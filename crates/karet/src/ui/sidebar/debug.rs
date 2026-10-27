@@ -15,8 +15,8 @@ pub(super) fn draw_debug_panel(
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
     let dim = theme.style(ThemeRole::LineNumber);
     let muted = theme.style(ThemeRole::Muted);
-    let panel = &app.debug_panel;
-    let output = &app.debug_output;
+    let panel = &app.debugger.panel;
+    let output = &app.debugger.output;
 
     let items: Vec<ListItem> = panel
         .rows
@@ -128,11 +128,11 @@ pub(super) fn draw_debug_panel(
             .bg(theme.role(ThemeRole::Selection).to_ratatui())
             .add_modifier(Modifier::BOLD),
     );
-    let total = app.debug_panel.rows.len();
+    let total = app.debugger.panel.rows.len();
     let (results, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     f.render_stateful_widget(list, results, &mut state);
-    app.debug_ui.offset = state.offset();
-    app.debug_ui.results_rect = results;
+    app.debugger.chrome.offset = state.offset();
+    app.debugger.chrome.results_rect = results;
     hits.record(
         tracks.paint(
             f.buffer_mut(),

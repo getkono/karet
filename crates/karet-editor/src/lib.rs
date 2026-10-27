@@ -8,10 +8,6 @@
 //! Nor does it depend on the syntax engine: highlight spans, fold regions and
 //! semantic blocks are the neutral `karet-core` shapes `karet-syntax` computes,
 //! so a consumer of the widget never builds tree-sitter.
-//!
-//! This is the implementation *skeleton*: the [`Editor`] builder (the data joint)
-//! and [`EditorState`] are defined; the painting/input logic is filled in
-//! separately.
 
 mod bracket;
 mod conflict;
@@ -37,34 +33,6 @@ pub use diagnostic::diagnostic_messages;
 pub use diagnostic::diagnostic_signs;
 pub use diagnostic::severity_role;
 pub use diagnostic::severity_sign;
-use karet_core::CursorState;
-use karet_core::Decoration;
-use karet_core::DecorationKind;
-use karet_core::Diagnostic;
-use karet_core::DiagnosticTag;
-use karet_core::HighlightSpan;
-use karet_core::Highlights;
-use karet_core::LineCol;
-use karet_core::Range;
-use karet_core::Selection;
-use karet_core::SemanticBlock;
-use karet_core::SemanticBlocks;
-use karet_core::Severity;
-use karet_core::ThemeRole;
-use karet_core::TokenId;
-use karet_core::VirtualLine;
-use karet_core::VirtualText;
-use karet_core::VirtualTextPlacement;
-use karet_text::TextBuffer;
-use karet_theme::Rgba;
-use karet_theme::Theme;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::StatefulWidget;
 pub use state::EditorState;
 pub use state::Fold;
 pub use state::GutterHit;
@@ -82,6 +50,5 @@ pub use text::word_bounds;
 pub use view::Editor;
 pub use view::LineNumbers;
 pub use view::RenderWhitespace;
-use view::gutter_width;
 pub use visual::WrappingIndent;
 pub use visual::cluster_widths;

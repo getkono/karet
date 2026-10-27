@@ -6,7 +6,7 @@ use karet_core::BytePos;
 use karet_core::Span;
 use karet_core::StandardToken;
 
-use crate::*;
+use super::*;
 
 /// The gutter `LineNumbers::Off` keeps: content starts at this column.
 const X: u16 = 2;
@@ -147,7 +147,7 @@ fn guides_follow_horizontal_scroll_on_text_and_blank_lines() {
     let buffer = TextBuffer::from_text("{\n        a\n\n        b\n");
     let area = Rect::new(0, 0, 10, 4);
     let mut state = EditorState::new();
-    state.scroll_col = 2;
+    state.scroll_to_column(2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
         .indent_guides(true)
@@ -334,6 +334,28 @@ fn bracket_depths_restart_after_a_jump_past_the_scan_bound() {
         depths.line(line, u32::MAX),
         [None],
         "the opener lies beyond the restarted scan's lookback"
+    );
+}
+
+#[test]
+fn bracket_depths_keep_their_stack_for_a_step_of_exactly_the_scan_bound() {
+    // Line 0 opens a bracket; its closer sits on line `SCAN_LINES + 1`.
+    let bound = bracket::SCAN_LINES;
+    let text = format!("(\n{})\n", "\n".repeat(bound));
+    let buffer = TextBuffer::from_text(&text);
+    let mut depths = bracket::BracketDepths::new(&buffer, None);
+    // Asking for line 1 consumes line 0, so the stack holds its `(`.
+    assert_eq!(depths.line(1, u32::MAX), [] as [Option<usize>; 0]);
+    let last = u32::try_from(bound + 1).unwrap_or(u32::MAX);
+    assert_eq!(
+        depths.line(last, u32::MAX),
+        [Some(0)],
+        "a step of exactly the bound walks on instead of restarting"
+    );
+    assert_eq!(
+        depths.line(last, u32::MAX),
+        [Some(0)],
+        "a repeated line reuses the stack instead of rescanning a shorter lookback"
     );
 }
 

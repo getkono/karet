@@ -10,15 +10,11 @@
 
 use karet_core::ApplyWorkspaceEditResult;
 use karet_core::CodeAction;
-use karet_core::DocumentChange;
-use karet_text::TextBuffer;
 
+use super::columns::utf16_caret;
 use super::lsp_requests::NO_SERVER;
 use super::lsp_requests::clamp_to_document;
 use super::lsp_requests::refused;
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
-use super::workspace_edit::Columns;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
 use crate::api::CodeActionTrigger;
@@ -207,34 +203,6 @@ impl Session {
         };
         if let Some(cmd) = self.lsp.code_action(selector, &path, cmd) {
             self.adopt_code_action(cmd.unanswered(NO_SERVER));
-        }
-    }
-
-    /// Convert every listed action's edit from the server's UTF-16 columns to
-    /// buffer columns, reading each file at most once.
-    fn actions_to_buffer_columns(&self, actions: &mut [CodeAction]) {
-        let mut buffers: HashMap<PathBuf, Option<TextBuffer>> = HashMap::new();
-        let mut convert = |path: &Path, edits: &mut [TextEdit]| {
-            let buffer = buffers
-                .entry(path.to_path_buf())
-                .or_insert_with(|| self.buffer_for_path(path));
-            // A file that cannot be read keeps the server's columns: its edit
-            // cannot apply anyway, and that is reported when it is run.
-            if let Some(buffer) = buffer {
-                for edit in edits {
-                    edit.range = utf16_range_to_buffer(buffer, edit.range);
-                }
-            }
-        };
-        for edit in actions.iter_mut().filter_map(|action| action.edit.as_mut()) {
-            for (path, edits) in &mut edit.changes {
-                convert(path, edits);
-            }
-            for change in &mut edit.document_changes {
-                if let DocumentChange::Edit(document) = change {
-                    convert(&document.path, &mut document.edits);
-                }
-            }
         }
     }
 }

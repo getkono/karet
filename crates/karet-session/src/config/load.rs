@@ -236,6 +236,7 @@ const SECTIONS: &[&str] = &[
     "toml",
     "debug",
     "notebook",
+    "tasks",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
@@ -428,6 +429,7 @@ fn deserialize_sections(
             "toml" => section(value, |v| settings.toml = v),
             "debug" => section(value, |v| settings.debug = v),
             "notebook" => section(value, |v| settings.notebook = v),
+            "tasks" => section(value, |v| settings.tasks = v),
             // Unreachable: `SECTIONS` gates the loop above, and
             // `every_section_round_trips_a_value` proves each entry lands.
             _ => Ok(()),
@@ -543,15 +545,19 @@ pub(crate) fn user_config_path() -> Option<PathBuf> {
 /// config files live.
 #[must_use]
 pub fn user_config_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "getkono", "karet")
-        .map(|dirs| dirs.config_dir().to_path_buf())
+    crate::dirs::config_dir()
 }
 
 /// `<system config dir>/karet/setting.jsonc`. On Unix this is the first entry of
 /// `$XDG_CONFIG_DIRS` (default `/etc/xdg`); other platforms have no system tier.
 fn system_config_path() -> Option<PathBuf> {
+    system_config_path_in(std::env::var_os("XDG_CONFIG_DIRS"))
+}
+
+/// [`system_config_path`] for a given `$XDG_CONFIG_DIRS` value.
+fn system_config_path_in(xdg_config_dirs: Option<std::ffi::OsString>) -> Option<PathBuf> {
     if cfg!(unix) {
-        let base = std::env::var_os("XDG_CONFIG_DIRS")
+        let base = xdg_config_dirs
             .and_then(|dirs| {
                 dirs.to_str()
                     .and_then(|s| s.split(':').next())

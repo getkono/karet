@@ -225,12 +225,13 @@ impl App {
     }
 
     /// Activate a link only for the explicit Ctrl/Cmd-click gesture: one
-    /// rendered in a Markdown preview, or one written in the source of the
-    /// editor under the pointer, focused split or not (a bare URL, or a
-    /// Markdown `[text](target)`).
+    /// rendered in a Markdown preview, or one in the editor under the
+    /// pointer, focused split or not -- a language server's document link
+    /// first, else one written in the source (a bare URL, or a Markdown
+    /// `[text](target)`).
     ///
-    /// A source link outranks Go to Definition under the same gesture: the
-    /// link is what the underline promised. Alt or Shift keep the click the
+    /// A link outranks Go to Definition under the same gesture: the link is
+    /// what the underline promised. Alt or Shift keep the click the
     /// editor's (multi-caret, extend), as Ctrl+click on a symbol does.
     pub(in crate::app) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -249,10 +250,21 @@ impl App {
         let plain = !mouse
             .modifiers
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
-        let Some(target) = preview.or_else(|| self.pane_source_link(point).filter(|_| plain))
-        else {
-            return false;
+        // A language server's link outranks one read from the source: the
+        // server knows where the text leads, where a scan only recognises it.
+        let server = if preview.is_none() && plain {
+            self.pane_server_link(point)
+        } else {
+            None
         };
+        let target = match (&server, preview) {
+            (Some(_), _) => None,
+            (None, Some(preview)) => Some(preview),
+            (None, None) => self.pane_source_link(point).filter(|_| plain),
+        };
+        if server.is_none() && target.is_none() {
+            return false;
+        }
         // Every pane's links are live. The link resolves against the file it is
         // in, so the click focuses that pane first, as any click on its text does.
         if let Some(pane) = self
@@ -264,6 +276,13 @@ impl App {
             self.focus_pane_switch(pane);
             self.focus = Focus::Editor;
         }
+        if let Some((doc, link)) = server {
+            self.follow_document_link(doc, link);
+            return true;
+        }
+        let Some(target) = target else {
+            return false;
+        };
         self.activate_link(&target)
     }
 
@@ -296,18 +315,7 @@ impl App {
                 self.open_markdown_file_link(&path);
             },
             Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
-                self.confirm_action(
-                    "Open a file outside this workspace?",
-                    format!(
-                        "This link points to {}, which is outside {}. Opening it \
-                         leaves the workspace you started karet in.",
-                        path.display(),
-                        self.root.display()
-                    ),
-                    "Stay in the workspace",
-                    "Open it",
-                    ConfirmAction::OpenOutsideWorkspaceLink(path),
-                );
+                self.confirm_outside_workspace_link(path);
             },
             Err(error) => self.notify(
                 Report::Refusal,
@@ -316,6 +324,22 @@ impl App {
             ),
         }
         true
+    }
+
+    /// Ask before opening `path`, a link's file outside the workspace.
+    pub(in crate::app) fn confirm_outside_workspace_link(&mut self, path: PathBuf) {
+        self.confirm_action(
+            "Open a file outside this workspace?",
+            format!(
+                "This link points to {}, which is outside {}. Opening it \
+                 leaves the workspace you started karet in.",
+                path.display(),
+                self.root.display()
+            ),
+            "Stay in the workspace",
+            "Open it",
+            ConfirmAction::OpenOutsideWorkspaceLink(path),
+        );
     }
 
     pub(in crate::app) fn open_markdown_file_link(&mut self, path: &Path) {
@@ -470,7 +494,7 @@ impl App {
     /// it. Returns `true` when the event landed on the popup. Its scrollbar is
     /// routed before this, with every other bar.
     pub(in crate::app) fn handle_completion_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(list) = self.completion.as_ref().map(|ui| ui.list) else {
+        let Some(list) = self.completion.popup.as_ref().map(|ui| ui.list) else {
             return false;
         };
         if !rect_contains(list.area(), (mouse.column, mouse.row)) {
@@ -485,8 +509,8 @@ impl App {
                     .row_at(mouse.column, mouse.row)
                     .filter(|row| *row < len)
                 {
-                    if let Some(ui) = self.completion.as_mut() {
-                        ui.list.selected = row;
+                    if let Some(ui) = self.completion.popup.as_mut() {
+                        ui.list.select(row, len);
                     }
                     self.accept_completion();
                 }
@@ -496,7 +520,7 @@ impl App {
             _ => return false,
         };
         let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
-        if let Some(ui) = self.completion.as_mut() {
+        if let Some(ui) = self.completion.popup.as_mut() {
             ui.list.scroll_by(delta, len);
         }
         true
@@ -596,14 +620,32 @@ impl App {
         };
         let point = (mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
+            MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect(), point) => {
                 // The click and the hover accent resolve rows the same way, so
                 // the row that lit up is the row that runs.
-                let row = menu.row_at(mouse.column, mouse.row);
-                if let (Some(menu), Some(row)) = (self.context_menu.as_mut(), row) {
-                    menu.selected = row;
+                let Some(row) = menu.row_at(mouse.column, mouse.row) else {
+                    self.accept_context_menu();
+                    return true;
+                };
+                let picked = self
+                    .context_menu
+                    .as_mut()
+                    .is_some_and(|menu| menu.select_row(row));
+                if picked {
+                    self.accept_context_menu();
+                    return true;
                 }
-                self.accept_context_menu();
+                // A disabled row keeps the cursor where it was (keyboard
+                // navigation never rests on one either) but still owes the user
+                // its note; the menu stays open so another row can be chosen.
+                let note = self
+                    .context_menu
+                    .as_ref()
+                    .and_then(|menu| menu.entries().get(row))
+                    .and_then(|entry| entry.note.clone());
+                if let Some(note) = note {
+                    self.notify(Report::Refusal, NotificationKind::System, note);
+                }
                 true
             },
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {

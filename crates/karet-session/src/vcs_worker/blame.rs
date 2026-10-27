@@ -74,7 +74,7 @@ pub(super) fn blame(
     Ok(result)
 }
 
-pub(super) fn map_attribution(
+fn map_attribution(
     current: &[&str],
     head: &[&str],
     groups: &[blameline::BlameGroup],
@@ -85,13 +85,10 @@ pub(super) fn map_attribution(
     }
     let mut by_head = vec![BlameAttribution::Uncommitted; head.len()];
     for group in groups {
-        let Some(author_time) = group.author_time() else {
-            continue;
-        };
         let commit = BlameCommit {
             hash: group.commit_hash.clone(),
             author: group.author.clone(),
-            author_time,
+            author_time: group.author_time,
         };
         let start = group.lines.start.saturating_sub(1) as usize;
         let end = (group.lines.end as usize).min(by_head.len());
@@ -118,4 +115,58 @@ pub(super) fn map_attribution(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commit(hash: &str) -> BlameAttribution {
+        BlameAttribution::Commit(BlameCommit {
+            hash: hash.to_string(),
+            author: "Ada".to_string(),
+            author_time: 1_773_619_200,
+        })
+    }
+
+    #[test]
+    fn current_buffer_mapping_keeps_exact_and_unique_moved_lines() {
+        let groups = vec![blameline::BlameGroup {
+            lines: blameline::LineRange { start: 1, end: 3 },
+            commit_hash: "one".to_string(),
+            message: "change".to_string(),
+            author: "Ada".to_string(),
+            date: "2026-03-16T00:00:00+00:00".to_string(),
+            author_time: 1_773_619_200,
+        }];
+        let mapped = map_attribution(&["a", "new", "c", "b"], &["a", "b", "c"], &groups);
+        assert_eq!(mapped[0], commit("one"));
+        assert_eq!(mapped[1], BlameAttribution::Uncommitted);
+        assert_eq!(mapped[2], commit("one"));
+        assert_eq!(mapped[3], commit("one"));
+    }
+
+    /// The attribution's time comes from blameline's integer `author_time`,
+    /// never from re-parsing the display `date`: a group whose `date` no
+    /// parser reads still attributes its lines instead of showing them as
+    /// Uncommitted.
+    #[test]
+    fn attribution_time_does_not_depend_on_the_display_date() {
+        let groups = vec![blameline::BlameGroup {
+            lines: blameline::LineRange { start: 1, end: 1 },
+            commit_hash: "one".to_string(),
+            message: "change".to_string(),
+            author: "Ada".to_string(),
+            date: "not a date".to_string(),
+            author_time: 1_773_619_200,
+        }];
+        let mapped = map_attribution(&["a"], &["a"], &groups);
+        assert_eq!(mapped, vec![commit("one")]);
+    }
+
+    #[test]
+    fn ambiguous_moved_lines_are_uncommitted() {
+        let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
+        assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
+    }
 }

@@ -173,7 +173,7 @@ where
 
 /// Drain events until `pick` accepts one, bounded by a deadline.
 async fn wait_for<T>(
-    rx: &mut mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
     mut pick: impl FnMut(&Event) -> Option<T>,
 ) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -187,7 +187,7 @@ async fn wait_for<T>(
 
 #[tokio::test]
 async fn the_command_event_contract_round_trips() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     // Breakpoints set before any session: stored, echoed unverified.
@@ -281,7 +281,7 @@ async fn the_command_event_contract_round_trips() {
 
 #[tokio::test]
 async fn adapter_output_late_breakpoints_and_exit_reach_the_event_stream() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -358,7 +358,7 @@ fn failing_connector() -> Connector {
 
 #[tokio::test]
 async fn a_start_that_fails_is_the_only_debug_transition_reported_as_an_error() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(failing_connector());
     manager.start(None);
@@ -383,7 +383,7 @@ async fn a_start_that_fails_is_the_only_debug_transition_reported_as_an_error() 
 
 #[tokio::test]
 async fn inspection_answers_ride_the_request_id() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -444,7 +444,7 @@ async fn inspection_answers_ride_the_request_id() {
 
 #[tokio::test]
 async fn inspection_without_a_stop_answers_empty() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.stack_trace(RequestId(9));
     let frames = wait_for(&mut events_rx, |event| match event {
@@ -457,7 +457,7 @@ async fn inspection_without_a_stop_answers_empty() {
 
 #[tokio::test]
 async fn start_without_configurations_notifies() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -475,7 +475,7 @@ async fn start_without_configurations_notifies() {
 
 #[tokio::test]
 async fn run_controls_without_a_session_notify() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.run_control(RunControl::StepOver);
     let message = wait_for(&mut events_rx, |event| match event {

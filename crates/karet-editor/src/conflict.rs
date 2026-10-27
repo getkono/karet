@@ -315,6 +315,25 @@ mod tests {
     }
 
     #[test]
+    fn ignores_a_repeated_base_and_an_unterminated_nested_start() {
+        for text in [
+            "<<<<<<< a\n||||||| b\n||||||| c\n=======\n>>>>>>> d\n",
+            "<<<<<<< outer\n<<<<<<< inner\n",
+        ] {
+            assert!(conflict_decorations(text).is_empty(), "unexpected: {text}");
+        }
+    }
+
+    #[test]
+    fn a_nested_marker_set_is_skipped_whole_including_complete_conflicts_inside_it() {
+        // The inner `<<<<<<< c` … `>>>>>>> c` would be a complete conflict on its
+        // own, but it sits inside the outer, nested set, which is ignored as one.
+        let text = "<<<<<<< outer\n<<<<<<< inner\na\n=======\nb\n>>>>>>> inner\n\
+                    <<<<<<< c\nx\n=======\ny\n>>>>>>> c\n>>>>>>> outer\n";
+        assert!(conflict_decorations(text).is_empty());
+    }
+
+    #[test]
     fn finds_multiple_independent_conflicts() {
         let text =
             "<<<<<<< a\n1\n=======\n2\n>>>>>>> b\nplain\n<<<<<<< c\n3\n=======\n4\n>>>>>>> d\n";

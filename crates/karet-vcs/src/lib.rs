@@ -18,6 +18,7 @@ mod remote;
 mod repo;
 mod selection;
 mod stash;
+mod subprocess;
 mod summary;
 #[cfg(test)]
 mod test_support;
@@ -38,11 +39,15 @@ pub use ops::RebaseStep;
 pub use ops::RefKind;
 pub use ops::RefLabel;
 pub use ops::ResetMode;
+pub use remote::ForgeKind;
 pub use remote::Remote;
 pub use remote::RemoteBranch;
+pub use remote::RemoteUrl;
 pub use remote::RepositoryOperation;
 pub use remote::RepositoryState;
 pub use remote::SyncOutcome;
+pub use remote::detect_forge;
+pub use remote::parse_remote;
 pub use selection::Selection;
 pub use stash::StashEntry;
 pub use stash::StashOptions;
@@ -224,31 +229,6 @@ impl Repository {
     /// `user.name`/`user.email` identity).
     pub fn commit(&self, message: &str) -> Result<String, VcsError> {
         self.git_commit(message)
-    }
-
-    /// Commit the staged changes, streaming the hooks' console output, and stop
-    /// on request.
-    ///
-    /// [`commit`](Self::commit) with a sink: `on_line` is called for every line
-    /// `git` and its hooks print, as they print it, and every line arrives before
-    /// the result is decided — so a hook that fails after explaining itself still
-    /// delivers the explanation.
-    ///
-    /// `cancel` stops the commit and its hooks from any thread. It reports
-    /// [`CommitOutcome::Cancelled`] only when no commit was created; a request
-    /// that arrives too late to prevent one says so — see [`CommitOutcome`].
-    ///
-    /// # Errors
-    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
-    /// [`VcsError::Git`] when the commit is refused, carrying the last thing
-    /// written to stderr as the reason.
-    pub fn commit_with_output(
-        &self,
-        message: &str,
-        cancel: &CommitCancel,
-        on_line: &mut dyn FnMut(CommitOutputLine),
-    ) -> Result<CommitOutcome, VcsError> {
-        self.commit_streaming(message, cancel, on_line)
     }
 
     /// The staged changes as a unified diff plus a `--stat` summary and file count.

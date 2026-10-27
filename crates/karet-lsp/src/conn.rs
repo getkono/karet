@@ -170,6 +170,23 @@ impl LspHandler {
                     let watchers = Watcher::from_register_options(item.get("registerOptions"));
                     gate.watch(id.to_owned(), watchers);
                 }
+                // A pull registration's options carry the dependency flag a
+                // handshake would have advertised; it rides along as a second
+                // registration under a derived id, so withdrawing the pull
+                // withdraws it too.
+                if feature == ServerFeature::PullDiagnostics
+                    && item
+                        .get("registerOptions")
+                        .and_then(|options| options.get("interFileDependencies"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    gate.register(
+                        inter_file_id(id),
+                        ServerFeature::InterFileDiagnostics,
+                        selector.clone(),
+                    );
+                }
                 gate.register(id.to_owned(), feature, selector);
             }
         }
@@ -191,11 +208,10 @@ impl LspHandler {
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            let feature = self
-                .gate
-                .write()
-                .ok()
-                .and_then(|mut gate| gate.unregister(id));
+            let feature = self.gate.write().ok().and_then(|mut gate| {
+                let _ = gate.unregister(&inter_file_id(id));
+                gate.unregister(id)
+            });
             if let Some(feature) = feature {
                 tracing::debug!(?feature, "server unregistered a capability");
             }
@@ -272,10 +288,23 @@ impl karet_jsonrpc::Handler for LspHandler {
                 let _ = self.refreshes.send(ServerRefresh::SemanticTokens);
                 Ok(Value::Null)
             },
+            // Answered at once for the same reason; the pulls a consumer
+            // re-asks are its own.
+            "workspace/diagnostic/refresh" => {
+                let _ = self.refreshes.send(ServerRefresh::Diagnostics);
+                Ok(Value::Null)
+            },
             "workspace/configuration" => Ok(config::answer(&self.settings, params)),
             _ => answer_server_request(method, params),
         }
     }
+}
+
+/// The gate id a pull registration's `interFileDependencies` flag is kept
+/// under: derived from the pull's own id, so it goes when the pull does. The
+/// NUL keeps it apart from any id a real server mints.
+fn inter_file_id(id: &str) -> String {
+    format!("{id}\0interFileDependencies")
 }
 
 /// A live JSON-RPC connection to one language server, and the streams of the

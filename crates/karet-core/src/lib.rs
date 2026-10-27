@@ -19,15 +19,16 @@
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
 //! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
 //! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
-//!   [`CompletionItem`], [`Hover`], [`InlayHint`], [`VirtualText`], [`SignatureHelp`],
-//!   [`CodeAction`], ….
+//!   [`CompletionItem`], [`Hover`], [`DocumentHighlight`], [`InlayHint`], [`VirtualText`],
+//!   [`SignatureHelp`], [`CodeAction`], ….
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
-//!   [`FoldKind`], [`FoldRegions`].
+//!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
+//!   [`merge_spans`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
-//! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
+//! - Interop traits: [`SymbolProvider`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
@@ -88,11 +89,10 @@ pub use highlight::HighlightSpan;
 pub use highlight::Highlights;
 pub use highlight::SemanticBlock;
 pub use highlight::SemanticBlocks;
-pub use model::CODE_LENS_SEPARATOR;
+pub use highlight::merge_spans;
+pub use highlight::shift_span;
 pub use model::CodeAction;
 pub use model::CodeLens;
-pub use model::CodeLensRow;
-pub use model::CodeLensSpan;
 pub use model::CommandId;
 pub use model::CompletionItem;
 pub use model::CompletionKind;
@@ -103,13 +103,21 @@ pub use model::DecorationColor;
 pub use model::DecorationKind;
 pub use model::Diagnostic;
 pub use model::DiagnosticTag;
+pub use model::DocumentColor;
+pub use model::DocumentHighlight;
+pub use model::DocumentLink;
 pub use model::EolAlign;
 pub use model::HierarchyDirection;
 pub use model::HierarchyItem;
+pub use model::HighlightKind;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;
 pub use model::InlayHintLabelPart;
+pub use model::InlineAsk;
+pub use model::InlineCompletionItem;
+pub use model::InlineCompletionTrigger;
+pub use model::InlineGhost;
 pub use model::Location;
 pub use model::Markup;
 pub use model::MarkupKind;
@@ -132,8 +140,6 @@ pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
-pub use provider::DiagnosticFormatter;
-pub use provider::FormattedDiagnostic;
 pub use provider::SymbolProvider;
 pub use semantic_token::SemanticToken;
 pub use semantic_token::SemanticTokenModifiers;

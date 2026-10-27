@@ -5,7 +5,7 @@
 //! [`BlameGroup`]; each group carries the **full** commit message (not just the
 //! hash); and blame can be narrowed to the function or block enclosing a line via
 //! tree-sitter. Every model derives [`serde::Serialize`], so the issue's
-//! `{lines, commit_hash, message, author, date}` shape is one [`to_json`] call away
+//! `{lines, commit_hash, message, author, date, author_time}` shape is one [`to_json`] call away
 //! — ready to feed to another tool or an AI agent.
 //!
 //! # Backend
@@ -43,7 +43,7 @@ pub struct LineRange {
 }
 
 /// A run of consecutive lines attributed to a single commit — the unit of semantic
-/// blame. Serializes to `{lines, commit_hash, message, author, date}`.
+/// blame. Serializes to `{lines, commit_hash, message, author, date, author_time}`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlameGroup {
     /// The grouped, consecutive lines (1-based, inclusive).
@@ -54,8 +54,14 @@ pub struct BlameGroup {
     pub message: String,
     /// The commit author's name.
     pub author: String,
-    /// The commit's author date, ISO-8601 (falls back to the raw git timestamp).
+    /// The commit's author date for display, ISO-8601 (falls back to the raw
+    /// git timestamp). Compute with [`author_time`](Self::author_time) rather
+    /// than parsing this.
     pub date: String,
+    /// The commit's author time in seconds since the Unix epoch, read from the
+    /// commit's own timestamp. A timestamp git cannot read counts as `0`, the
+    /// epoch, as `git log` shows it.
+    pub author_time: i64,
 }
 
 impl BlameGroup {
@@ -74,15 +80,6 @@ impl BlameGroup {
     #[must_use]
     pub fn summary(&self) -> &str {
         self.message.lines().next().unwrap_or("")
-    }
-
-    /// The author's timestamp in seconds since the Unix epoch, when `date` is a
-    /// valid Git or ISO-8601 date.
-    #[must_use]
-    pub fn author_time(&self) -> Option<i64> {
-        gix::date::parse(&self.date, None)
-            .ok()
-            .map(|time| time.seconds)
     }
 }
 
@@ -105,11 +102,16 @@ pub enum BlameError {
     Json(String),
 }
 
-/// Semantic blame narrowed to the function/block enclosing `line` (0-based).
+/// Semantic blame narrowed to the function/block enclosing `line` (1-based, the
+/// same numbering as [`BlameGroup::lines`]).
 ///
-/// Parses `source` with tree-sitter to find the innermost enclosing function, then
-/// clips whole-file blame to that line range. Falls back to the whole file when the
-/// language is unsupported or no enclosing function is found.
+/// With the `treesitter` feature, parses `source` with tree-sitter to find the
+/// innermost enclosing function, then clips whole-file blame to that line range.
+/// Falls back to the whole file when the language is unsupported (no matching
+/// `lang-*` feature), no enclosing function is found, or `line` is `0` or past
+/// the end of `source`. Without the `treesitter`
+/// feature, `source` and `line` are ignored and this always returns whole-file
+/// blame, the same as [`blame_file`].
 ///
 /// # Errors
 /// Returns [`BlameError`] if the repository can't be opened or blamed — including
@@ -168,6 +170,7 @@ mod tests {
             message: "subject line\n\nbody".to_string(),
             author: "Jane Doe".to_string(),
             date: "2026-03-16T00:00:00+00:00".to_string(),
+            author_time: 1_773_619_200,
         }
     }
 
@@ -192,16 +195,6 @@ mod tests {
         // A multi-byte char ending exactly at byte 7 still truncates.
         let g = group(1, 1, "abcdeéxyz");
         assert_eq!(g.short_hash(), "abcdeé");
-    }
-
-    #[test]
-    fn author_time_parses_iso_and_raw_git_dates() {
-        let mut g = group(1, 1, "abc");
-        assert_eq!(g.author_time(), Some(1_773_619_200));
-        g.date = "1773619200 +0000".to_string();
-        assert_eq!(g.author_time(), Some(1_773_619_200));
-        g.date = "not a date".to_string();
-        assert_eq!(g.author_time(), None);
     }
 
     #[test]
@@ -250,7 +243,8 @@ mod tests {
     "commit_hash": "abc123",
     "message": "subject line\n\nbody",
     "author": "Jane Doe",
-    "date": "2026-03-16T00:00:00+00:00"
+    "date": "2026-03-16T00:00:00+00:00",
+    "author_time": 1773619200
   }
 ]"#;
         assert_eq!(json, want);

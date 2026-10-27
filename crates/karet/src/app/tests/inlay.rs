@@ -79,7 +79,6 @@ fn snapshot_of(app: &App) -> DocSnapshot {
         highlights: Arc::new(karet_syntax::Highlights::default()),
         semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),
@@ -271,7 +270,7 @@ fn one_document_in_two_panes_is_asked_about_once_over_both_viewports() {
     app.split_focused(karet_widgets::SplitDir::Right);
     // The new, focused pane scrolls far down; the stored one stays at the top.
     let active = app.active;
-    app.tabs[active].editor.scroll_line = 500;
+    app.tabs[active].editor.scroll_to_line(500);
 
     app.request_inlay_hints();
     let asked = inlay_requests(&backend);

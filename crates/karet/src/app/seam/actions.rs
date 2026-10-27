@@ -106,20 +106,11 @@ impl App {
 
     /// Offer the start points the Seam view could be opened on.
     ///
-    /// Discovery runs here on the app thread rather than on the backend. The picker *is*
-    /// the surface being opened, so rows arriving after it would move the selection under
-    /// the reader's fingers, and withholding it until they arrived would be exactly the
-    /// delayed surface a picker must never be. Discovery only reads manifests and lists
-    /// directories, and it is bounded — the app already runs a heavier walk than this
-    /// synchronously to open the quick-open picker.
+    /// The picker opens at once over the reader's context and the packages the last
+    /// discovery found; a fresh discovery runs on a worker thread (it walks directories,
+    /// and on a large root that takes long enough to stall a frame) and fills the rows in
+    /// when it lands, keeping the highlighted row where the reader left it.
     pub(crate) fn open_seam_view_picker(&mut self) {
-        let items = self.seam_root_candidates();
-        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
-    }
-
-    /// The start points on offer: the reader's context, and what discovery found.
-    fn seam_root_candidates(&mut self) -> Vec<(String, std::path::PathBuf)> {
-        let discovered = karet_seam::discover(&self.root, karet_seam::DiscoveryOptions::default());
         let current = self
             .tabs
             .get(self.active)
@@ -127,7 +118,35 @@ impl App {
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_path_buf);
         let explorer = self.explorer_seam_root();
-        super::roots::candidates(&self.root.clone(), current, explorer, discovered)
+        let root = self.root.clone();
+        let items = self.seam_root_candidates(&root, current.clone(), explorer.clone());
+        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
+        self.seam_discovery.start(&root, current, explorer);
+    }
+
+    /// The start points on offer now: the reader's context, and what discovery last found.
+    fn seam_root_candidates(
+        &self,
+        root: &std::path::Path,
+        current: Option<std::path::PathBuf>,
+        explorer: Option<std::path::PathBuf>,
+    ) -> Vec<(String, std::path::PathBuf)> {
+        let known = self.seam_discovery.known(root);
+        super::roots::candidates(root, current, explorer, known)
+    }
+
+    /// Adopt a finished package discovery, filling in an open Seam picker.
+    ///
+    /// A picker closed since it asked is left closed, and any other overlay open in its
+    /// place is left alone; the packages are still kept for the next picker.
+    pub(crate) fn on_seam_discovery(&mut self, discovery: super::roots::Discovery) {
+        let root = self.root.clone();
+        let Some(items) = self.seam_discovery.accept(&root, discovery) else {
+            return;
+        };
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_seam_roots(items);
+        }
     }
 
     /// The explorer's selection as a directory, when the panel has one.

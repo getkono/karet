@@ -122,3 +122,24 @@ fn formatting_chords_bind_in_the_editor() {
         Some("Ctrl+K Ctrl+F")
     );
 }
+
+#[test]
+fn alt_arrows_walk_history_outside_the_editor_and_move_by_word_inside_it() {
+    assert_eq!(
+        res(Focus::Sidebar, false, key(KeyCode::Left, KeyModifiers::ALT)),
+        Some(Command::JumpBack)
+    );
+    assert_eq!(
+        res(
+            Focus::Sidebar,
+            false,
+            key(KeyCode::Right, KeyModifiers::ALT)
+        ),
+        Some(Command::JumpForward)
+    );
+    // The editor layer outranks Global: Alt+arrow stays word motion there (#141).
+    assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::Right, KeyModifiers::ALT)),
+        Some(Command::CaretWordRight)
+    );
+}

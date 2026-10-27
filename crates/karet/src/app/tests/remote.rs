@@ -33,7 +33,7 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
         panic!("a file-backed tab opens a pane menu");
     };
     let commands: Vec<Command> = menu
-        .entries
+        .entries()
         .iter()
         .filter_map(ContextMenuEntry::command)
         .collect();
@@ -54,8 +54,8 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
             Command::CopyGithubHeadLink,
         ]
     );
-    assert!(menu.entries[..6].iter().all(|e| e.enabled));
-    for entry in &menu.entries[6..] {
+    assert!(menu.entries()[..6].iter().all(|e| e.enabled));
+    for entry in &menu.entries()[6..] {
         assert!(
             !entry.enabled,
             "{:?} is disabled outside a repo",
@@ -102,7 +102,7 @@ fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
     let first = |app: &App| {
         app.context_menu
             .as_ref()
-            .and_then(|menu| menu.entries.first())
+            .and_then(|menu| menu.entries().first())
             .and_then(ContextMenuEntry::command)
     };
 
@@ -256,7 +256,7 @@ async fn remote_facts_resolve_through_the_backend() {
     let Some(Ok(facts)) = app.cached_remote_facts(&path) else {
         panic!("facts resolve inside a repo with an origin");
     };
-    assert_eq!(facts.remote.kind, crate::remote::ForgeKind::GitHub);
+    assert_eq!(facts.remote.kind, karet_vcs::ForgeKind::GitHub);
     assert_eq!(facts.rel_path, PathBuf::from("new.rs"));
     assert!(facts.tracked);
     assert!(facts.head.is_some());
@@ -509,13 +509,15 @@ fn context_menu_refuses_a_disabled_entry_and_surfaces_its_note() {
         2,
         vec![
             ContextMenuEntry::disabled(Command::ExplorerNewFile, "not available here"),
-            ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ContextMenuEntry::disabled(Command::ExplorerRefresh, "nor this"),
         ],
     ));
-    // Force the selection onto the disabled row (as a mouse click would).
-    if let Some(menu) = app.context_menu.as_mut() {
-        menu.selected = 0;
-    }
+    // With no activatable row the cursor rests on the first, disabled one —
+    // the only way a selection can sit on a refused row.
+    assert_eq!(
+        app.context_menu.as_ref().map(ContextMenu::selected),
+        Some(0)
+    );
     app.dispatch(Command::ContextMenuAccept);
     // The command did not run, the menu stays open, and the note is surfaced.
     assert!(!app.explorer.is_editing(), "disabled command must not run");

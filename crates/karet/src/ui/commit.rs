@@ -12,7 +12,6 @@ pub(in crate::ui) use graph::CommitGraphScroll;
 pub(in crate::ui) use graph::draw_commit_graph;
 pub(in crate::ui) use list::CommitListEntry;
 pub(in crate::ui) use list::commit_list_items;
-pub(crate) use list::relative_time;
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;
 
@@ -361,7 +360,7 @@ pub(super) fn file_card_header(
         }
         if w > 2 {
             spans.push(Span::styled(
-                truncate_start(&path, w - 2),
+                karet_widgets::text::fit_start(&path, w - 2),
                 fg.add_modifier(Modifier::BOLD),
             ));
         }
@@ -391,7 +390,7 @@ pub(super) fn file_card_header(
     let path_budget = w
         .saturating_sub(prefix_width + suffix_width + reason_width + 2)
         .max(1);
-    path = truncate_start(&path, path_budget);
+    path = karet_widgets::text::fit_start(&path, path_budget);
     let path_width = UnicodeWidthStr::width(path.as_str());
     let dashes = w
         .saturating_sub(prefix_width + path_width + reason_width + suffix_width + 1)
@@ -461,11 +460,6 @@ pub(super) fn file_card_footer(theme: &Theme, width: u16) -> Line<'static> {
         ),
         border,
     )
-}
-
-/// Keep the right-most, most-specific part of `text` within `max` terminal cells.
-pub(super) fn truncate_start(text: &str, max: usize) -> String {
-    karet_widgets::text::fit_start(text, max)
 }
 
 /// Draw the full-screen commit graph browser: a DAG commit list on the left and the

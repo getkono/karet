@@ -147,9 +147,10 @@ pub(crate) fn describe_paths(paths: &[PathBuf], root: &Path) -> String {
 fn first_action(dialog: ConfirmDialog) -> Option<ConfirmAction> {
     dialog
         .choices
-        .entries
-        .first()
-        .map(|choice| choice.action.clone())
+        .into_entries()
+        .into_iter()
+        .next()
+        .map(|choice| choice.action)
 }
 
 impl App {
@@ -296,22 +297,22 @@ impl App {
         };
         let point = (mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) if rect_contains(dialog.rect, point) => {
+            MouseEventKind::Down(MouseButton::Left) if rect_contains(dialog.rect(), point) => {
                 // The click and the hover accent resolve rows the same way, so
                 // the row that lit up is the row that runs. A click on the box
                 // but not on a row (the body, the border) changes nothing.
                 let Some(row) = dialog.row_at(mouse.column, mouse.row) else {
                     return true;
                 };
-                // The widget's keyboard selection refuses to land on a disabled
-                // row; a click must not be the way around that.
-                if !dialog.choices.entries.get(row).is_some_and(|e| e.enabled) {
-                    return true;
+                // The widget refuses to rest the cursor on a disabled row, and a
+                // click on one runs nothing.
+                if self
+                    .confirm
+                    .as_mut()
+                    .is_some_and(|dialog| dialog.select_row(row))
+                {
+                    self.confirm_accept();
                 }
-                if let Some(dialog) = self.confirm.as_mut() {
-                    dialog.choices.selected = row;
-                }
-                self.confirm_accept();
                 true
             },
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {
@@ -389,5 +390,57 @@ mod tests {
     #[test]
     fn no_paths_describe_as_nothing() {
         assert_eq!(describe_paths(&[], Path::new("/w")), "");
+    }
+
+    #[test]
+    fn clicking_a_disabled_choice_runs_nothing_and_keeps_the_cursor() {
+        use crate::app::tests::support::screen;
+        use crate::app::tests::support::test_dir;
+
+        let dir = test_dir("confirm-disabled-click");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.confirm(ConfirmDialog::new(
+            "Delete?",
+            "",
+            vec![
+                ConfirmChoice::custom("Keep", ConfirmAction::Cancel),
+                ConfirmChoice::disabled_custom(
+                    "Delete",
+                    ConfirmAction::Command(Command::Quit),
+                    "read-only",
+                ),
+            ],
+        ));
+        // The dialog records where its rows landed when painted.
+        let _ = screen(&mut app, 60, 20);
+        let rows = app
+            .confirm
+            .as_ref()
+            .map(ConfirmDialog::rows)
+            .unwrap_or_default();
+        let click = |app: &mut App, row: u16| {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rows.x,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+        };
+
+        click(&mut app, rows.y + 1);
+        let Some(dialog) = app.confirm.as_ref() else {
+            panic!("a click on the refused choice must not close the dialog");
+        };
+        assert!(
+            matches!(
+                dialog.selected_choice().map(|choice| &choice.action),
+                Some(ConfirmAction::Cancel)
+            ),
+            "the cursor stays on the activatable row"
+        );
+
+        click(&mut app, rows.y);
+        assert!(app.confirm.is_none(), "an activatable row runs and closes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

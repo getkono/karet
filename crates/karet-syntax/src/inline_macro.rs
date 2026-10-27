@@ -1,11 +1,15 @@
 //! Tree-sitter-aware inline editing macros.
 
+use std::borrow::Borrow;
+
 use karet_core::BytePos;
 use karet_core::LineCol;
+use karet_core::LineIndex;
 use karet_core::Range;
 use karet_core::Span;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
+use karet_treesitter::LayeredTree;
 use karet_treesitter::SyntaxNode;
 use karet_treesitter::language_id_from_injection_name;
 
@@ -94,105 +98,125 @@ impl InlineMacroEngine {
         trigger: InlineMacroTrigger,
         indentation: &str,
     ) -> Option<InlineMacroExpansion> {
+        let parser = &mut self.parser;
+        Self::expand_with_tree(language, text, selection, trigger, indentation, || {
+            parser.parse(language, text).ok()
+        })
+    }
+
+    /// [`expand`](Self::expand) over a layered parse the caller already holds
+    /// (for example one cached per document version), so an editor that parses
+    /// the buffer for other features does not parse it again here.
+    ///
+    /// `tree` is called at most once, and only after the gesture and the text
+    /// around the caret pass the cheap checks, so a keystroke that cannot
+    /// expand never asks for a parse. It must return a parse of exactly `text`
+    /// as `language`; `None` means no parse is available and no macro expands.
+    #[must_use]
+    pub fn expand_with_tree<T: Borrow<LayeredTree>>(
+        language: LanguageId,
+        text: &str,
+        selection: Range,
+        trigger: InlineMacroTrigger,
+        indentation: &str,
+        tree: impl FnOnce() -> Option<T>,
+    ) -> Option<InlineMacroExpansion> {
         let definition = DEFINITIONS.iter().find(|definition| {
             definition.trigger == trigger
                 && language_id_from_injection_name(definition.language) == Some(language)
         })?;
         match definition.kind {
             ExpansionKind::MarkdownLink | ExpansionKind::MarkdownTag => {
-                self.expand_markdown(language, text, selection, definition.kind)
+                expand_markdown(text, selection, definition.kind, tree)
             },
-            ExpansionKind::RustFunction => {
-                self.expand_rust_function(language, text, selection, indentation)
-            },
+            ExpansionKind::RustFunction => expand_rust_function(text, selection, indentation, tree),
         }
-    }
-
-    fn expand_markdown(
-        &mut self,
-        language: LanguageId,
-        text: &str,
-        selection: Range,
-        kind: ExpansionKind,
-    ) -> Option<InlineMacroExpansion> {
-        if selection.is_empty() {
-            return None;
-        }
-        let span = range_to_span(text, selection)?;
-        let tree = self.parser.parse(language, text).ok()?;
-        let start_nodes = ancestors_covering(&tree, span.start);
-        let end_byte = BytePos(span.end.0.saturating_sub(1));
-        let end_nodes = ancestors_covering(&tree, end_byte);
-        if !markdown_text_context(&start_nodes) || !markdown_text_context(&end_nodes) {
-            return None;
-        }
-        let selected = text.get(span.start.0..span.end.0)?;
-        let (new_text, cursor_byte) = match kind {
-            ExpansionKind::MarkdownLink => (format!("[{selected}]()"), selected.len() + 3),
-            ExpansionKind::MarkdownTag => (format!("<{selected}>"), selected.len() + 1),
-            ExpansionKind::RustFunction => return None,
-        };
-        Some(expansion(selection, &new_text, cursor_byte))
-    }
-
-    fn expand_rust_function(
-        &mut self,
-        language: LanguageId,
-        text: &str,
-        selection: Range,
-        indentation: &str,
-    ) -> Option<InlineMacroExpansion> {
-        if !selection.is_empty() {
-            return None;
-        }
-        let caret = line_col_to_byte(text, selection.start)?;
-        let trigger_start = preceding_word_start(text, caret);
-        if text.get(trigger_start..caret)? != "fn" {
-            return None;
-        }
-
-        let original = self.parser.parse(language, text).ok()?;
-        let at_trigger = ancestors_covering(&original, BytePos(trigger_start));
-        if at_trigger.iter().any(|node| {
-            matches!(
-                node.kind.as_str(),
-                "line_comment"
-                    | "block_comment"
-                    | "string_literal"
-                    | "raw_string_literal"
-                    | "char_literal"
-            )
-        }) {
-            return None;
-        }
-
-        // The incomplete token is normally an ERROR node, but its ancestors still
-        // identify whether it belongs to a file/module/impl/trait item list or an
-        // executable block.
-        let _nearest_container = at_trigger.iter().find(|node| {
-            matches!(
-                node.kind.as_str(),
-                "block" | "declaration_list" | "source_file"
-            )
-        })?;
-
-        let line_start = text[..trigger_start]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let leading = text.get(line_start..trigger_start)?;
-        if !leading.chars().all(char::is_whitespace) {
-            return None;
-        }
-        let new_text = format!("fn () {{\n{leading}{indentation}\n{leading}}}");
-        let range = Range {
-            start: byte_to_line_col(text, trigger_start)?,
-            end: selection.end,
-        };
-        Some(expansion(range, &new_text, 3))
     }
 }
 
-fn ancestors_covering(tree: &karet_treesitter::LayeredTree, byte: BytePos) -> Vec<SyntaxNode> {
+fn expand_markdown<T: Borrow<LayeredTree>>(
+    text: &str,
+    selection: Range,
+    kind: ExpansionKind,
+    tree: impl FnOnce() -> Option<T>,
+) -> Option<InlineMacroExpansion> {
+    if selection.is_empty() {
+        return None;
+    }
+    let span = range_to_span(text, selection)?;
+    let tree = tree()?;
+    let tree = tree.borrow();
+    let start_nodes = ancestors_covering(tree, span.start);
+    let end_byte = BytePos(span.end.0.saturating_sub(1));
+    let end_nodes = ancestors_covering(tree, end_byte);
+    if !markdown_text_context(&start_nodes) || !markdown_text_context(&end_nodes) {
+        return None;
+    }
+    let selected = text.get(span.start.0..span.end.0)?;
+    let (new_text, cursor_byte) = match kind {
+        ExpansionKind::MarkdownLink => (format!("[{selected}]()"), selected.len() + 3),
+        ExpansionKind::MarkdownTag => (format!("<{selected}>"), selected.len() + 1),
+        ExpansionKind::RustFunction => return None,
+    };
+    Some(expansion(selection, &new_text, cursor_byte))
+}
+
+fn expand_rust_function<T: Borrow<LayeredTree>>(
+    text: &str,
+    selection: Range,
+    indentation: &str,
+    tree: impl FnOnce() -> Option<T>,
+) -> Option<InlineMacroExpansion> {
+    if !selection.is_empty() {
+        return None;
+    }
+    let caret = line_col_to_byte(text, selection.start)?;
+    let trigger_start = preceding_word_start(text, caret);
+    if text.get(trigger_start..caret)? != "fn" {
+        return None;
+    }
+
+    let original = tree()?;
+    let at_trigger = ancestors_covering(original.borrow(), BytePos(trigger_start));
+    if at_trigger.iter().any(|node| {
+        matches!(
+            node.kind.as_str(),
+            "line_comment"
+                | "block_comment"
+                | "string_literal"
+                | "raw_string_literal"
+                | "char_literal"
+        )
+    }) {
+        return None;
+    }
+
+    // The incomplete token is normally an ERROR node, but its ancestors still
+    // identify whether it belongs to a file/module/impl/trait item list or an
+    // executable block.
+    let _nearest_container = at_trigger.iter().find(|node| {
+        matches!(
+            node.kind.as_str(),
+            "block" | "declaration_list" | "source_file"
+        )
+    })?;
+
+    let line_start = text[..trigger_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let leading = text.get(line_start..trigger_start)?;
+    if !leading.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let new_text = format!("fn () {{\n{leading}{indentation}\n{leading}}}");
+    let range = Range {
+        start: LineIndex::new(text).line_col(text, BytePos(trigger_start)),
+        end: selection.end,
+    };
+    Some(expansion(range, &new_text, 3))
+}
+
+fn ancestors_covering(tree: &LayeredTree, byte: BytePos) -> Vec<SyntaxNode> {
     tree.layers()
         .filter(|layer| layer.span().start.0 <= byte.0 && byte.0 <= layer.span().end.0)
         .flat_map(|layer| layer.named_ancestors_at(byte))
@@ -280,14 +304,6 @@ fn line_col_to_byte(text: &str, position: LineCol) -> Option<usize> {
         |(index, _)| Some(index),
     )?;
     Some(line_start + byte_col)
-}
-
-fn byte_to_line_col(text: &str, byte: usize) -> Option<LineCol> {
-    let prefix = text.get(..byte)?;
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-    let col = text.get(line_start..byte)?.chars().count();
-    Some(LineCol::new(line.try_into().ok()?, col.try_into().ok()?))
 }
 
 #[cfg(test)]
@@ -463,6 +479,57 @@ mod tests {
                     "    ",
                 )
                 .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_tree_expands_and_is_asked_for_only_past_the_cheap_checks() -> TestResult {
+        let lang = language("rust")?;
+        let caret = Range {
+            start: LineCol::new(0, 2),
+            end: LineCol::new(0, 2),
+        };
+        let tree = LayeredParser::new().parse(lang, "fn")?;
+        let expanded = InlineMacroEngine::expand_with_tree(
+            lang,
+            "fn",
+            caret,
+            InlineMacroTrigger::Tab,
+            "  ",
+            || Some(&tree),
+        )
+        .ok_or("missing function macro over a held tree")?;
+        assert_eq!(expanded.new_text, "fn () {\n  \n}");
+
+        // Tab after anything but `fn`, an empty markdown selection, and an
+        // unconfigured gesture never need a parse.
+        let lang_md = language("markdown")?;
+        for (lang, text, trigger) in [
+            (lang, "let", InlineMacroTrigger::Tab),
+            (lang_md, "te", InlineMacroTrigger::Character('[')),
+            (lang, "fn", InlineMacroTrigger::Character('f')),
+        ] {
+            let mut asked = false;
+            let result =
+                InlineMacroEngine::expand_with_tree(lang, text, caret, trigger, "  ", || {
+                    asked = true;
+                    None::<LayeredTree>
+                });
+            assert!(result.is_none() && !asked, "{text}");
+        }
+
+        // No parse available means no expansion.
+        assert!(
+            InlineMacroEngine::expand_with_tree(
+                lang,
+                "fn",
+                caret,
+                InlineMacroTrigger::Tab,
+                "  ",
+                || None::<LayeredTree>,
+            )
+            .is_none()
         );
         Ok(())
     }

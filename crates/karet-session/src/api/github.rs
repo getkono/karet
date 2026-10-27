@@ -12,6 +12,49 @@ pub struct GithubVerification {
     pub signer: Option<String>,
 }
 
+/// The GitHub operation an [`Event::GithubError`](crate::api::Event::GithubError)
+/// reports a failure of, so a client can word and route the failure without
+/// matching on text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GithubOperation {
+    /// Discovering the ambient credential when the GitHub worker starts.
+    Authentication,
+    /// Signing in with an explicit token.
+    SignIn,
+    /// A request reached a workspace that is not an eligible github.com worktree.
+    Eligibility,
+    /// A request reached a backend built without the `github` feature.
+    FeatureDisabled,
+    /// Refreshing the repository's availability and authentication state.
+    Refresh,
+    /// Searching issues.
+    Issues,
+    /// Searching pull requests.
+    PullRequests,
+    /// Listing workflows and their runs.
+    Actions,
+    /// Loading one issue and its comments.
+    IssueDetail,
+    /// Loading one pull request and its supplements.
+    PullRequestDetail,
+    /// Replacing a pull request's description.
+    UpdatePullRequestBody,
+    /// Commenting on a pull request.
+    CommentPullRequest,
+    /// Merging a pull request.
+    MergePullRequest,
+    /// Marking a pull request draft or ready for review.
+    UpdatePullRequestReadiness,
+    /// Loading the labels and assignees an issue form offers.
+    IssueMetadata,
+    /// Creating an issue.
+    CreateIssue,
+    /// Creating a pull request.
+    CreatePullRequest,
+    /// Looking up a commit signature's verification verdict.
+    CommitVerification,
+}
+
 /// A public GitHub repository selected for the session.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GithubRepository {

@@ -412,7 +412,6 @@ pub(crate) fn commit_detail(hash: &str, summary: &str) -> CommitDetail {
     };
     CommitDetail {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         body: String::new(),
         author: id.clone(),
@@ -488,7 +487,6 @@ pub(crate) fn responsive_commit_app() -> App {
 pub(crate) fn commit(hash: &str, summary: &str) -> Commit {
     Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         author: "T".to_string(),
         time: 0,
@@ -522,6 +520,11 @@ pub(crate) async fn pump_until(app: &mut App, events: &mut EventRx, ready: impl 
 
 /// [`pump_until`] over both of a local backend's streams: events and the
 /// document snapshots that carry state such as the dirty flag.
+///
+/// Events go first, as in the app's own loop: the session sends a document's
+/// `Opened` before its first snapshot, and only the bound tab can take that
+/// snapshot, so reading the two in either order would drop the text a newly
+/// opened tab is waiting for.
 pub(crate) async fn pump_with_snapshots_until(
     app: &mut App,
     events: &mut EventRx,
@@ -535,6 +538,7 @@ pub(crate) async fn pump_with_snapshots_until(
             "the awaited state never arrived within 10s"
         );
         tokio::select! {
+            biased;
             event = events.recv() => {
                 let (id, ev) = event.expect("the backend closed its event stream");
                 app.on_backend_event(id, ev);
@@ -554,6 +558,58 @@ pub(crate) fn active_doc_open(app: &App) -> bool {
         app.tabs.get(app.active).map(|tab| &tab.kind),
         Some(TabKind::Code { doc: Some(_), .. })
     )
+}
+
+/// Whether the active tab is a code tab holding its document's text: bound to
+/// a document and filled by the session's first snapshot.
+pub(crate) fn active_doc_filled(app: &App) -> bool {
+    active_doc_open(app)
+        && app
+            .tabs
+            .get(app.active)
+            .is_some_and(|tab| tab.fill_caret.is_none())
+}
+
+/// A clean snapshot of `buffer` at its own version, with no syntax yet.
+pub(crate) fn buffer_snapshot(buffer: TextBuffer) -> DocSnapshot {
+    DocSnapshot {
+        version: buffer.version(),
+        buffer,
+        highlights: Arc::new(karet_syntax::Highlights::default()),
+        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        folds: Arc::new(FoldRegions::default()),
+        syntax_error_lines: Arc::new(Vec::new()),
+        table_lines: Arc::default(),
+        language: None,
+        dirty: false,
+        cursor: None,
+    }
+}
+
+/// Stand in for the session's first snapshot on every reserved code tab, for a
+/// test app whose backend never publishes one: load each file from disk and
+/// place the caret where the open asked, as the real first fill does.
+pub(crate) fn fill_reserved_tabs(app: &mut App) {
+    for tab in app.all_tabs_mut() {
+        let Some(position) = tab.fill_caret else {
+            continue;
+        };
+        let TabKind::Code {
+            path, buffer, text, ..
+        } = &mut tab.kind
+        else {
+            continue;
+        };
+        let bytes = std::fs::read(&*path).unwrap_or_default();
+        let Ok(loaded) = TextBuffer::from_bytes(&bytes) else {
+            continue;
+        };
+        *text = loaded.text_snapshot();
+        *buffer = Arc::new(loaded);
+        tab.fill_caret = None;
+        tab.fill_since = None;
+        crate::tab::place_fill(&mut tab.editor, buffer, position, tab.fill_view.take());
+    }
 }
 
 /// Answer the manager tab's outstanding inventory request, the way the session

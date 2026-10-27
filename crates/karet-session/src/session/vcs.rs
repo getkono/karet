@@ -1,6 +1,43 @@
 use super::*;
 
 impl Session {
+    /// Register a cancellation for `id` and hand the worker a job built from it —
+    /// the single submission shape for every cancellable VCS request.
+    pub(super) fn submit_vcs(
+        &self,
+        id: RequestId,
+        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
+    ) {
+        let cancel = self.cancellations.register(id);
+        let _ = self.vcs_worker.send(make(id, cancel));
+    }
+
+    pub(super) fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: "blame: unknown document".to_string(),
+                },
+            );
+            return;
+        };
+        if document.buffer.version() != version {
+            return;
+        }
+        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path: document.path.clone(),
+            text: document.buffer.text(),
+            line,
+            cancel: self.cancellations.register(id),
+        });
+    }
+
     /// Fetch a page of the commit log and emit it. Requests one extra commit to
     /// detect whether more remain, then trims to `limit`. A no-op without a repo.
     /// A requested page tags the answering event with `id`; a spontaneous reload
@@ -124,8 +161,21 @@ impl Session {
     /// filesystem event) emits only when the status changed (the worker keeps the
     /// last emitted status), collapsing event bursts and absorbing the feedback
     /// from the session's own index writes.
+    ///
+    /// Without a repository a requested refresh still answers, with an empty
+    /// status: there is nothing to report, and a notification here would fire on
+    /// every explorer refresh of a folder that is simply not under git.
     pub(super) fn emit_vcs_status(&mut self, id: Option<RequestId>) {
         if self.vcs.is_none() {
+            if id.is_some() {
+                self.emit(
+                    id,
+                    Event::VcsStatus {
+                        staged: Vec::new(),
+                        working: Vec::new(),
+                    },
+                );
+            }
             return;
         }
         let _ = self
@@ -134,14 +184,19 @@ impl Session {
     }
 
     /// Run a write action against the repository, then force a fresh status (so the
-    /// user always sees the result of their action). Failures surface as an
-    /// [`Event::Notification`].
+    /// user always sees the result of their action). Failures — including there
+    /// being no repository to write to — surface as an [`Event::Notification`].
     pub(super) fn vcs_write(
         &mut self,
         id: RequestId,
         action: impl FnOnce(&Repository) -> Result<(), VcsError>,
     ) {
         let Some(repo) = self.vcs.as_ref() else {
+            self.emit_vcs_notice(
+                id,
+                Severity::Error,
+                "no workspace repository is open".to_string(),
+            );
             return;
         };
         match action(repo) {
@@ -168,6 +223,7 @@ impl Session {
     ///
     /// The user and system layers keep the override: those are the machine
     /// owner's own files.
+    #[cfg(feature = "aicommit")]
     pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
         let mut options = self.config.settings.git.ai_commit.clone();
         let from_project = self
@@ -243,21 +299,28 @@ impl Session {
             let diff = match diff {
                 Ok(Ok(diff)) => diff,
                 Ok(Err(message)) => {
-                    fail(&events, id, &cancel, message);
+                    events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message });
                     return;
                 },
                 Err(error) => {
-                    fail(
-                        &events,
-                        id,
+                    events.emit_if_live(
+                        Some(id),
                         &cancel,
-                        format!("reading the staged diff: {error}"),
+                        Event::CommitMessageFailed {
+                            message: format!("reading the staged diff: {error}"),
+                        },
                     );
                     return;
                 },
             };
             if diff.file_count == 0 || diff.patch.trim().is_empty() {
-                fail(&events, id, &cancel, "stage changes first".to_string());
+                events.emit_if_live(
+                    Some(id),
+                    &cancel,
+                    Event::CommitMessageFailed {
+                        message: "stage changes first".to_string(),
+                    },
+                );
                 return;
             }
             // Reading the diff shells out to `git`, which is long enough to be
@@ -273,11 +336,9 @@ impl Session {
                 () = cancel.cancelled() => {},
                 result = crate::aicommit::generate(&diff, &cfg) => match result {
                     Ok(message) => {
-                        if !cancel.is_cancelled() {
-                            let _ = events.send((Some(id), Event::CommitMessageGenerated { message }));
-                        }
+                        events.emit_if_live(Some(id), &cancel, Event::CommitMessageGenerated { message });
                     },
-                    Err(message) => fail(&events, id, &cancel, message),
+                    Err(message) => events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message }),
                 },
             }
         });
@@ -353,12 +414,12 @@ impl Session {
                 agents,
                 effort_conflict,
             };
-            let _ = events.send((
+            events.emit(
                 id,
                 Event::AiCommitAvailability {
                     status: Box::new(status),
                 },
-            ));
+            );
         });
     }
 
@@ -429,21 +490,19 @@ impl Session {
             },
         );
     }
-}
 
-/// Report a generation failure, unless the request was cancelled.
-///
-/// A cancelled request answers with nothing: the client already moved on, and a
-/// late "failed" would contradict the state it is showing.
-#[cfg(feature = "aicommit")]
-fn fail(
-    events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    cancel: &crate::cancellation::Cancellation,
-    message: String,
-) {
-    if cancel.is_cancelled() {
-        return;
+    /// Persist the inline-blame toggle and adopt it into the live settings.
+    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
+        self.config.settings.git.blame = enabled;
+        if let Err(error) = crate::config::set_user_blame(enabled) {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("settings: {error}"),
+                },
+            );
+        }
     }
-    let _ = events.send((Some(id), Event::CommitMessageFailed { message }));
 }

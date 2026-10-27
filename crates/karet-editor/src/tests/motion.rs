@@ -5,7 +5,7 @@
 use karet_core::Change;
 use karet_core::TextEdit;
 
-use crate::*;
+use super::*;
 
 fn at(line: u32, col: u32) -> LineCol {
     LineCol::new(line, col)
@@ -152,11 +152,11 @@ fn a_page_moves_the_caret_by_the_viewport_and_scrolls_with_it() {
     let mut state = state_at(&buffer, &[at(3, 2)]);
     state.move_carets(&buffer, Motion::PageDown, false);
     assert_eq!(state.cursor(), at(13, 2));
-    assert_eq!(state.scroll_line, 10, "the caret stays on its screen row");
+    assert_eq!(state.scroll_line(), 10, "the caret stays on its screen row");
     paint(&buffer, &mut state, &[], false, 40);
     state.move_carets(&buffer, Motion::PageUp, false);
     assert_eq!(state.cursor(), at(3, 2));
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
 
     state.goto(&buffer, at(25, 2));
     paint(&buffer, &mut state, &[], false, 40);
@@ -164,6 +164,41 @@ fn a_page_moves_the_caret_by_the_viewport_and_scrolls_with_it() {
     assert_eq!(state.cursor(), at(29, 7), "fewer rows left than a page");
     state.move_carets(&buffer, Motion::PageUp, false);
     assert_eq!(state.cursor(), at(19, 2), "back at the goal column");
+}
+
+#[test]
+fn extend_page_down_and_up_move_the_caret_a_page_and_keep_the_anchor() {
+    let text: Vec<String> = (0..30).map(|n| format!("line {n}")).collect();
+    let buffer = TextBuffer::from_text(&text.join("\n"));
+    let mut state = state_at(&buffer, &[at(3, 2)]);
+    state.extend_page_down(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(13, 2),
+        }],
+        "Shift+PageDown grows the selection by one page"
+    );
+    paint(&buffer, &mut state, &[], false, 40);
+    state.extend_page_up(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(3, 2),
+        }],
+        "Shift+PageUp moves the head back one page, and the anchor stays put"
+    );
+    state.extend_page_up(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(0, 0),
+        }],
+        "a page past the first line selects to the document start"
+    );
 }
 
 /// `zero`, then a fold headed by `head` hiding `in1` and `in2`, then `tail`.
@@ -323,4 +358,13 @@ fn only_row_motions_are_vertical() {
             "{motion:?}"
         );
     }
+}
+
+#[test]
+fn a_word_left_skips_the_whitespace_before_the_caret_first() {
+    let buffer = TextBuffer::from_text("foo  bar\n  baz");
+    // Back over the two spaces, then over `foo`.
+    assert_eq!(previous_word_boundary(&buffer, at(0, 5)), at(0, 0));
+    // Only whitespace before the caret: the line start.
+    assert_eq!(previous_word_boundary(&buffer, at(1, 2)), at(1, 0));
 }

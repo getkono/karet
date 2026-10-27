@@ -102,7 +102,10 @@ fn tab_walks_the_stops_to_the_final_one() {
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(code_tab_text(&app), "v.push(c, 42)\n");
     assert_eq!(selections(&app), vec![span(0, 13, 13)]);
-    assert!(app.snippet.is_none(), "the final stop ends the session");
+    assert!(
+        app.completion.snippet.is_none(),
+        "the final stop ends the session"
+    );
 }
 
 /// Typing in a mirrored stop edits every copy of it.
@@ -129,7 +132,7 @@ fn shift_tab_goes_back_a_stop() {
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(selections(&app), vec![span(0, 7, 9)]);
-    assert!(app.snippet.is_some());
+    assert!(app.completion.snippet.is_some());
 }
 
 /// Esc leaves the session; the next Tab is an ordinary Tab again.
@@ -137,9 +140,9 @@ fn shift_tab_goes_back_a_stop() {
 fn esc_leaves_the_snippet() {
     let (backend, mut app) = completion_app("v.pu\n", LineCol::new(0, 4));
     accept(&mut app, &backend, push_item());
-    assert!(app.snippet.is_some());
+    assert!(app.completion.snippet.is_some());
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.snippet.is_none());
+    assert!(app.completion.snippet.is_none());
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert_ne!(
         selections(&app),
@@ -154,12 +157,12 @@ fn esc_leaves_the_snippet() {
 fn a_tab_outside_the_snippet_is_an_ordinary_tab() {
     let (backend, mut app) = completion_app("v.pu\nx\n", LineCol::new(0, 4));
     accept(&mut app, &backend, push_item());
-    assert!(app.snippet.is_some());
+    assert!(app.completion.snippet.is_some());
     app.tabs[app.active]
         .editor
         .set_carets(&[LineCol::new(1, 0)]);
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert!(app.snippet.is_none());
+    assert!(app.completion.snippet.is_none());
     assert_ne!(code_tab_text(&app), "v.push(ch, n)\nx\n", "Tab indented");
 }
 
@@ -172,7 +175,7 @@ fn an_unfollowed_change_ends_the_session() {
         *next_version += 7;
     }
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert!(app.snippet.is_none());
+    assert!(app.completion.snippet.is_none());
 }
 
 /// A snippet whose only stop is `$0` places the caret there and starts no
@@ -183,7 +186,7 @@ fn a_final_stop_alone_only_places_the_caret() {
     let item = snippet_item("foo", "foo()", vec![stop(0, &[(4, 4)])]);
     accept(&mut app, &backend, item);
     assert_eq!(selections(&app), vec![span(0, 4, 4)]);
-    assert!(app.snippet.is_none());
+    assert!(app.completion.snippet.is_none());
 
     let (backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
     accept(
@@ -192,7 +195,7 @@ fn a_final_stop_alone_only_places_the_caret() {
         CompletionItem::new("foo", CompletionKind::Function),
     );
     assert_eq!(selections(&app), vec![span(0, 3, 3)]);
-    assert!(app.snippet.is_none());
+    assert!(app.completion.snippet.is_none());
 }
 
 /// An import the item brings above the snippet moves its stops down a line.
@@ -277,7 +280,7 @@ fn a_snippet_accepted_in_a_session_replaces_it() {
         "the new item's final stop, not the old session's `n`"
     );
     assert!(
-        app.snippet.is_none(),
+        app.completion.snippet.is_none(),
         "the old session went with the accept"
     );
 }
@@ -295,7 +298,7 @@ fn a_plain_completion_inside_a_stop_keeps_the_session() {
         CompletionItem::new("my_char", CompletionKind::Variable),
     );
     assert_eq!(code_tab_text(&app), "v.push(my_char, n)\n");
-    assert!(app.snippet.is_some());
+    assert!(app.completion.snippet.is_some());
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(selections(&app), vec![span(0, 16, 17)], "`n` is selected");
 }

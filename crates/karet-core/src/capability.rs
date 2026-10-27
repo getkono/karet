@@ -101,10 +101,17 @@ pub enum ServerFeature {
     InlayHintResolve,
     /// Values shown inline while debugging.
     InlineValue,
+    /// Text proposed at the caret, shown as ghost text to accept or type over
+    /// (LSP 3.18 `textDocument/inlineCompletion`).
+    InlineCompletion,
     /// Diagnostics the client pulls, rather than the server pushing them.
     PullDiagnostics,
     /// Pulling diagnostics for the whole workspace at once.
     WorkspacePullDiagnostics,
+    /// Pulled diagnostics that depend on other files
+    /// (`diagnosticProvider.interFileDependencies`): an edit to one document
+    /// can change another's, so every open document is pulled again.
+    InterFileDiagnostics,
     /// Running a server-provided command.
     ExecuteCommand,
     /// Edits the server supplies on save, before the write.
@@ -267,7 +274,10 @@ impl Capabilities {
         self.features.len()
     }
 
-    /// Whether the server advertised nothing at all.
+    /// Whether no [`ServerFeature`] is available.
+    ///
+    /// Only the feature set is consulted; the other fields (position encoding,
+    /// sync kind, trigger characters, …) may still carry advertised values.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.features.is_empty()
@@ -327,6 +337,7 @@ mod tests {
         capabilities.enable(ServerFeature::Rename);
         assert!(capabilities.supports(ServerFeature::Hover));
         assert_eq!(capabilities.len(), 2);
+        assert!(!capabilities.is_empty());
 
         // Enabling twice is idempotent, so a re-registration cannot double-count.
         capabilities.enable(ServerFeature::Hover);

@@ -406,3 +406,67 @@ fn a_heading_inside_a_fence_never_reaches_the_toc() {
     assert!(toc.contains("- [Also real](#also-real)"), "{toc}");
     assert!(!toc.contains("Not a heading"), "{toc}");
 }
+
+/// Fix All Lint Issues asks the session for the active document -- the lint
+/// and the configuration are the session's -- and edits nothing locally.
+#[test]
+fn fix_all_lint_issues_asks_the_session_for_the_active_document() {
+    let mut app = markdown_app("# Title\n\ntext \n", LineCol::new(2, 2));
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.clone()).unwrap_or_default();
+    assert!(
+        sent.iter().any(|(_, command)| matches!(
+            command,
+            SessionCommand::FixMarkdownLint { doc: DocumentId(9) }
+        )),
+        "{sent:?}"
+    );
+    assert_eq!(code_tab_text(&app), "# Title\n\ntext \n");
+}
+
+#[test]
+fn fix_all_lint_issues_outside_markdown_refuses_without_asking() {
+    let mut app = rust_app("fn main() {}\n");
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.len()).unwrap_or_default();
+    assert_eq!(sent, 0);
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("lint fixes apply to Markdown files")
+    );
+}
+
+/// The session's count becomes the toast: a success names how many, and
+/// nothing to fix is a refusal, not a success.
+#[test]
+fn the_session_answer_reports_the_fixed_count() {
+    let mut app = markdown_app("# Title\n", LineCol::new(0, 0));
+    let answer = |fixed| SessionEvent::MarkdownLintFixed {
+        doc: DocumentId(9),
+        fixed,
+    };
+
+    app.on_backend_event(Some(RequestId(1)), answer(0));
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Report::Refusal.severity(),
+            "no fixable lint issues".to_owned()
+        ))
+    );
+
+    app.on_backend_event(Some(RequestId(2)), answer(1));
+    assert_eq!(
+        last_report(&app),
+        Some((Report::Outcome.severity(), "fixed 1 lint issue".to_owned()))
+    );
+
+    app.on_backend_event(Some(RequestId(3)), answer(3));
+    assert_eq!(last_message(&app).as_deref(), Some("fixed 3 lint issues"));
+}

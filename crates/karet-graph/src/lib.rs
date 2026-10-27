@@ -8,7 +8,11 @@
 //! the left of the existing commit text.
 //!
 //! With the **`view`** feature, [`render_rail`](view::render_rail) turns a [`RailRow`]
-//! into a themed ratatui [`Line`](ratatui::text::Line).
+//! into a ratatui [`Line`](ratatui::text::Line) coloured through a caller-supplied
+//! `lane_style` closure, and [`graph_tree_lines`](view::graph_tree_lines) flattens a
+//! [`karet_core::GraphView`] into indented tree rows styled by plain
+//! [`TreeStyles`](view::TreeStyles). The view takes no theme dependency; the caller
+//! maps its own palette onto the styles.
 
 #[cfg(feature = "view")]
 pub mod view;
@@ -168,7 +172,6 @@ fn trim_trailing(lanes: &mut Vec<Option<String>>, colors: &mut Vec<u8>) {
 /// Render one row into a glyph gutter. Uses a cell grid of `2*width - 1` columns —
 /// lanes at even indices, inter-lane connectors at odd indices — then trims trailing
 /// blanks. `lanes`/`colors` are the *post-update* lane picture (what continues below).
-#[allow(clippy::too_many_arguments)] // a self-contained renderer; splitting hurts clarity
 fn render_row(
     node_lane: usize,
     row: &LaneInput,

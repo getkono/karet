@@ -74,8 +74,8 @@ impl App {
             return;
         };
         let mut entries = spelling_entries(warning);
-        if let Some(mut menu) = self.context_menu.take() {
-            entries.append(&mut menu.entries);
+        if let Some(menu) = self.context_menu.take() {
+            entries.extend(menu.into_entries());
         }
         self.context_menu = Some(ContextMenu::new(x, y, entries));
     }
@@ -171,8 +171,8 @@ impl App {
                 )
             })
             .collect();
-        self.pending_completion = None;
-        self.completion = Some(crate::completion::CompletionUi::new(
+        self.completion.pending = None;
+        self.completion.popup = Some(crate::completion::CompletionUi::new(
             warning.doc,
             warning.range.start,
             warning.range.end,

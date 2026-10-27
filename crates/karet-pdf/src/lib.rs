@@ -76,6 +76,38 @@ impl RenderedPage {
     }
 }
 
+/// The largest width or height, in pixels, [`Document::render_page`] produces.
+const MAX_RENDER_SIDE: u32 = 16_384;
+
+/// The largest pixel count (`width * height`) [`Document::render_page`]
+/// produces: 32 Mi pixels, a 128 MiB RGBA buffer.
+const MAX_RENDER_PIXELS: u64 = 1 << 25;
+
+/// Reduce `scale` so a page of `(width, height)` points renders within
+/// [`MAX_RENDER_SIDE`] and [`MAX_RENDER_PIXELS`]. A scale that is not positive
+/// (zero, negative, NaN) or a page size that is not positive and finite maps to
+/// `0.0`, which renders an empty page.
+fn bounded_scale((width, height): (f32, f32), scale: f32) -> f32 {
+    let (w, h) = (f64::from(width), f64::from(height));
+    let page_ok = w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0;
+    if !page_ok || scale.is_nan() || scale <= 0.0 {
+        return 0.0;
+    }
+    let cap =
+        (f64::from(MAX_RENDER_SIDE) / w.max(h)).min((MAX_RENDER_PIXELS as f64 / (w * h)).sqrt());
+    if f64::from(scale) <= cap {
+        return scale;
+    }
+    // `cap` is finite and at most `MAX_RENDER_SIDE`, so the cast is exact enough.
+    let narrowed = cap as f32;
+    // Round toward zero, so the f32 scale never exceeds the f64 cap.
+    if f64::from(narrowed) > cap {
+        narrowed.next_down()
+    } else {
+        narrowed
+    }
+}
+
 /// A parsed PDF document. Load once, then rasterize pages on demand.
 pub struct Document {
     pdf: Pdf,
@@ -102,6 +134,12 @@ impl Document {
     /// 72-DPI size; 2.0 is twice as large) over an opaque white background,
     /// producing straight RGBA8 pixels.
     ///
+    /// The output is bounded: where the page box at `scale` would exceed 16384
+    /// pixels on either side or 2^25 (about 33.5 million) pixels in total,
+    /// including at `scale = f32::INFINITY`, the page is rendered at the largest
+    /// scale that fits both, keeping its aspect ratio. A zero, negative, or NaN
+    /// `scale`, or a page box with no finite size, yields an empty 0×0 page.
+    ///
     /// # Errors
     /// Returns [`PdfError::PageOutOfRange`] if `index >= self.page_count()`.
     pub fn render_page(&self, index: usize, scale: f32) -> Result<RenderedPage, PdfError> {
@@ -110,6 +148,7 @@ impl Document {
         let page = pages
             .get(index)
             .ok_or(PdfError::PageOutOfRange { index, count })?;
+        let scale = bounded_scale(page.render_dimensions(), scale);
 
         let cache = hayro::RenderCache::new();
         let interpreter = InterpreterSettings::default();
@@ -175,7 +214,9 @@ impl Document {
 /// One entry in a PDF's navigation outline (a bookmark / table-of-contents node).
 #[derive(Clone, Debug)]
 pub struct OutlineItem {
-    /// The bookmark's display title, decoded from the PDF text string.
+    /// The bookmark's display title, decoded from the PDF text string: UTF-16BE
+    /// when it starts with a `FE FF` byte-order mark, otherwise byte-by-byte as
+    /// Latin-1 (an approximation of PDFDocEncoding; a UTF-8 BOM is not handled).
     pub title: String,
     /// The 0-based page index the bookmark points to, if it targets an in-document
     /// page via an explicit destination or a `GoTo` action. `None` when the entry
@@ -262,7 +303,9 @@ fn dest_array_page(
 
 /// Decode a PDF text string into a Rust `String` without external crates: UTF-16BE
 /// when it opens with a `FE FF` byte-order mark, otherwise byte-for-byte as
-/// Latin-1 / PDFDocEncoding.
+/// Latin-1. That is only an approximation of PDFDocEncoding, which differs from
+/// Latin-1 at `0x18..=0x1F` and `0x80..=0x9F`, and a UTF-8 (`EF BB BF`) BOM is not
+/// recognised, so such a title decodes byte-by-byte as Latin-1 too.
 fn decode_pdf_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units = rest
@@ -675,5 +718,77 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         let dims = doc.render_page(0, 0.255).map(|p| (p.width(), p.height()));
         assert!(matches!(dims, Ok((25, 25))));
         Ok(())
+    }
+
+    /// A one-page document whose page box is `width`×`height` points.
+    fn sized_page(width: u64, height: u64) -> Result<Document, PdfError> {
+        let page = format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 {width} {height}]>>");
+        let bodies = [PAGE_TREE[0], PAGE_TREE[1], page.as_str()];
+        Document::load(pdf_with_xref(&bodies, ""))
+    }
+
+    /// An oversized MediaBox at the app's 2.0 scale, and the same page at an
+    /// infinite scale, both narrow to `MAX_RENDER_SIDE` instead of asking hayro
+    /// for a 65535-wide pixmap. The page is one point tall at the bound, so the
+    /// raster stays cheap.
+    #[test]
+    fn oversized_page_and_infinite_scale_clamp_to_max_side() -> Result<(), PdfError> {
+        let doc = sized_page(1_000_000, 100)?;
+        for scale in [2.0, 1e9, f32::MAX, f32::INFINITY] {
+            let page = doc.render_page(0, scale)?;
+            assert_eq!(
+                (page.width(), page.height()),
+                (MAX_RENDER_SIDE, 1),
+                "scale {scale}"
+            );
+            assert_eq!(page.rgba().len(), MAX_RENDER_SIDE as usize * 4);
+        }
+        Ok(())
+    }
+
+    /// A page that fits the budget renders at exactly the requested scale.
+    #[test]
+    fn in_budget_scale_is_untouched() {
+        assert_eq!(bounded_scale((612.0, 792.0), 2.0), 2.0);
+        assert_eq!(bounded_scale((100.0, 100.0), 0.255), 0.255);
+    }
+
+    /// Whichever bound binds, the clamped raster fits both the side and the
+    /// pixel budget, computed the way hayro sizes its pixmap.
+    #[test]
+    fn clamped_scale_fits_side_and_pixel_budget() {
+        let pages = [
+            (100_000.0, 100_000.0), // pixel budget binds
+            (1_000_000.0, 100.0),   // side bound binds
+            (100.0, 1_000_000.0),
+            (14_400.0, 14_400.0), // the PDF spec's largest page box
+            (612.0, 792.0),
+        ];
+        for (w, h) in pages {
+            for scale in [2.0, 1e6, f32::INFINITY] {
+                let s = bounded_scale((w, h), scale);
+                assert!(s.is_finite() && s > 0.0, "{w}x{h}@{scale}: {s}");
+                let (pw, ph) = ((w * s).floor(), (h * s).floor());
+                assert!(pw <= MAX_RENDER_SIDE as f32 && ph <= MAX_RENDER_SIDE as f32);
+                let pixels = pw as u64 * ph as u64;
+                assert!(pixels <= MAX_RENDER_PIXELS, "{w}x{h}@{scale}: {pixels}");
+            }
+        }
+        // The pixel bound uses most of the budget rather than collapsing.
+        let s = bounded_scale((100_000.0, 100_000.0), f32::INFINITY);
+        assert_eq!((100_000.0 * s).floor(), 5792.0);
+    }
+
+    /// A page box with no finite positive size renders empty at any scale.
+    #[test]
+    fn non_finite_page_box_renders_empty() {
+        for dims in [
+            (f32::INFINITY, 10.0),
+            (10.0, f32::INFINITY),
+            (f32::NAN, 10.0),
+            (0.0, 10.0),
+        ] {
+            assert_eq!(bounded_scale(dims, 2.0), 0.0, "{dims:?}");
+        }
     }
 }

@@ -105,9 +105,11 @@ pub struct Dialog<A> {
     /// The answers, in display order, and the cursor over them.
     pub choices: ChoiceList<A>,
     /// The dialog rect from the last render (for hit-testing and dismissal).
-    pub rect: Rect,
+    /// Private, like [`rows`](Self::rows()), because only [`draw`](Self::draw)
+    /// may set it: a hand-set rect would desync the hit test from the pixels.
+    rect: Rect,
     /// The rect the choice rows occupied in the last render.
-    pub rows: Rect,
+    rows: Rect,
 }
 
 impl<A> Dialog<A> {
@@ -134,17 +136,37 @@ impl<A> Dialog<A> {
         self.choices.select_by(delta);
     }
 
+    /// Put the cursor on choice `row` when it exists and can be activated,
+    /// reporting whether it moved there (see [`ChoiceList::select_row`]).
+    pub fn select_row(&mut self, row: usize) -> bool {
+        self.choices.select_row(row)
+    }
+
     /// The currently selected choice, if any.
     #[must_use]
     pub fn selected_choice(&self) -> Option<&Choice<A>> {
         self.choices.selected_entry()
     }
 
+    /// The dialog rect the last [`draw`](Self::draw) painted (for hit-testing
+    /// and dismissal); empty before the first draw.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The rect the choice rows occupied in the last [`draw`](Self::draw) —
+    /// exactly the click target [`row_at`](Self::row_at) tests against.
+    #[must_use]
+    pub fn rows(&self) -> Rect {
+        self.rows
+    }
+
     /// The choice row at terminal point `(x, y)`, using the rect recorded by
     /// the last [`draw`](Self::draw). Disabled rows answer too, so a click on
     /// one can still explain itself.
     ///
-    /// The click target is exactly [`rows`](Self::rows), the rect the choices
+    /// The click target is exactly [`rows`](Self::rows()), the rect the choices
     /// were painted into: a dialog is a large, deliberate modal, so a click
     /// counts only where a row is actually printed — the padding column and the
     /// border are chrome, not a row. (A [`ContextMenu`](crate::menu::ContextMenu)
@@ -358,7 +380,7 @@ mod tests {
 
     fn labels(d: &Dialog<u8>) -> Vec<String> {
         d.choices
-            .entries
+            .entries()
             .iter()
             .map(|entry| entry.label.clone().unwrap_or_default())
             .collect()
@@ -395,7 +417,7 @@ mod tests {
     #[test]
     fn a_new_dialog_selects_the_first_activatable_choice() {
         let d = dialog("Run `ls`?");
-        assert_eq!(d.choices.selected, 0);
+        assert_eq!(d.choices.selected(), 0);
         assert_eq!(d.selected_choice().map(|c| c.action), Some(0));
         assert_eq!(d.rect, Rect::default(), "nothing painted yet");
     }
@@ -514,11 +536,35 @@ mod tests {
     fn keyboard_navigation_skips_the_disabled_choice_and_saturates() {
         let mut d = dialog("Run `ls`?");
         d.select_by(1);
-        assert_eq!(d.choices.selected, 2, "the refused choice is skipped");
+        assert_eq!(d.choices.selected(), 2, "the refused choice is skipped");
         d.select_by(1);
-        assert_eq!(d.choices.selected, 2, "the end never wraps to the start");
+        assert_eq!(d.choices.selected(), 2, "the end never wraps to the start");
         d.select_by(-4);
-        assert_eq!(d.choices.selected, 0);
+        assert_eq!(d.choices.selected(), 0);
+    }
+
+    #[test]
+    fn a_pointer_pick_refuses_the_disabled_choice() {
+        let mut d = dialog("Run `ls`?");
+        assert!(
+            !d.select_row(1),
+            "the refused choice never takes the cursor"
+        );
+        assert_eq!(d.selected_choice().map(|c| c.action), Some(0));
+        assert!(d.select_row(2));
+        assert_eq!(d.selected_choice().map(|c| c.action), Some(2));
+    }
+
+    #[test]
+    fn the_recorded_geometry_is_what_was_painted() {
+        let mut d = dialog("Run `ls`?");
+        assert_eq!(d.rows(), Rect::default(), "nothing painted yet");
+        if draw(&mut d, 60, 20).is_none() {
+            return;
+        }
+        assert_eq!(d.rect(), d.rect);
+        assert_eq!(d.rows(), d.rows);
+        assert!(d.rect().height > d.rows().height);
     }
 
     #[test]
@@ -537,11 +583,15 @@ mod tests {
         assert_eq!(d.row_at(d.rows.x, d.rect.bottom()), None, "below the box");
 
         d.set_hover(Some((d.rows.x, d.rows.y + 2)));
-        assert_eq!(d.choices.hover, Some(2));
+        assert_eq!(d.choices.hover(), Some(2));
         d.set_hover(Some((d.rows.x, d.rows.y + 1)));
-        assert_eq!(d.choices.hover, None, "a refused choice clears the accent");
+        assert_eq!(
+            d.choices.hover(),
+            None,
+            "a refused choice clears the accent"
+        );
         d.set_hover(None);
-        assert_eq!(d.choices.hover, None);
+        assert_eq!(d.choices.hover(), None);
     }
 
     #[test]
@@ -596,7 +646,7 @@ mod tests {
         // permission prompt, running the tool the user did not pick.
         let mut d = dialog("Run `ls`?");
         d.select_by(1); // skips the refused middle choice
-        assert_eq!(d.choices.selected, 2, "the cursor is on the last choice");
+        assert_eq!(d.choices.selected(), 2, "the cursor is on the last choice");
         let Some(buffer) = draw(&mut d, 30, 4) else {
             return;
         };
@@ -626,9 +676,13 @@ mod tests {
         assert_eq!(d.row_at(d.rows.x, d.rows.y + 1), Some(2));
         // Hover follows the same path, so the accent cannot promise otherwise.
         d.set_hover(Some((d.rows.x, d.rows.y)));
-        assert_eq!(d.choices.hover, None, "the refused choice never lights up");
+        assert_eq!(
+            d.choices.hover(),
+            None,
+            "the refused choice never lights up"
+        );
         d.set_hover(Some((d.rows.x, d.rows.y + 1)));
-        assert_eq!(d.choices.hover, Some(2));
+        assert_eq!(d.choices.hover(), Some(2));
     }
 
     #[test]

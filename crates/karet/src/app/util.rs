@@ -45,6 +45,11 @@ pub(crate) fn tab_language(tab: &Tab) -> Option<&str> {
     (!language.is_empty()).then_some(language)
 }
 
+/// Whether `path` names a Markdown file, by the file-type registry's name for it.
+pub(crate) fn is_markdown(path: &Path) -> bool {
+    file_type_for_path(path).name() == "Markdown"
+}
+
 /// Resolve a code tab's long-line behavior from its configured override or file type.
 pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
     override_.unwrap_or_else(|| {
@@ -94,6 +99,7 @@ pub(super) fn same_path(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
 }
 
+/// Whether `path` resolves to `root` or a path below it.
 pub(super) fn path_under(root: &Path, path: &Path) -> bool {
     canonical(path).starts_with(canonical(root))
 }
@@ -125,11 +131,6 @@ pub(super) fn retarget_tab_path(tab: &mut Tab, path: &Path) {
             tab.title = name.to_string();
         }
     }
-}
-
-/// Whether `child` resolves to `parent` or a path below it.
-pub(super) fn path_contains_or_equals(parent: &Path, child: &Path) -> bool {
-    canonical(child).starts_with(canonical(parent))
 }
 
 /// A destination path under `dir`, suffixing when the source name already exists.
@@ -175,31 +176,9 @@ fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
     }
 }
 
-/// The canonical form of `path` for tab de-duplication. For a missing leaf, resolve
-/// its nearest existing ancestor and append the unresolved suffix; this preserves
-/// macOS `/var` → `/private/var` normalization before a new file is created.
-pub(super) fn canonical(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    for ancestor in path.ancestors().skip(1) {
-        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
-            continue;
-        };
-        let Ok(suffix) = path.strip_prefix(ancestor) else {
-            continue;
-        };
-        return resolved.join(suffix);
-    }
-    path.to_path_buf()
-}
-
-/// The (anchor, head) span of the word under `pos`, or the single character there
-/// when the cursor is not on a word character. Delegates to the widget's
-/// [`karet_editor::word_bounds`] so double-click and word motions agree.
-pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    karet_editor::word_bounds(buffer, pos)
-}
+/// The canonical form of `path` for tab de-duplication; see
+/// [`canonical_nearest`](crate::paths::canonical_nearest).
+pub(super) use crate::paths::canonical_nearest as canonical;
 
 /// Parse a revision-range spec typed into the go-to-commit input into
 /// `(base, head, merge_base)`, or `None` when it is a single revision.
@@ -257,43 +236,96 @@ pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
     Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }
 
-/// `bytes` in the largest unit that keeps it readable.
-///
-/// A download size is shown so the user can weigh it, and "14 MB" is weighable
-/// where "14680064" is not. One decimal place past kilobytes: the difference
-/// between 1.2 and 1.9 MB matters on a slow link, the digits after do not.
-pub(super) fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit + 1 < UNITS.len() {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} {}", UNITS[0])
+/// Build the lane layout for `commits` (newest first). Lane assignment is sequential
+/// from the tip, so callers cache this and recompute only when the commit list changes.
+pub(crate) fn commit_rails(commits: &[karet_vcs::Commit]) -> Vec<karet_graph::RailRow> {
+    let inputs: Vec<karet_graph::LaneInput> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| karet_graph::LaneInput {
+            id: commit.hash.clone(),
+            parents: commit.parents.clone(),
+            head: i == 0,
+        })
+        .collect();
+    karet_graph::assign_lanes(&inputs)
+}
+
+/// Scroll `offset` the minimum distance that brings row `cursor` inside a viewport of
+/// `height` rows. The three commit lists and the change list all need exactly this.
+#[must_use]
+pub(crate) fn keep_visible(cursor: usize, offset: usize, height: usize) -> usize {
+    if cursor < offset {
+        cursor
+    } else if height > 0 && cursor >= offset + height {
+        cursor + 1 - height
     } else {
-        format!("{size:.1} {}", UNITS[unit])
+        offset
     }
+}
+
+/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
+pub(crate) fn relative_time(secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    relative_time_at(secs, now)
+}
+
+/// [`relative_time`] as seen at `now` (seconds since the Unix epoch).
+fn relative_time_at(secs: i64, now: i64) -> String {
+    let delta = now - secs;
+    if delta < 0 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if delta < 60 {
+        (delta, "s")
+    } else if delta < 3600 {
+        (delta / 60, "m")
+    } else if delta < 86_400 {
+        (delta / 3600, "h")
+    } else if delta < 86_400 * 7 {
+        (delta / 86_400, "d")
+    } else if delta < 86_400 * 30 {
+        (delta / (86_400 * 7), "w")
+    } else if delta < 86_400 * 365 {
+        (delta / (86_400 * 30), "mo")
+    } else {
+        (delta / (86_400 * 365), "y")
+    };
+    format!("{n}{unit} ago")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::human_bytes;
+    use super::*;
 
+    /// The clamp only moves the viewport when the cursor is actually outside it, and
+    /// then by the minimum distance.
     #[test]
-    fn bytes_stay_whole_and_larger_units_keep_one_decimal() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(1023), "1023 B");
-        assert_eq!(human_bytes(1024), "1.0 KB");
-        assert_eq!(human_bytes(1536), "1.5 KB");
-        assert_eq!(human_bytes(14 * 1024 * 1024), "14.0 MB");
+    fn keep_visible_scrolls_the_minimum_distance() {
+        // Already inside: unchanged.
+        assert_eq!(keep_visible(5, 3, 10), 3);
+        // Above the viewport: the cursor becomes the top row.
+        assert_eq!(keep_visible(1, 4, 10), 1);
+        // Below the viewport: the cursor becomes the bottom row.
+        assert_eq!(keep_visible(20, 4, 10), 11);
+        // A zero-height viewport can't scroll anywhere.
+        assert_eq!(keep_visible(20, 4, 0), 4);
     }
 
     #[test]
-    fn the_largest_unit_saturates_rather_than_running_out() {
-        // Past gigabytes there is no unit left, so the number grows instead of
-        // the label going wrong.
-        assert!(human_bytes(4096 * 1024 * 1024 * 1024).ends_with(" GB"));
+    fn relative_time_uses_compact_git_style_units() {
+        let now = 40_000_000;
+        assert_eq!(relative_time_at(now + 1, now), "just now");
+        assert_eq!(relative_time_at(now - 42, now), "42s ago");
+        assert_eq!(relative_time_at(now - 120, now), "2m ago");
+        assert_eq!(relative_time_at(now - 10_800, now), "3h ago");
+        assert_eq!(relative_time_at(now - 172_800, now), "2d ago");
+        assert_eq!(relative_time_at(now - 1_209_600, now), "2w ago");
+        assert_eq!(relative_time_at(now - 5_184_000, now), "2mo ago");
+        assert_eq!(relative_time_at(now - 63_072_000, now), "2y ago");
     }
 }

@@ -7,6 +7,7 @@
 
 use crate::coord::BytePos;
 use crate::coord::Span;
+use crate::edit::AppliedEdit;
 use crate::token::TokenId;
 
 /// A highlighted region: a byte [`Span`] tagged with a semantic [`TokenId`].
@@ -67,6 +68,10 @@ impl Highlights {
     /// so the affected text renders unhighlighted rather than wrong.
     #[must_use]
     pub fn translate(&self, start: BytePos, old_end: BytePos, new_end: BytePos) -> Self {
+        // Unlike `shift_span`, which clamps a cut span to the edit and grows a
+        // span starting at a pure insertion over the inserted text, this drops
+        // the cut span and moves the starting one with the text it covers: a
+        // stale colour on new text is worse than none.
         let spans = self
             .spans
             .iter()
@@ -75,13 +80,11 @@ impl Highlights {
                     return Some(*s);
                 }
                 if s.span.start.0 >= old_end.0 {
-                    return Some(HighlightSpan {
-                        span: Span {
-                            start: BytePos(shift_pos(s.span.start.0, old_end.0, new_end.0)),
-                            end: BytePos(shift_pos(s.span.end.0, old_end.0, new_end.0)),
-                        },
-                        token: s.token,
-                    });
+                    let span = Span {
+                        start: BytePos(shifted(s.span.start.0, old_end.0, new_end.0)),
+                        end: BytePos(shifted(s.span.end.0, old_end.0, new_end.0)),
+                    };
+                    return Some(HighlightSpan { span, ..*s });
                 }
                 // The edit cut through this span.
                 None
@@ -91,13 +94,54 @@ impl Highlights {
     }
 }
 
-/// Move `pos` (which lies at or after `old_end`) by the edit's signed length delta.
-fn shift_pos(pos: usize, old_end: usize, new_end: usize) -> usize {
-    if new_end >= old_end {
-        pos + (new_end - old_end)
+/// Map `span` from the text before `edit` into the text after it.
+///
+/// A span wholly before the edit is unchanged and one wholly after it moves by
+/// the edit's length change. An end that falls inside the replaced region moves
+/// to the end of the inserted text, and a start inside it to the edit's start, so
+/// a span overlapping the edit still covers what replaced the part it lost.
+#[must_use]
+pub fn shift_span(span: Span, edit: &AppliedEdit) -> Span {
+    let start = if span.start.0 <= edit.start_byte {
+        span.start.0
+    } else if span.start.0 >= edit.old_end_byte {
+        shifted(span.start.0, edit.old_end_byte, edit.new_end_byte)
     } else {
-        pos.saturating_sub(old_end - new_end)
+        edit.start_byte
+    };
+    let end = if span.end.0 <= edit.start_byte {
+        span.end.0
+    } else if span.end.0 >= edit.old_end_byte {
+        shifted(span.end.0, edit.old_end_byte, edit.new_end_byte)
+    } else {
+        edit.new_end_byte
+    };
+    Span {
+        start: BytePos(start),
+        end: BytePos(end.max(start)),
     }
+}
+
+/// `byte`, at or after an edit's `old_end`, moved by the edit's length change
+/// (`old_end` → `new_end`).
+fn shifted(byte: usize, old_end: usize, new_end: usize) -> usize {
+    (byte + new_end).saturating_sub(old_end)
+}
+
+/// Sort `spans` and merge every pair that overlaps or touches.
+#[must_use]
+pub fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
+    spans.sort_by_key(|s| (s.start.0, s.end.0));
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match out.last_mut() {
+            Some(last) if span.start.0 <= last.end.0 => {
+                last.end = BytePos(last.end.0.max(span.end.0));
+            },
+            _ => out.push(span),
+        }
+    }
+    out
 }
 
 /// A foldable region as an inclusive line range `[start, end]` (0-based lines). The
@@ -148,6 +192,9 @@ pub enum FoldKind {
     Comment,
     /// A run of import (`use`, `import`, `#include`) declarations.
     Imports,
+    /// A region the source marks out itself (`#region` … `#endregion`, or an
+    /// editor fold marker), as a language server reports it.
+    Region,
 }
 
 /// The foldable regions of a buffer, in document order (outermost first), with at
@@ -165,11 +212,66 @@ impl FoldRegions {
         Self { regions }
     }
 
+    /// Normalize regions from a source that promises no order (a language
+    /// server's answer): a region that hides no line (`end <= start`) is
+    /// dropped, the rest are put in document order, and where several start on
+    /// one line only the outermost is kept.
+    #[must_use]
+    pub fn from_unordered(mut regions: Vec<FoldRegion>) -> Self {
+        regions.retain(|region| region.end > region.start);
+        regions.sort_by_key(|region| (region.start, std::cmp::Reverse(region.end)));
+        regions.dedup_by_key(|region| region.start);
+        Self { regions }
+    }
+
     /// The fold regions, outermost first.
     #[must_use]
     pub fn regions(&self) -> &[FoldRegion] {
         &self.regions
     }
+
+    /// These regions carried across `edit`, by line.
+    ///
+    /// A region wholly before the edit's first line stays; one wholly after
+    /// its last replaced line moves by the change in line count; one that
+    /// holds the edit keeps its header and moves its end. A region with its
+    /// header or its end strictly inside the replaced lines is dropped, since
+    /// no line maps it, as is one the edit leaves hiding nothing.
+    #[must_use]
+    pub fn translate(&self, edit: &AppliedEdit) -> Self {
+        let start_row = row(edit.start_point.row);
+        let old_end = row(edit.old_end_point.row);
+        let new_end = row(edit.new_end_point.row);
+        let moved = |line: u32| line.saturating_add(new_end).saturating_sub(old_end);
+        let regions = self
+            .regions
+            .iter()
+            .filter_map(|region| {
+                if region.end <= start_row {
+                    Some(*region)
+                } else if region.start > start_row && region.start >= old_end {
+                    Some(FoldRegion {
+                        start: moved(region.start),
+                        end: moved(region.end),
+                        kind: region.kind,
+                    })
+                } else if region.start <= start_row && region.end >= old_end {
+                    Some(FoldRegion {
+                        end: moved(region.end),
+                        ..*region
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self::from_unordered(regions)
+    }
+}
+
+/// An edit's row as a fold line, saturating on a buffer past `u32::MAX` lines.
+fn row(row: usize) -> u32 {
+    u32::try_from(row).unwrap_or(u32::MAX)
 }
 
 /// One semantic source block with a header and an enclosing lifetime, the unit
@@ -324,6 +426,57 @@ mod tests {
         );
     }
 
+    fn edit(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        AppliedEdit {
+            start_byte: start,
+            old_end_byte: old_end,
+            new_end_byte: new_end,
+            ..AppliedEdit::default()
+        }
+    }
+
+    #[test]
+    fn a_span_before_an_edit_stays_and_one_after_moves() {
+        let insert = edit(10, 10, 13);
+        assert_eq!(shift_span(span(2, 10), &insert), span(2, 10));
+        assert_eq!(shift_span(span(10, 12), &insert), span(10, 15));
+        assert_eq!(shift_span(span(11, 12), &insert), span(14, 15));
+        let delete = edit(4, 8, 4);
+        assert_eq!(shift_span(span(9, 12), &delete), span(5, 8));
+    }
+
+    #[test]
+    fn a_span_overlapping_an_edit_covers_its_replacement() {
+        // Replace 4..8 with two bytes: 4..6.
+        let replace = edit(4, 8, 6);
+        assert_eq!(shift_span(span(2, 6), &replace), span(2, 6));
+        assert_eq!(shift_span(span(6, 10), &replace), span(4, 8));
+        assert_eq!(shift_span(span(5, 7), &replace), span(4, 6));
+        assert_eq!(shift_span(span(2, 10), &replace), span(2, 8));
+    }
+
+    #[test]
+    fn translate_parts_from_shift_span_where_an_edit_meets_a_span() {
+        // A span the edit cuts through: translate drops it, shift_span clamps it.
+        let h = Highlights::from_sorted_spans(vec![hs(2, 6, 1)]);
+        let t = h.translate(BytePos(4), BytePos(8), BytePos(6));
+        assert!(t.all().is_empty());
+        assert_eq!(shift_span(span(2, 6), &edit(4, 8, 6)), span(2, 6));
+        // An insertion at a span's start: translate moves the span with its
+        // text, shift_span grows it over the insertion.
+        let h = Highlights::from_sorted_spans(vec![hs(4, 8, 1)]);
+        let t = h.translate(BytePos(4), BytePos(4), BytePos(7));
+        assert_eq!(t.all(), &[hs(7, 11, 1)]);
+        assert_eq!(shift_span(span(4, 8), &edit(4, 4, 7)), span(4, 11));
+    }
+
+    #[test]
+    fn merge_spans_joins_overlapping_and_touching_spans() {
+        let merged = merge_spans(vec![span(8, 9), span(0, 2), span(2, 4), span(3, 6)]);
+        assert_eq!(merged, vec![span(0, 6), span(8, 9)]);
+        assert!(merge_spans(Vec::new()).is_empty());
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn highlights_and_folds_round_trip_through_serde() -> Result<(), serde_json::Error> {
@@ -421,5 +574,85 @@ mod tests {
         let comment = FoldRegion::new(1, 2).with_kind(FoldKind::Comment);
         assert_eq!((comment.start, comment.end), (1, 2));
         assert_eq!(comment.kind, FoldKind::Comment);
+    }
+
+    /// An unordered answer comes out in document order, an empty or inverted
+    /// region dropped and only the outermost kept per header line. Falsified
+    /// by keeping the first region seen on a shared line (the inner one here).
+    #[test]
+    fn unordered_regions_normalize() {
+        let f = FoldRegions::from_unordered(vec![
+            FoldRegion::new(5, 9),
+            FoldRegion::new(0, 2).with_kind(FoldKind::Comment),
+            FoldRegion::new(5, 6).with_kind(FoldKind::Region),
+            FoldRegion::new(5, 12).with_kind(FoldKind::Region),
+            FoldRegion::new(3, 3),
+            FoldRegion::new(8, 4),
+        ]);
+        assert_eq!(
+            f.regions(),
+            [
+                FoldRegion::new(0, 2).with_kind(FoldKind::Comment),
+                FoldRegion::new(5, 12).with_kind(FoldKind::Region),
+            ]
+        );
+    }
+
+    /// An edit replacing rows `start..=old_end` with rows `start..=new_end`.
+    fn rows(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        let point = |row| crate::edit::BytePoint { row, col: 0 };
+        AppliedEdit {
+            start_byte: 0,
+            old_end_byte: 0,
+            new_end_byte: 0,
+            start_point: point(start),
+            old_end_point: point(old_end),
+            new_end_point: point(new_end),
+            replaced: String::new(),
+        }
+    }
+
+    /// Lines inserted inside a region stretch it and move the regions after
+    /// it, leaving the ones before alone; an edit within one line moves
+    /// nothing. Falsified by shifting a holding region's header, or by not
+    /// moving the regions below.
+    #[test]
+    fn translating_moves_regions_by_lines() {
+        let f = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 1),
+            FoldRegion::new(2, 6),
+            FoldRegion::new(8, 9).with_kind(FoldKind::Imports),
+        ]);
+        let grown = f.translate(&rows(4, 4, 6));
+        assert_eq!(
+            grown.regions(),
+            [
+                FoldRegion::new(0, 1),
+                FoldRegion::new(2, 8),
+                FoldRegion::new(10, 11).with_kind(FoldKind::Imports),
+            ]
+        );
+        assert_eq!(f.translate(&rows(3, 3, 3)).regions(), f.regions());
+    }
+
+    /// Deleting lines pulls later regions up, drops a region whose header the
+    /// deletion swallowed, and drops one it leaves hiding nothing. Falsified
+    /// by keeping a region whose header line no longer exists.
+    #[test]
+    fn translating_a_deletion_drops_what_it_swallowed() {
+        let f = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 3),
+            FoldRegion::new(4, 7),
+            FoldRegion::new(10, 12),
+        ]);
+        // Rows 2..=5 collapse onto row 2: (0, 3) ends inside, (4, 7) starts
+        // inside, (10, 12) is below and moves up by three.
+        assert_eq!(
+            f.translate(&rows(2, 5, 2)).regions(),
+            [FoldRegion::new(7, 9)]
+        );
+        // A region holding the deletion shrinks to nothing and goes.
+        let single = FoldRegions::from_sorted_regions(vec![FoldRegion::new(1, 2)]);
+        assert!(single.translate(&rows(1, 2, 1)).regions().is_empty());
     }
 }

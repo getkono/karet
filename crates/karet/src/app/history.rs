@@ -1,4 +1,5 @@
 use super::*;
+use crate::tab::compare_title;
 
 impl App {
     pub(super) fn toggle_commit_file(&mut self, file: usize) -> bool {
@@ -98,7 +99,7 @@ impl App {
             return;
         }
         *selected = index.min(commits.len() - 1);
-        let offset = crate::ui::commit::list::keep_visible(
+        let offset = crate::app::keep_visible(
             *selected,
             usize::from(*list_offset),
             usize::from(list_rect.height),
@@ -222,16 +223,41 @@ impl App {
         }
     }
 
-    /// Request a range diff; the answering [`SessionEvent::RangeReady`] opens the compare
-    /// tab, and an unresolvable range answers with a VCS notification instead.
-    pub(super) fn open_range(&mut self, command: SessionCommand) {
-        self.notify_progress(
-            NotificationKind::Vcs,
-            Self::DIFF_COMPUTE_TAG.to_string(),
-            "computing diff…",
-            None,
-        );
-        self.send_command(command);
+    /// Request a range diff and reserve its compare tab at once, keyed by the request
+    /// id: the answering [`SessionEvent::RangeReady`] fills that tab in place, and an
+    /// unresolvable range answers with a VCS notification that marks it failed. The
+    /// tab's changed-file block shows the shared delayed loading placeholder meanwhile.
+    pub(super) fn open_range(&mut self, spec: RangeSpec) {
+        // The header shows what was asked for until the backend resolves the labels.
+        let (base_label, head_label, merge_base) = match &spec {
+            RangeSpec::Unpushed => ("@{upstream}".to_string(), "HEAD".to_string(), true),
+            RangeSpec::SinceBase { base } => (
+                base.clone().unwrap_or_else(|| "base".to_string()),
+                "HEAD".to_string(),
+                true,
+            ),
+            RangeSpec::Between {
+                base,
+                head,
+                merge_base,
+            } => (base.clone(), head.clone(), *merge_base),
+            // `RangeSpec` is non-exhaustive; a future comparison still reserves its
+            // tab under generic labels until the answer names the endpoints.
+            _ => ("base".to_string(), "head".to_string(), false),
+        };
+        // No request means nothing will answer (`send` already reported why), so
+        // there is no tab to reserve.
+        let Some(id) = self.send(SessionCommand::RangeChanges { spec }) else {
+            return;
+        };
+        self.push_tab(Tab::compare(
+            base_label,
+            head_label,
+            merge_base,
+            CommitFiles::loading(),
+        ));
+        let view = self.tabs[self.active].view;
+        self.pending_compare.insert(id, view);
     }
 
     /// Mark the browser's selected commit as the base for a two-commit comparison.
@@ -244,7 +270,7 @@ impl App {
         }) = self.active_commit_graph()
             && let Some(commit) = commits.get(*selected)
         {
-            let short = commit.short_hash.clone();
+            let short = commit.short_hash().to_string();
             *compare_base = Some(commit.hash.clone());
             self.notify(
                 Report::Outcome,
@@ -277,12 +303,10 @@ impl App {
         let Some(head) = commits.get(*selected).map(|c| c.hash.clone()) else {
             return;
         };
-        self.open_range(SessionCommand::RangeChanges {
-            spec: RangeSpec::Between {
-                base,
-                head,
-                merge_base: false,
-            },
+        self.open_range(RangeSpec::Between {
+            base,
+            head,
+            merge_base: false,
         });
     }
 
@@ -327,7 +351,7 @@ impl App {
                 // A page that neither replaces nor continues the loaded run is stale.
                 return;
             }
-            *rails = crate::ui::commit::list::commit_rails(loaded);
+            *rails = crate::app::commit_rails(loaded);
             break;
         }
         // Chain the next page while the viewport is still short of the end.
@@ -362,7 +386,7 @@ impl App {
     /// block in a progressive loading state.
     pub(super) fn fill_commit_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -405,7 +429,7 @@ impl App {
     ) {
         let mut files = Some(commit_file_views(prepared));
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -486,6 +510,58 @@ impl App {
         }
     }
 
+    /// Route a resolved range to the compare tab reserved for its request. An answer
+    /// whose request no longer owns a tab (closed, cancelled, or never ours) is stale
+    /// and dropped; only an uncorrelated answer opens a tab of its own.
+    pub(super) fn on_range_ready(
+        &mut self,
+        id: Option<RequestId>,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<PreparedChange>,
+    ) {
+        match id.and_then(|request| self.pending_compare.remove(&request)) {
+            Some(view) => self.fill_compare_tab(view, base_label, head_label, merge_base, changes),
+            None if id.is_none() => {
+                self.open_compare_tab(base_label, head_label, merge_base, changes);
+            },
+            None => {},
+        }
+    }
+
+    /// Fill the reserved compare tab `view` with its resolved labels and changes.
+    fn fill_compare_tab(
+        &mut self,
+        view: ViewId,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<PreparedChange>,
+    ) {
+        if changes.is_empty() {
+            self.notify_no_range_changes(&base_label, &head_label);
+        }
+        let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view) else {
+            return;
+        };
+        let TabKind::Compare {
+            base_label: base,
+            head_label: head,
+            merge_base: three_dot,
+            files,
+            ..
+        } = &mut tab.kind
+        else {
+            return;
+        };
+        tab.title = compare_title(&base_label, &head_label, merge_base);
+        *base = base_label;
+        *head = head_label;
+        *three_dot = merge_base;
+        *files = CommitFiles::ready(commit_file_views(changes));
+    }
+
     /// Build and open a compare tab from a resolved range and its changes. An empty
     /// range (identical endpoints) opens with a "no changes" state rather than nothing.
     pub(super) fn open_compare_tab(
@@ -495,20 +571,34 @@ impl App {
         merge_base: bool,
         changes: Vec<PreparedChange>,
     ) {
-        // The compare tab is the answer to "computing diff…", so it retires that
-        // card whether or not the range turned out to be empty.
         if changes.is_empty() {
-            self.notify_tagged(
-                Report::Refusal,
-                NotificationKind::Vcs,
-                format!("no changes between {base_label} and {head_label}"),
-                Some(Self::DIFF_COMPUTE_TAG.to_string()),
-            );
-        } else {
-            self.notifications.dismiss_tagged(Self::DIFF_COMPUTE_TAG);
+            self.notify_no_range_changes(&base_label, &head_label);
         }
         let files = CommitFiles::ready(commit_file_views(changes));
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
+    }
+
+    /// Say why a resolved range's compare tab lists no files.
+    fn notify_no_range_changes(&mut self, base_label: &str, head_label: &str) {
+        self.notify(
+            Report::Refusal,
+            NotificationKind::Vcs,
+            format!("no changes between {base_label} and {head_label}"),
+        );
+    }
+
+    /// Mark the compare tab reserved for `request` as failed with the backend's
+    /// reason, so it stops showing a loading placeholder that nothing will replace.
+    pub(super) fn fail_pending_compare(&mut self, request: RequestId, message: &str) {
+        let Some(view) = self.pending_compare.remove(&request) else {
+            return;
+        };
+        if let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
+            && let TabKind::Compare { files, .. } = &mut tab.kind
+        {
+            files.loading_since = None;
+            files.error = Some(message.to_string());
+        }
     }
 
     /// Apply the forge's verification verdict to every open commit tab for `hash`.
@@ -638,7 +728,7 @@ impl App {
             .map(|commit| {
                 (
                     commit.hash.clone(),
-                    commit.short_hash.clone(),
+                    commit.short_hash().to_string(),
                     commit.summary.clone(),
                 )
             })
@@ -670,8 +760,8 @@ impl App {
                     .or_else(|| snapshot.remotes.first())
                     .and_then(|remote| remote.url.clone())
             })?;
-            let remote = crate::remote::parse_remote(&origin)?;
-            matches!(remote.kind, crate::remote::ForgeKind::GitHub)
+            let remote = karet_vcs::parse_remote(&origin)?;
+            matches!(remote.kind, karet_vcs::ForgeKind::GitHub)
                 .then(|| format!("https://{}/{}/issues/$1", remote.host, remote.repo_path))
         });
         let Some(template) = template else {

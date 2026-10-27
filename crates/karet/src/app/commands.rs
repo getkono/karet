@@ -21,6 +21,11 @@ impl App {
                 if panel == SidebarPanel::Todos && !self.todos_available() {
                     return;
                 }
+                // The Hierarchy panel shows a tree a hierarchy command grew;
+                // with none yet there is nothing to show.
+                if panel == SidebarPanel::Hierarchy && !self.show_hierarchy() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -80,6 +85,7 @@ impl App {
             | Command::TerminalScrollPageDown
             | Command::TerminalScrollToTop
             | Command::TerminalScrollToBottom => self.terminal_command(command),
+            Command::RunTask => self.open_task_picker(),
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
@@ -166,6 +172,7 @@ impl App {
             Command::ExpandSelection => self.expand_selection(),
             Command::ShrinkSelection => self.shrink_selection(),
             Command::CollapseCarets => self.collapse_carets_or_unfocus(),
+            Command::EnterNormalMode => self.vi_enter_normal(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -187,6 +194,10 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::NextInlineCompletion => self.cycle_inline_completion(true),
+            Command::PrevInlineCompletion => self.cycle_inline_completion(false),
+            Command::CopilotSignIn => self.copilot_account(true),
+            Command::CopilotSignOut => self.copilot_account(false),
             Command::Hover => self.request_hover(),
             Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),
@@ -267,6 +278,7 @@ impl App {
             Command::ShowOutgoingCalls => self.open_hierarchy(HierarchyDirection::OutgoingCalls),
             Command::ShowSupertypes => self.open_hierarchy(HierarchyDirection::Supertypes),
             Command::ShowSubtypes => self.open_hierarchy(HierarchyDirection::Subtypes),
+            Command::HierarchyExpand => self.hierarchy_expand(),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),
@@ -444,7 +456,20 @@ impl App {
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
-            Command::FindSubmit => self.find_submit(),
+            Command::FindSubmit => {
+                let searching =
+                    self.active_find().map(|find| find.field) == Some(SearchField::Find);
+                // In a modal preset, Enter in the query accepts the match the
+                // typing already moved to and hands the keys back to the
+                // editor, as vim's `/` does; `n`/`N` go on from there.
+                if searching && self.keymap_preset().is_modal() {
+                    if let Some(find) = self.active_find_mut() {
+                        find.focused = false;
+                    }
+                } else {
+                    self.find_submit();
+                }
+            },
             Command::FindReplaceAll => self.find_replace_all(),
             Command::FindToggleReplace => self.find_toggle_replace(),
             Command::FindToggleField => self.find_toggle_field(),
@@ -545,12 +570,8 @@ impl App {
             Command::RevInputSubmit => self.rev_submit(),
             Command::RevInputCancel => self.rev_cancel(),
             Command::ShowFileHistory => self.open_file_history(),
-            Command::DiffUnpushed => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Unpushed,
-            }),
-            Command::DiffSinceBase => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::SinceBase { base: None },
-            }),
+            Command::DiffUnpushed => self.open_range(RangeSpec::Unpushed),
+            Command::DiffSinceBase => self.open_range(RangeSpec::SinceBase { base: None }),
             Command::CommitGraphMarkBase => self.graph_mark_base(),
             Command::CommitGraphCompare => self.graph_compare(),
             Command::SpellingScan => self.scan_workspace_spelling(),

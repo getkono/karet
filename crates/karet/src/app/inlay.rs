@@ -205,7 +205,7 @@ impl App {
                 else {
                     return None;
                 };
-                let top = tab.editor.scroll_line;
+                let top = tab.editor.scroll_line();
                 // A tab that has never been painted reports no visible lines;
                 // one screenful is a better guess than none.
                 let visible = tab.editor.visible_lines().max(1);

@@ -128,6 +128,26 @@ mod tests {
     }
 
     #[test]
+    fn new_scope_ignores_an_earlier_replacement_that_does_not_match() -> Result<(), DiffError> {
+        // The earlier hunk replaces an unrelated line: it precedes the scoped
+        // hunk but is not its heading, so it must not be picked up.
+        let raw = "diff --git a/lib.rs b/lib.rs\nindex aaa..bbb 100644\n--- a/lib.rs\n+++ b/lib.rs\n@@ -5,2 +5,2 @@\n-let x = 1;\n+let x = 2;\n ctx\n@@ -30,2 +30,2 @@ fn process() {\n-    a\n+    b\n";
+        let diff = parse(raw)?;
+        assert_eq!(diff.files[0].hunks[1].new_scope, None);
+        Ok(())
+    }
+
+    #[test]
+    fn new_scope_ignores_a_replacement_on_the_hunks_own_first_line() -> Result<(), DiffError> {
+        // A heading always sits strictly above the hunk; a matching replacement
+        // at `old_start` itself is part of the hunk, not its heading.
+        let raw = "diff --git a/lib.rs b/lib.rs\nindex aaa..bbb 100644\n--- a/lib.rs\n+++ b/lib.rs\n@@ -10,2 +10,2 @@ fn process() {\n-fn process() {\n+fn renamed() {\n ctx\n";
+        let diff = parse(raw)?;
+        assert_eq!(diff.files[0].hunks[0].new_scope, None);
+        Ok(())
+    }
+
+    #[test]
     fn new_scope_matches_by_trimmed_content() -> Result<(), DiffError> {
         let raw = "diff --git a/lib.rs b/lib.rs\nindex aaa..bbb 100644\n--- a/lib.rs\n+++ b/lib.rs\n@@ -5,2 +5,2 @@\n-    fn inner(&self) -> u8 {\n+    fn inner(&self) -> u16 {\n ctx\n@@ -20,2 +20,2 @@ fn inner(&self) -> u8 {\n-        a\n+        b\n";
         let diff = parse(raw)?;

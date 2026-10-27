@@ -7,7 +7,7 @@ use karet_core::Highlights;
 use karet_core::Span;
 use karet_core::StandardToken;
 
-use crate::*;
+use super::*;
 
 fn at(line: u32, col: u32) -> LineCol {
     LineCol::new(line, col)
@@ -105,6 +105,18 @@ fn brackets_in_strings_and_comments_are_text() {
 }
 
 #[test]
+fn brackets_under_a_code_token_still_match() {
+    // Only string and comment tokens make brackets text: highlighted
+    // punctuation is code and pairs as usual.
+    let buffer = TextBuffer::from_text("f(a)\n");
+    let punctuation = spans(StandardToken::Punctuation, &[(1, 2), (3, 4)]);
+    assert_eq!(
+        matching_pair(&buffer, Some(&punctuation), at(0, 1)),
+        pair(at(0, 1), at(0, 3))
+    );
+}
+
+#[test]
 fn the_enclosing_pair_skips_balanced_pairs_before_the_caret() {
     let buffer = TextBuffer::from_text("{ a(b) [c] d }\n");
     assert_eq!(
@@ -143,6 +155,31 @@ fn the_enclosing_pair_skips_an_unclosed_bracket_of_another_kind() {
     // With nothing closed after the caret, there is no enclosing pair.
     let open = TextBuffer::from_text("{ x { y }\n");
     assert_eq!(enclosing_pair(&open, None, at(0, 3)), None);
+}
+
+#[test]
+fn a_balanced_pair_of_the_same_kind_before_the_caret_is_skipped() {
+    // `(a(b)c|)`: the inner parens close before the caret, the outer ones enclose it.
+    let buffer = TextBuffer::from_text("(a(b)c)\n");
+    assert_eq!(
+        enclosing_pair(&buffer, None, at(0, 6)),
+        pair(at(0, 0), at(0, 6))
+    );
+}
+
+#[test]
+fn a_typed_closer_pairs_with_the_opener_no_closer_answers() {
+    // `(a(b)c|`: the inner `(` is answered by its `)`, so a `)` typed at the
+    // caret answers the outer one.
+    let buffer = TextBuffer::from_text("(a(b)c\n");
+    assert_eq!(
+        crate::bracket::unclosed_opener(&buffer, None, at(0, 6), ')'),
+        Some(at(0, 0))
+    );
+    assert_eq!(
+        crate::bracket::unclosed_opener(&buffer, None, at(0, 6), ']'),
+        None
+    );
 }
 
 #[test]

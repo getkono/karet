@@ -31,8 +31,11 @@ impl App {
         // has to without another keystroke to wake the loop.
         let inlay = self.inlay_next_wake(now);
         let code_lens = self.code_lens_next_wake(now);
+        let links_colors = self.link_color_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
+        // And the ghost-text ask, once typing has paused.
+        let inline_completion = self.inline_completion_next_wake(now);
         // And the occurrence highlight, once the caret has rested on a word.
         let occurrences = self.occurrence_next_wake(now);
         // Likewise a workspace-symbol query, once typing pauses.
@@ -57,9 +60,15 @@ impl App {
         let terminal = self.terminal_frame.next_wake(now);
         #[cfg(not(feature = "terminal"))]
         let terminal = None;
+        // A task's output the live-scan throttle held back.
+        #[cfg(feature = "terminal")]
+        let task_scan = self.task_next_wake(now);
+        #[cfg(not(feature = "terminal"))]
+        let task_scan = None;
         [
             notif,
             terminal,
+            task_scan,
             spinner,
             auto_save,
             caret,
@@ -67,7 +76,9 @@ impl App {
             nested_repositories,
             inlay,
             code_lens,
+            links_colors,
             code_actions,
+            inline_completion,
             occurrences,
             workspace_symbols,
             ai_commit,
@@ -184,6 +195,12 @@ impl App {
                 version,
                 hints,
             } => self.on_inlay_hints(id, doc, version, hints),
+            SessionEvent::InlineCompletions {
+                doc, server, items, ..
+            } => self.on_inline_completions(id, doc, server, items),
+            SessionEvent::LanguageServerAccount { server, outcome } => {
+                self.on_language_server_account(&server, outcome);
+            },
             SessionEvent::InlayHintsFailed { doc, version } => {
                 self.on_inlay_hints_failed(id, doc, version);
             },
@@ -194,6 +211,15 @@ impl App {
             } => self.on_code_lenses(id, doc, version, lenses),
             SessionEvent::CodeLensesFailed { doc, version } => {
                 self.on_code_lenses_failed(id, doc, version);
+            },
+            SessionEvent::LinksAndColors {
+                doc,
+                version,
+                links,
+                colors,
+            } => self.on_links_and_colors(id, doc, version, (links, colors)),
+            SessionEvent::DocumentLinkResolved { doc, result } => {
+                self.on_document_link_resolved(id, doc, result);
             },
             SessionEvent::InlayHintResolved { doc, hint } => {
                 self.on_inlay_hint_resolved(id, doc, hint);
@@ -380,6 +406,7 @@ impl App {
                 // authoritative and never re-asked.
                 self.invalidate_inlay_coverage();
                 self.invalidate_code_lens_coverage();
+                self.invalidate_link_color_coverage();
             },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);
@@ -491,7 +518,7 @@ impl App {
                 head_label,
                 merge_base,
                 changes,
-            } => self.open_compare_tab(base_label, head_label, merge_base, changes),
+            } => self.on_range_ready(id, base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
                 self.on_commit_verification(id, &hash, status);
             },
@@ -610,6 +637,7 @@ impl App {
             SessionEvent::DocumentConverted { path, markdown } => {
                 self.apply_document_converted(id, &path, markdown);
             },
+            SessionEvent::MarkdownLintFixed { fixed, .. } => self.markdown_lint_fixed(fixed),
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },
@@ -630,16 +658,9 @@ impl App {
             SessionEvent::SearchReplaced {
                 files_changed,
                 replacements,
-            } => {
-                self.notify(
-                    Report::Outcome,
-                    NotificationKind::System,
-                    format!("replaced {replacements} occurrence(s) in {files_changed} file(s)"),
-                );
-                // Refresh so the (now empty, unless the replacement re-matches)
-                // results reflect the edited files.
-                self.run_global_search();
-            },
+                failures,
+                error,
+            } => self.search_replaced(files_changed, replacements, &failures, error),
             // Events answering commands this client never sends fall through
             // here until the corresponding UI exists.
             _ => {},
@@ -727,5 +748,56 @@ impl App {
             ],
         ));
         self.pending_swaps = Some(swaps);
+    }
+
+    /// Report a finished replace-all, then refresh the results so they reflect
+    /// the edited files (now empty, unless the replacement re-matches).
+    ///
+    /// A replace that stopped on an error, or left files it could not write, is
+    /// a failure the user must see: a bare count would read as complete.
+    fn search_replaced(
+        &mut self,
+        files_changed: usize,
+        replacements: usize,
+        failures: &[karet_search::WriteFailure],
+        error: Option<String>,
+    ) {
+        let done = format!("replaced {replacements} occurrence(s) in {files_changed} file(s)");
+        if let Some(error) = error {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::System,
+                format!("replace stopped: {error}"),
+                done,
+            );
+        } else if failures.is_empty() {
+            self.notify(Report::Outcome, NotificationKind::System, done);
+        } else {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::Io,
+                format!("{done}; {} file(s) could not be written", failures.len()),
+                self.write_failure_lines(failures),
+            );
+        }
+        self.run_global_search();
+    }
+
+    /// One `path: reason` line per unwritten file, root-relative, capped so a
+    /// read-only tree cannot fill the screen.
+    fn write_failure_lines(&self, failures: &[karet_search::WriteFailure]) -> String {
+        const SHOWN: usize = 5;
+        let mut lines: Vec<String> = failures
+            .iter()
+            .take(SHOWN)
+            .map(|f| {
+                let path = f.path.strip_prefix(&self.root).unwrap_or(&f.path);
+                format!("{}: {}", path.display(), f.error)
+            })
+            .collect();
+        if failures.len() > SHOWN {
+            lines.push(format!("…and {} more", failures.len() - SHOWN));
+        }
+        lines.join("\n")
     }
 }

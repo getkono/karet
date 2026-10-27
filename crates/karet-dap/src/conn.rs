@@ -1,52 +1,41 @@
-//! The DAP connection actor: two I/O tasks and request/response correlation,
-//! mirroring `karet-lsp`'s connection over the same shared `karet-jsonrpc` codec.
+//! The DAP connection: `karet-jsonrpc`'s correlation [`Actor`] speaking the
+//! DAP envelope.
 //!
-//! DAP is not JSON-RPC: every message carries a `seq` and a `type` of
-//! `request`/`response`/`event`. Responses resolve the pending request with
-//! the matching `request_seq` (a `success: false` response is a normal error,
-//! not a transport fault); events decode into [`DebugEvent`]s and fan out on
-//! a broadcast channel; adapter→client *reverse* requests (`runInTerminal`)
-//! are answered "unsupported" so no adapter waits forever. When the stream
-//! ends, in-flight requests fail with [`DapError::Closed`].
+//! The actor owns the I/O tasks, the pending map, the request timeout, the
+//! bounded outbound queue and fail-all-on-EOF; this module supplies only what
+//! DAP means by a message. DAP is not JSON-RPC: every message carries a `seq`
+//! and a `type` of `request`/`response`/`event`. Responses resolve the pending
+//! request with the matching `request_seq` (a `success: false` response is a
+//! normal error, not a transport fault); events decode into [`DebugEvent`]s
+//! and fan out on a broadcast channel; adapter→client *reverse* requests
+//! (`runInTerminal`) are answered "unsupported" so no adapter waits forever.
+//! When the stream ends, in-flight requests fail with [`DapError::Closed`].
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicI64;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
-use karet_jsonrpc::framing::content_length as codec;
+use karet_jsonrpc::Actor;
+use karet_jsonrpc::Classified;
+use karet_jsonrpc::Envelope;
+use karet_jsonrpc::Link;
+use karet_jsonrpc::RpcError;
+use karet_jsonrpc::framing::content_length::ContentLength;
+use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::io::BufReader;
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 use crate::DapError;
 use crate::types::DebugEvent;
 use crate::types::event_from;
 
-/// How long a request may wait for its response before failing with
-/// [`DapError::Timeout`].
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Event broadcast capacity; slow subscribers drop the oldest events.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
-/// Frames waiting to be written.
-const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
-
-/// A pending request's resolver: `Ok(body)` on success, the adapter's message
-/// on a failed response.
-type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
 /// The one-shot "`initialized` event seen" latch: the configuration phase may
 /// begin. A flag plus [`Notify`] rather than a broadcast subscription, so the
@@ -76,18 +65,132 @@ impl InitializedLatch {
     }
 }
 
+/// An inbound DAP message that is not a response.
+enum DapMessage {
+    /// An adapter-pushed event.
+    Event { name: String, body: Value },
+    /// An adapter→client reverse request.
+    Request { seq: i64, command: String },
+}
+
+/// The DAP envelope: `seq`-numbered messages, responses keyed by
+/// `request_seq`, and where events and reverse requests go.
+struct Dap {
+    events: broadcast::Sender<DebugEvent>,
+    initialized: Arc<InitializedLatch>,
+}
+
+impl Envelope for Dap {
+    type Framing = ContentLength;
+    type Id = i64;
+    /// `Ok(body)` on success, the adapter's message on a failed response.
+    type Outcome = Result<Value, String>;
+    type Message = DapMessage;
+
+    const PEER: &'static str = "debug adapter";
+
+    fn request_id(seq: i64) -> i64 {
+        seq
+    }
+
+    fn encode_request<P: Serialize>(
+        &self,
+        seq: &i64,
+        command: &str,
+        arguments: P,
+    ) -> Result<Vec<u8>, serde_json::Error> {
+        let arguments = serde_json::to_value(arguments)?;
+        let mut message = json!({
+            "seq": seq,
+            "type": "request",
+            "command": command,
+        });
+        if !arguments.is_null()
+            && let Some(object) = message.as_object_mut()
+        {
+            object.insert("arguments".to_owned(), arguments);
+        }
+        serde_json::to_vec(&message)
+    }
+
+    fn classify(&self, value: Value) -> Classified<i64, Self::Outcome, DapMessage> {
+        let text = |key: &str| value.get(key).and_then(Value::as_str);
+        match text("type") {
+            Some("response") => {
+                let Some(request_seq) = value.get("request_seq").and_then(Value::as_i64) else {
+                    return Classified::Malformed("a response with no request_seq");
+                };
+                let success = value
+                    .get("success")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let outcome = if success {
+                    Ok(value.get("body").cloned().unwrap_or(Value::Null))
+                } else {
+                    Err(text("message").unwrap_or("request rejected").to_owned())
+                };
+                Classified::Response {
+                    id: request_seq,
+                    outcome,
+                }
+            },
+            Some("event") => Classified::Message(DapMessage::Event {
+                name: text("event").unwrap_or("").to_owned(),
+                body: value.get("body").cloned().unwrap_or(Value::Null),
+            }),
+            Some("request") => Classified::Message(DapMessage::Request {
+                seq: value.get("seq").and_then(Value::as_i64).unwrap_or(0),
+                command: text("command").unwrap_or("").to_owned(),
+            }),
+            _ => Classified::Malformed("a message with no DAP shape"),
+        }
+    }
+
+    fn route(&self, message: DapMessage, link: &Link) {
+        match message {
+            DapMessage::Event { name, body } => {
+                if name == "initialized" {
+                    self.initialized.set();
+                }
+                match event_from(&name, &body) {
+                    Some(event) => {
+                        let _ = self.events.send(event); // no subscribers is fine
+                    },
+                    None => tracing::debug!(event = name, "unmodeled debug-adapter event"),
+                }
+            },
+            DapMessage::Request { seq, command } => {
+                // A reverse request (runInTerminal). karet runs adapters
+                // headless through the supervisor; declining is the honest
+                // answer, and it must not be left hanging -- so it takes the
+                // link, which never drops a frame and never blocks the reader.
+                let refusal = json!({
+                    "seq": link.next_seq(),
+                    "type": "response",
+                    "request_seq": seq,
+                    "command": command,
+                    "success": false,
+                    "message": format!("karet does not support the {command} reverse request"),
+                });
+                match serde_json::to_vec(&refusal) {
+                    Ok(frame) => link.reply(frame),
+                    Err(e) => tracing::warn!(error = %e, "failed to encode a refusal"),
+                }
+            },
+        }
+    }
+
+    fn on_closed(&self) {
+        // A session that dies before `initialized` must not hang the handshake.
+        self.initialized.set();
+        let _ = self.events.send(DebugEvent::Terminated);
+    }
+}
+
 /// A live connection to one debug adapter.
 pub(crate) struct Connection {
-    outbound: mpsc::Sender<Vec<u8>>,
-    pending: Pending,
-    next_seq: Arc<AtomicI64>,
-    events: broadcast::Sender<DebugEvent>,
+    actor: Actor<Dap>,
     pub(crate) initialized: Arc<InitializedLatch>,
-    closed: Arc<AtomicBool>,
-    reader_task: JoinHandle<()>,
-    writer_task: JoinHandle<()>,
-    /// The single task draining deferred refusals; see [`Refusals`].
-    drainer_task: JoinHandle<()>,
 }
 
 impl Connection {
@@ -97,50 +200,20 @@ impl Connection {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let (outbound, mut outbound_rx) = mpsc::channel::<Vec<u8>>(OUTBOUND_CHANNEL_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        let pending: Pending = Arc::default();
-        let next_seq = Arc::new(AtomicI64::new(1));
         let initialized = Arc::new(InitializedLatch::default());
-        let closed = Arc::new(AtomicBool::new(false));
-        let (refusals, drainer_task) = Refusals::start(outbound.clone());
-
-        let writer_closed = Arc::clone(&closed);
-        let writer_task = tokio::spawn(async move {
-            let mut write = write;
-            while let Some(frame) = outbound_rx.recv().await {
-                if let Err(e) = codec::write_frame(&mut write, &frame).await {
-                    tracing::warn!(error = %e, "debug-adapter write failed; closing writer");
-                    break;
-                }
-            }
-            writer_closed.store(true, Ordering::SeqCst);
-        });
-        let reader_task = tokio::spawn(read_loop(ReadLoop {
-            reader: BufReader::new(read),
-            pending: Arc::clone(&pending),
-            events: events.clone(),
-            refusals,
-            next_seq: Arc::clone(&next_seq),
-            initialized: Arc::clone(&initialized),
-            closed: Arc::clone(&closed),
-        }));
-
-        Self {
-            outbound,
-            pending,
-            next_seq,
+        let envelope = Dap {
             events,
+            initialized: Arc::clone(&initialized),
+        };
+        Self {
+            actor: Actor::start(envelope, read, write),
             initialized,
-            closed,
-            reader_task,
-            writer_task,
-            drainer_task,
         }
     }
 
-    /// Issue `command` and await its response body, bounded by
-    /// [`REQUEST_TIMEOUT`]. A failed (`success: false`) response is a
+    /// Issue `command` and await its response body, bounded by the actor's
+    /// request timeout. A failed (`success: false`) response is a
     /// [`DapError::Adapter`] error carrying the adapter's message.
     pub(crate) async fn request(&self, command: &str, arguments: Value) -> Result<Value, DapError> {
         self.request_deferred(command, arguments).await?.await
@@ -157,273 +230,48 @@ impl Connection {
         command: &str,
         arguments: Value,
     ) -> Result<impl Future<Output = Result<Value, DapError>> + Send + use<>, DapError> {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let mut message = json!({
-            "seq": seq,
-            "type": "request",
-            "command": command,
-        });
-        if !arguments.is_null()
-            && let Some(object) = message.as_object_mut()
-        {
-            object.insert("arguments".to_owned(), arguments);
-        }
-        let frame = serde_json::to_vec(&message)
-            .map_err(|e| DapError::Protocol(format!("failed to encode {command}: {e}")))?;
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut map = self.pending.lock().map_err(|_| DapError::Closed)?;
-            map.insert(seq, tx);
-        }
-        // Checked *after* registering, exactly like the LSP twin: the reader's
-        // drain fails a request that raced past the flag.
-        if self.closed.load(Ordering::SeqCst) {
-            self.forget(seq);
-            return Err(DapError::Closed);
-        }
-        if self.outbound.send(frame).await.is_err() {
-            self.forget(seq);
-            return Err(DapError::Closed);
-        }
-        let pending = Arc::clone(&self.pending);
+        let response = self
+            .actor
+            .dispatch(command, arguments, Dap::REQUEST_TIMEOUT)
+            .await
+            .map_err(dap_error)?;
         let command = command.to_owned();
         Ok(async move {
-            match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
-                Err(_elapsed) => {
-                    if let Ok(mut map) = pending.lock() {
-                        map.remove(&seq);
-                    }
-                    Err(DapError::Timeout)
-                },
-                Ok(Err(_recv)) => Err(DapError::Closed),
-                Ok(Ok(Err(message))) => {
-                    Err(DapError::Adapter(format!("{command} failed: {message}")))
-                },
-                Ok(Ok(Ok(body))) => Ok(body),
+            match response.await.map_err(dap_error)? {
+                Ok(body) => Ok(body),
+                Err(message) => Err(DapError::Adapter(format!("{command} failed: {message}"))),
             }
         })
     }
 
     /// Subscribe to adapter-pushed events.
     pub(crate) fn events(&self) -> broadcast::Receiver<DebugEvent> {
-        self.events.subscribe()
+        self.actor.envelope().events.subscribe()
     }
 
     /// Whether either I/O task has stopped.
     pub(crate) fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
-    }
-
-    /// Drop the pending entry for `seq` (on timeout or send failure).
-    fn forget(&self, seq: i64) {
-        if let Ok(mut map) = self.pending.lock() {
-            map.remove(&seq);
-        }
+        self.actor.is_closed()
     }
 }
 
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.reader_task.abort();
-        self.writer_task.abort();
-        self.drainer_task.abort();
-    }
-}
-
-/// The reader task's wiring, bundled to keep the spawn readable.
-struct ReadLoop<R> {
-    reader: BufReader<R>,
-    pending: Pending,
-    events: broadcast::Sender<DebugEvent>,
-    refusals: Refusals,
-    next_seq: Arc<AtomicI64>,
-    initialized: Arc<InitializedLatch>,
-    closed: Arc<AtomicBool>,
-}
-
-/// De-frame and route inbound messages until EOF or a framing error, then
-/// fail all in-flight requests by dropping their response senders.
-async fn read_loop<R>(mut ctx: ReadLoop<R>)
-where
-    R: AsyncRead + Send + Unpin + 'static,
-{
-    loop {
-        match codec::read_frame(&mut ctx.reader).await {
-            Ok(Some(bytes)) => handle_frame(&bytes, &ctx),
-            Ok(None) => break,
-            Err(e) => {
-                tracing::warn!(error = %e, "debug-adapter stream lost framing; closing");
-                break;
-            },
-        }
-    }
-    ctx.closed.store(true, Ordering::SeqCst);
-    if let Ok(mut map) = ctx.pending.lock() {
-        map.clear(); // dropping the senders fails the awaiting requests
-    }
-    // A session that dies before `initialized` must not hang the handshake.
-    ctx.initialized.set();
-    let _ = ctx.events.send(DebugEvent::Terminated);
-}
-
-/// Route one de-framed message.
-fn handle_frame<R>(bytes: &[u8], ctx: &ReadLoop<R>) {
-    let value: Value = match serde_json::from_slice(bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "dropping a non-JSON message from the debug adapter");
-            return;
-        },
-    };
-    match value.get("type").and_then(Value::as_str) {
-        Some("response") => {
-            let Some(request_seq) = value.get("request_seq").and_then(Value::as_i64) else {
-                tracing::warn!("dropping a response with no request_seq");
-                return;
-            };
-            let sender = ctx
-                .pending
-                .lock()
-                .ok()
-                .and_then(|mut map| map.remove(&request_seq));
-            let Some(sender) = sender else {
-                tracing::debug!(request_seq, "dropping a response to an abandoned request");
-                return;
-            };
-            let success = value
-                .get("success")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let outcome = if success {
-                Ok(value.get("body").cloned().unwrap_or(Value::Null))
-            } else {
-                Err(value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("request rejected")
-                    .to_owned())
-            };
-            let _ = sender.send(outcome); // requester may have timed out
-        },
-        Some("event") => {
-            let name = value.get("event").and_then(Value::as_str).unwrap_or("");
-            let body = value.get("body").cloned().unwrap_or(Value::Null);
-            if name == "initialized" {
-                ctx.initialized.set();
-            }
-            match event_from(name, &body) {
-                Some(event) => {
-                    let _ = ctx.events.send(event); // no subscribers is fine
-                },
-                None => tracing::debug!(event = name, "unmodeled debug-adapter event"),
-            }
-        },
-        Some("request") => {
-            // A reverse request (runInTerminal). karet runs adapters headless
-            // through the supervisor; declining is the honest answer, and it
-            // must not be left hanging.
-            let seq = ctx.next_seq.fetch_add(1, Ordering::Relaxed);
-            let command = value.get("command").and_then(Value::as_str).unwrap_or("");
-            let refusal = json!({
-                "seq": seq,
-                "type": "response",
-                "request_seq": value.get("seq").and_then(Value::as_i64).unwrap_or(0),
-                "command": command,
-                "success": false,
-                "message": format!("karet does not support the {command} reverse request"),
-            });
-            match serde_json::to_vec(&refusal) {
-                Ok(frame) => ctx.refusals.deliver(frame, command),
-                Err(e) => tracing::warn!(error = %e, "failed to encode a refusal"),
-            }
-        },
-        _ => tracing::warn!("dropping a message with no DAP shape"),
-    }
-}
-
-/// The path every reverse-request refusal takes to the writer: never dropped,
-/// never blocking the reader.
+/// Translate an actor failure into the DAP client's error vocabulary.
 ///
-/// `try_send` alone discarded the refusal whenever the outbound queue was
-/// full, which is the one outcome that defeats the point of refusing at all:
-/// the adapter blocks on its reverse request forever, and `runInTerminal` is
-/// issued precisely when a session is trying to start. The wait cannot happen
-/// inline either: this runs on the reader task, and an adapter can be blocked
-/// writing to a stdout we have stopped draining -- waiting here would close
-/// that into a deadlock.
-///
-/// So a refusal that finds the queue full parks on an overflow queue that
-/// **one** drainer task per connection moves onto the outbound queue as
-/// capacity frees, in order; while anything is parked, later refusals park
-/// behind it rather than overtake it. Tasks are therefore O(1) per
-/// connection.
-///
-/// **Memory is not bounded by any constant.** The overflow queue holds one
-/// refusal per reverse request the adapter has sent and we have not yet
-/// written, so an adapter that floods reverse requests while never reading
-/// its own stdin grows it without limit, until it reads or the connection
-/// ends. That is deliberate: a cap would have to drop the refusal that meets
-/// it (the adapter blocks forever) or block the reader until the queue
-/// shrinks (the deadlock above). It is also the memory profile of the design
-/// this replaced, which spawned one detached task per deferred refusal and so
-/// held the same unbounded set of frames plus a task for each; only the task
-/// count changed.
-///
-/// Parked refusals outlive the reader: when the adapter's stdout hits EOF the
-/// reader drops its handle, but the drainer keeps moving what was already
-/// parked onto the outbound queue, and the writer keeps writing it for as
-/// long as the [`Connection`] is alive and the adapter's stdin accepts bytes.
-struct Refusals {
-    outbound: mpsc::Sender<Vec<u8>>,
-    overflow: mpsc::UnboundedSender<Vec<u8>>,
-    /// Frames parked on `overflow` and not yet handed to `outbound`.
-    backlog: Arc<AtomicUsize>,
-}
-
-impl Refusals {
-    /// Build the refusal path over `outbound` and spawn its single drainer.
-    fn start(outbound: mpsc::Sender<Vec<u8>>) -> (Self, JoinHandle<()>) {
-        let (overflow, mut parked) = mpsc::unbounded_channel::<Vec<u8>>();
-        let backlog = Arc::new(AtomicUsize::new(0));
-        let drainer_outbound = outbound.clone();
-        let drainer_backlog = Arc::clone(&backlog);
-        let drainer = tokio::spawn(async move {
-            while let Some(frame) = parked.recv().await {
-                // Errors only once the writer is gone: nothing to answer then.
-                let _ = drainer_outbound.send(frame).await;
-                drainer_backlog.fetch_sub(1, Ordering::SeqCst);
-            }
-        });
-        (
-            Self {
-                outbound,
-                overflow,
-                backlog,
-            },
-            drainer,
-        )
-    }
-
-    /// Hand `frame` to the writer without dropping it and without blocking.
-    fn deliver(&self, frame: Vec<u8>, command: &str) {
-        // The fast path only while nothing is parked, so a refusal never
-        // overtakes one deferred before it.
-        let frame = if self.backlog.load(Ordering::SeqCst) == 0 {
-            match self.outbound.try_send(frame) {
-                Ok(()) => return,
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    tracing::debug!(command, "adapter closed before its refusal could be sent");
-                    return;
-                },
-                Err(mpsc::error::TrySendError::Full(frame)) => frame,
-            }
-        } else {
-            frame
-        };
-        self.backlog.fetch_add(1, Ordering::SeqCst);
-        if self.overflow.send(frame).is_err() {
-            self.backlog.fetch_sub(1, Ordering::SeqCst);
-            tracing::debug!(command, "adapter closed before its refusal could be sent");
-        }
+/// Exhaustive on purpose: a variant `karet-jsonrpc` adds must be placed here
+/// rather than fall into a catch-all as the wrong kind.
+fn dap_error(error: RpcError) -> DapError {
+    match error {
+        RpcError::Closed => DapError::Closed,
+        RpcError::Timeout => DapError::Timeout,
+        RpcError::Encode { method, source } => {
+            DapError::Protocol(format!("failed to encode {method}: {source}"))
+        },
+        RpcError::Decode { method, source } => {
+            DapError::Protocol(format!("malformed {method} response: {source}"))
+        },
+        RpcError::Peer { method, error } => {
+            DapError::Adapter(format!("{method} failed: {}", error.message))
+        },
+        RpcError::QueueFull => DapError::Protocol("the outbound queue is full".to_owned()),
     }
 }

@@ -116,7 +116,7 @@ pub(super) fn draw_panes(
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
-                debug_stopped: app.debug_stopped.as_ref(),
+                debug_stopped: app.debugger.stopped.as_ref(),
                 ref_labels: &app.scm.ref_labels,
                 repo_state: app.scm.repository.as_ref().map(|snapshot| &snapshot.state),
                 icon_style: app.icon_style,
@@ -130,6 +130,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
@@ -145,6 +146,7 @@ pub(super) fn draw_panes(
                 blame,
                 definition_underline: app.definition_underline_decoration(),
                 code_action_bulb: app.code_action_bulb_decoration(),
+                inline_ghost: app.inline_ghost_render(),
                 occurrences: app.occurrence_decorations(),
                 blame_clickable: app
                     .live_blame
@@ -182,7 +184,7 @@ pub(super) fn draw_panes(
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
-                debug_stopped: app.debug_stopped.as_ref(),
+                debug_stopped: app.debugger.stopped.as_ref(),
                 ref_labels: &app.scm.ref_labels,
                 repo_state: app.scm.repository.as_ref().map(|snapshot| &snapshot.state),
                 icon_style: app.icon_style,
@@ -196,6 +198,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
@@ -207,6 +210,7 @@ pub(super) fn draw_panes(
                 blame: None,
                 definition_underline: None,
                 code_action_bulb: None,
+                inline_ghost: None,
                 occurrences: Vec::new(),
                 blame_clickable: false,
                 markdown_link_hover: None,
@@ -394,7 +398,7 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
 pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits: &mut ScrollHits) {
     // Forgotten first, so a frame that ends up not painting it leaves nothing for
     // the pointer to hit; the render below records where it went.
-    if let Some(ui) = app.completion.as_mut() {
+    if let Some(ui) = app.completion.popup.as_mut() {
         ui.list.hide();
     }
     // The filter doubles as the "popup still applies" check.
@@ -431,7 +435,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         .saturating_sub(prefix_cols)
         .clamp(editor.left(), editor.right().saturating_sub(1));
 
-    let Some(ui) = app.completion.as_mut() else {
+    let Some(ui) = app.completion.popup.as_mut() else {
         return;
     };
     if filter != ui.last_filter {
@@ -439,7 +443,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         ui.last_filter.clone_from(&filter);
     }
     let crate::completion::CompletionUi { items, list, .. } = ui;
-    let mut popup = CompletionPopup::new(items, &mut app.completion_matcher, &filter, theme);
+    let mut popup = CompletionPopup::new(items, &mut app.completion.matcher, &filter, theme);
     let avail_w = editor.right().saturating_sub(x).max(1);
     let (width, rows) = popup.desired_size((avail_w, karet_widgets::completion::MAX_VISIBLE_ROWS));
     if width == 0 || rows == 0 {
@@ -468,7 +472,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
     // the hit test over the editor bar it floats above.
     hits.record_track(list.track(), ScrollSurface::Completion);
     let docs = ranked
-        .get(list.selected)
+        .get(list.selected())
         .and_then(|&index| items.get(index))
         .and_then(|item| item.documentation.as_ref());
     if let Some(docs) = docs {

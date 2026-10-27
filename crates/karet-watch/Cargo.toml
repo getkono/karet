@@ -17,6 +17,7 @@ publish = false                       # karet-internal infrastructure
 notify.workspace = true
 notify-debouncer-full.workspace = true
 ignore.workspace = true               # gitignore-aware directory enumeration to watch
+karet-search.workspace = true         # IGNORED_DIRS: the dirs every workspace walk prunes
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 tracing.workspace = true

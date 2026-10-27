@@ -137,6 +137,9 @@ pub(crate) fn parse(result: &Value) -> Capabilities {
         ),
         ("inlayHintProvider", ServerFeature::InlayHint),
         ("inlineValueProvider", ServerFeature::InlineValue),
+        // Behind `lsp_types` 0.97's `proposed` feature, so likewise only
+        // readable raw.
+        ("inlineCompletionProvider", ServerFeature::InlineCompletion),
         ("diagnosticProvider", ServerFeature::PullDiagnostics),
         ("executeCommandProvider", ServerFeature::ExecuteCommand),
     ] {
@@ -178,6 +181,10 @@ pub(crate) fn parse(result: &Value) -> Capabilities {
     out.set(
         ServerFeature::WorkspacePullDiagnostics,
         flag(caps.get("diagnosticProvider"), "workspaceDiagnostics"),
+    );
+    out.set(
+        ServerFeature::InterFileDiagnostics,
+        flag(caps.get("diagnosticProvider"), "interFileDependencies"),
     );
 
     parse_semantic_tokens(caps, &mut out);
@@ -331,6 +338,7 @@ pub(crate) fn feature_for_method(method: &str) -> Option<ServerFeature> {
         "textDocument/linkedEditingRange" => ServerFeature::LinkedEditingRange,
         "textDocument/inlayHint" => ServerFeature::InlayHint,
         "textDocument/inlineValue" => ServerFeature::InlineValue,
+        "textDocument/inlineCompletion" => ServerFeature::InlineCompletion,
         "textDocument/diagnostic" => ServerFeature::PullDiagnostics,
         "textDocument/semanticTokens" => ServerFeature::SemanticTokensFull,
         "workspace/executeCommand" => ServerFeature::ExecuteCommand,

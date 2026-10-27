@@ -19,7 +19,7 @@ default = []
 # grammar through karet-treesitter's shared injection-name resolver).
 highlight = ["dep:karet-syntax", "dep:karet-treesitter"]
 # The markdownlint-core linter (rule engine, .markdownlint.json config, autofixes).
-lint = ["dep:serde_json"]
+lint = ["dep:serde_json", "dep:thiserror"]
 # Render `mermaid` code fences as Unicode/ASCII diagrams in the preview.
 mermaid = ["dep:merman"]
 # Curated grammar bundle for typical fence languages (implies `highlight`).
@@ -51,7 +51,7 @@ serde_json = { workspace = true, optional = true }
 merman = { workspace = true, optional = true }
 karet-core.workspace = true
 pulldown-cmark.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, optional = true }
 unicode-width.workspace = true        # wrap by terminal columns, not bytes or chars
 karet-syntax = { workspace = true, optional = true }
 karet-treesitter = { workspace = true, optional = true }

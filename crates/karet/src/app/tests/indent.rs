@@ -113,7 +113,7 @@ fn an_inline_macro_takes_tab_first() {
 #[test]
 fn an_open_completion_takes_tab_first() {
     let mut rig = Rig::new("fo|");
-    rig.app.completion = Some(crate::completion::CompletionUi::new(
+    rig.app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         LineCol::new(0, 0),
         LineCol::new(0, 0),
@@ -126,7 +126,7 @@ fn an_open_completion_takes_tab_first() {
     rig.render();
     rig.step(key(KeyCode::Tab));
     assert_eq!(rig.marked(), "foobar|");
-    assert!(rig.app.completion.is_none());
+    assert!(rig.app.completion.popup.is_none());
 }
 
 #[test]

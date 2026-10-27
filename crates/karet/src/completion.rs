@@ -253,11 +253,9 @@ pub(crate) enum CompletionMode {
     Spelling { caret: LineCol },
 }
 
-/// Whether `c` is an identifier character for auto-trigger purposes (matches
-/// the editor's word-boundary vocabulary).
-pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+/// Whether `c` is an identifier character for auto-trigger purposes: the
+/// editor's word-boundary vocabulary.
+pub(crate) use karet_core::is_word_char;
 
 /// Whether any syntax-error line range in `errors` (inclusive `(start, end)`
 /// rows) covers `line` — the "no outright errors" auto-trigger gate.

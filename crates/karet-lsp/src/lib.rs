@@ -16,8 +16,9 @@
 //! server→client requests a headless client must not leave hanging
 //! (`workspace/configuration` from the consumer's [`ConnectOptions::settings`],
 //! `client/registerCapability`, `window/workDoneProgress/create`,
-//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh` -- the
-//! last two also surfaced through [`LspClient::refreshes`]). The server requests that must wait on the
+//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh`,
+//! `workspace/diagnostic/refresh` -- the last three also surfaced through
+//! [`LspClient::refreshes`]). The server requests that must wait on the
 //! editor, `workspace/applyEdit` and `window/showMessageRequest`, are handed
 //! out through [`LspClient::apply_edit_requests`] and
 //! [`LspClient::message_requests`] instead. File watchers a server registers
@@ -48,24 +49,32 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, document highlights, inlay hints, semantic tokens (whole and delta,
+//! symbols, document highlights, inlay hints, inline completions (LSP 3.18
+//! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), document/range
+//! `codeAction/resolve` and `workspace/executeCommand`), document links (with
+//! `documentLink/resolve`), document colours, folding ranges (see
+//! [`LspClient::folding_ranges`]), document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
 //! are implemented as typed, non-panicking operations.
 
-/// `Content-Length` message framing (the LSP base protocol).
-///
-/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
-/// the implementation now lives; the `karet_lsp::codec` path is kept because it
-/// is this crate's published surface.
 pub use apply_edit::ApplyEditRequest;
 pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
 pub use editing::LinkedEditingRanges;
 pub use editing::SaveReason;
-pub use highlight::DocumentHighlight;
-pub use highlight::HighlightKind;
+/// What [`LspClient::document_highlights`] answers with; defined once in
+/// [`karet_core`] and re-exported so the `karet_lsp::DocumentHighlight` path
+/// this crate published keeps working.
+pub use karet_core::DocumentHighlight;
+/// How a [`DocumentHighlight`] uses its symbol; re-exported from
+/// [`karet_core`] for the same reason.
+pub use karet_core::HighlightKind;
+/// `Content-Length` message framing (the LSP base protocol).
+///
+/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
+/// the implementation now lives; the `karet_lsp::codec` path is kept because it
+/// is this crate's published surface.
 pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
@@ -91,12 +100,15 @@ mod config;
 mod conn;
 mod convert;
 mod editing;
+mod folding;
 mod gate;
 mod handshake;
 mod hierarchy;
 mod highlight;
 mod inlay;
+mod inline_completion;
 mod launch;
+mod link_color;
 mod navigation;
 mod pull;
 mod selection;
@@ -327,6 +339,11 @@ pub enum ServerRefresh {
     /// that finished loading, a dependency that resolved) reclassified names
     /// in files nobody edited.
     SemanticTokens,
+    /// `workspace/diagnostic/refresh`: every document's pulled diagnostics
+    /// from this server may now be stale -- a project-wide change (a
+    /// dependency edit, a configuration reload) changed what it would report
+    /// for files nobody edited, so each open document is pulled again.
+    Diagnostics,
 }
 
 /// An async client for a single language server.
@@ -582,7 +599,9 @@ impl LspClient {
         if let Some(settings) = &options.settings {
             conn.set_settings(settings.clone());
         }
-        let result: Value = conn.request("initialize", params).await?;
+        let result: Value = conn
+            .request("initialize", handshake::to_wire(params)?)
+            .await?;
         // Seeded into the gate the handler already owns. Registrations are kept
         // apart from the advertised set, so one that arrives between here and
         // the first request survives the seeding.
@@ -658,6 +677,26 @@ impl LspClient {
             .is_ok_and(|gate| gate.supports_for(feature, doc))
     }
 
+    /// Whether this server currently supports `feature` for the document at
+    /// `doc` were it open as `language`, open now or not.
+    ///
+    /// As [`Self::supports_for`], except that a selector's `language` filter
+    /// is matched against `language` rather than the `languageId` the client
+    /// recorded at [`Self::did_open`], which [`Self::did_close`] forgets. It
+    /// answers for a document already closed: whether a registration still
+    /// covers what it was last open as.
+    #[must_use]
+    pub fn supports_for_language(
+        &self,
+        feature: ServerFeature,
+        doc: &Path,
+        language: &str,
+    ) -> bool {
+        self.gate
+            .read()
+            .is_ok_and(|gate| gate.supports_as(feature, doc, Some(language)))
+    }
+
     /// Refuse `method` when the server never said it could answer it for any
     /// document.
     ///
@@ -727,8 +766,8 @@ impl LspClient {
     /// full `text`.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_open(
         &self,
         doc: &Path,
@@ -761,8 +800,8 @@ impl LspClient {
     /// [`Self::did_change_incremental`] where the server supports it.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_change(&self, doc: &Path, version: i32, text: &str) -> Result<(), LspError> {
         let params = lsp_types::DidChangeTextDocumentParams {
             text_document: lsp_types::VersionedTextDocumentIdentifier::new(
@@ -793,7 +832,8 @@ impl LspClient {
     /// Returns [`LspError::Unsupported`] **without sending anything** when the
     /// server did not ask for incremental sync (send the whole text with
     /// [`Self::did_change`] instead), [`LspError::Protocol`] for an
-    /// unconvertible path, or [`LspError::Closed`] if the connection is gone.
+    /// unconvertible path or a full outbound queue, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn did_change_incremental(
         &self,
         doc: &Path,
@@ -825,8 +865,8 @@ impl LspClient {
     /// Notify the server that `doc` was saved (optionally including its text).
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_save(&self, doc: &Path, text: Option<&str>) -> Result<(), LspError> {
         let params = lsp_types::DidSaveTextDocumentParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
@@ -838,8 +878,8 @@ impl LspClient {
     /// Notify the server that `doc` was closed.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_close(&self, doc: &Path) -> Result<(), LspError> {
         if let Ok(mut gate) = self.gate.write() {
             gate.closed(doc);
@@ -854,8 +894,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn hover(&self, doc: &Path, pos: LineCol) -> Result<Option<Hover>, LspError> {
         self.require_for(ServerFeature::Hover, "textDocument/hover", doc)?;
         let params = lsp_types::HoverParams {
@@ -871,8 +913,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn document_symbols(&self, doc: &Path) -> Result<Vec<Symbol>, LspError> {
         self.require_for(
             ServerFeature::DocumentSymbol,
@@ -896,8 +940,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for a request that does
+    /// not encode or a result that does not decode, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>, LspError> {
         self.require(ServerFeature::WorkspaceSymbol, "workspace/symbol")?;
         let params = lsp_types::WorkspaceSymbolParams {
@@ -918,8 +964,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn implementations(
         &self,
         doc: &Path,
@@ -946,8 +994,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn definition(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
         self.require_for(ServerFeature::Definition, "textDocument/definition", doc)?;
         let params = lsp_types::GotoDefinitionParams {
@@ -965,9 +1015,11 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`], or [`LspError::Protocol`] when the edit names a
-    /// URI that is not a file.
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a result that does not decode or
+    /// an edit naming a URI that is not a file, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn rename(
         &self,
         doc: &Path,
@@ -994,7 +1046,10 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise `prepareProvider`, else [`LspError::Server`]
-    /// (servers commonly explain a refusal this way) or [`LspError::Timeout`].
+    /// (servers commonly explain a refusal this way), [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for an unconvertible path, a request that does
+    /// not encode or a result that does not decode, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn prepare_rename(
         &self,
         doc: &Path,
@@ -1031,8 +1086,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn signature_help(
         &self,
         doc: &Path,
@@ -1064,8 +1121,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn formatting(
         &self,
         doc: &Path,
@@ -1102,8 +1161,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn range_formatting(
         &self,
         doc: &Path,
@@ -1186,6 +1247,28 @@ impl LspClient {
         T: serde::de::DeserializeOwned,
     {
         self.conn.request(method, params).await
+    }
+
+    /// [`custom_request`](Self::custom_request), bounded by `timeout` instead
+    /// of the standard request timeout: for a request the server answers only
+    /// once something slower than a round trip has happened, such as a user
+    /// confirming a device code in their browser.
+    ///
+    /// # Errors
+    ///
+    /// As [`custom_request`](Self::custom_request), with
+    /// [`LspError::Timeout`] once `timeout` has passed unanswered.
+    pub async fn custom_request_with<P, T>(
+        &self,
+        method: &str,
+        params: P,
+        timeout: std::time::Duration,
+    ) -> Result<T, LspError>
+    where
+        P: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        self.conn.request_with(method, params, timeout).await
     }
 
     /// Send an arbitrary notification (fire-and-forget), `method` verbatim.

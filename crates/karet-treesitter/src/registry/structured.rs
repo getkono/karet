@@ -53,6 +53,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_json::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-ini")]
     grammars.push(GrammarInfo {
@@ -64,6 +67,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_ini::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-properties")]
     grammars.push(GrammarInfo {
@@ -75,6 +81,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_properties::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-edn")]
     grammars.push(GrammarInfo {
@@ -86,6 +95,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_clojure_orchard::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-cbor")]
     grammars.push(GrammarInfo {
@@ -97,6 +109,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_json::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-lockfile")]
     grammars.push(GrammarInfo {
@@ -108,5 +123,8 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_yaml::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
 }

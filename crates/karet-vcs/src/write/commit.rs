@@ -274,16 +274,24 @@ pub enum CommitOutcome {
 }
 
 impl Repository {
-    /// Commit the staged changes, calling `on_line` for every line `git` and its
-    /// hooks print, and reporting whether a commit was created.
+    /// Commit the staged changes, streaming the hooks' console output, and stop
+    /// on request.
     ///
-    /// Every line reaches `on_line` before success or failure is decided, so a
-    /// hook that fails after printing its diagnosis still delivers it.
+    /// [`commit`](Self::commit) with a sink: `on_line` is called for every line
+    /// `git` and its hooks print, as they print it, and every line arrives before
+    /// the result is decided — so a hook that fails after explaining itself still
+    /// delivers the explanation.
     ///
-    /// `cancel` can stop the run from another thread at any point; see
-    /// [`CommitCancel`] for what that does and [`CommitOutcome`] for why it does
-    /// not by itself decide the answer.
-    pub fn commit_streaming(
+    /// `cancel` stops the commit and its hooks from any thread; see
+    /// [`CommitCancel`] for what that does. It reports
+    /// [`CommitOutcome::Cancelled`] only when no commit was created; a request
+    /// that arrives too late to prevent one says so — see [`CommitOutcome`].
+    ///
+    /// # Errors
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
+    /// [`VcsError::Git`] when the commit is refused, carrying the last thing
+    /// written to stderr as the reason.
+    pub fn commit_with_output(
         &self,
         message: &str,
         cancel: &CommitCancel,

@@ -10,9 +10,6 @@ use karet_session::FormatScope;
 use super::*;
 use crate::app::scroll::adjust;
 
-/// How soon a press must follow the last one to continue its multi-click streak.
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
-
 /// What a left click landed on, for multi-click counting: a press on another
 /// surface than the last one starts a new streak.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +119,7 @@ impl App {
                 adjust(&mut view.scroll, delta);
             },
             TabKind::Hex { bytes, scroll, .. } => {
-                let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
+                let max = karet_fileview::hex::row_count(bytes).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
@@ -180,7 +177,8 @@ impl App {
             .wrapped
             .source_line_for_wrapped(usize::from(preview.scroll));
         let last = buffer.line_count().saturating_sub(1);
-        tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
+        tab.editor
+            .scroll_to_line(u32::try_from(source.min(last)).unwrap_or(u32::MAX));
     }
 
     /// Jump to the top or bottom of the active tab.
@@ -190,11 +188,11 @@ impl App {
         };
         match &mut tab.kind {
             TabKind::Code { buffer, .. } => {
-                tab.editor.scroll_line = if top {
+                tab.editor.scroll_to_line(if top {
                     0
                 } else {
                     buffer.line_count().saturating_sub(1) as u32
-                };
+                });
             },
             TabKind::MarkdownPreview {
                 wrapped, scroll, ..
@@ -217,7 +215,7 @@ impl App {
                 *scroll = if top {
                     0
                 } else {
-                    bytes.len().div_ceil(16).saturating_sub(1)
+                    karet_fileview::hex::row_count(bytes).saturating_sub(1)
                 };
             },
             #[cfg(feature = "pdf")]
@@ -730,10 +728,26 @@ impl App {
     // Editing routes through the headless session backend and reflects its
     // snapshots back into the active code tab.
     /// Register every already-open code tab with the session (called once the
-    /// backend is attached at startup).
+    /// backend is attached at startup), in every pane: a `--split` or a
+    /// restored layout leaves tabs in panes that are not focused.
     pub(super) fn register_open_tabs(&mut self) {
         for idx in 0..self.tabs.len() {
             self.register_doc(idx);
+        }
+        let panes: Vec<PaneId> = self.stored.keys().copied().collect();
+        for pane in panes {
+            let Some(mut stored) = self.stored.remove(&pane) else {
+                continue;
+            };
+            // `register_doc` reads the focused pane's tabs; lend it this
+            // pane's for the duration, without moving focus or recording an
+            // activation.
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            for idx in 0..self.tabs.len() {
+                self.register_doc(idx);
+            }
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            self.stored.insert(pane, stored);
         }
     }
 
@@ -895,6 +909,9 @@ impl App {
                 },
             editor,
             view,
+            // A tab still waiting for its text holds an empty placeholder, not
+            // the document: a change built against it never lands.
+            fill_caret: None,
             ..
         }) = self.tabs.get_mut(idx)
         {
@@ -946,9 +963,11 @@ impl App {
             // replacement for this version arrives.
             self.shift_inlay_hints(doc, base, version, &change.edits);
             self.shift_code_lenses(doc, base, version, &change.edits);
+            self.shift_links_and_colors(doc, base, version, &change.edits);
             self.shift_navigation(doc, base, version, &change.edits);
             self.note_inlay_edit(doc, Instant::now());
             self.note_code_lens_edit(doc, Instant::now());
+            self.note_link_color_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }
     }

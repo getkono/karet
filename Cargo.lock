@@ -3579,9 +3579,7 @@ dependencies = [
  "crossterm",
  "directories",
  "filedescriptor",
- "flate2",
  "gix",
- "ignore",
  "jsonc-parser",
  "karet-core",
  "karet-diff",
@@ -3605,6 +3603,7 @@ dependencies = [
  "karet-widgets",
  "portable-pty",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -3654,6 +3653,7 @@ version = "0.7.1"
 dependencies = [
  "imara-diff",
  "karet-core",
+ "karet-filetype",
  "ratatui",
  "serde",
  "tempfile",
@@ -3695,6 +3695,7 @@ name = "karet-fileview"
 version = "0.7.1"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "gamut",
  "karet-core",
  "karet-filetype",
@@ -3715,6 +3716,7 @@ name = "karet-github"
 version = "0.7.1"
 dependencies = [
  "bytes",
+ "karet-vcs",
  "reqwest 0.12.28",
  "secrecy",
  "serde",
@@ -3818,6 +3820,7 @@ name = "karet-search"
 version = "0.7.1"
 dependencies = [
  "ignore",
+ "karet-filetype",
  "memchr",
  "regex",
  "regex-syntax 0.8.11",
@@ -3835,7 +3838,6 @@ dependencies = [
  "base64 0.22.1",
  "blameline",
  "ciborium",
- "command-group",
  "dependable-core",
  "dependable-fetch",
  "directories",
@@ -3925,7 +3927,6 @@ name = "karet-theme"
 version = "0.7.1"
 dependencies = [
  "karet-core",
- "palette",
  "ratatui",
  "serde",
  "serde_json",
@@ -4006,7 +4007,7 @@ dependencies = [
  "command-group",
  "gix",
  "imara-diff",
- "karet-core",
+ "karet-filetype",
  "serde",
  "ssh-key",
  "thiserror 2.0.19",
@@ -4017,6 +4018,7 @@ name = "karet-watch"
 version = "0.7.1"
 dependencies = [
  "ignore",
+ "karet-search",
  "notify",
  "notify-debouncer-full",
  "tempfile",
@@ -4894,7 +4896,6 @@ dependencies = [
  "fast-srgb8",
  "libm",
  "palette_derive",
- "phf 0.11.3",
 ]
 
 [[package]]

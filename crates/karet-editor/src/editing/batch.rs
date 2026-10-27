@@ -455,4 +455,31 @@ mod tests {
         // `(` shifts the merged `2..5` deletion's landing one column right.
         assert_eq!(heads(&out), vec![at(0, 3), at(0, 3)]);
     }
+
+    #[test]
+    fn a_merged_edit_starting_where_its_caret_sits_still_lands_after_the_merge() {
+        // `0..2 -> "X"` and a delete of `0..3` whose caret is at its own start:
+        // both carets belong to the merged edit and land after its text, not
+        // where the second edit alone would have left its caret.
+        let replace = Edit {
+            change: Change::new(
+                0,
+                vec![TextEdit {
+                    range: Range {
+                        start: at(0, 0),
+                        end: at(0, 2),
+                    },
+                    new_text: "X".to_string(),
+                }],
+            ),
+            caret: at(0, 1),
+        };
+        let items = vec![
+            (caret(at(0, 2)), Some(replace)),
+            (caret(at(0, 3)), Some(delete(at(0, 0), at(0, 3)))),
+        ];
+        let out = composed(0, 0, &items);
+        assert_eq!(out.change.edits.len(), 1);
+        assert_eq!(heads(&out), vec![at(0, 1), at(0, 1)]);
+    }
 }

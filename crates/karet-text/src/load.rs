@@ -73,7 +73,9 @@ pub enum LoadError {
     /// The bytes are not valid UTF-8; `offset` is the first invalid byte.
     #[error("not valid utf-8 at byte {offset}")]
     NotUtf8 {
-        /// Byte offset of the first invalid sequence.
+        /// Byte offset of the first invalid sequence, counted from the start of
+        /// the content after any leading UTF-8 BOM (so it is 3 less than the
+        /// file offset when the file starts with a BOM).
         offset: usize,
     },
     /// An I/O error while reading the file.
@@ -81,7 +83,8 @@ pub enum LoadError {
     Io(String),
 }
 
-const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+/// The UTF-8 byte-order mark: stripped on load, re-added on save.
+pub(crate) const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 impl TextBuffer {
     /// Build a buffer from in-memory file bytes: strip a BOM, validate UTF-8
@@ -138,6 +141,11 @@ impl TextBuffer {
     /// building a buffer from text whose on-disk form you already have — e.g. a
     /// binary format decoded into an editable buffer, where the disk bytes are the
     /// undecoded original.
+    ///
+    /// If `path`'s metadata cannot be read, this silently records nothing and
+    /// leaves any earlier fingerprint in place. A buffer that never had one then
+    /// stays without it, so a later [`save`](Self::save) or
+    /// [`save_bytes`](Self::save_bytes) skips its on-disk conflict check.
     pub fn record_disk_state(&mut self, path: &Path, disk_bytes: &[u8]) {
         if let Ok(meta) = std::fs::metadata(path) {
             self.saved_state = Some(SavedState {
@@ -188,6 +196,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eol_bytes_and_labels() {
+        assert_eq!(Eol::Lf.as_bytes(), b"\n");
+        assert_eq!(Eol::Crlf.as_bytes(), b"\r\n");
+        assert_eq!(Eol::Lf.to_string(), "LF");
+        assert_eq!(Eol::Crlf.to_string(), "CRLF");
+    }
+
+    #[test]
+    fn encoding_labels() {
+        assert_eq!(Encoding::Utf8.to_string(), "UTF-8");
+        assert_eq!(Encoding::Utf8Bom.to_string(), "UTF-8 BOM");
+    }
+
+    #[test]
     fn plain_lf_loads_clean() {
         let b = TextBuffer::from_bytes(b"a\nb\n").unwrap_or_default();
         assert_eq!(b.eol(), Eol::Lf);
@@ -212,6 +234,14 @@ mod tests {
         assert!(b.has_mixed_eol());
         assert_eq!(b.eol(), Eol::Crlf); // 2 CRLF vs 1 LF → majority CRLF
         assert_eq!(b.text(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn a_leading_lf_is_an_lf() {
+        // The `\n` at byte 0 has no byte before it to be a `\r`.
+        let b = TextBuffer::from_bytes(b"\na\r\n").unwrap_or_default();
+        assert!(b.has_mixed_eol());
+        assert_eq!(b.text(), "\na\n");
     }
 
     #[test]

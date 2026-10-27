@@ -100,14 +100,14 @@ fn right_clicking_off_a_misspelled_word_offers_no_spelling_rows() {
 
         let menu = app.context_menu.as_ref().expect("the pane menu");
         assert!(
-            menu.entries.iter().all(|entry| !matches!(
+            menu.entries().iter().all(|entry| !matches!(
                 entry.action,
                 ContextMenuAction::ReplaceSpelling { .. }
                     | ContextMenuAction::AddSpellingToDictionary { .. }
             )),
             "{what}"
         );
-        assert_eq!(menu.entries[0].command(), Some(Command::Cut), "{what}");
+        assert_eq!(menu.entries()[0].command(), Some(Command::Cut), "{what}");
     }
 }
 
@@ -121,7 +121,7 @@ fn right_clicking_a_spell_warning_leads_the_menu_with_replacements_and_add_word(
         .context_menu
         .as_ref()
         .map(|menu| {
-            menu.entries
+            menu.entries()
                 .iter()
                 .filter_map(|entry| entry.label.as_deref())
                 .collect()
@@ -140,7 +140,7 @@ fn right_clicking_a_spell_warning_leads_the_menu_with_replacements_and_add_word(
     let commands: Vec<Command> = app
         .context_menu
         .as_ref()
-        .map(|menu| menu.entries.iter().filter_map(|e| e.command()).collect())
+        .map(|menu| menu.entries().iter().filter_map(|e| e.command()).collect())
         .unwrap_or_default();
     assert_eq!(
         commands.get(..3),
@@ -149,7 +149,7 @@ fn right_clicking_a_spell_warning_leads_the_menu_with_replacements_and_add_word(
     assert_eq!(
         app.context_menu
             .as_ref()
-            .and_then(|menu| menu.entries[4].command()),
+            .and_then(|menu| menu.entries()[4].command()),
         Some(Command::Cut)
     );
     // The right click moved the caret to the click, as it does anywhere else.
@@ -158,7 +158,7 @@ fn right_clicking_a_spell_warning_leads_the_menu_with_replacements_and_add_word(
         .context_menu
         .as_ref()
         .map(|menu| {
-            menu.entries
+            menu.entries()
                 .iter()
                 .filter_map(|entry| match entry.action {
                     ContextMenuAction::AddSpellingToDictionary { target, .. } => Some(target),
@@ -184,16 +184,16 @@ fn warning_without_matches_renders_a_clear_empty_message() {
 
     let menu = app.context_menu.as_ref().expect("spelling menu");
     assert_eq!(
-        menu.entries[0].label.as_deref(),
+        menu.entries()[0].label.as_deref(),
         Some("No similar words found")
     );
-    assert!(!menu.entries[0].enabled);
+    assert!(!menu.entries()[0].enabled);
     assert_eq!(
-        menu.entries[1].label.as_deref(),
+        menu.entries()[1].label.as_deref(),
         Some("Add “wrod” to Project Dictionary")
     );
     assert_eq!(
-        menu.entries[2].label.as_deref(),
+        menu.entries()[2].label.as_deref(),
         Some("Add “wrod” to User Dictionary")
     );
     let painted = screen(&mut app, 80, 12).join("\n");
@@ -209,7 +209,7 @@ fn moving_the_pointer_over_the_menu_highlights_the_row_it_rests_on() {
     let rect = app
         .context_menu
         .as_ref()
-        .map(|menu| menu.rect)
+        .map(|menu| menu.rect())
         .unwrap_or_default();
 
     let move_to = |app: &mut App, column: u16, row: u16| {
@@ -224,19 +224,22 @@ fn moving_the_pointer_over_the_menu_highlights_the_row_it_rests_on() {
     // Row 2 of the menu body is "Add … to Project Dictionary".
     move_to(&mut app, rect.x + 1, rect.y + 3);
     assert_eq!(
-        app.context_menu.as_ref().and_then(|menu| menu.hover),
+        app.context_menu.as_ref().and_then(|menu| menu.hover()),
         Some(2)
     );
 
     move_to(&mut app, rect.x + 1, rect.y + 1);
     assert_eq!(
-        app.context_menu.as_ref().and_then(|menu| menu.hover),
+        app.context_menu.as_ref().and_then(|menu| menu.hover()),
         Some(0)
     );
 
     // Leaving the menu clears the accent rather than stranding it on a row.
     move_to(&mut app, rect.x + 1, rect.bottom() + 2);
-    assert_eq!(app.context_menu.as_ref().and_then(|menu| menu.hover), None);
+    assert_eq!(
+        app.context_menu.as_ref().and_then(|menu| menu.hover()),
+        None
+    );
 }
 
 #[test]
@@ -247,7 +250,7 @@ fn clicking_a_disabled_menu_row_still_refuses_it_rather_than_running_another() {
     let rect = app
         .context_menu
         .as_ref()
-        .map(|menu| menu.rect)
+        .map(|menu| menu.rect())
         .unwrap_or_default();
 
     // Row 0 is the disabled "No similar words found"; the initial selection sits
@@ -260,7 +263,16 @@ fn clicking_a_disabled_menu_row_still_refuses_it_rather_than_running_another() {
     });
 
     assert!(app.context_menu.is_some(), "the menu stays open");
-    assert_eq!(app.context_menu.as_ref().map(|menu| menu.selected), Some(0));
+    assert_eq!(
+        app.context_menu.as_ref().map(|menu| menu.selected()),
+        Some(1),
+        "the cursor never rests on the disabled row"
+    );
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("The dictionary has no close matches"),
+        "the refused row still explains itself"
+    );
 }
 
 #[test]
@@ -307,7 +319,7 @@ async fn add_word_updates_an_existing_project_settings_file_without_prompt()
     app.backend = Some(backend);
     open_spelling_menu(&mut app);
     if let Some(menu) = app.context_menu.as_mut() {
-        menu.selected = 1;
+        assert!(menu.select_row(1));
     }
 
     app.accept_context_menu();
@@ -336,7 +348,7 @@ async fn add_word_requires_confirmation_before_creating_project_settings()
     app.backend = Some(backend);
     open_spelling_menu(&mut app);
     if let Some(menu) = app.context_menu.as_mut() {
-        menu.selected = 1;
+        assert!(menu.select_row(1));
     }
 
     app.accept_context_menu();
@@ -365,7 +377,7 @@ async fn add_word_requires_confirmation_before_creating_project_settings()
     // instead of a second creation prompt.
     open_spelling_menu(&mut app);
     if let Some(menu) = app.context_menu.as_mut() {
-        menu.selected = 1;
+        assert!(menu.select_row(1));
     }
     app.accept_context_menu();
     pump_until(&mut app, &mut events, |app| app.confirm.is_some()).await;
@@ -383,7 +395,7 @@ fn debounced_spell_warning_replaces_pending_lsp_with_spelling_completions() {
     let (backend, mut app) = completion_app("wrod\n", LineCol::new(0, 4));
     app.trigger_completion(false);
     assert_eq!(completion_requests(&backend).len(), 1);
-    assert!(app.pending_completion.is_some());
+    assert!(app.completion.pending.is_some());
 
     app.on_backend_event(
         None,
@@ -393,9 +405,9 @@ fn debounced_spell_warning_replaces_pending_lsp_with_spelling_completions() {
         },
     );
 
-    assert!(app.pending_completion.is_none());
+    assert!(app.completion.pending.is_none());
     assert!(matches!(
-        app.completion.as_ref().map(|ui| ui.mode),
+        app.completion.popup.as_ref().map(|ui| ui.mode),
         Some(crate::completion::CompletionMode::Spelling {
             caret: LineCol { line: 0, col: 4 }
         })
@@ -418,12 +430,12 @@ fn manual_completion_still_offers_spelling_when_auto_trigger_is_disabled() {
             diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
         },
     );
-    assert!(app.completion.is_none());
+    assert!(app.completion.popup.is_none());
 
     app.trigger_completion(true);
 
     assert!(matches!(
-        app.completion.as_ref().map(|ui| ui.mode),
+        app.completion.popup.as_ref().map(|ui| ui.mode),
         Some(crate::completion::CompletionMode::Spelling { .. })
     ));
     assert!(
@@ -442,9 +454,9 @@ fn spelling_completion_dismisses_as_soon_as_the_word_changes() {
             diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
         },
     );
-    assert!(app.completion.is_some());
+    assert!(app.completion.popup.is_some());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
 
-    assert!(app.completion.is_none());
+    assert!(app.completion.popup.is_none());
 }

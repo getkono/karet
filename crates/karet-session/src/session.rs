@@ -13,6 +13,7 @@
 //! in the frames before the worker answers.
 
 mod code_actions;
+mod columns;
 mod completion;
 mod debug;
 mod docfile;
@@ -28,6 +29,7 @@ mod edit_requests;
 #[cfg(feature = "github")]
 mod github;
 mod hints;
+mod inline_completion;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
@@ -39,12 +41,17 @@ mod mdlint;
 mod notebooks;
 mod notify_text;
 mod persistence;
+mod reload;
 mod retirement;
 mod search;
 mod semantic_tokens;
+mod server_folds;
 mod spelling;
+mod streams;
+mod syntax_state;
 mod updates;
 mod vcs;
+mod viz;
 mod workspace_edit;
 
 #[cfg(test)]
@@ -56,12 +63,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use columns::Columns;
 #[cfg(feature = "github")]
 use github::GithubJob;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
-use karet_core::Decoration;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Range;
@@ -69,7 +76,9 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
+#[cfg(feature = "cbor")]
 use karet_filetype::FileKind;
+#[cfg(feature = "cbor")]
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
@@ -89,8 +98,8 @@ use karet_vcs::Repository;
 use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
+use syntax_state::SyntaxState;
 use tokio::sync::mpsc;
-use workspace_edit::Columns;
 
 use crate::api::Command;
 use crate::api::DocumentEncoding;
@@ -108,6 +117,7 @@ use crate::backup::SwapStore;
 use crate::backup::discard;
 use crate::backup::scan;
 use crate::config::load::ConfigManager;
+use crate::event_tx::EventTx;
 use crate::highlight::HighlightJob;
 use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
@@ -171,20 +181,6 @@ impl Default for SessionConfig {
     }
 }
 
-impl SessionConfig {
-    /// Whether format-on-save is enabled (`editor.formatOnSave`).
-    #[must_use]
-    pub fn format_on_save(&self) -> bool {
-        self.settings.editor.format_on_save
-    }
-
-    /// Whether spell-checking is enabled (`spellcheck.enabled`).
-    #[must_use]
-    pub fn spellcheck(&self) -> bool {
-        self.settings.spellcheck.enabled
-    }
-}
-
 /// How a document's edit buffer maps to its on-disk bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocFormat {
@@ -203,6 +199,12 @@ enum DocumentLoadError {
     /// A known binary format whose decode-to-text failed (corrupt CBOR): the
     /// client should fall back to a read-only byte view, like non-UTF-8 text.
     #[error("file is not decodable to text")]
+    // Only CBOR has a decode step today; the variant stays ungated so the
+    // open path's match arm in `documents.rs` reads the same in every build.
+    #[cfg_attr(
+        not(feature = "cbor"),
+        expect(dead_code, reason = "constructed only by the cbor decode path")
+    )]
     Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
@@ -225,20 +227,9 @@ struct Document {
     must_create: bool,
     /// Per-path behavior after application settings and EditorConfig resolution.
     settings: DocumentSettings,
-    /// The last highlights the worker produced, translated across any edits applied
-    /// since. The parsed trees themselves live on the worker, not here.
-    highlights: Arc<Highlights>,
-    folds: Arc<FoldRegions>,
-    /// Semantic block scopes produced by the syntax worker for this version.
-    semantic_blocks: Arc<SemanticBlocks>,
-    /// Grammar-backed outline used when LSP supplies no symbols.
-    syntax_symbols: Arc<Vec<Symbol>>,
-    /// Syntax-error line ranges from the worker's last parse (see
-    /// [`DocSnapshot::syntax_error_lines`]).
-    error_lines: Arc<Vec<(u32, u32)>>,
-    /// GFM table line ranges from the worker's last parse (see
-    /// [`DocSnapshot::table_lines`]).
-    table_lines: Arc<Vec<std::ops::RangeInclusive<u32>>>,
+    /// What the syntax worker last derived, translated across any edits
+    /// applied since.
+    syntax: SyntaxState,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last markdown-lint diagnostics (empty for non-Markdown documents or
@@ -256,7 +247,9 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
-    decorations: Vec<Decoration>,
+    /// The primary server's folding ranges, preferred over the grammar's folds
+    /// on every snapshot while held (see [`server_folds`]).
+    server_folds: Option<server_folds::ServerFolds>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
@@ -294,7 +287,7 @@ pub struct Session {
     config: SessionConfig,
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
-    events: mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: EventTx,
     snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
     store: DocumentStore,
     /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered
@@ -622,7 +615,7 @@ impl Session {
             | Command::GithubCreatePullRequest { .. } => self.emit(
                 Some(id),
                 Event::GithubError {
-                    operation: "github".to_string(),
+                    operation: crate::api::GithubOperation::FeatureDisabled,
                     message: "the backend was built without the github feature".to_string(),
                 },
             ),
@@ -688,6 +681,7 @@ impl Session {
                 });
             },
             Command::ConvertDocument { path } => self.convert_document(id, path),
+            Command::FixMarkdownLint { doc } => self.fix_markdown_lint(id, doc),
             Command::PrepareDiff { path, old, new } => {
                 let syntax = self.diff_syntax;
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {
@@ -722,18 +716,27 @@ impl Session {
                 match_limit,
             } => self.search_workspace(id, query, file_limit, match_limit),
             Command::IndexSeams { root, mode } => {
-                if let Some(root) = root.or_else(|| self.config.roots.first().cloned()) {
-                    let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
-                        id,
-                        root,
-                        mode,
-                        // The cap stops being theoretical once the root is a whole
-                        // repository rather than one crate.
-                        options: karet_seam::IndexOptions {
-                            max_files: self.config.settings.seam.max_indexed_files,
+                let Some(root) = root.or_else(|| self.config.roots.first().cloned()) else {
+                    // Answered, not dropped: a request is never left outstanding
+                    // just because there is nothing to index (see `Backend`).
+                    self.emit(
+                        Some(id),
+                        Event::SeamIndexFailed {
+                            message: "no workspace root is open to index".to_string(),
                         },
-                    });
-                }
+                    );
+                    return;
+                };
+                let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
+                    id,
+                    root,
+                    mode,
+                    // The cap stops being theoretical once the root is a whole
+                    // repository rather than one crate.
+                    options: karet_seam::IndexOptions {
+                        max_files: self.config.settings.seam.max_indexed_files,
+                    },
+                });
             },
             Command::ReindexSeams { path, text } => {
                 let _ =
@@ -761,49 +764,55 @@ impl Session {
             Command::SearchReplaceAll { query, replacement } => {
                 self.search_replace_all(id, query, replacement);
             },
-            // Language-server management commands are consumed by the
-            // `handle_lsp_command` pre-dispatch above and never reach this match.
-            _ => {},
+            // Consumed by the pre-dispatch functions above, so they never reach
+            // this match. Named rather than matched by a wildcard so that a new
+            // `Command` variant nobody routed fails to compile instead of being
+            // silently dropped. The notebook-kernel commands land here only in a
+            // build without the `notebook-kernel` feature, where there is no
+            // kernel to drive.
+            Command::DebugStart { .. }
+            | Command::DebugStop
+            | Command::DebugContinue
+            | Command::DebugStepOver
+            | Command::DebugStepIn
+            | Command::DebugStepOut
+            | Command::DebugPause
+            | Command::DebugSetBreakpoints { .. }
+            | Command::DebugStackTrace
+            | Command::DebugScopes { .. }
+            | Command::DebugVariables { .. }
+            | Command::DebugEvaluate { .. }
+            | Command::NotebookRunAll { .. }
+            | Command::NotebookRunCell { .. }
+            | Command::NotebookInterrupt
+            | Command::NotebookRestart
+            | Command::LanguageServerStatus
+            | Command::InstallLanguageServer { .. }
+            | Command::DeclineLanguageServer { .. }
+            | Command::UndeclineLanguageServer { .. }
+            | Command::CheckLanguageServerUpdates { .. }
+            | Command::ApplyLanguageServerPlan { .. }
+            | Command::UninstallLanguageServer { .. }
+            | Command::Format(_)
+            | Command::SelectionRanges { .. }
+            | Command::DocumentHighlights { .. }
+            | Command::PrepareHierarchy { .. }
+            | Command::ExpandHierarchy { .. }
+            | Command::LinkedEditingRanges { .. }
+            | Command::FormatOnType { .. }
+            | Command::CodeLenses { .. }
+            | Command::RunCodeLens { .. }
+            | Command::LinksAndColors { .. }
+            | Command::ResolveDocumentLink { .. }
+            | Command::RestartLanguageServer { .. }
+            | Command::CancelLanguageServerWork { .. }
+            | Command::AnswerLanguageServerMessage { .. }
+            | Command::InlineCompletion { .. }
+            | Command::AcceptInlineCompletion { .. }
+            | Command::SignInLanguageServer { .. }
+            | Command::SignOutLanguageServer { .. }
+            | Command::LanguageServerLog { .. } => {},
         }
-    }
-
-    // --- source control ---------------------------------------------------
-
-    /// Register a cancellation for `id` and hand the worker a job built from it —
-    /// the single submission shape for every cancellable VCS request.
-    fn submit_vcs(
-        &self,
-        id: RequestId,
-        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
-    ) {
-        let cancel = self.cancellations.register(id);
-        let _ = self.vcs_worker.send(make(id, cancel));
-    }
-
-    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
-        let Some(document) = self.store.docs.get(&doc) else {
-            self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: "blame: unknown document".to_string(),
-                },
-            );
-            return;
-        };
-        if document.buffer.version() != version {
-            return;
-        }
-        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
-            id,
-            doc,
-            version,
-            path: document.path.clone(),
-            text: document.buffer.text(),
-            line,
-            cancel: self.cancellations.register(id),
-        });
     }
 
     fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
@@ -871,33 +880,22 @@ fn update_syntax(
     edits: Option<&[AppliedEdit]>,
 ) -> bool {
     doc.translate_semantic_tokens(edits);
+    doc.translate_server_folds(edits);
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
-        doc.highlights = Arc::new(Highlights::default());
-        doc.folds = crate::highlight::indent_folds(settings, doc.language_selector, &doc.buffer);
-        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        doc.syntax_symbols = Arc::default();
-        // No worker result will replace these, so ranges from a previous grammar
+        // No worker result will replace this, so ranges from a previous grammar
         // (a Markdown file saved as `.txt`) would otherwise linger on the snapshot.
-        doc.error_lines = Arc::default();
-        doc.table_lines = Arc::default();
+        doc.syntax.clear(crate::highlight::indent_folds(
+            settings,
+            doc.language_selector,
+            &doc.buffer,
+        ));
         return true;
     };
 
-    // Keep the spans we already have usable until the worker answers. Rendering them
-    // unshifted would smear color across the text the edit moved.
+    // Keep the spans we already have usable until the worker answers.
     if let Some(edits) = edits {
-        // Block scopes are line-based and cannot be translated safely across an
-        // arbitrary edit. Hide them briefly rather than render stale source context.
-        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        doc.syntax_symbols = Arc::default();
-        for ae in edits {
-            doc.highlights = Arc::new(doc.highlights.translate(
-                BytePos(ae.start_byte),
-                BytePos(ae.old_end_byte),
-                BytePos(ae.new_end_byte),
-            ));
-        }
+        doc.syntax.translate(edits);
     }
 
     let request = HighlightRequest {
@@ -1003,14 +1001,6 @@ pub(super) fn clamp_cursor(buffer: &TextBuffer, mut cursors: CursorState) -> Cur
         selection.head = buffer.clamp(selection.head);
     }
     cursors
-}
-
-/// Map an explicit LSP-style language id (e.g. `"rust"`) to karet's display name,
-/// when one is supplied on open.
-fn name_for_language(_id: &str) -> Option<&'static str> {
-    // The display name is derived from the path today; an explicit override table
-    // lands with the LSP language registry.
-    None
 }
 
 /// Resolve an editor language even when Karet has no Tree-sitter grammar for

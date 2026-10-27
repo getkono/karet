@@ -38,7 +38,7 @@ const FILE_NAME: &str = "recent.json";
 #[must_use]
 pub(crate) fn absolute(path: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    crate::lexically_normalize(&path)
+    crate::paths::lexically_normalize(&path)
 }
 
 /// One remembered change, replayed in memory and against the file on disk.
@@ -145,9 +145,7 @@ impl RecentStore {
     /// (the local data directory where there is none, as for the logs).
     #[must_use]
     pub(crate) fn default_path() -> Option<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "getkono", "karet")?;
-        let state = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-        Some(state.join(FILE_NAME))
+        karet_session::dirs::state_dir().map(|state| state.join(FILE_NAME))
     }
 
     /// Load the store at `path` and write every later touch back to it.

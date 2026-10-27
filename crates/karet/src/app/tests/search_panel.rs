@@ -213,6 +213,7 @@ fn opening_a_match_row_lands_on_that_match_not_the_first() {
     // Row 2 is the *second* match, not the heading and not the first match.
     app.search.selection.move_to(2);
     app.open_selected_result();
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(
         app.tabs[app.active].editor.cursor(),
@@ -572,6 +573,7 @@ fn opening_a_result_leaves_the_keyboard_with_the_panel() {
     app.search.selection.move_to(2);
 
     app.dispatch(Command::SearchOpen);
+    fill_reserved_tabs(&mut app);
     assert_eq!(
         app.tabs[app.active].editor.cursor(),
         LineCol::new(1, 4),

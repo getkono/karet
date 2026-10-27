@@ -321,7 +321,7 @@ impl App {
         let left = self.drag_text_left(area);
         let cols = if word_wrap {
             0
-        } else if col < left && tab.editor.scroll_col > 0 {
+        } else if col < left && tab.editor.scroll_col() > 0 {
             -i32::from(left - col)
         } else if col >= area.right() {
             i32::from(col - area.right()) + 1

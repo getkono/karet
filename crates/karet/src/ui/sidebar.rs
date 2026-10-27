@@ -1,4 +1,5 @@
 mod debug;
+mod hierarchy;
 mod problems;
 pub(super) mod search;
 
@@ -164,6 +165,7 @@ pub(super) fn draw_sidebar(
         SidebarPanel::Todos => draw_todos_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Debug => debug::draw_debug_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Problems => problems::draw_problems_panel(f, app, theme, rows[1], hits),
+        SidebarPanel::Hierarchy => hierarchy::draw_hierarchy_panel(f, app, theme, rows[1], hits),
     }
 }
 
@@ -174,7 +176,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     // Resolve the app-specific row texts (default command labels + key hints);
     // the shared widget owns placement, clamping, and painting.
     let hints: Vec<Option<String>> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry
@@ -183,7 +185,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
         })
         .collect();
     let labels: Vec<String> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry.label.clone().unwrap_or_else(|| {
@@ -232,6 +234,11 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         SidebarPanel::Todos => "TODOS",
         SidebarPanel::Debug => "DEBUG",
         SidebarPanel::Problems => "PROBLEMS",
+        SidebarPanel::Hierarchy => match app.hierarchy.tree.as_ref() {
+            Some(tree) if !tree.direction().is_calls() => "TYPE HIERARCHY",
+            Some(_) => "CALL HIERARCHY",
+            None => "HIERARCHY",
+        },
     };
     // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
@@ -241,11 +248,16 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
     // The activity-bar switcher: one 2-cell button per shown panel, plus a
     // trailing cell. Spelling is offered only while spell check is on, Todos
-    // only while codetag highlighting is.
+    // only while codetag highlighting is, and Hierarchy only while it holds a
+    // tree to go back to.
     let spelling = app.spelling_available();
     let todos_shown = app.todos_available();
+    let hierarchy = app.hierarchy.tree.is_some();
     // 3 always-on panels (2 cells each) + Debug + Problems + a trailing spacer cell.
-    let switcher_w: u16 = 11 + if spelling { 2 } else { 0 } + if todos_shown { 2 } else { 0 };
+    let switcher_w: u16 = 11
+        + if spelling { 2 } else { 0 }
+        + if todos_shown { 2 } else { 0 }
+        + if hierarchy { 2 } else { 0 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
     let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
@@ -341,6 +353,10 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         .push((next_hit, next_hit + 2, SidebarPanel::Debug));
     app.panel_hits
         .push((next_hit + 2, next_hit + 4, SidebarPanel::Problems));
+    if hierarchy {
+        app.panel_hits
+            .push((next_hit + 4, next_hit + 6, SidebarPanel::Hierarchy));
+    }
     let icon = |ui: UiIcon, panel: SidebarPanel| {
         let hovered = app
             .panel_hits
@@ -370,6 +386,9 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     }
     icons.push(icon(UiIcon::Debug, SidebarPanel::Debug));
     icons.push(icon(UiIcon::Problems, SidebarPanel::Problems));
+    if hierarchy {
+        icons.push(icon(UiIcon::Hierarchy, SidebarPanel::Hierarchy));
+    }
     f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
 
@@ -415,11 +434,7 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
     if cell_width(&compact) <= max_width {
         return compact;
     }
-    truncate_left(&full, max_width)
-}
-
-pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
-    karet_widgets::text::fit_start(text, usize::from(max_width))
+    karet_widgets::text::fit_start(&full, usize::from(max_width))
 }
 
 pub(super) fn draw_spelling_panel(

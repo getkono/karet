@@ -15,8 +15,18 @@ const ROW_WIDTH: usize = 16;
 /// Columns the file-offset prefix occupies before a row's byte columns begin.
 pub const OFFSET_WIDTH: u16 = 10;
 
+/// The number of rows the hex dump of `bytes` occupies: one per 16 bytes,
+/// rounding a short final row up.
+///
+/// Scroll is measured in these rows, so a consumer clamps a [`HexView`]'s
+/// scroll against this without building the widget.
+#[must_use]
+pub fn row_count(bytes: &[u8]) -> usize {
+    bytes.len().div_ceil(ROW_WIDTH)
+}
+
 /// A read-only hex view of a byte slice. Scroll is measured in rows; the
-/// application clamps it against [`row_count`](HexView::row_count).
+/// application clamps it against [`row_count`].
 pub struct HexView<'a> {
     bytes: &'a [u8],
     scroll: usize,
@@ -51,7 +61,7 @@ impl<'a> HexView<'a> {
     /// The total number of 16-byte rows.
     #[must_use]
     pub fn row_count(&self) -> usize {
-        self.bytes.len().div_ceil(ROW_WIDTH)
+        row_count(self.bytes)
     }
 }
 
@@ -98,7 +108,7 @@ impl Widget for HexView<'_> {
 /// the text this returns begins on screen. `None` past the last row.
 #[must_use]
 pub fn row_text(bytes: &[u8], row: usize) -> Option<String> {
-    if row >= bytes.len().div_ceil(ROW_WIDTH) {
+    if row >= row_count(bytes) {
         return None;
     }
     let (hex, ascii) = format_row(bytes, row * ROW_WIDTH);
@@ -142,6 +152,23 @@ mod tests {
         assert_eq!(HexView::new(&[0u8; 1]).row_count(), 1);
         assert_eq!(HexView::new(&[0u8; 16]).row_count(), 1);
         assert_eq!(HexView::new(&[0u8; 17]).row_count(), 2);
+    }
+
+    #[test]
+    fn free_row_count_matches_the_widget_and_row_text() {
+        for len in [0usize, 1, 15, 16, 17, 32, 33] {
+            let bytes = vec![0u8; len];
+            let rows = row_count(&bytes);
+            assert_eq!(rows, HexView::new(&bytes).row_count());
+            // The last row has text and the one past it does not.
+            assert_eq!(
+                rows.checked_sub(1)
+                    .and_then(|r| row_text(&bytes, r))
+                    .is_some(),
+                rows > 0
+            );
+            assert!(row_text(&bytes, rows).is_none());
+        }
     }
 
     #[test]

@@ -47,8 +47,11 @@ today. Each fix then adds its own failing reproductions.
 - **Goal column**: the display column that vertical motion tries to return to.
   It is measured in display cells (tabs expanded, wide characters counted
   twice, inlay hints not counted), from the start of the visual row when word
-  wrap is on, so it survives passing over shorter lines. Each caret keeps its
-  own; a horizontal motion, an edit or a click resets it.
+  wrap is on, counting the blank cells of a continuation row's indent
+  (`editor.wrappingIndent`), so it survives passing over shorter lines and
+  keeps the caret in the same screen column across an indented row. A goal
+  that falls inside that indent lands on the row's first character. Each caret
+  keeps its own; a horizontal motion, an edit or a click resets it.
 - **Word**: a run of identifier characters (letters, digits, `_`). A run of
   punctuation and a run of whitespace are each one unit of their own for word
   motion and double-click.
@@ -71,9 +74,9 @@ end on the same position merge into one.
 | Ctrl+Left / Ctrl+Right, Alt+Left / Alt+Right | To the previous word start / next word end. | harness |
 | Ctrl+Shift+\ | Go to Bracket: to the other bracket of the pair the caret touches (the bracket after it first, then the one before it), or, inside a pair, to its closing bracket. The caret lands just before the target, so pressing again goes back. Brackets in strings and comments are ignored. | harness |
 | PageUp / PageDown | Move the caret by the focused pane's visible rows, keeping the goal column, and scroll by the same amount so the caret keeps its screen row. With less than a page left, go to the start / end of the document. | harness |
-| Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. | harness |
+| Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. The goal column counts a continuation row's indent (see Terms). | harness (indent: `tests/vertical_motion.rs`) |
 | Collapsed folds | Motion skips over a fold; a jump into a fold (find, go to definition, outline) unfolds it. Collapsing a fold moves every caret inside it onto its header. A caret is never hidden. | harness |
-| Fold commands | Ctrl+K Ctrl+0 folds every region and Ctrl+K Ctrl+J unfolds them all. Ctrl+K Ctrl+1…7 folds every region at that nesting depth (1 is outermost) except one holding a caret, leaving other depths as they are. Ctrl+K Ctrl+[ / Ctrl+K Ctrl+] fold / unfold the region at the cursor (the one headed on its line, else the innermost holding it) and every region inside it. Ctrl+K Ctrl+/ folds every comment block and Ctrl+K Ctrl+G every import block. A grammar with a fold query (Rust, Python, JavaScript, TypeScript, JSON, Go, C, C++, YAML, Lua) folds per construct and classifies comment and import runs; any other grammar folds every multi-line node, and text with no grammar folds by indentation. | harness (`tests/folding.rs`) |
+| Fold commands | Ctrl+K Ctrl+0 folds every region and Ctrl+K Ctrl+J unfolds them all. Ctrl+K Ctrl+1…7 folds every region at that nesting depth (1 is outermost) except one holding a caret, leaving other depths as they are. Ctrl+K Ctrl+[ / Ctrl+K Ctrl+] fold / unfold the region at the cursor (the one headed on its line, else the innermost holding it) and every region inside it. Ctrl+K Ctrl+/ folds every comment block and Ctrl+K Ctrl+G every import block. A grammar with a fold query (Rust, Python, JavaScript, TypeScript, JSON, Go, C, C++, YAML, Lua) folds per construct and classifies comment and import runs; any other grammar folds every multi-line node, and text with no grammar folds by indentation. A language server that offers folding ranges replaces these with its own, its comment and import ranges included (see [language servers](language-servers.md#capability-ownership-and-overlap)). | harness (`tests/folding.rs`) |
 
 Alt+Left/Right are bound as well as Ctrl+Left/Right. Deviation: macOS terminals
 commonly deliver Option+arrow and not Cmd+arrow, so both bindings lead to the
@@ -208,6 +211,7 @@ of a wide character or of a tab's cells resolves to after it.
 | Click past the end of a line | Caret at the line end. | harness |
 | Click below the last line | Caret at the end of the document. | harness |
 | Click at a wrap boundary | The caret stays on the visual row that was clicked. | harness (`vertical_motion.rs`) |
+| Click in a continuation row's indent | Caret at the row's first character: the indent cells (`editor.wrappingIndent`) hold no text, so a click there resolves to the start of the row it indents. | harness (`vertical_motion.rs`) |
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); non-identifiers by a recording backend in `tests/definition.rs` |
 | Ctrl+click on a link written in the source | Open the link instead of going to a definition: a bare `http`/`https` URL in any file, and in Markdown an inline `[text](target)` (or `![alt](src)`) link anywhere from its `[` to its `)`. A URL opens with the desktop's opener; a relative file target opens in karet, and one that resolves outside the workspace asks first; any other target is refused with a notice. Holding Ctrl (or Super) over a link underlines it, whether or not a language server is running; the underline shows in the focused split only, but a Ctrl+click on a link in an unfocused split focuses that split and opens the link. Ctrl+Alt and Ctrl+Shift keep their editor meanings. The keyboard path is Open Link at Caret (Ctrl+K Enter, or the command palette), which opens the link the primary caret is in or ends against. A link that would open without asking (a URL, or a file inside the workspace) is also painted as a terminal hyperlink (OSC 8), so a terminal's own Cmd+click opens it; one that resolves outside the workspace is not, so it keeps its confirmation. | `tests/source_links.rs`; scanning in `autolink.rs` |
@@ -239,7 +243,7 @@ reference-style links (`[text][ref]`) are not resolved.
 | Double click | Select the unit under the pointer: a word, a punctuation run or a whitespace run. | harness |
 | Triple click | Select the whole line, newline included. | harness |
 | Fourth click and beyond | Stay at line granularity. | harness |
-| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval, with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause, move, modifier); surface in `multi_click.rs` |
+| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval (400 ms; a click exactly 400 ms after the previous one starts a new streak, in the editor and the terminal alike), with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause, move, modifier); surface in `multi_click.rs`; terminal boundary in `terminal/selection.rs` |
 | Modifier + repeated click | The modifier wins over the count: two quick Alt+clicks add (then remove) a caret, and two quick Shift+clicks extend twice. Neither selects a word. | harness |
 | Double click on a misspelled word | Select the word, as anywhere else. Spelling suggestions live in the right-click menu. | `tests/spellcheck.rs` |
 
@@ -297,6 +301,6 @@ a modifier reaching karet; a keymap test
 (`every_swallowable_gesture_has_a_bound_keyboard_path`) checks each chord in
 the table. Where the chord's own modifiers are lost too, as Option is in some
 macOS terminals, each of these commands is also in the command palette
-(Ctrl+Shift+P, or F1), under the names Go to Definition, Open Link at Caret, Add Cursor Above, Add
-Cursor Below, Add Cursor to Next Occurrence and Column Select Up / Down / Left
-/ Right.
+(Ctrl+Shift+P, or F1), under the names Go to Definition, Open Link at Caret,
+Add Cursor Above, Add Cursor Below, Add Cursor to Next Occurrence and Column
+Select Up / Down / Left / Right.

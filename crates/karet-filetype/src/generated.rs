@@ -210,10 +210,14 @@ fn has_banner(head: &str) -> bool {
         guard -= 1;
     }
     let window = head.get(..guard).unwrap_or_default();
-    let header = match window.split_once("\n\n") {
-        Some((header, _)) => header,
-        None => window,
-    };
+    // The header block ends at the first blank line in either line ending: an
+    // LF blank line is `\n\n`, a CRLF one is `\n\r\n`.
+    let end = [window.find("\n\n"), window.find("\n\r\n")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(window.len());
+    let header = window.get(..end).unwrap_or(window);
     let lowered = header.to_ascii_lowercase();
     BANNERS.iter().any(|banner| lowered.contains(banner))
 }

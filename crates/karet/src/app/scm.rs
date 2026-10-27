@@ -287,12 +287,10 @@ impl App {
                 "go to commit: enter a hash, ref, or range (a..b, a...b)",
             );
         } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
-            self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base,
-                },
+            self.open_range(RangeSpec::Between {
+                base,
+                head,
+                merge_base,
             });
         } else {
             self.open_commit(rev);
@@ -387,7 +385,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -403,7 +402,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -419,7 +419,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -685,7 +686,7 @@ impl App {
             merged.append(commits);
             *commits = merged;
             // The lane layout is sequential from the tip, so a new tip invalidates it.
-            *rails = crate::ui::commit::list::commit_rails(commits);
+            *rails = crate::app::commit_rails(commits);
             // Keep the viewport and the selection on the same commits they were on.
             if *list_offset > 0 {
                 *list_offset = list_offset.saturating_add(u16::try_from(inserted).unwrap_or(0));

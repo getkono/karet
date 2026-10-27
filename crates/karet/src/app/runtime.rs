@@ -13,8 +13,8 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
         // Every external process is owned by a hidden copy of this executable.
         process_supervisor: std::env::current_exe().ok(),
         // Immutable installations are shared by every local karet instance.
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
+        lsp_registry_dir: karet_session::dirs::data_local_dir()
+            .map(|dir| dir.join("language-servers")),
         // The stored seam index, so opening the view a second time does not re-parse a
         // repository that has not changed. Losing it costs a rebuild and nothing else.
         seam_cache_dir: karet_session::seam_cache::default_cache_dir(),
@@ -73,6 +73,13 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
+    // Before any cache opens: bring the caches earlier releases kept under a second
+    // root (macOS/Windows only) onto the one root every store now shares.
+    match karet_session::dirs::migrate_legacy_cache() {
+        Ok(0) => {},
+        Ok(moved) => tracing::info!(moved, "moved legacy cache entries to the karet cache root"),
+        Err(error) => tracing::warn!(%error, "could not migrate the legacy karet cache"),
+    }
     // The real app persists crash-recovery swaps to the user data directory;
     // headless/test sessions leave this unset and keep no backups.
     let config = session_config(&app, karet_session::backup::default_swap_dir());
@@ -89,7 +96,10 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
         io::stdout(),
-        SetTitle(format!("karet - {}", crate::window_title_path(&app.root)))
+        SetTitle(format!(
+            "karet - {}",
+            crate::paths::window_title_path(&app.root)
+        ))
     );
     let _keyboard = {
         let _ = crossterm::execute!(
@@ -110,25 +120,31 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         EnableFocusChange
     );
 
-    // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
-    // the input reader thread has not started yet, so we can read the reply here).
-    // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
-    // the heuristic already trusts.
-    if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.graphics = GraphicsProtocol::Kitty;
-        app.caps.kitty_graphics = true;
-        app.caps.placeholders = super::state::unicode_placeholders();
-    }
-    // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
-    // the sidebar/SCM dividers) — confirmed support only, never assumed.
-    if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.pointer_shapes = true;
-    }
+    // Refine the environment's answers with the real handshakes (raw mode is on and
+    // the input reader thread has not started yet, so the replies are read here).
+    // This is the probe `--doctor` reports: Kitty graphics are upgraded when the
+    // terminal answers and never downgraded from a trusted heuristic, and OSC 22
+    // pointer-shape hints (col-resize/row-resize over the sidebar/SCM dividers)
+    // are confirmed support only, never assumed. The keyboard answer is the one
+    // the gate above already got.
+    let probed = crate::term_caps::probe_with_keyboard(kitty_keyboard_supported);
+    let cell_px = app.caps.cell_px;
+    app.caps = TerminalCaps::from_capabilities(&probed);
+    app.caps.cell_px = cell_px;
     // Themes are RGB; a terminal without 24-bit colour gets every frame
     // quantised to the 256-colour palette instead.
-    let color_depth = crate::term_caps::probe_color_depth();
+    let color_depth = probed.color_depth;
+
+    // The saved workspace layout lives beside the swaps. Only the live editor
+    // reads or writes it: `--capture` and tests never touch the user's state.
+    let layout_dir = karet_session::backup::default_swap_dir();
 
     let result = runtime.block_on(async {
+        // Restored before the backend attaches, so attaching registers every
+        // restored pane's tabs with the rest of startup's.
+        if let Some(dir) = &layout_dir {
+            app.restore_workspace_layout(dir);
+        }
         let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
@@ -156,6 +172,15 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     );
     drop(_keyboard);
     ratatui::restore();
+    // Only a clean exit saves the layout; after a failure, the one the last
+    // clean exit saved is the better guess at where the user was.
+    if result.is_ok()
+        && let Some(dir) = &layout_dir
+        && let Err(error) = app.save_workspace_layout(dir)
+    {
+        app.farewell
+            .push(format!("could not save the workspace layout: {error}"));
+    }
     // Only now is there a screen to read it on: printed earlier, it would land in
     // the alternate screen and vanish with it.
     let mut stderr = io::stderr().lock();
@@ -238,6 +263,7 @@ async fn event_loop(
 
     let mut decoded_images = preview_image_results(app);
     let mut file_scans = app.file_index.take_receiver();
+    let mut seam_discoveries = app.seam_discovery.take_receiver();
     let mut terminal_events = terminal_events(app);
     // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
     let keymap_paths: Vec<std::path::PathBuf> =
@@ -277,8 +303,11 @@ async fn event_loop(
         // how much of the document is on screen.
         app.request_inlay_hints();
         app.request_code_lenses();
+        app.request_links_and_colors();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
+        // And the ghost-text ask, once typing has paused.
+        app.probe_inline_completion(Instant::now());
         // So does the occurrence highlight.
         app.probe_occurrences(Instant::now());
         // A workspace-symbol query goes out once typing has paused.
@@ -304,6 +333,9 @@ async fn event_loop(
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
             },
+            discovery = recv_decoded(&mut seam_discoveries) => if let Some(discovery) = discovery {
+                app.on_seam_discovery(discovery);
+            },
             terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
             change = recv_decoded(&mut keymap_changes) => if change.is_some() {
                 // One reload covers a burst of events (an atomic-rename save).
@@ -321,6 +353,8 @@ async fn event_loop(
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
         app.fire_auto_save(Instant::now());
+        #[cfg(feature = "terminal")]
+        app.fire_task_scans(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -345,6 +379,10 @@ async fn event_loop(
         while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw = true;
             app.on_file_index(scan);
+        }
+        while let Some(discovery) = seam_discoveries.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            redraw = true;
+            app.on_seam_discovery(discovery);
         }
         while let Some(event) = terminal_events.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw |= accept_terminal(app, Some(event));

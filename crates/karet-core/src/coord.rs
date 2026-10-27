@@ -127,10 +127,12 @@ impl Range {
 /// A precomputed line-start index over one immutable text snapshot, for cheap
 /// byte-offset → row / line-column lookups.
 ///
-/// Engines that work over a borrowed `&str` (highlighters, outline extractors,
-/// blame narrowing) all need "which row is this byte on?"; this is that one
-/// shared implementation. Buffers that *own* mutable text keep using
-/// `karet_text::TextBuffer`'s conversions instead.
+/// Engines that work over a borrowed `&str` (highlighters, outline extractors)
+/// need "which row is this byte on?"; this is the shared implementation for the
+/// `karet-*` crates. Buffers that *own* mutable text keep using
+/// `karet_text::TextBuffer`'s conversions instead, and the standalone
+/// `blameline` crate (which takes no direct `karet-core` dependency) keeps its
+/// own small line-start table for function narrowing.
 #[derive(Clone, Debug)]
 pub struct LineIndex {
     /// Byte offset of the start of each row; `starts[0] == 0`.
@@ -180,13 +182,17 @@ impl LineIndex {
     /// The [`LineCol`] (char-counted column) of byte offset `pos` within `text`.
     ///
     /// `text` must be the same snapshot the index was built from.
+    ///
+    /// An offset that is not a position in `text` is clamped to the nearest one
+    /// before it: an offset inside a multi-byte `char` gets that `char`'s column,
+    /// and an offset past the end of `text` gets the end of the last row. The row
+    /// is the one [`row_at`](Self::row_at) reports.
     #[must_use]
     pub fn line_col(&self, text: &str, pos: BytePos) -> LineCol {
         let (row, byte_col) = self.point_at(pos);
         let start = self.starts.get(row as usize).copied().unwrap_or(0);
-        let col = text
-            .get(start..start + byte_col)
-            .map_or(0, |s| s.chars().count());
+        let end = text.floor_char_boundary(start.saturating_add(byte_col));
+        let col = text.get(start..end).map_or(0, |s| s.chars().count());
         LineCol::new(row, u32::try_from(col).unwrap_or(u32::MAX))
     }
 
@@ -218,6 +224,14 @@ mod tests {
         assert!(!s.is_empty());
         assert!(s.contains(BytePos(2)));
         assert!(!s.contains(BytePos(5)));
+        assert!(Span::default().is_empty());
+        assert!(
+            Span {
+                start: BytePos(4),
+                end: BytePos(4),
+            }
+            .is_empty()
+        );
         assert_eq!(Span::new(BytePos(2), BytePos(5)), Ok(s));
         assert_eq!(
             Span::new(BytePos(5), BytePos(2)),
@@ -233,6 +247,16 @@ mod tests {
         };
         assert!(r.contains(LineCol::new(2, 99)));
         assert!(!r.contains(LineCol::new(3, 4)));
+        assert!(!r.is_empty());
+        assert!(Range::default().is_empty());
+        let caret = LineCol::new(2, 7);
+        assert!(
+            Range {
+                start: caret,
+                end: caret,
+            }
+            .is_empty()
+        );
         assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), Ok(r));
         assert_eq!(
             Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),
@@ -267,12 +291,47 @@ mod tests {
         assert_eq!(idx.line_col(text, BytePos(text.len())), LineCol::new(3, 1));
         // The empty row between two newlines has only column 0.
         assert_eq!(idx.line_col(text, BytePos(8)), LineCol::new(2, 0));
-        // An offset inside 'é' (bytes 5..7) or past the end is not a position in
-        // `text`; it keeps its row and falls back to column 0 rather than
-        // panicking on the slice. Whether it should clamp instead is #641.
+        // An offset inside 'é' (bytes 5..7) is not a position in `text`; it keeps
+        // its row and clamps back to the column of 'é' itself (2), not 0 and not
+        // the column after it (3).
         assert_eq!(idx.point_at(BytePos(6)), (1, 3));
-        assert_eq!(idx.line_col(text, BytePos(6)), LineCol::new(1, 0));
-        assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(3, 0));
+        assert_eq!(idx.line_col(text, BytePos(6)), LineCol::new(1, 2));
+        // Past the end clamps to the end of the last row, the same point as the
+        // end of the text itself.
+        assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(3, 1));
+        assert_eq!(idx.line_col(text, BytePos(usize::MAX)), LineCol::new(3, 1));
+    }
+
+    #[test]
+    fn line_col_clamps_inside_a_wide_char_and_past_the_end_of_a_one_row_text() {
+        // '€' is 3 bytes (1..4): both interior offsets clamp to its column 1.
+        let text = "a€b";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.line_col(text, BytePos(2)), LineCol::new(0, 1));
+        assert_eq!(idx.line_col(text, BytePos(3)), LineCol::new(0, 1));
+        assert_eq!(idx.line_col(text, BytePos(4)), LineCol::new(0, 2));
+        // Past the end of a text ending mid-row: the end of that row, the
+        // column just after its last char.
+        assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(0, 3));
+        // A text ending in a multi-byte char: past the end counts that char.
+        let tail = "xé";
+        let tail_idx = LineIndex::new(tail);
+        assert_eq!(tail_idx.line_col(tail, BytePos(2)), LineCol::new(0, 1));
+        assert_eq!(tail_idx.line_col(tail, BytePos(50)), LineCol::new(0, 2));
+        // A span that runs past the end converts to a range ending at the end.
+        assert_eq!(
+            idx.range(
+                text,
+                Span {
+                    start: BytePos(2),
+                    end: BytePos(999),
+                }
+            ),
+            Range {
+                start: LineCol::new(0, 1),
+                end: LineCol::new(0, 3),
+            }
+        );
     }
 
     #[test]

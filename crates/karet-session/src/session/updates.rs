@@ -1,5 +1,5 @@
-use karet_core::Symbol;
-
+use super::columns::convert_symbol_columns;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
@@ -74,6 +74,9 @@ impl Session {
             update @ (LspUpdate::Completions { .. } | LspUpdate::CompletionResolved { .. }) => {
                 self.deliver_completion(update);
             },
+            update @ (LspUpdate::InlineCompletions { .. } | LspUpdate::Account { .. }) => {
+                self.deliver_inline_completions(update);
+            },
             LspUpdate::InlayHints {
                 request,
                 doc,
@@ -124,7 +127,7 @@ impl Session {
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 if symbols.is_empty() {
-                    symbols = document.syntax_symbols.as_ref().clone();
+                    symbols = document.syntax.symbols().as_ref().clone();
                 }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
@@ -205,6 +208,7 @@ impl Session {
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer),
             LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
             // A formatting answer either answers a Format command or finishes a
@@ -303,10 +307,18 @@ impl Session {
             // The connection has been gone past the grace window: its
             // markers and its overlay both describe a server that is down.
             LspUpdate::DiagnosticsCleared { server, .. } => {
-                self.clear_lsp_diagnostic_layer(&server);
+                self.clear_lsp_diagnostic_layer(&server, None);
                 self.clear_semantic_tokens_of(&server);
+                self.clear_server_folds_of(&server);
+            },
+            // The server is up, but no longer answers pulls for a document
+            // it was pulled for: what it last answered would otherwise stay
+            // on screen, since nothing it publishes replaces that layer.
+            LspUpdate::PulledDiagnosticsWithdrawn { server, .. } => {
+                self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
             },
             update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
+            update @ LspUpdate::FoldingRanges { .. } => self.adopt_server_folds(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {
@@ -396,10 +408,10 @@ impl Session {
                         // user recorded is an answer too — re-asking either would
                         // spend their bandwidth on a decision they have made.
                         let root = self.config.lsp_registry_dir.as_deref();
-                        if crate::lsp_registry::ever_installed(root, &server) {
+                        if crate::lsp_registry::store::ever_installed(root, &server) {
                             return;
                         }
-                        if crate::lsp_registry::read_declined(root, &server).is_some() {
+                        if crate::lsp_registry::store::read_declined(root, &server).is_some() {
                             return;
                         }
                         let enabled = self
@@ -580,13 +592,10 @@ impl Session {
         if doc.buffer.version() != result.version {
             return;
         }
-        doc.highlights = result.highlights;
-        doc.folds = result.folds;
-        doc.semantic_blocks = result.semantic_blocks;
-        doc.syntax_symbols = result.symbols;
-        (doc.error_lines, doc.table_lines) = (result.error_lines, result.table_lines);
-        self.publish(result.doc, None);
-        self.schedule_spell(result.doc);
+        let doc_id = result.doc;
+        doc.syntax.adopt(result);
+        self.publish(doc_id, None);
+        self.schedule_spell(doc_id);
     }
 
     /// Queue the current token model after highlighting has settled. Disabled or
@@ -612,8 +621,8 @@ impl Session {
             language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
-            highlights: doc.highlights.clone(),
-            syntax_error_lines: doc.error_lines.clone(),
+            highlights: doc.syntax.highlights().clone(),
+            syntax_error_lines: doc.syntax.error_lines().clone(),
             settings: self.config.settings.spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
@@ -901,37 +910,21 @@ impl Session {
     }
 }
 
-pub(super) fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
-    for symbol in symbols {
-        let range = symbol.range;
-        symbol.range = Range {
-            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-        };
-        let selection = symbol.selection_range;
-        symbol.selection_range = Range {
-            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
-            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
-        };
-        convert_symbol_columns(buffer, &mut symbol.children);
-    }
-}
-
-pub(super) fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
-    Range {
-        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-    }
-}
-
-/// A caret converted to the server's UTF-16 column encoding — the conversion
-/// every positional LSP forwarder applies (see the karet-lsp crate docs).
-pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
-    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
-}
-
 #[cfg(not(feature = "mdlint"))]
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+
+    /// Without the `mdlint` feature there is no linter to fix with: the
+    /// request is answered with a notice rather than left outstanding.
+    pub(super) fn fix_markdown_lint(&mut self, id: RequestId, _doc: crate::api::DocumentId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::System,
+                message: "markdown lint is not available in this build".to_owned(),
+            },
+        );
+    }
 }

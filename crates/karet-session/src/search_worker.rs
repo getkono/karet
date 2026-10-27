@@ -14,6 +14,7 @@
 mod preview;
 
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -21,18 +22,14 @@ use std::sync::mpsc::Sender;
 use karet_search::Matcher;
 use karet_search::SearchQuery;
 use karet_search::WorkspaceSearch;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SearchHit;
 use crate::cancellation::Cancellation;
-
-/// Flush a batch after this many files, so a long stretch of non-matching files
-/// still advances the panel's scanned count.
-const FILES_PER_BATCH: usize = 200;
-/// Flush a batch once it holds this many matching files.
-const HITS_PER_BATCH: usize = 64;
+use crate::event_tx::EventTx;
+use crate::scan_walk::BatchedScan;
+use crate::scan_walk::Walk;
 
 /// One unit of background search work.
 pub(crate) enum SearchJob {
@@ -76,9 +73,7 @@ impl SearchJob {
 
 /// Start the worker; the session sends [`SearchJob`]s and answers arrive on the
 /// shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<SearchJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<SearchJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-search".to_owned())
@@ -86,10 +81,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(
-    jobs: &Receiver<SearchJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) {
+fn run(jobs: &Receiver<SearchJob>, events: &EventTx) {
     while let Ok(mut job) = jobs.recv() {
         // Coalesce: only the newest queued search matters (a replace is never
         // skipped — it mutates files).
@@ -119,13 +111,9 @@ fn run(
 }
 
 /// Answer a search that a newer one displaced before it started.
-fn superseded(
-    id: RequestId,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    send(
-        events,
-        id,
+fn superseded(id: RequestId, events: &EventTx) -> ControlFlow<()> {
+    events.try_emit(
+        Some(id),
         Event::SearchFinished {
             files_scanned: 0,
             matches_found: 0,
@@ -136,21 +124,58 @@ fn superseded(
     )
 }
 
-/// Everything one search accumulates while walking.
-struct ScanState {
-    hits: Vec<SearchHit>,
-    files_scanned: usize,
-    files_since_flush: usize,
+/// One search's matcher, caps and running totals, visited by the shared walk.
+struct SearchScan<'a> {
+    matcher: &'a Matcher,
+    file_limit: usize,
+    match_limit: usize,
     files_matched: usize,
     matches_found: usize,
-    truncated: bool,
-    cancelled: bool,
 }
 
-fn execute(
-    job: SearchJob,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+impl BatchedScan for SearchScan<'_> {
+    type Hit = SearchHit;
+
+    fn visit(&mut self, path: &Path, text: &str, hits: &mut Vec<SearchHit>) -> ControlFlow<()> {
+        let matches = self.matcher.find(text);
+        if !matches.is_empty() {
+            // Build previews only up to the remaining budget. Checking the cap
+            // after converting a whole file would let one 10 MiB minified line
+            // allocate a preview `String` per match — the very case the match
+            // cap exists to bound. The *count* still reflects everything found,
+            // so the total stays honest.
+            let room = self.match_limit.saturating_sub(self.matches_found);
+            let kept: Vec<_> = matches
+                .iter()
+                .take(room)
+                .map(|m| preview::search_match(text, m))
+                .collect();
+            self.matches_found += matches.len();
+            if !kept.is_empty() {
+                self.files_matched += 1;
+                hits.push(SearchHit {
+                    path: path.to_path_buf(),
+                    matches: kept,
+                });
+            }
+        }
+        if self.files_matched >= self.file_limit || self.matches_found >= self.match_limit {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    fn progress(&self, hits: Vec<SearchHit>, files_scanned: usize) -> Option<Event> {
+        Some(Event::SearchProgress {
+            hits,
+            files_scanned,
+            matches_found: self.matches_found,
+        })
+    }
+}
+
+fn execute(job: SearchJob, events: &EventTx) -> ControlFlow<()> {
     match job {
         SearchJob::Search {
             id,
@@ -165,25 +190,38 @@ fn execute(
             roots,
             query,
             replacement,
-        } => {
-            let mut files_changed = 0;
-            let mut replacements = 0;
-            for root in &roots {
-                let summary = WorkspaceSearch::new()
-                    .replace(root, &query, &replacement)
-                    .unwrap_or_default();
+        } => events.try_emit(Some(id), replace_all(&roots, &query, &replacement)),
+    }
+}
+
+/// Replace across every root and fold the per-root summaries into one answer.
+///
+/// An error (a bad pattern or glob) is the same for every root, so it stops the
+/// loop and is reported rather than read as "0 replacements"; whatever earlier
+/// roots already wrote is still counted.
+fn replace_all(roots: &[PathBuf], query: &SearchQuery, replacement: &str) -> Event {
+    let mut files_changed = 0;
+    let mut replacements = 0;
+    let mut failures = Vec::new();
+    let mut error = None;
+    for root in roots {
+        match WorkspaceSearch::new().replace(root, query, replacement) {
+            Ok(summary) => {
                 files_changed += summary.files_changed;
                 replacements += summary.replacements;
-            }
-            send(
-                events,
-                id,
-                Event::SearchReplaced {
-                    files_changed,
-                    replacements,
-                },
-            )
-        },
+                failures.extend(summary.failures);
+            },
+            Err(e) => {
+                error = Some(e.to_string());
+                break;
+            },
+        }
+    }
+    Event::SearchReplaced {
+        files_changed,
+        replacements,
+        failures,
+        error,
     }
 }
 
@@ -195,16 +233,15 @@ fn search(
     file_limit: usize,
     match_limit: usize,
     cancel: &Cancellation,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
 ) -> ControlFlow<()> {
     // Compile once for the whole tree rather than per file, and surface a bad
     // pattern instead of letting it read as "no matches".
     let matcher = match Matcher::new(query) {
         Ok(matcher) => matcher,
         Err(error) => {
-            return send(
-                events,
-                id,
+            return events.try_emit(
+                Some(id),
                 Event::SearchFinished {
                     files_scanned: 0,
                     matches_found: 0,
@@ -215,120 +252,30 @@ fn search(
             );
         },
     };
-    let mut state = ScanState {
-        hits: Vec::new(),
-        files_scanned: 0,
-        files_since_flush: 0,
+    let mut scan = SearchScan {
+        matcher: &matcher,
+        file_limit,
+        match_limit,
         files_matched: 0,
         matches_found: 0,
-        truncated: false,
-        cancelled: false,
     };
-    let mut disconnected = false;
-    let mut walk_error = None;
-    // One `ScanState` across every root, so the caps, the batching and
-    // cancellation stay global to the search rather than resetting per root.
-    for root in roots {
-        let outcome =
-            karet_search::walk_text_files(root, &query.includes, &query.excludes, |path, text| {
-                // Checked on every visited file, matching or not, so cancelling
-                // over a large non-matching tree does not wait out the walk.
-                if cancel.is_cancelled() {
-                    state.cancelled = true;
-                    return ControlFlow::Break(());
-                }
-                state.files_scanned += 1;
-                state.files_since_flush += 1;
-                let matches = matcher.find(&text);
-                if !matches.is_empty() {
-                    // Build previews only up to the remaining budget. Checking the
-                    // cap after converting a whole file would let one 10 MiB
-                    // minified line allocate a preview `String` per match — the
-                    // very case the match cap exists to bound. The *count* still
-                    // reflects everything found, so the total stays honest.
-                    let room = match_limit.saturating_sub(state.matches_found);
-                    let kept: Vec<_> = matches
-                        .iter()
-                        .take(room)
-                        .map(|m| preview::search_match(&text, m))
-                        .collect();
-                    state.matches_found += matches.len();
-                    if !kept.is_empty() {
-                        state.files_matched += 1;
-                        state.hits.push(SearchHit {
-                            path: path.to_path_buf(),
-                            matches: kept,
-                        });
-                    }
-                }
-                if state.files_matched >= file_limit || state.matches_found >= match_limit {
-                    state.truncated = true;
-                    return ControlFlow::Break(());
-                }
-                if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH
-                {
-                    state.files_since_flush = 0;
-                    if flush(&mut state, id, events).is_break() {
-                        disconnected = true;
-                        return ControlFlow::Break(());
-                    }
-                }
-                ControlFlow::Continue(())
-            });
-        if let Err(error) = outcome {
-            walk_error = Some(error.to_string());
-            break;
-        }
-        if disconnected || state.cancelled || state.truncated {
-            break;
-        }
-    }
-    if disconnected {
-        return ControlFlow::Break(());
-    }
-    if !state.hits.is_empty() {
-        flush(&mut state, id, events)?;
-    }
-    send(
-        events,
-        id,
+    let walk = Walk {
+        roots,
+        includes: &query.includes,
+        excludes: &query.excludes,
+        cancel,
+    };
+    let walked = crate::scan_walk::walk_batched(&walk, &mut scan, id, events, Vec::new())?;
+    events.try_emit(
+        Some(id),
         Event::SearchFinished {
-            files_scanned: state.files_scanned,
-            matches_found: state.matches_found,
-            truncated: state.truncated,
-            cancelled: state.cancelled,
-            error: walk_error,
+            files_scanned: walked.files_scanned,
+            matches_found: scan.matches_found,
+            truncated: walked.truncated,
+            cancelled: walked.cancelled,
+            error: walked.error,
         },
     )
-}
-
-/// Send the pending batch, leaving `state.hits` empty.
-fn flush(
-    state: &mut ScanState,
-    id: RequestId,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    send(
-        events,
-        id,
-        Event::SearchProgress {
-            hits: std::mem::take(&mut state.hits),
-            files_scanned: state.files_scanned,
-            matches_found: state.matches_found,
-        },
-    )
-}
-
-fn send(
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    event: Event,
-) -> ControlFlow<()> {
-    if events.send((Some(id), event)).is_err() {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
-    }
 }
 
 #[cfg(test)]
@@ -336,7 +283,7 @@ mod tests {
     use super::*;
     use crate::cancellation::CancellationHub;
 
-    type Events = tokio_mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
+    type Events = tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
 
     fn query(pattern: &str) -> SearchQuery {
         SearchQuery {
@@ -370,7 +317,7 @@ mod tests {
             let _ = jobs_tx.send(job);
         }
         drop(jobs_tx);
-        let (events_tx, events_rx) = tokio_mpsc::unbounded_channel();
+        let (events_tx, events_rx) = crate::event_tx::EventTx::channel();
         run(&jobs_rx, &events_tx);
         events_rx
     }
@@ -447,6 +394,7 @@ mod tests {
                 Event::SearchReplaced {
                     files_changed,
                     replacements,
+                    ..
                 } => order.push((id.map_or(0, |id| id.0), files_changed, replacements)),
                 Event::SearchFinished {
                     matches_found,
@@ -465,6 +413,71 @@ mod tests {
         assert_eq!(order, vec![(1, 0, 2), (2, 1, 2), (3, 0, 2)]);
         let text = std::fs::read_to_string(dir.path().join("a.txt"))?;
         assert_eq!(text, "new new\n");
+        Ok(())
+    }
+
+    /// A replace that could not run reports why instead of answering
+    /// "0 replacements", and it stops at the first root rather than repeating
+    /// the same error for each.
+    #[test]
+    fn an_invalid_replace_pattern_is_reported_not_read_as_zero() -> TestResult {
+        let dir = tree(&[("a.txt", "needle\n")])?;
+        let bad = SearchQuery {
+            regex: true,
+            ..query("(")
+        };
+        let roots = vec![dir.path().to_path_buf(), dir.path().to_path_buf()];
+        let Event::SearchReplaced {
+            files_changed,
+            failures,
+            error,
+            ..
+        } = replace_all(&roots, &bad, "pin")
+        else {
+            return Err("not a SearchReplaced".into());
+        };
+        assert_eq!((files_changed, failures.len()), (0, 0));
+        assert_eq!(error, Some("invalid search pattern".to_owned()));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt"))?,
+            "needle\n"
+        );
+        Ok(())
+    }
+
+    /// Files that could not be written back are carried in the answer from every
+    /// root, beside the counts of the files that were.
+    #[test]
+    fn replace_failures_from_every_root_reach_the_answer() -> TestResult {
+        let (one, two) = (
+            tree(&[("a.txt", "needle\n")])?,
+            tree(&[("b.txt", "needle\n")])?,
+        );
+        let locked = two.path().join("b.txt");
+        let mut perms = std::fs::metadata(&locked)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&locked, perms)?;
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&locked)
+            .is_ok()
+        {
+            // A privileged user writes through the read-only bit; nothing to observe.
+            return Ok(());
+        }
+        let roots = vec![one.path().to_path_buf(), two.path().to_path_buf()];
+        let Event::SearchReplaced {
+            files_changed,
+            replacements,
+            failures,
+            error,
+        } = replace_all(&roots, &query("needle"), "pin")
+        else {
+            return Err("not a SearchReplaced".into());
+        };
+        assert_eq!((files_changed, replacements, error), (1, 1, None));
+        let failed: Vec<PathBuf> = failures.into_iter().map(|f| f.path).collect();
+        assert_eq!(failed, vec![locked]);
         Ok(())
     }
 

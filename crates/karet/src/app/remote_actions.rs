@@ -149,7 +149,7 @@ impl App {
         // they resolved or failed — the parked actions below report either way.
         self.notifications.dismiss_tagged(Self::REMOTE_FACTS_TAG);
         let adopted = facts.and_then(|facts| {
-            let remote = remote::parse_remote(&facts.origin_url)
+            let remote = karet_vcs::parse_remote(&facts.origin_url)
                 .ok_or_else(|| format!("unrecognized origin remote URL: {}", facts.origin_url))?;
             Ok(RemoteFacts {
                 remote,
@@ -377,13 +377,13 @@ impl App {
             .map(|c| {
                 let display = format!(
                     "{} {} \u{2014} {}",
-                    c.short_hash,
+                    c.short_hash(),
                     c.summary,
                     ui::relative_time(c.time)
                 );
                 let target = DiffTarget {
+                    label: c.short_hash().to_string(),
                     rev: c.hash,
-                    label: c.short_hash,
                 };
                 (display, target)
             })

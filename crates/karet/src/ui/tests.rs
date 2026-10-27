@@ -194,28 +194,6 @@ fn breadcrumb_spans_of_no_components_are_empty() {
 }
 
 #[test]
-fn relative_time_uses_compact_git_style_units() {
-    let now = 40_000_000;
-    assert_eq!(commit::list::relative_time_at(now + 1, now), "just now");
-    assert_eq!(commit::list::relative_time_at(now - 42, now), "42s ago");
-    assert_eq!(commit::list::relative_time_at(now - 120, now), "2m ago");
-    assert_eq!(commit::list::relative_time_at(now - 10_800, now), "3h ago");
-    assert_eq!(commit::list::relative_time_at(now - 172_800, now), "2d ago");
-    assert_eq!(
-        commit::list::relative_time_at(now - 1_209_600, now),
-        "2w ago"
-    );
-    assert_eq!(
-        commit::list::relative_time_at(now - 5_184_000, now),
-        "2mo ago"
-    );
-    assert_eq!(
-        commit::list::relative_time_at(now - 63_072_000, now),
-        "2y ago"
-    );
-}
-
-#[test]
 fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
     // The padding needs 4 columns and 2 rows; below that there is no content rect.
     assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
@@ -516,7 +494,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
         );
     }
     assert_eq!(
-        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        karet_widgets::text::fit_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
         "\u{2026}file.rs"
     );
 }
@@ -536,7 +514,6 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -841,7 +818,20 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     );
     app.settings.editor.semantic_comments.enabled = true;
     app.settings.spellcheck.enabled = true;
-    let _ = header(&mut app);
+    // The Hierarchy button appears, last, only while there is a tree to
+    // return to.
+    app.hierarchy.tree = Some(crate::app::hierarchy::HierarchyTree::new(
+        karet_core::HierarchyDirection::IncomingCalls,
+        DocumentId(1),
+        dir.clone(),
+        RequestId(1),
+    ));
+    assert_eq!(
+        header(&mut app).last(),
+        Some(&SidebarPanel::Hierarchy),
+        "{:?}",
+        app.panel_hits
+    );
     // Two cells each, marching left to right and staying inside the header.
     for window in app.panel_hits.windows(2) {
         assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);

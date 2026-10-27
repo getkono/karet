@@ -38,6 +38,9 @@
 //! - `latex` — external LaTeX compilation and diagnostics.
 //! - `wakatime` — WakaTime heartbeats.
 //!
+//! Every per-user path (config, swaps, caches, state) resolves through [`dirs`], on
+//! one platform root.
+//!
 //! File-watching runs over `karet-watch`, and external process trees are owned
 //! through `karet-supervisor`. In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
 //! stream (`local`), not by borrowing document state across the actor boundary.
@@ -51,7 +54,9 @@ mod cancellation;
 pub mod config;
 mod dap;
 mod diff_prepare;
+pub mod dirs;
 mod editorconfig;
+mod event_tx;
 mod highlight;
 mod latex;
 pub mod local;
@@ -61,6 +66,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+mod scan_walk;
 pub mod seam_cache;
 mod seam_worker;
 mod search_worker;
@@ -72,10 +78,9 @@ mod todo_scan;
 mod toml_format;
 #[cfg(feature = "toml-lsp")]
 mod toml_lsp;
-pub mod ts_errors;
 mod vcs_worker;
 #[cfg(feature = "viz")]
-pub mod viz;
+mod viz;
 mod wakatime;
 
 pub use api::AiCommitAgentStatus;
@@ -105,6 +110,7 @@ pub use api::GithubIssue;
 pub use api::GithubLabel;
 pub use api::GithubNewIssue;
 pub use api::GithubNewPullRequest;
+pub use api::GithubOperation;
 pub use api::GithubPage;
 pub use api::GithubPullRequest;
 pub use api::GithubPullRequestActivity;

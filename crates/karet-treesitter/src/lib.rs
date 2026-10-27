@@ -1,11 +1,12 @@
 //! `karet-treesitter` — the shared tree-sitter parse host for the karet toolkit.
 //!
-//! Owns parser pooling, tree caching and query execution so that `karet-syntax`,
-//! `karet-diff`, and (via syntax) the editor all reuse a single parse of each
-//! buffer. Tree-sitter is karet's *sole* syntax backend — there is deliberately no
-//! second backend to abstract over. Grammars are compiled in behind `lang-*`
-//! features; [`language_id_from_path`] / [`language_name_from_path`] map a file to
-//! one (or to a plaintext fallback).
+//! Owns parser pooling, tree caching and query execution so that `karet-syntax`
+//! and (via syntax) the editor reuse a single parse of each buffer. (`karet-diff`
+//! is purely textual today and does not depend on this crate.) Tree-sitter is
+//! karet's *sole* syntax backend — there is deliberately no second backend to
+//! abstract over. Grammars are compiled in behind `lang-*` features;
+//! [`language_id_from_path`] / [`language_name_from_path`] map a file to one (or
+//! to a plaintext fallback).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -25,13 +26,15 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use changes::merge_spans;
-pub use changes::shift_span;
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
 pub use indent::IndentAnchor;
 pub use injection::InjectionRegion;
+// The span helpers live in `karet-core` beside `Highlights::translate`, which
+// shares their shifting rule; these keep their `karet_treesitter::` paths working.
+pub use karet_core::merge_spans;
+pub use karet_core::shift_span;
 pub use walk::WalkControl;
 pub use walk::WalkNode;
 
@@ -163,6 +166,10 @@ pub type Edit = karet_core::AppliedEdit;
 pub struct SyntaxTree {
     tree: tree_sitter::Tree,
     lang: LanguageId,
+    /// Whether [`edit`](Self::edit) has been applied since the last parse. tree-sitter
+    /// takes an unedited old tree to describe the new text unchanged and reuses its
+    /// nodes, so a reparse offers the old tree only when this is set.
+    edited: bool,
 }
 
 impl SyntaxTree {
@@ -176,7 +183,11 @@ impl SyntaxTree {
         let tree = parser
             .parse(text.as_bytes(), None)
             .ok_or(TsError::ParseFailed)?;
-        Ok(Self { tree, lang })
+        Ok(Self {
+            tree,
+            lang,
+            edited: false,
+        })
     }
 
     /// The language this tree was parsed with.
@@ -347,6 +358,7 @@ impl SyntaxTree {
         Ok(Self {
             tree: result?,
             lang,
+            edited: false,
         })
     }
 
@@ -361,19 +373,22 @@ impl SyntaxTree {
 
     /// Re-parse after the buffer changed to `text`.
     ///
-    /// Without a prior edit applied to the old tree this is a full reparse; that is
-    /// acceptable for the snippet-sized inputs the MVP highlights. Prefer
-    /// [`edit`](Self::edit) + [`reparse_with`](Self::reparse_with) for genuine
-    /// incremental reparsing.
+    /// Without an [`edit`](Self::edit) applied since the last parse this is a full
+    /// reparse, producing the tree [`parse`](Self::parse) would; after one it reuses
+    /// the subtrees the edits left untouched. Prefer [`edit`](Self::edit) +
+    /// [`reparse_with`](Self::reparse_with) to feed the parser without materializing
+    /// the text.
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if re-parsing fails.
     pub fn reparse(&mut self, pool: &mut ParserPool, text: &str) -> Result<(), TsError> {
+        let old = self.edited.then_some(&self.tree);
         let parser = pool.parser_for(self.lang)?;
         let tree = parser
-            .parse(text.as_bytes(), Some(&self.tree))
+            .parse(text.as_bytes(), old)
             .ok_or(TsError::ParseFailed)?;
         self.tree = tree;
+        self.edited = false;
         Ok(())
     }
 
@@ -392,6 +407,7 @@ impl SyntaxTree {
             old_end_position: to_point(edit.old_end_point),
             new_end_position: to_point(edit.new_end_point),
         });
+        self.edited = true;
     }
 
     /// Incrementally re-parse the edited tree, reading the new text through `read`
@@ -400,7 +416,8 @@ impl SyntaxTree {
     ///
     /// `read(byte)` must return the buffer bytes starting at `byte` (e.g. a rope
     /// chunk), or an empty slice at/after the end — so the parser is fed without
-    /// ever materializing the whole file as one `String`.
+    /// ever materializing the whole file as one `String`. Without an edit applied
+    /// since the last parse this is a full reparse, as for [`reparse`](Self::reparse).
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if re-parsing fails.
@@ -409,12 +426,14 @@ impl SyntaxTree {
         T: AsRef<[u8]>,
         F: FnMut(usize) -> T,
     {
+        let old = self.edited.then_some(&self.tree);
         let parser = pool.parser_for(self.lang)?;
         let mut callback = |byte: usize, _: tree_sitter::Point| read(byte);
         let tree = parser
-            .parse_with_options(&mut callback, Some(&self.tree), None)
+            .parse_with_options(&mut callback, old, None)
             .ok_or(TsError::ParseFailed)?;
         self.tree = tree;
+        self.edited = false;
         Ok(())
     }
 
@@ -716,8 +735,9 @@ impl LayeredParser {
     /// or reparsed over edited text. Outside them, a query over the new tree
     /// finds what it found over the old one, moved by the edits.
     ///
-    /// Too many edits at once (a large multi-cursor replace) report the whole
-    /// document rather than track each one.
+    /// No edits at all (a cold reparse of unrelated text) and too many edits at
+    /// once (a large multi-cursor replace) both report the whole document rather
+    /// than track each change.
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if the root cannot be reparsed.
@@ -727,7 +747,14 @@ impl LayeredParser {
         edits: &[Edit],
         text: &str,
     ) -> Result<Vec<Span>, TsError> {
-        let edited = changes::edited_ranges(edits);
+        // With no edits the reparse is cold, and tree-sitter's `changed_ranges`
+        // compares only structure, never text: a rename that keeps the tree's
+        // shape would go unreported. Report the whole document instead.
+        let edited = if edits.is_empty() {
+            None
+        } else {
+            changes::edited_ranges(edits)
+        };
         for edit in edits {
             tree.root.edit(edit);
             // The old layers are only compared when the edits are tracked.
@@ -741,6 +768,7 @@ impl LayeredParser {
         let old_root = SyntaxTree {
             tree: tree.root.tree.clone(),
             lang: tree.root.lang,
+            edited: tree.root.edited,
         };
         tree.root.reparse(&mut self.pool, text)?;
         let old_children =
@@ -755,7 +783,7 @@ impl LayeredParser {
         let layers = changes::layer_changes(&old_children, &tree.children, &changed);
         changed.extend(tree.root.changed_ranges(&old_root));
         changed.extend(layers);
-        Ok(changes::merge_spans(changed))
+        Ok(merge_spans(changed))
     }
 
     /// Expand every injected layer beneath `root`, breadth-first.
@@ -868,7 +896,8 @@ fn covers_same_text(parent: &SyntaxTree, ranges: &[Span], lang: LanguageId) -> b
 /// merge the results without translating coordinates.
 pub struct LayeredTree {
     root: SyntaxTree,
-    /// Injected layers, innermost first within each branch of the descent.
+    /// Injected layers in breadth-first order: every layer the root injects
+    /// directly, then every layer those inject, and so on (shallowest first).
     children: Vec<SyntaxTree>,
 }
 
@@ -879,7 +908,8 @@ impl LayeredTree {
         &self.root
     }
 
-    /// The injected layers, excluding the root.
+    /// The injected layers, excluding the root, in breadth-first order
+    /// (shallowest first).
     #[must_use]
     pub fn children(&self) -> &[SyntaxTree] {
         &self.children
@@ -970,6 +1000,93 @@ mod contract_tests {
         assert_eq!(tree.children().len(), MAX_INJECTION_LAYERS);
         // Every admitted layer is one of the fences.
         assert!(tree.children().iter().all(|layer| layer.language() == rust));
+        Ok(())
+    }
+}
+
+/// A reparse with no edit since the last parse is a cold parse. Kept here rather
+/// than in `tests.rs`, which sits near the file-line ceiling.
+#[cfg(all(test, feature = "lang-rust"))]
+mod reparse_tests {
+    use super::*;
+
+    const OLD: &str = "fn main() {}\n";
+    const NEW: &str = "struct Point { x: i32 }\nfn main() { let y = 2; }\n";
+
+    fn sexp(tree: &SyntaxTree) -> String {
+        tree.tree.root_node().to_sexp()
+    }
+
+    #[test]
+    fn reparse_without_an_edit_matches_a_cold_parse() -> Result<(), TsError> {
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut pool = ParserPool::new();
+        let cold = SyntaxTree::parse(&mut pool, rust, NEW)?;
+
+        let mut tree = SyntaxTree::parse(&mut pool, rust, OLD)?;
+        tree.reparse(&mut pool, NEW)?;
+        assert_eq!(sexp(&tree), sexp(&cold));
+
+        let mut tree = SyntaxTree::parse(&mut pool, rust, OLD)?;
+        tree.reparse_with(&mut pool, |byte| NEW.as_bytes().get(byte..).unwrap_or(&[]))?;
+        assert_eq!(sexp(&tree), sexp(&cold));
+        Ok(())
+    }
+
+    #[test]
+    fn a_reparse_consumes_the_edit_it_followed() -> Result<(), TsError> {
+        // Edit + reparse to `mid`, then reparse to NEW with no further edit: the
+        // second reparse must not offer the first one's tree as if it were edited.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mid = "fn main() {let z=1;}\n";
+        let mut pool = ParserPool::new();
+        let mut tree = SyntaxTree::parse(&mut pool, rust, OLD)?;
+        tree.edit(&Edit {
+            start_byte: 11,
+            old_end_byte: 11,
+            new_end_byte: 19,
+            start_point: karet_core::BytePoint::new(0, 11),
+            old_end_point: karet_core::BytePoint::new(0, 11),
+            new_end_point: karet_core::BytePoint::new(0, 19),
+            replaced: String::new(),
+        });
+        tree.reparse(&mut pool, mid)?;
+        assert_eq!(sexp(&tree), sexp(&SyntaxTree::parse(&mut pool, rust, mid)?));
+        tree.reparse(&mut pool, NEW)?;
+        assert_eq!(sexp(&tree), sexp(&SyntaxTree::parse(&mut pool, rust, NEW)?));
+        Ok(())
+    }
+
+    #[test]
+    fn reparse_changed_with_no_edits_matches_a_cold_parse() -> Result<(), TsError> {
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let mut parser = LayeredParser::new();
+        let mut tree = parser.parse(rust, OLD)?;
+        let changed = parser.reparse_changed(&mut tree, &[], NEW)?;
+        let cold = parser.parse(rust, NEW)?;
+        assert_eq!(sexp(tree.root()), sexp(cold.root()));
+        let whole = Span {
+            start: BytePos(0),
+            end: BytePos(NEW.len()),
+        };
+        assert_eq!(changed, vec![whole]);
+        Ok(())
+    }
+
+    #[test]
+    fn reparse_changed_with_no_edits_reports_a_same_shape_rename() -> Result<(), TsError> {
+        // Same tree shape, different text: structural `changed_ranges` sees
+        // nothing, so the whole document must still be reported.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let renamed = "fn mian() {}\n";
+        let mut parser = LayeredParser::new();
+        let mut tree = parser.parse(rust, OLD)?;
+        let changed = parser.reparse_changed(&mut tree, &[], renamed)?;
+        let whole = Span {
+            start: BytePos(0),
+            end: BytePos(renamed.len()),
+        };
+        assert_eq!(changed, vec![whole]);
         Ok(())
     }
 }

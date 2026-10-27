@@ -7,6 +7,7 @@
 //! served from `dependable-fetch`'s in-process cache.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::TryRecvError;
@@ -15,13 +16,14 @@ use dependable_fetch::Checker;
 use dependable_fetch::core::CheckResult;
 use dependable_fetch::core::DependencyStatus;
 use dependable_fetch::core::ManifestKind;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::ManifestHint;
 use crate::api::ManifestHintState;
-use crate::api::RequestId;
+use crate::event_tx::EventTx;
+
+mod lockfile;
 
 /// One re-check request (the newest per document wins).
 pub(crate) struct HintJob {
@@ -32,14 +34,14 @@ pub(crate) struct HintJob {
     pub version: u64,
     /// The manifest text (the live buffer).
     pub manifest: String,
-    /// The sibling `Cargo.lock`, when present on disk.
-    pub lockfile: Option<String>,
+    /// Where the manifest lives. The worker reads the governing `Cargo.lock`
+    /// from it (beside the manifest, or the root's of the workspace that
+    /// counts the package as a member), off the session thread.
+    pub path: PathBuf,
 }
 
 /// Start the worker; answers arrive as [`Event::ManifestHints`].
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<HintJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<HintJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-manifest-hints".to_owned())
@@ -47,7 +49,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
+fn run(jobs: &Receiver<HintJob>, events: &EventTx) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -75,15 +77,15 @@ fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
         for job in pending.into_values() {
             let hints = runtime.block_on(check(&checker, &job));
             if events
-                .send((
+                .try_emit(
                     None,
                     Event::ManifestHints {
                         doc: job.doc,
                         version: job.version,
                         hints,
                     },
-                ))
-                .is_err()
+                )
+                .is_break()
             {
                 return;
             }
@@ -95,12 +97,9 @@ fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
 /// fails outright (offline, rate-limited) yields no hints — annotations
 /// simply do not appear rather than shouting about the network.
 async fn check(checker: &Checker, job: &HintJob) -> Vec<ManifestHint> {
+    let lockfile = lockfile::read(&job.path);
     let Ok(report) = checker
-        .check_manifest(
-            ManifestKind::CargoToml,
-            &job.manifest,
-            job.lockfile.as_deref(),
-        )
+        .check_manifest(ManifestKind::CargoToml, &job.manifest, lockfile.as_deref())
         .await
     else {
         return Vec::new();

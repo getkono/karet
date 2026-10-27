@@ -54,7 +54,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the hierarchy `direction` walks, else
-    /// [`LspError::Server`] or [`LspError::Timeout`].
+    /// [`LspError::Server`], [`LspError::Timeout`], [`LspError::Protocol`] for
+    /// an unconvertible path, a request that does not encode or a result that
+    /// does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn prepare_hierarchy(
         &self,
         direction: HierarchyDirection,
@@ -81,9 +83,10 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server neither advertised nor registered the hierarchy for any
-    /// document, [`LspError::Protocol`] when
-    /// `item`'s payload is not an item's wire form, else [`LspError::Server`]
-    /// or [`LspError::Timeout`].
+    /// document, else [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] when `item`'s payload is not an item's wire
+    /// form, the request does not encode or the result does not decode, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn hierarchy_children(
         &self,
         direction: HierarchyDirection,
@@ -117,8 +120,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
         let direction = HierarchyDirection::Supertypes;
         let roots = self.prepare_hierarchy(direction, doc, pos).await?;

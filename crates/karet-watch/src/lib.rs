@@ -31,6 +31,11 @@ use std::time::Duration;
 
 use ignore::DirEntry;
 use ignore::WalkBuilder;
+// The directory names whose contents are never surfaced or watched (build output,
+// VCS metadata) are karet-search's, so watching, searching, and quick-open agree
+// on what a workspace walk covers. Git dirs are watched separately and narrowly
+// (see `watch_git_dir`).
+use karet_search::IGNORED_DIRS;
 use notify::Config;
 use notify::ErrorKind;
 use notify::EventKind;
@@ -52,12 +57,6 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// Polling fallback interval used only after the native backend reports watch
 /// exhaustion. Kept slower than the main debounce so degraded trees remain cheap.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// Directory names whose contents are never surfaced or watched (build output / VCS
-/// metadata). Git dirs are watched separately and narrowly — see [`watch_git_dir`].
-/// Kept in parity with `karet_search::IGNORED_DIRS` so watching, searching, and
-/// quick-open agree on what a workspace walk covers.
-const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
 /// What kind of change a [`FsEvent`] reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,10 +214,8 @@ impl Drop for Watcher {
     }
 }
 
-/// The background worker: registers watches (off the caller's critical path), then
-/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
-/// debouncer so it can register new watches (e.g. for a freshly created directory)
-/// from the same thread that reads its event stream.
+/// The borrowed channels, roots and stop flag [`worker_main`] runs over, bundled so
+/// its signature stays short.
 struct WorkerMainArgs<'a> {
     raw_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
     poll_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
@@ -229,6 +226,10 @@ struct WorkerMainArgs<'a> {
     stop: &'a AtomicBool,
 }
 
+/// The background worker: registers watches (off the caller's critical path), then
+/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
+/// debouncer so it can register new watches (e.g. for a freshly created directory)
+/// from the same thread that reads its event stream.
 fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: WorkerMainArgs<'_>) {
     let WorkerMainArgs {
         raw_rx,

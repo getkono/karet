@@ -1,5 +1,7 @@
 //! GitHub remote parsing and repository identity.
 
+use karet_vcs::ForgeKind;
+
 /// A public GitHub repository identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RepositoryIdentity {
@@ -26,33 +28,29 @@ pub struct GitHubRemote {
 impl GitHubRemote {
     /// Parse a conventional public GitHub clone URL.
     ///
-    /// GitHub Enterprise hosts, aliases, subdomains, query strings, fragments, and
-    /// paths other than exactly `owner/repository` are rejected.
+    /// Builds on [`karet_vcs::parse_remote`], so a remote is GitHub here exactly
+    /// when that parser detects [`ForgeKind::GitHub`] for it: the SSH user and
+    /// port are ignored and the host matches case-insensitively. On top of that,
+    /// both path components must be plain GitHub names (ASCII alphanumerics,
+    /// `-`, `_`, `.`). GitHub Enterprise hosts, aliases, subdomains, query
+    /// strings, fragments, and paths other than exactly `owner/repository` are
+    /// rejected.
     #[must_use]
     pub fn parse(input: &str) -> Option<Self> {
-        let input = input.trim();
-        if let Some(identity) = parse_scp(input) {
-            return Some(Self { identity });
-        }
-
-        let url = reqwest::Url::parse(input).ok()?;
-        if !matches!(url.scheme(), "http" | "https" | "git" | "ssh")
-            || !url
-                .host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
+        let remote = karet_vcs::parse_remote(input)?;
+        if remote.kind != ForgeKind::GitHub {
             return None;
         }
-        if url.scheme() == "ssh" && !url.username().is_empty() && url.username() != "git" {
+        let (owner, repo) = remote.repo_path.split_once('/')?;
+        if !valid_component(owner) || !valid_component(repo) {
             return None;
         }
-        let parts: Vec<&str> = url
-            .path_segments()?
-            .filter(|part| !part.is_empty())
-            .collect();
-        parse_parts(&parts).map(|identity| Self { identity })
+        Some(Self {
+            identity: RepositoryIdentity {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+            },
+        })
     }
 
     /// Borrow the repository identity.
@@ -66,30 +64,6 @@ impl GitHubRemote {
     pub fn into_identity(self) -> RepositoryIdentity {
         self.identity
     }
-}
-
-fn parse_scp(input: &str) -> Option<RepositoryIdentity> {
-    let (authority, path) = input.split_once(':')?;
-    let (user, host) = authority.split_once('@')?;
-    if user != "git" || !host.eq_ignore_ascii_case("github.com") {
-        return None;
-    }
-    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    parse_parts(&parts)
-}
-
-fn parse_parts(parts: &[&str]) -> Option<RepositoryIdentity> {
-    let [owner, repo] = parts else {
-        return None;
-    };
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    if !valid_component(owner) || !valid_component(repo) {
-        return None;
-    }
-    Some(RepositoryIdentity {
-        owner: (*owner).to_string(),
-        repo: repo.to_string(),
-    })
 }
 
 fn valid_component(value: &str) -> bool {
@@ -124,6 +98,11 @@ mod tests {
             "ssh://git@github.com/getkono/karet.git",
             "git@github.com:getkono/karet.git",
             "  git@GitHub.com:getkono/karet  ",
+            // The SSH user and the host's case do not change the repository, so
+            // this parser agrees with `karet_vcs::parse_remote` on both.
+            "alice@github.com:getkono/karet.git",
+            "ssh://alice@github.com/getkono/karet.git",
+            "https://GITHUB.com/getkono/karet",
         ] {
             assert_eq!(
                 GitHubRemote::parse(input).map(GitHubRemote::into_identity),
@@ -141,6 +120,8 @@ mod tests {
             "git@work:getkono/karet.git",
             "https://github.com/getkono/karet/extra",
             "https://github.com/getkono/karet?tab=readme",
+            "https://github.com/getkono/karet#readme",
+            "git@github.com:get kono/karet.git",
             "https://github.com/getkono%2fkaret/repo",
             "https://gitlab.com/getkono/karet.git",
         ] {

@@ -74,11 +74,7 @@ fn inject_data_arg(spec: &mut LspSpec, root: &Path) {
 fn workspace_data_dir(root: &Path) -> Option<PathBuf> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     root.hash(&mut hasher);
-    directories::ProjectDirs::from("", "", "karet").map(|dirs| {
-        dirs.cache_dir()
-            .join("jdtls")
-            .join(format!("{:016x}", hasher.finish()))
-    })
+    crate::dirs::cache_dir().map(|dir| dir.join("jdtls").join(format!("{:016x}", hasher.finish())))
 }
 
 /// The user-facing diagnosis when the JDK preflight fails; `None` when jdtls
@@ -168,6 +164,17 @@ mod tests {
         let mut launch = spec("jdtls", &["-data", "/tmp/ws"]);
         inject_data_arg(&mut launch, Path::new("/work/project"));
         assert_eq!(launch.args, vec!["-data", "/tmp/ws"]);
+    }
+
+    #[test]
+    fn data_dir_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into.
+        let dir = workspace_data_dir(Path::new("/work/a"));
+        let jdtls = dir.as_deref().and_then(Path::parent);
+        assert_eq!(
+            jdtls.map(Path::to_path_buf),
+            crate::dirs::cache_dir().map(|cache| cache.join("jdtls"))
+        );
     }
 
     #[test]

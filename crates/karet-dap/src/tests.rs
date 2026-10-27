@@ -571,13 +571,58 @@ async fn a_missing_adapter_executable_is_a_launch_error() {
             got.err()
         );
     }
-    let got = DapClient::spawn_command_tcp(tokio::process::Command::new(missing), 1).await;
+    let got = DapClient::spawn_tcp(tokio::process::Command::new(missing), 1).await;
     assert!(matches!(got, Err(DapError::Launch(_))), "{:?}", got.err());
 }
 
 #[tokio::test]
+async fn spawn_with_hands_prepare_the_spec_and_propagates_its_error() -> TestResult {
+    // Stdio passes the spec through verbatim (`${port}` is only a TCP
+    // placeholder); TCP substitutes a real port into every occurrence. A
+    // failing `prepare` aborts the launch with its own error, untouched.
+    for transport in [DapTransport::Stdio, DapTransport::Tcp] {
+        let spec = DapSpec {
+            command: "adapter".to_owned(),
+            args: vec!["--port".to_owned(), "${port}".to_owned()],
+            transport,
+        };
+        let mut seen = None;
+        let got = DapClient::spawn_with(&spec, |given| {
+            seen = Some(given.clone());
+            Err(DapError::Launch("prepare refused".to_owned()))
+        })
+        .await;
+        assert!(
+            matches!(&got, Err(DapError::Launch(m)) if m == "prepare refused"),
+            "{transport:?}: {:?}",
+            got.err()
+        );
+        let seen = seen.ok_or("prepare never ran")?;
+        assert_eq!(seen.command, "adapter");
+        assert_eq!(seen.transport, transport);
+        assert_eq!(seen.args[0], "--port");
+        match transport {
+            DapTransport::Stdio => assert_eq!(seen.args[1], "${port}"),
+            DapTransport::Tcp => assert!(
+                seen.args[1].parse::<u16>().is_ok_and(|port| port != 0),
+                "{:?}",
+                seen.args
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_socket_that_never_accepts_is_a_launch_error_at_the_deadline() -> TestResult {
-    let port = free_port()?; // nobody listens on it
+    // Hold the port with a socket that is bound but never listens: connects to
+    // it are refused, and for as long as it lives no concurrent test can bind
+    // the port and no connect can pick it as its own source port (a loopback
+    // self-connect). A `free_port()` that is dropped at once leaves both open,
+    // and the test then flakes by connecting successfully.
+    let holder = tokio::net::TcpSocket::new_v4()?;
+    holder.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let port = holder.local_addr()?.port();
     let started = std::time::Instant::now();
     let got = connect_with_retries(port, Duration::from_millis(200)).await;
     let elapsed = started.elapsed();
@@ -590,17 +635,22 @@ async fn a_socket_that_never_accepts_is_a_launch_error_at_the_deadline() -> Test
         elapsed >= Duration::from_millis(200),
         "gave up before the deadline"
     );
+    drop(holder);
     Ok(())
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn spawn_command_tcp_retries_until_the_adapter_listens() -> TestResult {
+async fn spawn_with_tcp_retries_until_the_adapter_listens_and_holds_stdin_open() -> TestResult {
     // The child stands in for an adapter that is slow to boot; the socket is
-    // bound here, only after the client has started retrying, and speaks DAP
-    // so the connection is proven end to end.
-    let port = free_port()?;
+    // bound here — on the port `spawn_with` substituted into the args `prepare`
+    // saw — only after the client has started retrying, and speaks DAP so the
+    // connection is proven end to end. The child is `cat` reading its stdin,
+    // as a supervisor wrapper does: it exits on EOF, so it is still running
+    // after the handshake only if the client holds stdin open.
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let adapter = tokio::spawn(async move {
+        let port = port_rx.await.map_err(std::io::Error::other)?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
         let (stream, _) = listener.accept().await?;
@@ -609,11 +659,27 @@ async fn spawn_command_tcp_retries_until_the_adapter_listens() -> TestResult {
         run_adapter(BufReader::new(read), write, full_script(), Arc::clone(&log)).await;
         Ok::<_, std::io::Error>(commands(&log))
     });
-    let mut command = tokio::process::Command::new("sh");
-    command.args(["-c", "exec sleep 30"]);
-    let mut client = DapClient::spawn_command_tcp(command, port).await?;
+    let spec = DapSpec {
+        command: "sh".to_owned(),
+        args: vec!["--port".to_owned(), "${port}".to_owned()],
+        transport: DapTransport::Tcp,
+    };
+    let mut client = DapClient::spawn_with(&spec, |spec| {
+        let port = spec.args[1]
+            .parse()
+            .map_err(|e| DapError::Launch(format!("unsubstituted port: {e}")))?;
+        let _ = port_tx.send(port);
+        let mut command = tokio::process::Command::new(&spec.command);
+        command
+            .args(["-c", "exec cat >/dev/null", "sh"])
+            .args(&spec.args);
+        Ok(command)
+    })
+    .await?;
     let caps = client.initialize("fake").await?;
     assert!(caps.support_terminate_debuggee);
+    let child = client._child.as_mut().ok_or("no child held")?;
+    assert!(child.try_wait()?.is_none(), "stdin reached EOF early");
     client.disconnect(false).await?;
     let seen = tokio::time::timeout(Duration::from_secs(5), adapter).await???;
     assert_eq!(seen, ["initialize", "disconnect"]);

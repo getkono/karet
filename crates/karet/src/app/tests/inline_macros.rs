@@ -75,6 +75,82 @@ fn markdown_code_selection_falls_back_to_plain_typing() {
 }
 
 #[test]
+fn inline_macros_read_the_shared_layered_parse_only_when_they_need_one() {
+    // Tab after a word that is not `fn` never asks for a parse.
+    let (mut app, _) = inline_macro_app("lib.rs", "let");
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(0, 3), LineCol::new(0, 3));
+    }
+    assert!(!app.try_inline_macro(karet_syntax::InlineMacroTrigger::Tab));
+    assert!(app.layered_trees.held().is_none());
+
+    // A selection the macro must check parses once, into the cache every other
+    // reader of this version shares.
+    let (mut app, _) = inline_macro_app("notes.md", "`code`");
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(0, 1), LineCol::new(0, 5));
+    }
+    assert!(!app.try_inline_macro(karet_syntax::InlineMacroTrigger::Character('[')));
+    let held = app
+        .layered_trees
+        .held()
+        .expect("the macro parsed through the cache");
+    assert_eq!(held.text, "`code`");
+    let shared = app.layered_tree().expect("the shared parse");
+    assert!(Arc::ptr_eq(&held, &shared));
+}
+
+#[test]
+fn inline_macro_refuses_a_cached_parse_of_other_text_than_it_reads() {
+    // The macro reads the tab's `text` snapshot, but the shared parse comes from
+    // `buffer`. Desync the two: the parse of `buffer` would place the selection
+    // in ordinary markdown text and expand it, yet it is of other text than the
+    // snapshot the expansion would edit, so it must be refused.
+    let (mut app, backend) = inline_macro_app("notes.md", "café is good");
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, text, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(0, 0), LineCol::new(0, 4));
+        *text = "word is good".into();
+    }
+
+    assert!(!app.try_inline_macro(karet_syntax::InlineMacroTrigger::Character('[')));
+
+    // The refusal is the guard's, not a missing parse: the cache did parse the
+    // buffer, and that parse is what was turned away.
+    let held = app
+        .layered_trees
+        .held()
+        .expect("the macro parsed the buffer through the cache");
+    assert_eq!(held.text, "café is good");
+    let TabKind::Code { text, .. } = &app.tabs[active].kind else {
+        return;
+    };
+    assert_eq!(text, "word is good");
+    let sent = backend
+        .sent
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    assert!(last_edit(&sent).is_none(), "a stale parse must not expand");
+}
+
+#[test]
 fn markdown_macro_expands_every_selected_caret_in_one_change() {
     let (mut app, backend) = inline_macro_app("notes.md", "one two");
     let active = app.active;

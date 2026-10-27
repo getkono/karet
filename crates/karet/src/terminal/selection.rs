@@ -1,7 +1,6 @@
 //! Mouse selection over the terminal grid: which kind of selection a click
 //! starts, and where a viewport cell sits in the scrolled grid.
 
-use std::time::Duration;
 use std::time::Instant;
 
 use alacritty_terminal::index::Column;
@@ -13,9 +12,7 @@ use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::Term;
 
 use super::TerminalPane;
-
-/// Two presses on the same cell within this window count as one multi-click.
-const MULTI_CLICK: Duration = Duration::from_millis(400);
+use crate::app::MULTI_CLICK_INTERVAL;
 
 /// Counts consecutive presses on one cell, cycling single → double → triple.
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,7 +26,7 @@ impl ClickTracker {
     /// which press of a run it is (1, 2, or 3; a fourth starts over).
     pub(crate) fn press(&mut self, column: u16, row: u16, now: Instant) -> u8 {
         let repeat = self.last.is_some_and(|(at, c, r)| {
-            c == column && r == row && now.saturating_duration_since(at) <= MULTI_CLICK
+            c == column && r == row && now.saturating_duration_since(at) < MULTI_CLICK_INTERVAL
         });
         self.count = if repeat && self.count < 3 {
             self.count + 1
@@ -120,6 +117,8 @@ impl TerminalPane {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -140,6 +139,21 @@ mod tests {
         assert_eq!(clicks.press(0, 0, t0), 1);
         assert_eq!(clicks.press(1, 0, t0 + Duration::from_millis(50)), 1);
         assert_eq!(clicks.press(1, 0, t0 + Duration::from_secs(2)), 1);
+    }
+
+    #[test]
+    fn a_press_exactly_one_interval_later_starts_a_new_run() {
+        let mut clicks = ClickTracker::default();
+        let t0 = Instant::now();
+        let just_inside = MULTI_CLICK_INTERVAL - Duration::from_millis(1);
+        assert_eq!(clicks.press(4, 1, t0), 1);
+        assert_eq!(clicks.press(4, 1, t0 + just_inside), 2);
+        let t1 = t0 + just_inside;
+        assert_eq!(
+            clicks.press(4, 1, t1 + MULTI_CLICK_INTERVAL),
+            1,
+            "the interval is exclusive, as in the editor"
+        );
     }
 
     #[test]

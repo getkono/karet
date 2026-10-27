@@ -1,7 +1,7 @@
 //! `karet-filetype` — the single source of truth for file-type classification and
 //! presentation metadata in the karet toolkit.
 //!
-//! It unifies three concerns that were previously scattered across the workspace:
+//! It unifies four concerns that were previously scattered across the workspace:
 //!
 //! - **Identity** — [`file_type_for_path`] resolves display, tree-sitter grammar,
 //!   LSP `languageId`, configuration selector, and [`Category`] independently,
@@ -26,11 +26,14 @@ mod icon;
 mod pairs;
 mod registry;
 
+pub use classify::BINARY_SNIFF_LEN;
 pub use classify::FileKind;
 pub use classify::SIZE_GUARD;
 pub use classify::classify;
 pub use classify::classify_ignoring_size;
 pub use classify::classify_with_guard;
+pub use classify::is_utf8_text;
+pub use classify::looks_binary;
 pub use comment::CommentTokens;
 pub use generated::BANNER_GUARD;
 pub use generated::Generated;
@@ -44,5 +47,6 @@ pub use registry::FileType;
 pub use registry::WrapMode;
 pub use registry::all_file_types;
 pub use registry::category_for_path;
+pub use registry::file_type_for_language;
 pub use registry::file_type_for_path;
 pub use registry::icon_for_path;

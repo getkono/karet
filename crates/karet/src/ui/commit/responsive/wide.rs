@@ -1,8 +1,8 @@
 //! The wide two-column commit layout, split from the responsive module to
 //! respect the per-file code-line ceiling.
 
-use super::super::list::keep_visible;
 use super::*;
+use crate::app::keep_visible;
 
 // A render helper threads every precomputed section through one call; a
 // one-use bundling struct would only add indirection.

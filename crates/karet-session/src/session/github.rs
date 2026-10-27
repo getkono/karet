@@ -19,6 +19,7 @@ use crate::api::GithubIssue;
 use crate::api::GithubLabel;
 use crate::api::GithubNewIssue;
 use crate::api::GithubNewPullRequest;
+use crate::api::GithubOperation;
 use crate::api::GithubPage;
 use crate::api::GithubPullRequest;
 use crate::api::GithubPullRequestActivity;
@@ -28,6 +29,7 @@ use crate::api::GithubVerification;
 use crate::api::GithubWorkflow;
 use crate::api::GithubWorkflowRun;
 use crate::api::RequestId;
+use crate::event_tx::EventTx;
 
 pub(super) enum GithubJob {
     Refresh,
@@ -152,44 +154,44 @@ impl Session {
             let mut client = match GitHubClient::discover().await {
                 Ok(client) => client,
                 Err(error) => {
-                    let _ = events.send((
+                    events.emit(
                         None,
                         Event::GithubError {
-                            operation: "authentication".to_string(),
+                            operation: GithubOperation::Authentication,
                             message: error.to_string(),
                         },
-                    ));
+                    );
                     return;
                 },
             };
-            let _ = events.send((
+            events.emit(
                 None,
                 Event::GithubAvailability {
                     repository: Some(map_repository(&repository)),
                     auth: map_auth(client.auth_state()),
                 },
-            ));
+            );
             while let Some((id, job, cancel)) = rx.recv().await {
                 if let GithubJob::Login { token } = job {
                     match GitHubClient::authenticate(token).await {
                         Ok(authenticated) => {
                             client = authenticated;
-                            let _ = events.send((
+                            events.emit(
                                 Some(id),
                                 Event::GithubAvailability {
                                     repository: Some(map_repository(&repository)),
                                     auth: map_auth(client.auth_state()),
                                 },
-                            ));
+                            );
                         },
                         Err(error) => {
-                            let _ = events.send((
+                            events.emit(
                                 Some(id),
                                 Event::GithubError {
-                                    operation: "sign in".to_string(),
+                                    operation: GithubOperation::SignIn,
                                     message: error.to_string(),
                                 },
-                            ));
+                            );
                         },
                     }
                     continue;
@@ -213,7 +215,7 @@ impl Session {
             self.emit(
                 Some(id),
                 Event::GithubError {
-                    operation: "eligibility".to_string(),
+                    operation: GithubOperation::Eligibility,
                     message: "the workspace root is not an eligible github.com worktree"
                         .to_string(),
                 },
@@ -235,7 +237,7 @@ async fn run_job(
     repository: &RepositoryIdentity,
     id: RequestId,
     job: GithubJob,
-    events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
 ) {
     let operation = operation_name(&job);
     let result = match job {
@@ -391,30 +393,30 @@ async fn run_job(
     let event = match result {
         Ok(event) => event,
         Err(error) => Event::GithubError {
-            operation: operation.to_string(),
+            operation,
             message: error.to_string(),
         },
     };
-    let _ = events.send((Some(id), event));
+    events.emit(Some(id), event);
 }
 
-fn operation_name(job: &GithubJob) -> &'static str {
+fn operation_name(job: &GithubJob) -> GithubOperation {
     match job {
-        GithubJob::Refresh => "refresh",
-        GithubJob::Login { .. } => "sign in",
-        GithubJob::Issues { .. } => "issues",
-        GithubJob::PullRequests { .. } => "pull requests",
-        GithubJob::Actions { .. } => "actions",
-        GithubJob::Issue { .. } => "issue detail",
-        GithubJob::PullRequest { .. } => "pull request detail",
-        GithubJob::UpdatePullRequestBody { .. } => "update pull request body",
-        GithubJob::CommentPullRequest { .. } => "comment on pull request",
-        GithubJob::MergePullRequest { .. } => "merge pull request",
-        GithubJob::SetPullRequestDraft { .. } => "update pull request readiness",
-        GithubJob::IssueMetadata => "issue metadata",
-        GithubJob::CreateIssue { .. } => "create issue",
-        GithubJob::CreatePullRequest { .. } => "create pull request",
-        GithubJob::Verification { .. } => "commit verification",
+        GithubJob::Refresh => GithubOperation::Refresh,
+        GithubJob::Login { .. } => GithubOperation::SignIn,
+        GithubJob::Issues { .. } => GithubOperation::Issues,
+        GithubJob::PullRequests { .. } => GithubOperation::PullRequests,
+        GithubJob::Actions { .. } => GithubOperation::Actions,
+        GithubJob::Issue { .. } => GithubOperation::IssueDetail,
+        GithubJob::PullRequest { .. } => GithubOperation::PullRequestDetail,
+        GithubJob::UpdatePullRequestBody { .. } => GithubOperation::UpdatePullRequestBody,
+        GithubJob::CommentPullRequest { .. } => GithubOperation::CommentPullRequest,
+        GithubJob::MergePullRequest { .. } => GithubOperation::MergePullRequest,
+        GithubJob::SetPullRequestDraft { .. } => GithubOperation::UpdatePullRequestReadiness,
+        GithubJob::IssueMetadata => GithubOperation::IssueMetadata,
+        GithubJob::CreateIssue { .. } => GithubOperation::CreateIssue,
+        GithubJob::CreatePullRequest { .. } => GithubOperation::CreatePullRequest,
+        GithubJob::Verification { .. } => GithubOperation::CommitVerification,
     }
 }
 

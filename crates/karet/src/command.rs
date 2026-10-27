@@ -19,13 +19,9 @@ mod resolve;
 #[cfg(test)]
 mod tests;
 
-// The app is a binary crate, so this compatibility re-export is not referenced
-// internally even though it preserves the command module's existing API path.
 // Only the keymap schema generator (a test) enumerates every id.
 #[cfg(test)]
 pub(crate) use ids::COMMAND_IDS;
-#[allow(unused_imports)]
-pub use resolve::ResolveNamedError;
 pub use resolve::palette;
 pub use resolve::resolve_named;
 
@@ -119,6 +115,9 @@ pub enum Command {
     TerminalScrollToTop,
     /// Scroll the active terminal back to the live screen.
     TerminalScrollToBottom,
+    /// Pick one of the configured `tasks` and run it in a new integrated
+    /// terminal, its problem matchers feeding the Problems panel.
+    RunTask,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -285,6 +284,8 @@ pub enum Command {
     ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
+    /// Leave Insert mode for Normal mode (`editor.keymap` `"vim"`/`"helix"`).
+    EnterNormalMode,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -329,6 +330,16 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show the next ghost-text proposal, or ask for some when none is on
+    /// show (Alt+]).
+    NextInlineCompletion,
+    /// Show the previous ghost-text proposal, or ask for some when none is
+    /// on show (Alt+[).
+    PrevInlineCompletion,
+    /// Sign in to GitHub through `copilot-language-server` (palette).
+    CopilotSignIn,
+    /// Sign out of GitHub through `copilot-language-server` (palette).
+    CopilotSignOut,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
     /// Show the parameter hints of the call around the caret
@@ -446,6 +457,9 @@ pub enum Command {
     /// Open the type hierarchy of the type at the caret, growing toward what
     /// derives from or implements it.
     ShowSubtypes,
+    /// Expand the selected node of the Hierarchy panel, asking the language
+    /// server for its children the first time.
+    HierarchyExpand,
     /// Rename the symbol at the caret across the workspace (F2).
     RenameSymbol,
     /// Apply the name typed into the rename prompt.
@@ -834,7 +848,6 @@ impl Command {
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
             Self::SelectView(View::Editor) => "View: Editor",
             Self::SelectView(View::GitHub) => "View: GitHub",
-            // #211: Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
@@ -842,6 +855,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
             Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "View: Show Hierarchy",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
@@ -878,6 +892,7 @@ impl Command {
             Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
             Self::TerminalScrollToTop => "Terminal: Scroll to Top",
             Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
+            Self::RunTask => "Tasks: Run Task",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
@@ -955,6 +970,7 @@ impl Command {
             Self::ExpandSelection => "Expand Selection",
             Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
+            Self::EnterNormalMode => "Enter Normal Mode",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -984,6 +1000,10 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::NextInlineCompletion => "Show Next Inline Suggestion",
+            Self::PrevInlineCompletion => "Show Previous Inline Suggestion",
+            Self::CopilotSignIn => "Copilot: Sign In",
+            Self::CopilotSignOut => "Copilot: Sign Out",
             Self::Hover => "Show Hover",
             Self::SignatureHelp => "Trigger Parameter Hints",
             Self::ToggleInlayHints => "Toggle Inlay Hints",
@@ -1038,6 +1058,7 @@ impl Command {
             Self::ShowOutgoingCalls => "Show Outgoing Calls",
             Self::ShowSupertypes => "Show Supertypes",
             Self::ShowSubtypes => "Show Subtypes",
+            Self::HierarchyExpand => "Hierarchy: Expand Node",
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",

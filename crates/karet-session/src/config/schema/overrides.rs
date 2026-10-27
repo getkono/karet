@@ -148,6 +148,8 @@ pub struct EditorOverride {
     pub semantic_comments: Option<SemanticCommentsOverride>,
     /// Partially override completion behavior.
     pub completion: Option<CompletionOverride>,
+    /// Partially override inline completion (ghost text).
+    pub inline_completion: Option<InlineCompletionOverride>,
     /// Partially override which diagnostics show their message inline.
     pub inline_diagnostics: Option<InlineDiagnosticsOverride>,
 }
@@ -172,6 +174,15 @@ pub struct CompletionOverride {
     pub enabled: Option<bool>,
     /// Override automatic completion triggering.
     pub auto_trigger: Option<bool>,
+}
+
+/// A partial per-language patch for `editor.inlineCompletion`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineCompletionOverride {
+    /// Override whether ghost text is asked for.
+    pub enabled: Option<bool>,
 }
 
 /// A partial per-language patch for [`SemanticComments`].
@@ -421,6 +432,15 @@ impl<'a> ResolvedEditor<'a> {
             base: &self.base.completion,
             override_: self.override_.and_then(|o| o.completion.as_ref()),
         }
+    }
+
+    /// Whether ghost text is asked for (`inlineCompletion.enabled`).
+    #[must_use]
+    pub fn inline_completion(self) -> bool {
+        self.override_
+            .and_then(|o| o.inline_completion.as_ref())
+            .and_then(|o| o.enabled)
+            .unwrap_or(self.base.inline_completion.enabled)
     }
 
     /// Final inline-diagnostic settings.

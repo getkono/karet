@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use karet_core::BytePos;
 use karet_core::Span as ByteSpan;
 use karet_diff::DiffOptions;
+use karet_diff::FileDiff;
+use karet_diff::FileStatus;
 use karet_diff::PreparedDiff;
 use karet_diff::TokenSpan;
 use karet_diff::diff_text;
@@ -50,7 +52,7 @@ pub(crate) fn summarize(change: &FileChange) -> ChangeSummary {
 /// Prepare a repository change for display: diff it and (when `syntax`)
 /// syntax-highlight both sides.
 pub(crate) fn prepare_change(change: FileChange, syntax: bool) -> PreparedChange {
-    prepare(
+    let mut prepared = prepare(
         change.path,
         change.old_path,
         change.status,
@@ -58,7 +60,30 @@ pub(crate) fn prepare_change(change: FileChange, syntax: bool) -> PreparedChange
         &change.old,
         &change.new,
         syntax,
-    )
+    );
+    reconcile_status(&mut prepared.diff.diff, change.status);
+    prepared
+}
+
+/// Correct the engine's guess at `diff`'s status with what the repository
+/// knows.
+///
+/// Diffing two texts reads an empty side as a missing file, but an empty file
+/// is still a file: a tracked file emptied in place is not a deletion, and an
+/// empty file that gained lines is not a creation. Left as the engine guessed,
+/// the hunk patch built from it would delete the path from the index, or fail
+/// to apply because the path is already there.
+fn reconcile_status(diff: &mut FileDiff, status: StatusKind) {
+    let created = matches!(
+        status,
+        StatusKind::Added | StatusKind::Untracked | StatusKind::Renamed | StatusKind::Copied
+    );
+    let reconciled = match diff.status {
+        FileStatus::Added if !created => FileStatus::Modified,
+        FileStatus::Removed if status != StatusKind::Deleted => FileStatus::Modified,
+        ref other => other.clone(),
+    };
+    diff.status = reconciled;
 }
 
 /// Prepare an ad-hoc diff of two texts for display. `is_binary` marks a change
@@ -214,6 +239,45 @@ mod tests {
         let prepared = prepare_change(change("notes.unknownext", "alpha\n", "beta\n"), true);
         assert!(prepared.diff.old_tokens.is_empty() && prepared.diff.new_tokens.is_empty());
         assert_eq!(prepared.diff.line_stats(), (1, 1));
+    }
+
+    /// The repository's status, not an empty side, decides whether a change
+    /// creates or deletes its file — the patch staging a hunk depends on it.
+    #[test]
+    fn empty_sides_follow_the_repository_status() {
+        let status_of = |status: StatusKind, old: &str, new: &str| {
+            let mut c = change("f.txt", old, new);
+            c.status = status;
+            prepare_change(c, false).diff.diff.status
+        };
+        // An emptied file and a filled empty file are both still there.
+        assert_eq!(
+            status_of(StatusKind::Modified, "a\n", ""),
+            FileStatus::Modified
+        );
+        assert_eq!(
+            status_of(StatusKind::Modified, "", "a\n"),
+            FileStatus::Modified
+        );
+        assert_eq!(
+            status_of(StatusKind::Conflicted, "", "a\n"),
+            FileStatus::Modified
+        );
+        // A real deletion or creation keeps the engine's reading.
+        assert_eq!(
+            status_of(StatusKind::Deleted, "a\n", ""),
+            FileStatus::Removed
+        );
+        assert_eq!(status_of(StatusKind::Added, "", "a\n"), FileStatus::Added);
+        assert_eq!(
+            status_of(StatusKind::Untracked, "", "a\n"),
+            FileStatus::Added
+        );
+        // A non-empty change is untouched.
+        assert_eq!(
+            status_of(StatusKind::Modified, "a\n", "b\n"),
+            FileStatus::Modified
+        );
     }
 
     #[test]

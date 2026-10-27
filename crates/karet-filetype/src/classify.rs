@@ -10,6 +10,16 @@ use std::path::Path;
 /// Files larger than this are classified [`FileKind::TooLarge`] (10 MiB).
 pub const SIZE_GUARD: u64 = 10 * 1024 * 1024;
 
+/// The extensions that route to [`FileKind::Markdown`], shared with the
+/// registry's Markdown entry so the two cannot drift.
+pub(crate) const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
+
+/// The extensions that route to [`FileKind::Image`], shared with the
+/// registry's Image entry so the two cannot drift.
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif",
+];
+
 /// The renderer a file should be opened with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -42,9 +52,13 @@ pub enum FileKind {
 /// first 8 KiB), and its total `len` in bytes.
 ///
 /// This deliberately does **not** distinguish code from plain text — both are
-/// [`FileKind::Text`]; the application resolves a grammar from the path. Image and
-/// PDF kinds are detected by extension and confirmed (or recovered) by magic
-/// bytes, so a mislabeled file still routes sensibly.
+/// [`FileKind::Text`]; the application resolves a grammar from the path. A known
+/// image, PDF, DOCX, notebook, or CBOR extension routes on the extension alone
+/// (the content is not checked against it). Otherwise magic bytes recover a PDF,
+/// image, or self-described CBOR file whatever its name; then content that
+/// [`looks_binary`] (a NUL in the first [`BINARY_SNIFF_LEN`] bytes) or fails
+/// [`is_utf8_text`] routes to [`FileKind::Binary`], and only text-shaped
+/// content with a markdown extension becomes [`FileKind::Markdown`].
 ///
 /// Files larger than [`SIZE_GUARD`] are [`FileKind::TooLarge`]. To route with a
 /// different ceiling — an inline preview and a full-file reader typically use very
@@ -91,12 +105,12 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     // Markdown is text-shaped (unlike image/PDF/DOCX/CBOR below), so its extension
     // alone must not skip the binary sniff below — a non-UTF-8 `.md` file needs to
     // still route to `Binary`, not silently open as broken editable text.
-    let is_markdown_ext = matches!(ext.as_deref(), Some("md" | "markdown" | "mdown" | "mkd"));
+    let is_markdown_ext = ext
+        .as_deref()
+        .is_some_and(|ext| MARKDOWN_EXTENSIONS.contains(&ext));
     if let Some(ext) = ext.as_deref() {
         match ext {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif" => {
-                return FileKind::Image;
-            },
+            _ if IMAGE_EXTENSIONS.contains(&ext) => return FileKind::Image,
             "pdf" => return FileKind::Pdf,
             // DOCX is a ZIP container (`PK\x03\x04`, ambiguous with any archive), so it is
             // routed by extension only — there is no cheap magic-byte signal in the head.
@@ -115,7 +129,7 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     if is_cbor(head) {
         return FileKind::Cbor;
     }
-    if looks_binary(head) {
+    if looks_binary(head) || !is_utf8_text(head) {
         return FileKind::Binary;
     }
     if is_markdown_ext {
@@ -146,23 +160,64 @@ fn is_image(head: &[u8]) -> bool {
         || (head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP"))
 }
 
-/// Whether `head` looks like binary content: a NUL byte, or an invalid UTF-8 byte
-/// that is not merely a multi-byte sequence truncated at the sample boundary.
-fn looks_binary(head: &[u8]) -> bool {
-    if head.contains(&0) {
-        return true;
-    }
+/// How many leading bytes [`looks_binary`] inspects for a NUL byte (8000, the
+/// window git uses to decide whether a file is binary).
+pub const BINARY_SNIFF_LEN: usize = 8000;
+
+/// Whether `head` looks like binary content: a NUL byte within its first
+/// [`BINARY_SNIFF_LEN`] bytes, git's heuristic. Bytes past the window are ignored,
+/// so a caller may pass a whole file or any longer sample.
+///
+/// This is the one binary sniff the toolkit shares, so the file explorer, the diff
+/// engine, workspace search, and git change enumeration agree about the same file. It says nothing about
+/// encoding: whether NUL-free bytes decode as UTF-8 is the separate
+/// [`is_utf8_text`] question.
+#[must_use]
+pub fn looks_binary(head: &[u8]) -> bool {
+    head.get(..BINARY_SNIFF_LEN).unwrap_or(head).contains(&0)
+}
+
+/// Whether `head` is UTF-8 text: valid UTF-8, allowing a multi-byte sequence
+/// truncated at the end of the sample (a head cut mid-character is still text).
+///
+/// [`classify`] routes content that fails this to [`FileKind::Binary`] (the hex
+/// view), because it cannot open as editable text. A NUL byte is valid UTF-8, so
+/// this does not replace [`looks_binary`].
+#[must_use]
+pub fn is_utf8_text(head: &[u8]) -> bool {
     match std::str::from_utf8(head) {
-        Ok(_) => false,
+        Ok(_) => true,
         // `error_len() == None` means the sample ended mid-character (truncation),
-        // which is fine; `Some(_)` is a genuinely invalid byte → binary.
-        Err(e) => e.error_len().is_some(),
+        // which is fine; `Some(_)` is a genuinely invalid byte → not text.
+        Err(e) => e.error_len().is_none(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Routing and the registry agree: a path the registry names Markdown or
+    /// Image opens in that renderer, whatever the extension's case.
+    #[test]
+    fn registry_markdown_and_image_extensions_route_to_their_renderer() {
+        for (ext, kind) in MARKDOWN_EXTENSIONS
+            .iter()
+            .map(|e| (*e, FileKind::Markdown))
+            .chain(IMAGE_EXTENSIONS.iter().map(|e| (*e, FileKind::Image)))
+        {
+            for name in [format!("a.{ext}"), format!("a.{}", ext.to_uppercase())] {
+                let path = Path::new(&name);
+                let expected = if kind == FileKind::Markdown {
+                    "Markdown"
+                } else {
+                    "Image"
+                };
+                assert_eq!(crate::file_type_for_path(path).name(), expected, "{name}");
+                assert_eq!(classify(path, b"plain", 5), kind, "{name}");
+            }
+        }
+    }
 
     #[test]
     fn classifies_by_extension() {
@@ -223,6 +278,44 @@ mod tests {
         let head = &full[..full.len() - 1];
         assert_eq!(
             classify(Path::new("x.txt"), head, full.len() as u64),
+            FileKind::Text
+        );
+    }
+
+    /// The sniff window is git's 8000 bytes: a NUL on its last byte is binary, one
+    /// just past it is not, and a sample shorter than the window is read whole.
+    #[test]
+    fn looks_binary_finds_a_nul_only_inside_the_sniff_window() {
+        assert!(!looks_binary(b""));
+        assert!(looks_binary(b"\x00"));
+        let mut bytes = vec![b'a'; BINARY_SNIFF_LEN + 1];
+        assert!(!looks_binary(&bytes));
+        bytes[BINARY_SNIFF_LEN - 1] = 0;
+        assert!(looks_binary(&bytes));
+        bytes[BINARY_SNIFF_LEN - 1] = b'a';
+        bytes[BINARY_SNIFF_LEN] = 0;
+        assert!(!looks_binary(&bytes));
+    }
+
+    /// Encoding is a separate question from the NUL sniff: NUL is valid UTF-8, a
+    /// truncated trailing character is still text, a stray invalid byte is not.
+    #[test]
+    fn is_utf8_text_allows_a_truncated_tail_but_not_an_invalid_byte() {
+        assert!(is_utf8_text(b""));
+        assert!(is_utf8_text(b"a\x00b"));
+        assert!(is_utf8_text(&"café".as_bytes()[..4]));
+        assert!(!is_utf8_text(b"caf\xe9!"));
+        assert!(!is_utf8_text(b"\xff"));
+    }
+
+    /// The explorer routes with the shared window: a NUL past it no longer makes
+    /// a file binary (diff and search agree it is text).
+    #[test]
+    fn nul_past_the_sniff_window_classifies_as_text() {
+        let mut head = vec![b'a'; BINARY_SNIFF_LEN + 1];
+        head[BINARY_SNIFF_LEN] = 0;
+        assert_eq!(
+            classify(Path::new("x.txt"), &head, head.len() as u64),
             FileKind::Text
         );
     }

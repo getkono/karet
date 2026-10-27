@@ -53,6 +53,9 @@ fn testbed_args(behavior: &str, report: &Path) -> Vec<String> {
 struct Harness {
     backend: Box<dyn Backend>,
     events: karet_session::EventRx,
+    /// Declared after the session so it drops after it: by then nothing is left
+    /// to elect a replacement for the brokers it reaps.
+    _brokers: BrokerReaper,
     /// Held so the temporary directories outlive the session.
     _workspace: tempfile::TempDir,
     _registry: Option<tempfile::TempDir>,
@@ -123,6 +126,7 @@ fn harness(behavior: &str, brokered: bool) -> Result<Harness, SetupError> {
     Ok(Harness {
         backend: Box::new(backend),
         events,
+        _brokers: BrokerReaper(registry.as_ref().map(|dir| dir.path().to_path_buf())),
         _workspace: workspace,
         _registry: registry,
         report,
@@ -180,6 +184,127 @@ impl Harness {
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect()
+    }
+}
+
+/// Kills, on drop, every broker published under a registry directory, together
+/// with the processes beneath it.
+///
+/// A broker is deliberately not owned by the session that elected it: it
+/// outlives every editor window until 30 seconds pass with no client. Left
+/// alone, a brokered test's broker, its supervisor and its server all outlive
+/// the test binary, and the broker's normal exit half a minute later writes an
+/// instrumented build's coverage profile while `cargo llvm-cov` may already be
+/// merging the profiles -- a half-written file that aborts the whole merge.
+///
+/// Killed leaves first, while each is idle: a `SIGKILL` that lands on a process
+/// that has not begun to exit means no profile is written at all, where a
+/// supervisor killed before its server would hand the server an EOF and race
+/// its exit. Linux only, because `/proc` is how the tree is found; elsewhere
+/// the brokers idle out on their own, as they always have.
+struct BrokerReaper(Option<PathBuf>);
+
+impl Drop for BrokerReaper {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(registry) = &self.0 {
+            reap::brokers(&registry.join("brokers"));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod reap {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::TESTBED;
+
+    /// How long a killed tree gets to disappear. Only a failure waits it out.
+    const GONE_DEADLINE: Duration = Duration::from_secs(5);
+
+    pub(super) fn brokers(directory: &Path) {
+        // A session shutting down might still elect a replacement as it goes,
+        // so look again after each kill; three rounds is plenty for that.
+        for _ in 0..3 {
+            let roots = published_brokers(directory);
+            if roots.is_empty() {
+                return;
+            }
+            let tree = with_descendants(&roots);
+            let mut kill = std::process::Command::new("kill");
+            kill.arg("-KILL");
+            // `with_descendants` lists parents first; kill the leaves first.
+            kill.args(tree.iter().rev().map(u32::to_string));
+            let _ = kill.status();
+            let deadline = Instant::now() + GONE_DEADLINE;
+            while tree.iter().any(|pid| running(*pid)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    /// The live brokers whose endpoint files sit in `directory`. The process
+    /// must still be the double: a stale endpoint names a pid that may by now
+    /// belong to anything -- the stale-endpoint test writes one naming pid 1.
+    fn published_brokers(directory: &Path) -> Vec<u32> {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let Ok(testbed) = std::fs::canonicalize(TESTBED) else {
+            return Vec::new();
+        };
+        let testbed = Some(testbed);
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter_map(|endpoint| u32::try_from(endpoint.get("pid")?.as_u64()?).ok())
+            .filter(|pid| {
+                running(*pid) && std::fs::read_link(format!("/proc/{pid}/exe")).ok() == testbed
+            })
+            .collect()
+    }
+
+    /// `roots` and everything beneath them, each parent before its children.
+    fn with_descendants(roots: &[u32]) -> Vec<u32> {
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, parent) in std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .filter_map(|pid| Some((pid, stat(pid)?.1)))
+        {
+            children.entry(parent).or_default().push(pid);
+        }
+        let mut tree = roots.to_vec();
+        let mut next = 0;
+        while let Some(pid) = tree.get(next).copied() {
+            tree.extend(children.get(&pid).into_iter().flatten().copied());
+            next += 1;
+        }
+        tree
+    }
+
+    /// Whether `pid` still runs. A zombie does not: it can write nothing more,
+    /// and where PID 1 never reaps it would otherwise be waited on forever.
+    fn running(pid: u32) -> bool {
+        stat(pid).is_some_and(|(state, _)| state != 'Z' && state != 'X')
+    }
+
+    /// A process's state and parent, from `/proc/PID/stat`. The command name
+    /// before them is parenthesised and may itself hold spaces or parentheses,
+    /// so the fields are read after its last `)`.
+    fn stat(pid: u32) -> Option<(char, u32)> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let mut fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
+        let state = fields.next()?.chars().next()?;
+        let parent = fields.next()?.parse().ok()?;
+        Some((state, parent))
     }
 }
 
@@ -636,25 +761,37 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Res
     );
 
     let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
-    let mut ruff_states = Vec::new();
-    while ruff_states.last() != Some(&LanguageServerRuntimeState::Running)
+    // Each transition keeps the runtime's own failure text beside its state.
+    // States alone made a past flake unreadable: `[Starting, Unavailable]`
+    // says the launch was judged permanent and nothing about why, and the
+    // cause (the `ETXTBSY` exec `stage_testbed` documents) had to be
+    // reconstructed from the code. The error names it outright.
+    let mut ruff_transitions = Vec::new();
+    while ruff_transitions.last().map(|(state, _)| state)
+        != Some(&LanguageServerRuntimeState::Running)
         && tokio::time::Instant::now() < deadline
     {
         let remaining = deadline - tokio::time::Instant::now();
         let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
             break;
         };
-        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event
+        if let Event::LanguageServerRuntimeChanged {
+            server,
+            state,
+            error,
+            ..
+        } = event
             && server.key() == "ruff"
         {
-            ruff_states.push(state);
+            ruff_transitions.push((state, error));
         }
     }
     assert_eq!(
-        ruff_states.last(),
+        ruff_transitions.last().map(|(state, _)| state),
         Some(&LanguageServerRuntimeState::Running),
         "Ruff must still provide diagnostics when Python's primary provider is missing; \
-         its states before the stream ended or {STARTUP_DEADLINE:?} passed: {ruff_states:?}"
+         its states and errors before the stream ended or {STARTUP_DEADLINE:?} passed: \
+         {ruff_transitions:?}"
     );
     Ok(())
 }

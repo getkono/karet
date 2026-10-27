@@ -53,6 +53,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    b(Global, true,  false, false, Char('8'), Command::SelectPanel(SidebarPanel::Hierarchy)),
     // Next / previous problem in the active file (VS Code parity). Global, so the
     // walk also works from the Problems panel, which hands focus to the editor.
     b(Global, false, false, false, F(8),      Command::NextProblem),
@@ -68,7 +69,6 @@ pub(super) static BINDINGS: &[Binding] = &[
     // mirror `Ctrl+1..6` one level up.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
-    // #211: seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('o'))], Command::ToggleOutline),
     // Screen-reclaiming modes for small terminals. `Ctrl+K Z` is VS Code's Zen
     // Mode; its maximise chord, `Ctrl+K Ctrl+M`, is the editor's Show Diagnostic
@@ -171,6 +171,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ProblemsFilter, false, false, false, Enter, Command::ProblemsFilterAccept),
     b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
     b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
+
+    // Hierarchy panel. Right and `l` grow the tree, where the shared sidebar verbs
+    // would open the row; Enter still opens it, and Left/`h` collapse or climb.
+    b(Hierarchy, false, false, false, Right,     Command::HierarchyExpand),
+    b(Hierarchy, false, false, false, Char('l'), Command::HierarchyExpand),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.
@@ -275,6 +280,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    // Alt+] / Alt+[ cycle the ghost-text proposals, asking for some when none
+    // is on show (VS Code parity). Tab, Ctrl+Right and Esc act on the ghost
+    // only while one is on show, so they are taken ahead of the keymap
+    // (`App::inline_completion_key`) rather than bound here.
+    b(Editor, false, false, true,  Char(']'), Command::NextInlineCompletion),
+    b(Editor, false, false, true,  Char('['), Command::PrevInlineCompletion),
     // Ctrl+Shift+Space shows the parameter hints (VS Code parity). Only a
     // terminal that reports Shift with Space (kitty protocol) can send it;
     // the palette reaches it everywhere.
@@ -604,4 +615,57 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SearchInput, false, false, true,  Char('r'), Command::SearchToggleRegex),
     b(SearchInput, false, false, true,  Char('c'), Command::SearchToggleCase),
     b(SearchInput, false, false, true,  Char('w'), Command::SearchToggleWord),
+
+    // Modal editing (`editor.keymap`). The Normal layers hold the commands a
+    // fixed key can name; motions, operators, counts, registers and macros
+    // are the grammar in `super::vi`, which takes every plain key these leave
+    // unbound. Neovim's defaults for the language-server keys (`grr`, `grn`,
+    // `gra`, `gri`, `gO`, `[d`/`]d`).
+    b(VimNormal, false, false, false, Char('u'), Command::Undo),
+    b(VimNormal, true,  false, false, Char('r'), Command::Redo),
+    b(VimNormal, false, false, false, Char('/'), Command::OpenFind),
+    b(VimNormal, false, false, false, Char('?'), Command::OpenFind),
+    b(VimNormal, false, false, false, Char(':'), Command::OpenCommandPalette),
+    b(VimNormal, false, false, false, Char('K'), Command::Hover),
+    b(VimNormal, true,  false, false, Char(']'), Command::GoToDefinition),
+    b(VimNormal, true,  false, false, Char('o'), Command::JumpBack),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('d'))], Command::GoToDefinition),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('D'))], Command::GoToDeclaration),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('O'))], Command::GoToSymbolInEditor),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('t'))], Command::NextTab),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('T'))], Command::PrevTab),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('r'))], Command::FindReferences),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('n'))], Command::RenameSymbol),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('a'))], Command::CodeActions),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('i'))], Command::GoToImplementation),
+    seq(VimNormal, chord(false, false, false, Char(']')), &[chord(false, false, false, Char('d'))], Command::NextProblem),
+    seq(VimNormal, chord(false, false, false, Char('[')), &[chord(false, false, false, Char('d'))], Command::PrevProblem),
+    // Helix's Normal layer: its goto (`g`) and space-mode pickers.
+    b(HelixNormal, false, false, false, Char('u'), Command::Undo),
+    b(HelixNormal, false, false, false, Char('U'), Command::Redo),
+    b(HelixNormal, false, false, false, Char('/'), Command::OpenFind),
+    b(HelixNormal, false, false, false, Char('?'), Command::OpenFind),
+    b(HelixNormal, false, false, false, Char(':'), Command::OpenCommandPalette),
+    b(HelixNormal, true,  false, false, Char('o'), Command::JumpBack),
+    b(HelixNormal, false, false, true,  Char('o'), Command::ExpandSelection),
+    b(HelixNormal, false, false, true,  Char('i'), Command::ShrinkSelection),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('d'))], Command::GoToDefinition),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('D'))], Command::GoToDeclaration),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('y'))], Command::GoToTypeDefinition),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r'))], Command::FindReferences),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('i'))], Command::GoToImplementation),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('n'))], Command::NextTab),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('p'))], Command::PrevTab),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('f'))], Command::OpenQuickOpen),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('s'))], Command::GoToSymbolInEditor),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('S'))], Command::GoToSymbolInWorkspace),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('k'))], Command::Hover),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('r'))], Command::RenameSymbol),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('a'))], Command::CodeActions),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('/'))], Command::OpenGlobalSearch),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('c'))], Command::ToggleLineComment),
+    seq(HelixNormal, chord(false, false, false, Char(']')), &[chord(false, false, false, Char('d'))], Command::NextProblem),
+    seq(HelixNormal, chord(false, false, false, Char('[')), &[chord(false, false, false, Char('d'))], Command::PrevProblem),
+    // Insert mode, shared by both presets: everything else is the editor's.
+    b(Insert, false, false, false, Esc, Command::EnterNormalMode),
 ];

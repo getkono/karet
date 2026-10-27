@@ -386,7 +386,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
     let _ = std::fs::write(&file, [0x81u8, 0x01]);
 
     let mut app = app();
-    let len = karet_fileview::viewer::SIZE_GUARD + 1;
+    let len = karet_filetype::SIZE_GUARD + 1;
     app.tabs = vec![Tab::new(
         "big.cbor",
         TabKind::Placeholder {

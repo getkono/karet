@@ -17,6 +17,10 @@ fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), true);
+    // The tab is reserved before its text arrives, so the jump is held for the
+    // first fill rather than clamped into the empty buffer.
+    assert_eq!(app.tabs[app.active].fill_caret, Some(LineCol::new(2, 4)));
+    fill_reserved_tabs(&mut app);
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert_eq!(app.focus, Focus::Editor);
@@ -36,6 +40,7 @@ fn focus_by_file_line_can_open_without_taking_the_focus() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus = Focus::Sidebar;
     app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), false);
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps the keyboard");
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
@@ -56,6 +61,7 @@ fn focus_by_file_line_resolves_a_relative_path_against_the_workspace_root() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     // VCS change paths and search hits both arrive repo-relative.
     app.focus_by_file_line(Path::new("src/main.rs"), LineCol::new(1, 0), true);
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(
         app.tabs[app.active].path(),
@@ -74,6 +80,7 @@ fn focus_by_file_line_moves_the_caret_in_an_already_open_tab() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus_by_file_line(&path, LineCol::new(0, 0), true);
+    fill_reserved_tabs(&mut app);
     let opened = app.tabs.len();
     app.focus_by_file_line(&path, LineCol::new(3, 2), true);
 
@@ -90,6 +97,7 @@ fn focus_by_file_line_clamps_a_target_past_the_end_of_the_buffer() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus_by_file_line(&dir.join("a.txt"), LineCol::new(9999, 9999), true);
+    fill_reserved_tabs(&mut app);
 
     let caret = app.tabs[app.active].editor.cursor();
     assert!(
@@ -265,7 +273,7 @@ async fn editing_a_preview_tab_promotes_it_permanently() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path_preview(&path, true);
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
     assert!(app.tabs[app.active].is_preview);
 
     app.dispatch(Command::InsertChar('x'));
@@ -306,7 +314,7 @@ async fn a_dirty_preview_is_not_silently_replaced_by_the_next_preview() {
     app.backend = Some(backend);
 
     app.open_path_preview(&a, true);
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
     assert!(app.tabs[app.active].is_preview);
 
     // Edit a.txt so a snapshot marks it dirty (and thus permanent).
@@ -586,7 +594,6 @@ fn commit_graph_browser_opens_fills_and_clamps_navigation() {
     // Backend is None in unit tests, so feed a history page directly.
     let commit = |hash: &str, summary: &str, parents: Vec<String>| Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         author: "Tester".to_string(),
         time: 0,
@@ -648,39 +655,6 @@ fn parse_rev_range_distinguishes_two_and_three_dot() {
 }
 
 #[test]
-fn open_compare_tab_builds_a_compare_tab() {
-    let mut app = app();
-    app.open_compare_tab(
-        "main".to_string(),
-        "HEAD".to_string(),
-        true,
-        vec![prepared_change("a.rs", StatusKind::Modified)],
-    );
-    match &app.tabs[app.active].kind {
-        TabKind::Compare {
-            base_label,
-            head_label,
-            merge_base,
-            files,
-            view,
-        } => {
-            assert_eq!(base_label, "main");
-            assert_eq!(head_label, "HEAD");
-            assert!(*merge_base);
-            assert_eq!(files.files.len(), 1);
-            assert_eq!(view.scroll, 0);
-        },
-        _ => panic!("expected a compare tab"),
-    }
-    // A compare tab scrolls via the shared pager arm.
-    app.scroll_lines(2);
-    assert!(matches!(
-        &app.tabs[app.active].kind,
-        TabKind::Compare { view, .. } if view.scroll == 2
-    ));
-}
-
-#[test]
 fn graph_compare_requires_a_marked_base() {
     let mut app = app();
     app.dispatch(Command::ShowCommitGraph);
@@ -691,7 +665,6 @@ fn graph_compare_requires_a_marked_base() {
         vec![
             Commit {
                 hash: "aaaa".to_string(),
-                short_hash: "aaaa".to_string(),
                 summary: "c1".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -699,7 +672,6 @@ fn graph_compare_requires_a_marked_base() {
             },
             Commit {
                 hash: "bbbb".to_string(),
-                short_hash: "bbbb".to_string(),
                 summary: "c0".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -730,7 +702,6 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
     // Build a standalone commit view with one changed file.
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: karet_vcs::Identity {
@@ -787,7 +758,6 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -857,7 +827,7 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     let file = dir.join("a.txt");
     let _ = std::fs::write(&file, "needle here\n");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -866,7 +836,7 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&file);
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
 
     app.search.query = "needle".to_string();
     app.run_global_search();

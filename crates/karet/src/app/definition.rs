@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use karet_core::DocumentLink;
 use karet_core::Location;
 
 use super::*;
@@ -272,6 +273,13 @@ impl App {
         let plain = !mouse
             .modifiers
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
+        // A language server's link first, as a click follows it first.
+        if let Some((_, link)) = self.server_link_in(tab, area, point).filter(|_| plain) {
+            return Some(DefinitionHover {
+                view: tab.view,
+                range: link.range,
+            });
+        }
         if let Some((range, _)) = self.source_link_under(area, point).filter(|_| plain) {
             return Some(DefinitionHover {
                 view: tab.view,
@@ -331,6 +339,22 @@ impl App {
     /// one: otherwise a Ctrl/Cmd+click on a link in a background split would
     /// fall through to Go to Definition.
     pub(crate) fn pane_source_link(&self, point: (u16, u16)) -> Option<String> {
+        let (tab, area) = self.pane_tab_at(point)?;
+        source_link_in(tab, area, point).map(|(_, target)| target)
+    }
+
+    /// The language server's link under the pointer at `point` in whichever
+    /// split's editor it is over, focused or not, with the document it was
+    /// listed for (see [`Self::pane_source_link`] for why any split).
+    pub(crate) fn pane_server_link(&self, point: (u16, u16)) -> Option<(DocumentId, DocumentLink)> {
+        let (tab, area) = self.pane_tab_at(point)?;
+        self.server_link_in(tab, area, point)
+            .map(|(doc, link)| (doc, link.clone()))
+    }
+
+    /// The front tab of the split whose editor is under `point`, and that
+    /// editor's viewport.
+    fn pane_tab_at(&self, point: (u16, u16)) -> Option<(&Tab, Rect)> {
         let frame = self
             .pane_frames
             .iter()
@@ -344,7 +368,28 @@ impl App {
             let stored = self.stored.get(&frame.pane)?;
             stored.tabs.get(stored.active)?
         };
-        source_link_in(tab, frame.editor_rect, point).map(|(_, target)| target)
+        Some((tab, frame.editor_rect))
+    }
+
+    /// The language server's link under the pointer at `point` in code tab
+    /// `tab`, drawn in the editor viewport `area`, with its document.
+    fn server_link_in(
+        &self,
+        tab: &Tab,
+        area: Rect,
+        point: (u16, u16),
+    ) -> Option<(DocumentId, &DocumentLink)> {
+        let pos = char_in(tab, area, point)?;
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        self.server_link_at(*doc, buffer.version(), pos)
+            .map(|link| (*doc, link))
     }
 
     /// The target of the link written in the active code tab's source under
@@ -444,12 +489,6 @@ fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, St
         end: LineCol::new(pos.line, col(link.range.end)?),
     };
     Some((range, link.target))
-}
-
-/// Whether the file at `path` is Markdown, whose inline `[text](target)`
-/// links count as source links alongside bare URLs.
-pub(crate) fn is_markdown(path: &Path) -> bool {
-    karet_filetype::file_type_for_path(path).name() == "Markdown"
 }
 
 /// The character the pointer at `point` is on in code tab `tab`, drawn in the

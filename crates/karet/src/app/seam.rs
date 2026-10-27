@@ -20,6 +20,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use karet_seam::EdgeKind;
+use karet_seam::SeamPath;
+use karet_seam::query::TermKind;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
@@ -28,9 +31,16 @@ use karet_session::api::SeamSummary;
 
 use super::pending::Pending;
 
-/// The five lens names, in display order. Mirrors `karet_seam::LENSES` without taking a
-/// dependency on the engine from the presentation layer.
-pub(crate) const LENS_NAMES: [&str; 5] = ["api", "substitution", "variation", "boundary", "hazard"];
+/// The lens names, in display order: [`karet_seam::LENSES`] by name.
+pub(crate) const LENS_NAMES: [&str; karet_seam::LENSES.len()] = {
+    let mut names = [""; karet_seam::LENSES.len()];
+    let mut index = 0;
+    while index < names.len() {
+        names[index] = karet_seam::LENSES[index].name();
+        index += 1;
+    }
+    names
+};
 
 /// What has keyboard focus inside the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -633,18 +643,36 @@ impl SeamViewState {
     /// could not be handed back as something the reader can inspect.
     pub(crate) fn as_query(&self) -> String {
         let mut terms = Vec::new();
-        match self.narrow.last() {
-            Some(Narrow::Scope(id)) => terms.push(format!("in:{id}")),
-            Some(Narrow::Pivot { edge, from, .. }) => {
-                terms.push(format!("pivot:{edge}:{from}"));
-            },
-            None => {},
+        if let Some(narrow) = self.narrow.last() {
+            terms.push(narrow_term(narrow));
         }
         terms.extend(self.lenses.iter().map(|lens| format!("lens:{lens}")));
         if !self.query.trim().is_empty() {
             terms.push(self.query.trim().to_owned());
         }
         terms.join(" ")
+    }
+}
+
+/// The query term a narrow serializes to.
+///
+/// The term is built as a [`TermKind`] and rendered through its `Display`, which writes a
+/// path holding whitespace or a `"` — an impl block such as `pkg::{impl Render for
+/// Widget}` — in the quoting form the query parser reads back. A path or edge name the
+/// query language cannot represent falls back to the bare text, which is what the reader
+/// would otherwise have typed.
+fn narrow_term(narrow: &Narrow) -> String {
+    match narrow {
+        Narrow::Scope(id) => id.parse::<SeamPath>().map_or_else(
+            |_| format!("in:{id}"),
+            |path| TermKind::In(path).to_string(),
+        ),
+        Narrow::Pivot { edge, from, .. } => {
+            match (EdgeKind::from_name(edge), from.parse::<SeamPath>()) {
+                (Some(edge), Ok(target)) => TermKind::Pivot { edge, target }.to_string(),
+                _ => format!("pivot:{edge}:{from}"),
+            }
+        },
     }
 }
 

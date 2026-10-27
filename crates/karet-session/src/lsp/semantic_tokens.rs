@@ -40,6 +40,7 @@ use tokio::task::AbortHandle;
 use tokio::task::JoinSet;
 
 use super::commands::OpenDocument;
+use super::folding::FoldFetches;
 use super::message::LspUpdate;
 use super::pull::Pulls;
 use super::slot::SlotKey;
@@ -211,24 +212,28 @@ impl SemanticFetches {
 }
 
 /// The per-version fetches a connection makes for its open documents --
-/// diagnostic pulls and semantic tokens -- launched, abandoned and stopped
-/// together, so the server task treats them as one.
+/// diagnostic pulls, semantic tokens and folding ranges -- launched, abandoned
+/// and stopped together, so the server task treats them as one.
 pub(super) struct DocumentFetches {
     pulls: Pulls,
     semantic: SemanticFetches,
+    folds: FoldFetches,
 }
 
 impl DocumentFetches {
-    /// Fetches whose semantic tokens are gated on `semantic`.
-    pub(super) fn new(semantic: watch::Receiver<bool>) -> Self {
+    /// Fetches whose semantic tokens are gated on `semantic`, and whose
+    /// folding ranges are asked only of a `primary` slot.
+    pub(super) fn new(semantic: watch::Receiver<bool>, primary: bool) -> Self {
         Self {
             pulls: Pulls::default(),
             semantic: SemanticFetches::new(semantic),
+            folds: FoldFetches::new(primary),
         }
     }
 
     /// Launch every fetch the documents' sent versions call for (see
-    /// [`Pulls::launch_ready`] and [`SemanticFetches::launch_ready`]).
+    /// [`Pulls::launch_ready`], [`SemanticFetches::launch_ready`] and
+    /// [`FoldFetches::launch_ready`]).
     pub(super) fn launch_ready(
         &mut self,
         client: &Arc<LspClient>,
@@ -238,26 +243,29 @@ impl DocumentFetches {
     ) {
         self.pulls.launch_ready(client, documents, pending, slot);
         self.semantic.launch_ready(client, documents, pending, slot);
+        self.folds.launch_ready(client, documents, pending, slot);
     }
 
     /// Stop every fetch; the connection is gone.
     pub(super) fn abandon(&mut self) {
         self.pulls.abandon();
         self.semantic.abandon();
+        self.folds.abandon();
     }
 
     /// Stop every fetch and wait until each has let go of the client.
     pub(super) async fn shutdown(&mut self) {
         self.pulls.shutdown().await;
         self.semantic.shutdown().await;
+        self.folds.shutdown().await;
     }
 
     /// Resolve when a document skipped or already asked may need fetching
     /// now: a capability registration, a semantic-highlighting change, or a
-    /// semantic-token refresh. Cancel-safe.
+    /// semantic-token or diagnostic refresh. Cancel-safe.
     pub(super) async fn woken(&mut self) {
         tokio::select! {
-            () = self.pulls.registered() => {},
+            () = self.pulls.woken() => {},
             () = self.semantic.changed() => {},
         }
     }
@@ -352,6 +360,6 @@ async fn ask(
 /// Whether `error` is LSP's `ServerCancelled` (`-32802`): the server gave up
 /// on the request and expects the client to ask again. The code survives only
 /// in the message `karet-lsp` formats for a peer error.
-fn is_server_cancelled(error: &LspError) -> bool {
+pub(super) fn is_server_cancelled(error: &LspError) -> bool {
     matches!(error, LspError::Server(message) if message.contains("code -32802"))
 }

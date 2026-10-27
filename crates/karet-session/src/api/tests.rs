@@ -136,6 +136,28 @@ fn github_token_refuses_to_serialize() {
     assert!(result.is_err(), "a credential must not cross the seam");
 }
 
+/// A GitHub failure names its operation as a typed variant, so a client reads
+/// the same operation back after the seam rather than a label to re-match.
+#[test]
+fn github_error_carries_its_operation_across_the_seam() -> Result<(), serde_json::Error> {
+    let error = Event::GithubError {
+        operation: GithubOperation::CommitVerification,
+        message: "HTTP 422".into(),
+    };
+    let back: Event = serde_json::from_str(&serde_json::to_string(&error)?)?;
+    assert!(
+        matches!(
+            back,
+            Event::GithubError {
+                operation: GithubOperation::CommitVerification,
+                ..
+            }
+        ),
+        "{back:?}"
+    );
+    Ok(())
+}
+
 /// The identifiers' and defaults' documented answers. Constructing a payload
 /// proves nothing the compiler does not, so only observable answers are pinned.
 #[test]

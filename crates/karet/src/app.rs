@@ -29,10 +29,12 @@ mod hit;
 mod hover;
 mod indent;
 mod inlay;
+mod inline_completion;
 mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
+mod link_color;
 mod linked_editing;
 mod markdown_edit;
 mod mouse;
@@ -62,12 +64,14 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+mod tasks;
 #[cfg(feature = "terminal")]
 mod terminal;
 pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
 mod util;
+pub(crate) mod vi;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -110,11 +114,14 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
-pub(crate) use definition::is_markdown;
+#[cfg(test)]
+pub(crate) use debugging::DebugPanel;
+pub(crate) use debugging::DebugRow;
 pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
 pub(crate) use editor::column::ColumnSelect;
 pub(crate) use editor::column::ColumnStep;
+use graphics::GraphicsCaret;
 pub(crate) use hit::*;
 pub(crate) use inlay::InlayHintHit;
 use karet_core::BlameAttribution;
@@ -144,6 +151,7 @@ use karet_filetype::WrapMode;
 use karet_filetype::file_type_for_path;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
+use karet_fileview::viewer::human_size;
 use karet_search::SearchQuery;
 use karet_search::search_chunks;
 use karet_session::Backend;
@@ -211,6 +219,8 @@ pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use language_servers::LanguageServerQuestion;
+pub(crate) use link_color::HeldColors;
+pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
 pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
@@ -219,37 +229,43 @@ pub(crate) use problems::ProblemsPanel;
 pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use search::SearchPanel;
+pub(crate) use search::SearchPanelField;
+pub(crate) use search::SearchRow;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
 pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
+pub(crate) use spelling::SpellingPanel;
+pub(crate) use spelling::SpellingRow;
 pub(crate) use state::*;
+pub(crate) use todos::TodoRow;
+pub(crate) use todos::TodosPanel;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
 use util::close_prompt_choices;
+pub(crate) use util::commit_rails;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
-use util::human_bytes;
+pub(crate) use util::is_markdown;
+pub(crate) use util::keep_visible;
 use util::load_theme;
 use util::move_path;
 use util::parse_rev_range;
-use util::path_contains_or_equals;
 use util::path_under;
 use util::rebase_path;
 use util::rect_contains;
+pub(crate) use util::relative_time;
 use util::retarget_tab_path;
 use util::row_in_rect;
 use util::same_path;
 use util::tab_at;
 pub(crate) use util::tab_language;
 use util::unique_child_path;
-use util::word_at;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
-use crate::compat;
-use crate::compat::GraphicsCaret;
 use crate::keymap::Context;
 use crate::keymap::EditorTab;
 use crate::keymap::Focus;
@@ -339,6 +355,9 @@ pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 /// Delay before rendering non-blocking loading text. Fast operations can complete
 /// without visual churn; slower ones get an explicit, stable placeholder.
 pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// How soon a press must follow the last one to continue its multi-click streak,
+/// in the editor, the shell's other surfaces, and the terminal grid alike.
+pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Maximum graceful wait for a repository mutation during application shutdown.
 const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -469,6 +488,9 @@ pub struct App {
     pub(crate) pending_swaps: Option<Vec<SwapInfo>>,
     /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
     pub(crate) pending: Vec<KeyChord>,
+    /// Modal editing (`editor.keymap` `"vim"`/`"helix"`): the mode, registers,
+    /// macros and the command being typed.
+    pub(crate) vi: vi::ViState,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// The workspace-spelling panel state.
@@ -553,6 +575,10 @@ pub struct App {
     pub(crate) problems: ProblemsPanel,
     /// The Problems panel's per-frame chrome.
     pub(crate) problems_ui: ProblemsChrome,
+    /// The Hierarchy panel state: the call or type tree being walked.
+    pub(crate) hierarchy: hierarchy::HierarchyPanel,
+    /// The Hierarchy panel's per-frame chrome.
+    pub(crate) hierarchy_ui: hierarchy::HierarchyChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -576,6 +602,9 @@ pub struct App {
     /// The quick-fix menu's pending request, the action being run, and the
     /// gutter lightbulb's probe.
     pub(crate) code_actions: code_actions::CodeActions,
+    /// Ghost text: the pending ask and what is on offer (see
+    /// [`inline_completion`]).
+    pub(crate) inline_completion: inline_completion::InlineCompletions,
     /// The occurrence-highlight probe and what it found (see [`occurrences`]).
     pub(crate) occurrences: occurrences::Occurrences,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
@@ -615,6 +644,9 @@ pub struct App {
     /// The frame cap terminal output repaints under.
     #[cfg(feature = "terminal")]
     terminal_frame: terminal::TerminalFrame,
+    /// The configured tasks running (or run) in terminals.
+    #[cfg(feature = "terminal")]
+    tasks: tasks::TaskRuns,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even
@@ -652,20 +684,10 @@ pub struct App {
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The closers auto-inserted by the last keystrokes, open to type-over.
     auto_closers: Option<autopair::AutoClosers>,
-    /// The in-flight completion request, if any (see [`crate::completion`]).
-    pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
-    /// The open completion popup, if any.
-    pub(crate) completion: Option<crate::completion::CompletionUi>,
-    /// The trigger and commit characters the server completing in each
-    /// document last answered with there; dropped when the document closes.
-    pub(crate) completion_chars: HashMap<DocumentId, karet_core::CompletionOptions>,
-    /// An accepted item's additional edits, still on their way.
-    pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
-    /// The snippet an accepted completion is still being filled in through,
-    /// if any (see [`crate::completion::SnippetSession`]).
-    pub(crate) snippet: Option<crate::completion::SnippetSession>,
-    /// The reusable fuzzy matcher backing the completion popup's filtering.
-    pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Completion: the request in flight, the open popup, each document's
+    /// trigger and commit characters, an accepted item's follow-up, the snippet
+    /// being filled in, and the matcher (see [`completion`]).
+    pub(crate) completion: completion::Completion,
     /// The in-flight hover request, if any (see [`crate::hover`]).
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The Expand Selection waiting on the server's selection ranges, if any
@@ -687,23 +709,17 @@ pub struct App {
     /// Each document's code lenses, the requests for them, and a lens run
     /// awaiting its answer (see [`code_lens`]).
     pub(crate) code_lenses: code_lens::CodeLensState,
+    /// Each document's language-server links and colours, the requests for
+    /// them, and a link resolve awaiting its answer (see [`link_color`]).
+    pub(crate) links_colors: link_color::LinkColorState,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
-    /// The debug session's lifecycle, mirrored from `Event::DebugState`.
-    pub(crate) debug_state: karet_session::DebugSessionState,
-    /// The status-line detail for the current debug state.
-    pub(crate) debug_detail: String,
+    /// The debug session: lifecycle, console, Debug panel, and stop location
+    /// (see [`debugging`]).
+    pub(crate) debugger: debugging::Debugger,
     /// Armed breakpoints per absolute file path: line → verified.
     pub(crate) breakpoints:
         std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
-    /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
-    pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
-    /// The Debug sidebar panel (stack, variables tree, evaluate log).
-    pub(crate) debug_panel: DebugPanel,
-    /// The Debug panel's last-frame hit-test data.
-    pub(crate) debug_ui: DebugChrome,
-    /// Where the debuggee is stopped, for the stopped-line tint.
-    pub(crate) debug_stopped: Option<(PathBuf, u32)>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or
@@ -711,11 +727,15 @@ pub struct App {
     /// the attach silently did nothing. [`runtime::attach_backend`] drains
     /// this, which is the one path both the live shell and `--capture` share.
     pub(crate) startup_commands: Vec<Command>,
-    /// Parser-backed resolver for the seeded inline-macro catalog.
-    inline_macro_engine: karet_syntax::InlineMacroEngine,
+    /// The last layered tree-sitter parse a UI-thread reader asked for (comment
+    /// toggling, Enter and paste indentation, Expand Selection, inline macros), reused while the
+    /// document and its buffer version are unchanged.
+    layered_trees: syntax_select::LayeredTreeCache,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, ViewId>,
+    /// In-flight range diffs, mapping request id → the compare tab reserved for it.
+    pending_compare: HashMap<RequestId, ViewId>,
     /// Explicit LaTeX build requests mapped to their reserved preview view.
     latex_previews: HashMap<RequestId, ViewId>,
     /// Lazy forge-verification reads, owned by their exact commit view.
@@ -733,6 +753,9 @@ pub struct App {
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
+    /// Whether the command line asked for a startup view or focus (`--view`,
+    /// `--focus`), which a restored workspace layout must leave in place.
+    startup_surface_requested: bool,
     /// In-flight commit-graph history pages, each owned by the exact view that asked.
     /// Keyed this way so an answering [`SessionEvent::VcsLog`] fills that view rather
     /// than the sidebar log — or, with several graph views open, the wrong one.
@@ -743,6 +766,8 @@ pub struct App {
     pub(crate) seam_query_req: Option<RequestId>,
     /// The in-flight seam node-detail request.
     pub(crate) seam_node_req: Option<RequestId>,
+    /// Package discovery behind the Seam start-point picker, run off the UI thread.
+    pub(crate) seam_discovery: seam::roots::RootDiscovery,
     /// Requests cancelled because their owning view closed. Late queued events
     /// bearing these ids are ignored and cannot resurrect UI.
     cancelled_requests: HashSet<RequestId>,

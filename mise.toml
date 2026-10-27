@@ -77,6 +77,282 @@ run = """cargo mutants --package karet-session \
   --file 'crates/karet-session/src/session/retirement.rs' \
   -- --all-features"""
 
+# Opt-in mutation scopes over the pure, synchronously tested modules: no
+# process, network or clock in the code under test, so a surviving mutant
+# points straight at a loose test rather than at a deadline it waited out.
+# Process-, network- and clock-bound modules (wakatime, aicommit, the notebook
+# kernel, dap, latex, watch) are deliberately left out. Like `mutants`, none of
+# these is in `verify` and none runs in CI; each is kept green, so a survivor
+# is a regression in the tests. `timeout` is the wall-clock cap on the whole
+# run: a run that outgrows it stops instead of running on unattended.
+# `mutants-all` runs every scope in turn.
+#
+# Green means no mutant is missed. cargo-mutants exits 3 when the only problem
+# is a timeout, and a timeout here is a mutant that turns a loop infinite (a
+# cursor that stops advancing, say): the suite never passes it, so it is
+# caught, and each run below accepts exit 3 as well as 0 (the `trap` turns a 3
+# into a 0 on the way out). Exit 2 (missed) and every other failure still fail
+# the task. `cargo mutants` stays the last command so that arguments after
+# `--` reach it: `mise run mutants-text -- -j 8`. Four jobs run at once unless
+# `CARGO_MUTANTS_JOBS` or `-j` says otherwise; the caps are sized for that.
+#
+# An equivalent mutant (one no input can tell apart from the original) is
+# excluded by an `--exclude-re` that names its file, line, operator and
+# function, with the argument written beside it. The line anchor is
+# deliberate: when an edit moves the code, the exclusion stops matching and the
+# mutant reappears as missed, so a stale argument can never hide a different
+# mutant. Re-check the argument and update the line when that happens.
+[tasks.mutants-text]
+description = "Opt-in: mutation-test karet-text's apply, history, read and load (cap 20m)"
+timeout = "20m"
+# Equivalent mutants, excluded with their argument:
+# - apply.rs `old_end_char > start_char` -> `>=` in `mutate`: when the two are
+#   equal the range is empty, and removing an empty range leaves the rope as it
+#   was, so the guard only skips a no-op.
+# - read.rs `end - start < needle.len()` -> `end + start <` / `==` in `find`: a
+#   fast path. The chunk loop only searches bytes inside `[start, end)`, so a
+#   span shorter than the needle finds nothing there either; skipping the early
+#   return changes the work done, never the answer. (`<=` is not equivalent and
+#   is caught: an exact fit must match.)
+# - read.rs `needle.len() - 1` -> `+` / `/` (the boundary head) in `find`: a
+#   boundary match is only taken when it starts inside the carry, and such a
+#   match ends within `needle.len() - 1` bytes of the head; extra head bytes
+#   are never part of a match that is taken.
+# - read.rs `at < boundary_len` -> `<=` in `find`: a match starting at
+#   `boundary_len` lies wholly in the current piece, which the very next search
+#   finds at the same offset (`carry_start + boundary_len == piece_start`).
+# - read.rs `keep = needle.len() - 1` -> `+` / `/`, `carry.len() > keep` ->
+#   `>=` / `==` in `find`: all keep the same or more carry than needed. A
+#   match lying wholly in earlier carry bytes would already have been returned
+#   when those bytes were searched, so the extra bytes never produce an answer.
+#   (The variants that keep less, or underflow, are caught by the one- and
+#   two-byte needles in the boundary tests.)
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-text --all-features \
+  --file 'crates/karet-text/src/apply.rs' \
+  --file 'crates/karet-text/src/history.rs' \
+  --file 'crates/karet-text/src/read.rs' \
+  --file 'crates/karet-text/src/load.rs' \
+  --exclude-re 'apply\\.rs:215:\\d+: replace > with >= in TextBuffer::mutate' \
+  --exclude-re 'read\\.rs:50:\\d+: replace (- with \\+|< with ==) in TextBuffer::find' \
+  --exclude-re 'read\\.rs:68:\\d+: replace - with [+/] in TextBuffer::find' \
+  --exclude-re 'read\\.rs:72:\\d+: replace < with <= in TextBuffer::find' \
+  --exclude-re 'read\\.rs:82:\\d+: replace - with [+/] in TextBuffer::find' \
+  --exclude-re 'read\\.rs:83:\\d+: replace > with (>=|==) in TextBuffer::find'"""
+
+[tasks.mutants-diff]
+description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 60m)"
+timeout = "60m"
+# Equivalent mutants, excluded with their argument:
+# - parse/path.rs `|` -> `^` joining the three octal digits in `decode_path`:
+#   each digit is below 8, so `d1 << 6`, `d2 << 3` and `d3` occupy disjoint
+#   bits (6-7, 3-5, 0-2) and OR equals XOR for every input.
+# - intraline.rs `dp[i][j - 1]` -> `dp[i][j / 1]` in the `lcs_tokens`
+#   backtrack: the branch runs only when the tokens differ, where
+#   `dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])`, so `up >= left` and
+#   `up >= dp[i][j]` both hold exactly when `up == dp[i][j]`.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-diff --all-features \
+  --file 'crates/karet-diff/src/engine.rs' \
+  --file 'crates/karet-diff/src/parse/*.rs' \
+  --file 'crates/karet-diff/src/patch.rs' \
+  --file 'crates/karet-diff/src/intraline.rs' \
+  --file 'crates/karet-diff/src/prepared.rs' \
+  --file 'crates/karet-diff/src/align.rs' \
+  --exclude-re 'path\\.rs:8[78]:\\d+: replace \\| with \\^ in decode_path' \
+  --exclude-re 'intraline\\.rs:114:43: replace - with / in lcs_tokens'"""
+
+[tasks.mutants-core]
+description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
+timeout = "20m"
+# Equivalent mutant, excluded with its argument:
+# - edit.rs `leader.head < leader.anchor` -> `<=` in `normalize_tracking`: the
+#   two differ only when the leader is a caret, which happens only when no
+#   member of the merge is non-empty. Carets collide only when they coincide,
+#   so then `lo == hi` and both branches build the same caret.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-core --all-features \
+  --file 'crates/karet-core/src/edit.rs' \
+  --file 'crates/karet-core/src/highlight.rs' \
+  --file 'crates/karet-core/src/coord.rs' \
+  --file 'crates/karet-core/src/capability.rs' \
+  --file 'crates/karet-core/src/graph.rs' \
+  --exclude-re 'edit\\.rs:389:\\d+: replace < with <= in CursorState::normalize_tracking'"""
+
+[tasks.mutants-cbor]
+description = "Opt-in: mutation-test karet-cbor's diagnostic-notation parser and printer (cap 20m)"
+timeout = "20m"
+# Equivalent mutants, excluded with their argument:
+# - `(hi << 4) | lo` -> `^` in `parse_bytes`: `hi << 4` has its low four bits
+#   clear and `lo` is a single hex digit (< 16), so the operands share no set
+#   bit and OR equals XOR for every input.
+# - `f < 0.0` -> `<=` in `format_float`: the comparison runs only for an
+#   infinite `f`, which is never `0.0`, so both pick the same sign.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-cbor --all-features \
+  --file 'crates/karet-cbor/src/diag.rs' \
+  --file 'crates/karet-cbor/src/diag/*.rs' \
+  --exclude-re 'parse\\.rs:276:\\d+: replace \\| with \\^ in Parser::parse_bytes' \
+  --exclude-re 'print\\.rs:49:\\d+: replace < with <= in format_float'"""
+
+[tasks.mutants-seam]
+description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 60m)"
+timeout = "60m"
+# Equivalent mutants, excluded with their argument:
+# - id.rs `i + 1` -> `i * 1` (the end of the last `}`) in `parse_segment`: the
+#   `#` search then starts at the `}` itself instead of just past it, and a
+#   `}` is never a `#`, so `rfind` lands on the same byte either way.
+# - regroup.rs `at < pending.len()` -> `<=` in `apply`: at `at == len` the
+#   `pending.get(at)` that follows is `None` and the loop breaks, so the extra
+#   iteration does nothing.
+# - query/eval.rs `candidates.len() < index.len()` -> `<=` in `evaluate`: when
+#   the two are equal every node is already a candidate, so the orphan pass
+#   finds none and appends nothing.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-seam --all-features \
+  --file 'crates/karet-seam/src/query/*.rs' \
+  --file 'crates/karet-seam/src/config/predicate.rs' \
+  --file 'crates/karet-seam/src/id.rs' \
+  --file 'crates/karet-seam/src/regroup.rs' \
+  --file 'crates/karet-seam/src/rollup.rs' \
+  --exclude-re 'id\\.rs:251:\\d+: replace \\+ with \\* in parse_segment' \
+  --exclude-re 'regroup\\.rs:43:\\d+: replace < with <= in apply' \
+  --exclude-re 'eval\\.rs:53:\\d+: replace < with <= in evaluate'"""
+
+[tasks.mutants-editor]
+description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 120m)"
+timeout = "120m"
+# `--lib`: every karet-editor test is a unit test (the crate has no `tests/`
+# directory and no runnable doctests), so building the doctest harness for
+# each of the ~800 mutants would only add time.
+#
+# Equivalent mutants, excluded with their argument:
+# - conflict.rs `conflict.end + 1` -> `* 1` / `- 1` in `conflict_decorations`:
+#   the scan resumes one or two lines early, on the conflict's own closing
+#   lines. A complete conflict holds no start marker after its first line
+#   (one would have made it nested, not complete), so those lines are skipped
+#   as non-starts and the scan reaches `end + 1` anyway.
+# - conflict.rs `end + 1` -> `* 1` / `- 1` (the resume past a nested set) in
+#   `parse_conflict`: line `end` is an end marker, and line `end - 1` can only
+#   be a start marker of a different width (one of the same width would have
+#   kept the nesting depth above zero at `end`), whose next line is then an
+#   end marker of the wrong width, which abandons it at once. Either way the
+#   scan resumes at `end + 1` with nothing decorated in between.
+# - text.rs `end < runs.len()` -> `<=` in `word_at`, `end < runs.len()` ->
+#   `<=` in `class_run`, and the three `i < runs.len()` -> `<=` in
+#   `next_word_boundary`: one step past the last cluster the lookup yields no
+#   word char, no class, or the `' '` sentinel, which is whitespace, so every
+#   loop and branch stops exactly where it would have.
+# - text.rs `at + 1` -> `at * 1` in `class_run`: `end` then starts at `at`,
+#   whose class is `class` by definition, so the loop's first step sets it to
+#   `at + 1` anyway.
+# - text.rs the `(_, true)` arm deleted, or `r.start < from` -> `<=`, in
+#   `find_next`: on the wrapped revisit of `from`'s line the extra matches are
+#   the ones at or after `from`, every one of which the first visit already
+#   offered to `taken` and had rejected. `taken` is a pure predicate (the one
+#   caller, `EditorState`, passes a lookup over the current selections), so it
+#   rejects them again, and matches before `from` still come first.
+# - text.rs `chars.len() < cap` -> `>` in `row_window`: it only decides
+#   whether a line shorter than the window returns at once or doubles on until
+#   another bound stops it; every pass then reads the same whole short line,
+#   so the chars returned are identical.
+# - editing/comment.rs `pos.col > e.col` -> `>=` (twice) in `map`: equality
+#   reaches the first branch when the edit removes nothing, and otherwise
+#   `pos.col < end`, where the inside-a-removal branch subtracts zero.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-editor --all-features --cargo-test-arg=--lib \
+  --file 'crates/karet-editor/src/text.rs' \
+  --file 'crates/karet-editor/src/bracket.rs' \
+  --file 'crates/karet-editor/src/conflict.rs' \
+  --file 'crates/karet-editor/src/editing.rs' \
+  --file 'crates/karet-editor/src/editing/*.rs' \
+  --exclude-re 'conflict\\.rs:62:\\d+: replace \\+ with [*-] in conflict_decorations' \
+  --exclude-re 'conflict\\.rs:104:85: replace \\+ with [*-] in parse_conflict' \
+  --exclude-re 'text\\.rs:58:\\d+: replace < with <= in word_at' \
+  --exclude-re 'text\\.rs:109:\\d+: replace \\+ with \\* in class_run' \
+  --exclude-re 'text\\.rs:110:\\d+: replace < with <= in class_run' \
+  --exclude-re 'text\\.rs:168:\\d+: (delete match arm \\(_, true\\)|replace < with <=) in find_next' \
+  --exclude-re 'text\\.rs:28[479]:\\d+: replace < with <= in next_word_boundary' \
+  --exclude-re 'text\\.rs:461:24: replace < with > in row_window' \
+  --exclude-re 'comment\\.rs:38[68]:\\d+: replace > with >= in map'"""
+
+[tasks.mutants-session-pure]
+description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 180m)"
+timeout = "180m"
+# `--lib`: these modules are covered by their in-file unit tests. The
+# `tests/` targets spawn real language servers, which is exactly the
+# process-bound work this scope keeps out, and would multiply every mutant's
+# test time.
+#
+# Equivalent mutants, excluded with their argument:
+# - config/load.rs the `!prefix.is_empty()` guards (`!` deleted, or the guard
+#   made `true`, or the empty-object guard made `false`) in `mark_explicit`: a
+#   nested empty object still reaches the leaf arm and records the same path,
+#   so the only key these can add or drop is the empty root path `""`.
+#   `report_from_sources` then keeps only keys whose first segment is a known
+#   section, which `""` never is.
+# - config/load.rs `to_object` returning an empty map, or its
+#   `Ok(Value::Object(map))` arm deleted: the merge then starts from no
+#   defaults instead of the serialized ones. `deserialize_sections` starts
+#   from `Settings::default()` and leaves a missing section at its default,
+#   and every section is `#[serde(default)]` over that same `Default`, whose
+#   maps and lists are empty, so a layer's partial section deserializes to the
+#   same value whether or not the defaults were merged under it.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
+  --file 'crates/karet-session/src/lsp/delta.rs' \
+  --file 'crates/karet-session/src/lsp/hint_flight.rs' \
+  --file 'crates/karet-session/src/lsp_registry/archive.rs' \
+  --file 'crates/karet-session/src/config/load.rs' \
+  --file 'crates/karet-session/src/cancellation.rs' \
+  --file 'crates/karet-session/src/highlight.rs' \
+  --file 'crates/karet-session/src/vcs_worker/linediff.rs' \
+  --file 'crates/karet-session/src/backup.rs' \
+  --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with (true|false)) in mark_explicit' \
+  --exclude-re 'load\\.rs:491:\\d+: replace match guard !prefix\\.is_empty\\(\\) with true in mark_explicit' \
+  --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)'"""
+
+[tasks.mutants-app]
+description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 180m)"
+timeout = "180m"
+# Equivalent mutants, excluded with their argument:
+# - terminal/input.rs `MOUSE_MOTION | MOUSE_DRAG` -> `^` in `encode_mouse`:
+#   the two are distinct single bits (1 << 6 and 1 << 13 in
+#   alacritty_terminal), so XOR builds the same mask as OR.
+# - terminal/input.rs `column > 223 || row > 223` -> `&&` in `encode_mouse`:
+#   the guard restates what `byte` already enforces, since `32 + value` fits a
+#   `u8` only up to 223. A coordinate past 223 on either axis still returns
+#   `None`, from `byte` instead of from the guard.
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
+cargo mutants --package karet --all-features \
+  --file 'crates/karet/src/keymap/chord.rs' \
+  --file 'crates/karet/src/terminal/input.rs' \
+  --file 'crates/karet/src/cli.rs' \
+  --file 'crates/karet/src/command/resolve.rs' \
+  --exclude-re 'input\\.rs:203:\\d+: replace \\| with \\^ in encode_mouse' \
+  --exclude-re 'input\\.rs:230:21: replace \\|\\| with && in encode_mouse'"""
+
+[tasks.mutants-all]
+description = "Opt-in: run every pure-module mutation scope in turn (cap is the sum of theirs)"
+run = [
+  "mise run mutants-text",
+  "mise run mutants-diff",
+  "mise run mutants-core",
+  "mise run mutants-cbor",
+  "mise run mutants-seam",
+  "mise run mutants-editor",
+  "mise run mutants-session-pure",
+  "mise run mutants-app",
+]
+
 [tasks.test-servers-live]
 description = "Opt-in: really install and start every managed language server (network, minutes)"
 run = "cargo test -p karet-session --features testbed --test managed_install_matrix -- --ignored --nocapture --test-threads=1"
@@ -129,13 +405,27 @@ run = [
   "cargo check -p karet-diff --no-default-features",
   "cargo check -p karet-graph --no-default-features",
   "cargo check -p karet-theme --no-default-features",
+  # The backend's shipped default and its lean build: `lint` sees karet-session
+  # only with every feature on, so code a disabled feature leaves dead is
+  # invisible there (issue #756).
+  "cargo clippy -p karet-session --all-targets -- -D warnings",
+  "cargo clippy -p karet-session --all-targets --no-default-features -- -D warnings",
 ]
 
 [tasks.coverage]
 description = "Generate the CI coverage artifact and print its summary"
+# `--failure-mode all`: skip a profile that cannot be merged (with a warning)
+# rather than fail the whole gate on it; still fail if none merges. Every test
+# has already passed by the time profiles merge, and an instrumented process
+# killed while writing its profile leaves a half-written `.profraw` -- which
+# production code does on purpose: the hidden supervisor `SIGKILL`s its child's
+# group when its parent goes, and a child seeing that EOF may already be
+# exiting. Losing that one process's counts is a smaller coverage signal, not
+# a reason to fail the merge gate (issue #623). Both commands merge, so both
+# carry the flag.
 run = [
-  "cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info",
-  "cargo llvm-cov report --summary-only",
+  "cargo llvm-cov --workspace --all-features --failure-mode all --lcov --output-path lcov.info",
+  "cargo llvm-cov report --failure-mode all --summary-only",
 ]
 
 [tasks.verify]

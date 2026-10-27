@@ -1,17 +1,19 @@
 //! `karet-text` — a headless text-editing model for the karet toolkit.
 //!
-//! A rope-backed [`TextBuffer`] with editing history plus a cursor/selection model
-//! (the [`cursor`] module), usable by any editor backend (TUI or otherwise)
-//! without pulling in rendering dependencies. It is the one place that converts
-//! between byte offsets and line/column positions, since that requires the rope —
-//! including the UTF-16 conversions LSP needs at its edge.
+//! A rope-backed [`TextBuffer`] with editing history, usable by any editor backend
+//! (TUI or otherwise) without pulling in rendering dependencies. Cursors and
+//! selections are not modelled here; they live in `karet_core::CursorState`.
+//! It is the one place that converts between byte offsets and line/column
+//! positions, since that requires the rope — including the UTF-16 conversions
+//! LSP needs at its edge.
 //!
 //! The mutation surface ([`apply`](TextBuffer::apply) / [`undo`](TextBuffer::undo)
-//! / [`redo`](TextBuffer::redo)) records an in-memory edit [`history`] and reports
+//! / [`redo`](TextBuffer::redo)) records an in-memory edit history and reports
 //! each applied edit back as an [`AppliedEdit`] (with tree-sitter-shaped points) so
 //! a parse host can reparse incrementally. Loading ([`load`](TextBuffer::load)) is
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
-//! is atomic and round-trips the detected encoding.
+//! round-trips the detected encoding and is atomic, falling back to a direct
+//! overwrite only where the temp-file rename fails.
 
 use std::io::Read;
 
@@ -78,7 +80,7 @@ pub enum TextError {
 ///
 /// Tracks a monotonically increasing edit `version` (used to validate
 /// [`Change`](karet_core::Change)s under optimistic concurrency), an in-memory
-/// undo/redo [`History`], and the detected line-ending / encoding so a save
+/// undo/redo history, and the detected line-ending / encoding so a save
 /// round-trips the on-disk form. The dirty state is derived from the normalized
 /// text content relative to the last loaded/saved content, so undo and equivalent
 /// manual edits both clear it.
@@ -166,6 +168,11 @@ impl TextBuffer {
     }
 
     /// Whether the buffer has unsaved changes relative to the last save point.
+    ///
+    /// Compares a hash of the current text with the hash taken at the last save
+    /// point, so editing back to the saved text reads as clean. The hash is
+    /// recomputed over the whole rope on every call, so each call costs O(buffer
+    /// length).
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         text_hash(&self.rope) != self.saved_text_hash
@@ -369,6 +376,12 @@ impl TextBuffer {
     /// Convert a UTF-16 `(line, column)` (as LSP speaks) to an internal [`LineCol`]
     /// with a UTF-32 (`char`) column. A column landing inside a surrogate pair is
     /// rounded down to the start of that `char`.
+    ///
+    /// A column past the line's content is clamped to the content length, never
+    /// counting the line's trailing line break, as the LSP specification asks and
+    /// as [`line_col_to_utf16`](Self::line_col_to_utf16) does in the other
+    /// direction. A `line` past the last line is returned unchanged with column 0,
+    /// so that result still does not address a position inside the buffer.
     #[must_use]
     pub fn utf16_to_line_col(&self, line: u32, utf16_col: u32) -> LineCol {
         let line_idx = line as usize;
@@ -376,9 +389,10 @@ impl TextBuffer {
             return LineCol::new(line, 0);
         }
         let lslice = self.rope.line(line_idx);
+        let content = lslice.slice(..line_content_chars(lslice));
         let mut units = 0u32;
         let mut col = 0u32;
-        for c in lslice.chars() {
+        for c in content.chars() {
             let width = c.len_utf16() as u32;
             // Stop before any char we cannot fully include, so an offset landing
             // inside a surrogate pair rounds down to that char's start.
@@ -439,27 +453,20 @@ fn text_hash(rope: &ropey::Rope) -> u64 {
     // against one recorded by an earlier run, so it cannot move with the
     // toolchain. The length is folded in first so a chunk boundary cannot
     // collide with a different split of the same bytes.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    let mut fold = |bytes: &[u8]| {
-        for byte in bytes {
-            hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
-        }
-    };
-    fold(&rope.len_bytes().to_le_bytes());
-    for chunk in rope.chunks() {
-        fold(chunk.as_bytes());
-    }
-    hash
+    let hash = save::fnv1a_extend(save::FNV1A_OFFSET, &rope.len_bytes().to_le_bytes());
+    rope.chunks().fold(hash, |hash, chunk| {
+        save::fnv1a_extend(hash, chunk.as_bytes())
+    })
 }
 
-/// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.
+/// The number of `char`s in `line`, excluding its trailing line break: any
+/// break the rope splits on ([`lines::is_break`]), with `\r\n` as one break.
 fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
     let mut end = line.len_chars();
-    if end > 0 && line.char(end - 1) == '\n' {
+    if end > 0 && lines::is_break(line.char(end - 1)) {
+        let last = line.char(end - 1);
         end -= 1;
-        if end > 0 && line.char(end - 1) == '\r' {
+        if last == '\n' && end > 0 && line.char(end - 1) == '\r' {
             end -= 1;
         }
     }
@@ -469,6 +476,16 @@ fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_hash_is_fixed_by_its_definition() {
+        // A restored history snapshot is matched against this value from an
+        // earlier run: golden FNV-1a over the little-endian length, then the text.
+        assert_eq!(
+            text_hash(&ropey::Rope::from_str("hello")),
+            0xff7a_61ff_1132_0f78
+        );
+    }
 
     #[test]
     fn buffer_basics() {
@@ -632,10 +649,10 @@ mod tests {
     #[test]
     fn utf16_column_past_the_end_of_an_lf_line() {
         let b = TextBuffer::from_text("ab\ncd");
-        // Current behaviour: the column counts the line's `\n`, so it lands one
-        // past the content end (2). `line_col_to_byte` and `clamp` pull it back.
-        // Filed as #634; the fix changes this assertion deliberately.
-        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 3));
+        // The column stops at the content end (2), never counting the `\n`, so
+        // the result already addresses a position inside the buffer (#634).
+        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(0, 3), LineCol::new(0, 2));
         assert_eq!(b.clamp(b.utf16_to_line_col(0, 99)), LineCol::new(0, 2));
         assert_eq!(
             b.line_col_to_byte(b.utf16_to_line_col(0, 99)),
@@ -651,9 +668,35 @@ mod tests {
     }
 
     #[test]
+    fn utf16_column_past_the_end_excludes_every_break_type() {
+        // `\r\n` is two chars of break; a lone `\r` and U+2028 are one each.
+        let b = TextBuffer::from_text("ab\r\ncd\rx\u{2028}y");
+        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(0, 3), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(1, 99), LineCol::new(1, 2));
+        assert_eq!(b.utf16_to_line_col(2, 99), LineCol::new(2, 1));
+        assert_eq!(b.utf16_to_line_col(3, 99), LineCol::new(3, 1));
+        // Round-trips with the opposite direction at every line end.
+        for line in 0..4 {
+            let end = b.utf16_to_line_col(line, 99);
+            assert_eq!(b.utf16_to_line_col(line, b.line_col_to_utf16(end)), end);
+        }
+        // An astral char before the break still counts as one column.
+        let astral = TextBuffer::from_text("a\u{1F600}\nz");
+        assert_eq!(astral.utf16_to_line_col(0, 99), LineCol::new(0, 2));
+    }
+
+    #[test]
     fn line_accessors_on_each_break_type() {
-        // `\n` and `\r\n` are stripped from a line's content.
-        for (text, break_len) in [("a\nb", 1), ("a\r\nb", 2)] {
+        // Every break the rope splits on is stripped from a line's content,
+        // `\r\n` as one break, so a clamped end-of-line position sits before
+        // the break rather than at the next line's start.
+        for brk in [
+            "\n", "\r\n", "\r", "\u{0B}", "\u{0C}", "\u{85}", "\u{2028}", "\u{2029}",
+        ] {
+            let text = format!("a{brk}b");
+            let text = text.as_str();
+            let break_len = brk.len();
             let b = TextBuffer::from_text(text);
             assert_eq!(b.line_count(), 2, "for {text:?}");
             assert_eq!(b.line(0).as_deref(), Some("a"), "for {text:?}");
@@ -672,32 +715,22 @@ mod tests {
                 Ok(BytePos(1 + break_len))
             );
             assert_eq!(b.line(1).as_deref(), Some("b"), "for {text:?}");
+            assert_eq!(b.line_col_to_utf16(LineCol::new(0, 9)), 1, "for {text:?}");
+            // `lines` splits on the same break and agrees with `line`.
+            assert_eq!(lines(text).collect::<Vec<_>>(), vec!["a", "b"]);
         }
-        // Current behaviour for every other break the rope recognises: it
-        // splits the line, but the accessors keep the break as content, so a
-        // clamped end-of-line position is the next line's start. Filed as #633;
-        // pinned here so the fix changes it deliberately.
-        for brk in ['\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'] {
-            let text = format!("a{brk}b");
-            let end = 1 + brk.len_utf8();
-            let b = TextBuffer::from_text(&text);
-            assert_eq!(b.line_count(), 2, "for {brk:?}");
-            assert_eq!(b.line(0), Some(format!("a{brk}")), "for {brk:?}");
-            assert_eq!(
-                b.line_to_byte_range(0),
-                Some(Span {
-                    start: BytePos(0),
-                    end: BytePos(end),
-                }),
-                "for {brk:?}"
-            );
-            assert_eq!(b.clamp(LineCol::new(0, 9)), LineCol::new(0, 2));
-            assert_eq!(b.line_col_to_byte(LineCol::new(0, 9)), Ok(BytePos(end)));
-            assert_eq!(b.line_col_to_byte(LineCol::new(1, 0)), Ok(BytePos(end)));
-            assert_eq!(b.line(1).as_deref(), Some("b"), "for {brk:?}");
-            // `lines` splits on the same break, without the terminator.
-            assert_eq!(lines(&text).collect::<Vec<_>>(), vec!["a", "b"]);
-        }
+        // A `\r` not followed by `\n` is its own break: `"a\r\rb"` is three
+        // lines, the middle one empty, and neither `\r` is content.
+        let b = TextBuffer::from_text("a\r\rb");
+        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.line(0).as_deref(), Some("a"));
+        assert_eq!(b.line(1).as_deref(), Some(""));
+        assert_eq!(b.clamp(LineCol::new(1, 9)), LineCol::new(1, 0));
+        assert_eq!(b.line_col_to_byte(LineCol::new(1, 9)), Ok(BytePos(2)));
+        // `"\n\r"` is two breaks, not a reversed `\r\n`.
+        let b = TextBuffer::from_text("a\n\rb");
+        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.line(1).as_deref(), Some(""));
     }
 
     #[test]

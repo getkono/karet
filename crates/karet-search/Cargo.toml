@@ -19,14 +19,15 @@ serde = ["dep:serde"]
 
 [dependencies]
 ignore.workspace = true
+# The shared binary sniff (`looks_binary`), so search agrees with the explorer and
+# diff about which files are binary. Dependency-free.
+karet-filetype.workspace = true
 serde = { workspace = true, optional = true }
 regex.workspace = true
 regex-syntax.workspace = true
 memchr.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true             # scratch trees for the workspace walk tests
+tempfile.workspace = true             # same-directory temp file + rename for replace write-backs
 
 [lints]
 workspace = true

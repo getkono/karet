@@ -93,6 +93,7 @@ impl App {
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        self.vi_record(key);
         self.begin_inlay_key();
         self.handle_key_inner(key);
         self.end_inlay_key();
@@ -141,6 +142,8 @@ impl App {
             && key.modifiers.is_empty()
             && !self.notifications.is_empty()
             && self.input_context().modal.is_none()
+            // In a modal preset's Insert mode, Esc is the way back to Normal.
+            && self.vi_editing() != crate::keymap::Editing::Insert
         {
             self.notifications.dismiss_latest();
             return;
@@ -155,6 +158,9 @@ impl App {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
+            // A modal preset (`editor.keymap`) takes the editor's keys first:
+            // Normal mode's commands and grammar, and Insert mode's `Esc`.
+            None if self.vi_key(key) => {},
             None => {
                 // An open hover popup is dismissed by Esc before anything else
                 // sees the key; every other key falls through (and most will
@@ -165,17 +171,29 @@ impl App {
                 // The completion popup is a light key layer over the editor:
                 // it consumes only its navigation/accept/dismiss keys and lets
                 // everything else (typing, movement) fall through.
+                // A key a popup takes means something else without it, so
+                // modal editing's `.` and macros do not replay it.
                 if self.completion_key(key) {
+                    self.vi_popup_took(key);
+                    return;
+                }
+                // Ghost text on show takes Tab, Ctrl+Right and Esc, ahead of
+                // a snippet session's Tab: accepting it is what Tab was
+                // pressed for while it is the thing on screen.
+                if self.inline_completion_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // The signature popup under it takes only Esc, and Up/Down
                 // when there are overloads to cycle.
                 if self.signature_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A snippet session under them takes Tab, Shift+Tab and Esc
                 // while the caret is in the snippet.
                 if self.snippet_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A find bar left open behind the editor still closes on Esc
@@ -250,6 +268,11 @@ impl App {
         Context {
             modal,
             target: self.focus_target(),
+            editing: if modal.is_none() {
+                self.vi_editing()
+            } else {
+                crate::keymap::Editing::Modeless
+            },
         }
     }
 
@@ -267,7 +290,7 @@ impl App {
     /// input; a broken sequence is dropped.
     pub(super) fn resolve_key(&mut self, key: KeyEvent) {
         self.pending.push(KeyChord::from_event(key));
-        let ctx = Context::focus(self.focus_target());
+        let ctx = Context::focus(self.focus_target()).with_editing(self.vi_editing());
         match keymap::resolve(ctx, &self.pending) {
             Resolved::Command(command) => {
                 self.pending.clear();
@@ -436,6 +459,7 @@ impl App {
             OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
             OverlayEvent::AcceptTheme(choice) => self.accept_theme(choice),
+            OverlayEvent::AcceptTask { label, .. } => self.run_task(&label),
             OverlayEvent::AcceptLocation { path, position }
             | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);
@@ -560,15 +584,6 @@ impl App {
 
     /// Edit the overlay query with an unbound key (backspace / printable).
     pub(super) fn overlay_input(&mut self, key: KeyEvent) {
-        // A hierarchy has no query to type into: the arrows walk its tree.
-        if matches!(self.overlay, Some(Overlay::Hierarchy(_))) {
-            match key.code {
-                KeyCode::Right => self.hierarchy_expand(),
-                KeyCode::Left => self.hierarchy_collapse(),
-                _ => {},
-            }
-            return;
-        }
         // A sigil typed or deleted switches quick-open's list (`@` symbols).
         self.edit_overlay_query(|overlay| match key.code {
             KeyCode::Backspace => overlay.pop_char(),

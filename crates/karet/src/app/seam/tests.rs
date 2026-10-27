@@ -461,6 +461,81 @@ fn a_pivot_serializes_to_its_pivot_term() {
     assert_eq!(state.as_query(), "pivot:implements:pkg::net::connect");
 }
 
+/// `pkg` holding one impl block, whose braced segment carries spaces, with one method.
+fn impl_view() -> SeamViewState {
+    let block = "pkg::{impl Render for Widget}";
+    let method = "pkg::{impl Render for Widget}::render";
+    let nodes = vec![
+        node("pkg", None, &[block], [1, 0, 0, 0, 0]),
+        node(block, Some("pkg"), &[method], [1, 0, 0, 0, 0]),
+        node(method, Some(block), &[], [1, 0, 0, 0, 0]),
+    ];
+    let mut state = SeamViewState::pending(PathBuf::new());
+    state.adopt(SeamSummary::default(), nodes);
+    state
+}
+
+#[test]
+fn a_reroot_onto_a_braced_segment_with_a_space_parses_back() -> Result<(), String> {
+    let mut state = impl_view();
+    state.select_path("pkg::{impl Render for Widget}");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+
+    let query = state.as_query();
+    // Written bare, the space splits the path into three terms and leaves an unbalanced
+    // `{`; the quoting form keeps it one term.
+    assert_eq!(query, r#"in:"pkg::{impl Render for Widget}""#);
+    let parsed = karet_seam::query::parse(&query).map_err(|error| error.message)?;
+    let expected: SeamPath = "pkg::{impl Render for Widget}"
+        .parse()
+        .map_err(|error: karet_seam::SeamPathError| error.to_string())?;
+    assert_eq!(parsed.root(), Some(&expected));
+    assert_eq!(parsed.to_string(), query);
+    Ok(())
+}
+
+#[test]
+fn a_pivot_from_a_braced_segment_with_a_space_parses_back() -> Result<(), String> {
+    let mut state = impl_view();
+    let block = "pkg::{impl Render for Widget}";
+    let from = "pkg::{impl Render for Widget}::render";
+    state.select_path(from);
+    assert!(state.pivot("calls", from, vec![block.to_owned()]));
+
+    let query = state.as_query();
+    assert_eq!(
+        query,
+        r#"pivot:calls:"pkg::{impl Render for Widget}::render""#
+    );
+    let parsed = karet_seam::query::parse(&query).map_err(|error| error.message)?;
+    let target: SeamPath = from
+        .parse()
+        .map_err(|error: karet_seam::SeamPathError| error.to_string())?;
+    assert_eq!(parsed.terms.len(), 1);
+    assert!(
+        matches!(
+            &parsed.terms[0].kind,
+            TermKind::Pivot { edge: EdgeKind::Calls, target: t } if *t == target
+        ),
+        "{parsed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_narrow_the_query_language_cannot_name_keeps_its_bare_text() {
+    // An edge name the query language does not know cannot be built as a term; the text
+    // the reader would have typed is the honest fallback, not an empty query.
+    let mut state = view();
+    state.select_path("pkg::net::connect");
+    assert!(state.pivot(
+        "no-such-edge",
+        "pkg::net::connect",
+        vec!["pkg::model::Symbol".to_owned()],
+    ));
+    assert_eq!(state.as_query(), "pivot:no-such-edge:pkg::net::connect");
+}
+
 #[test]
 fn an_unnarrowed_view_serializes_to_an_empty_query() {
     let state = view();
@@ -655,4 +730,121 @@ fn a_dropped_package_takes_its_files_with_it() {
     state.finish_sync(SeamSummary::default());
 
     assert!(!state.covers(&PathBuf::from("crates/beta/src/lib.rs")));
+}
+
+/// A Cargo workspace with members `alpha` and `beta`, an app rooted on it, and the
+/// receiver its package discoveries arrive on.
+fn picker_app() -> (
+    tempfile::TempDir,
+    crate::app::App,
+    tokio::sync::mpsc::UnboundedReceiver<roots::Discovery>,
+) {
+    let dir = tempfile::Builder::new()
+        .prefix("karet-seam-picker")
+        .tempdir()
+        .expect("temp dir");
+    let _ = std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"alpha\", \"beta\"]\n",
+    );
+    for name in ["alpha", "beta"] {
+        let _ = std::fs::create_dir_all(dir.path().join(name).join("src"));
+        let _ = std::fs::write(
+            dir.path().join(name).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n"),
+        );
+    }
+    let mut app = crate::app::App::new(dir.path().to_path_buf(), Vec::new(), Vec::new(), false);
+    let rx = app.seam_discovery.take_receiver().expect("receiver");
+    (dir, app, rx)
+}
+
+/// Wait for the discovery in flight and hand it to the app, as the event loop does.
+fn land(
+    app: &mut crate::app::App,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<roots::Discovery>,
+) {
+    let discovery = rx.blocking_recv().expect("a discovery lands");
+    app.on_seam_discovery(discovery);
+}
+
+fn picker(app: &mut crate::app::App) -> &mut crate::overlay::Picker<crate::overlay::OverlayEvent> {
+    match app.overlay.as_mut() {
+        Some(crate::overlay::Overlay::Picker(picker)) => picker,
+        _ => panic!("a picker is open"),
+    }
+}
+
+fn picker_rows(app: &mut crate::app::App) -> Vec<String> {
+    picker(app)
+        .rows()
+        .iter()
+        .map(|row| (*row).to_owned())
+        .collect()
+}
+
+fn highlighted(app: &mut crate::app::App) -> Option<PathBuf> {
+    match picker(app).accepted() {
+        Some(crate::overlay::OverlayEvent::AcceptSeamRoot(root)) => Some(root.clone()),
+        _ => None,
+    }
+}
+
+fn package_rows(app: &mut crate::app::App) -> usize {
+    picker_rows(app)
+        .iter()
+        .filter(|row| row.ends_with("· package"))
+        .count()
+}
+
+#[test]
+fn the_seam_picker_opens_before_discovery_and_fills_in_when_it_lands() {
+    let (_dir, mut app, mut rx) = picker_app();
+    app.open_seam_view_picker();
+    // Open at once, workspace root first, with no package discovered yet.
+    assert!(picker_rows(&mut app)[0].contains("workspace root"));
+    assert_eq!(package_rows(&mut app), 0);
+
+    land(&mut app, &mut rx);
+    let rows = picker_rows(&mut app);
+    assert!(rows[0].contains("workspace root"), "got {rows:?}");
+    assert!(
+        rows.iter().any(|row| row.starts_with("beta")),
+        "got {rows:?}"
+    );
+}
+
+#[test]
+fn a_reopened_seam_picker_offers_the_known_packages_and_keeps_the_highlight_when_they_refresh() {
+    let (_dir, mut app, mut rx) = picker_app();
+    app.open_seam_view_picker();
+    land(&mut app, &mut rx);
+    app.overlay = None;
+
+    app.open_seam_view_picker();
+    assert!(
+        package_rows(&mut app) > 0,
+        "known packages are offered at once"
+    );
+    for _ in 1..picker_rows(&mut app).len() {
+        picker(&mut app).select_down();
+    }
+    let chosen = highlighted(&mut app);
+    assert!(picker(&mut app).selected() > 0);
+
+    // The refresh replaces every row; the reader's highlight must not jump to the top.
+    land(&mut app, &mut rx);
+    assert_eq!(highlighted(&mut app), chosen);
+}
+
+#[test]
+fn a_discovery_landing_after_the_picker_closed_leaves_the_overlay_in_its_place_alone() {
+    let (_dir, mut app, mut rx) = picker_app();
+    app.open_seam_view_picker();
+    app.overlay = Some(crate::overlay::Overlay::command_palette());
+    let before = picker_rows(&mut app);
+
+    land(&mut app, &mut rx);
+    assert_eq!(picker(&mut app).title(), "Command Palette");
+    assert_eq!(picker_rows(&mut app), before);
 }

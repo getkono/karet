@@ -164,7 +164,7 @@ fn item(label: &str) -> karet_core::CompletionItem {
 /// Open the completion popup anchored at the caret, and draw it.
 fn open_completion(rig: &mut Rig, labels: &[String]) {
     let anchor = rig.tab().editor.cursor();
-    rig.app.completion = Some(crate::completion::CompletionUi::new(
+    rig.app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         anchor,
         anchor,
@@ -175,7 +175,7 @@ fn open_completion(rig: &mut Rig, labels: &[String]) {
 }
 
 fn completion_area(rig: &Rig) -> Rect {
-    let Some(ui) = rig.app.completion.as_ref() else {
+    let Some(ui) = rig.app.completion.popup.as_ref() else {
         panic!("the popup is open");
     };
     ui.list.area()
@@ -194,7 +194,7 @@ fn clicking_a_completion_row_accepts_it() {
         "beta|\n\n\n\n",
         "the clicked row was inserted"
     );
-    assert!(rig.app.completion.is_none(), "and the popup closed");
+    assert!(rig.app.completion.popup.is_none(), "and the popup closed");
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn the_wheel_over_the_completion_popup_scrolls_the_list_not_the_text() {
         0,
         "the text under the popup did not scroll"
     );
-    let Some(ui) = rig.app.completion.as_ref() else {
+    let Some(ui) = rig.app.completion.popup.as_ref() else {
         panic!("the wheel keeps the popup open");
     };
     assert_eq!(ui.list.row_at(area.x, area.y), Some(3), "the list did");
@@ -362,7 +362,7 @@ fn a_right_click_opens_the_menu_with_cut_copy_and_paste_first() {
         panic!("a right click on text opens the menu");
     };
     let commands: Vec<Command> = menu
-        .entries
+        .entries()
         .iter()
         .take(3)
         .filter_map(ContextMenuEntry::command)

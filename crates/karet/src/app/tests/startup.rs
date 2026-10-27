@@ -82,7 +82,7 @@ fn the_install_prompt_offers_a_permanent_refusal() {
         .as_ref()
         .map(|d| {
             d.choices
-                .entries
+                .entries()
                 .iter()
                 .map(|entry| entry.label.clone().unwrap_or_default())
                 .collect()
@@ -164,6 +164,7 @@ fn open_startup_goto_positions_caret_and_focuses_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.open_startup_goto(&path, 2, 5);
+    fill_reserved_tabs(&mut app);
 
     // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
@@ -667,6 +668,36 @@ fn queued_startup_commands_wait_for_the_active_document() {
 }
 
 #[test]
+fn queued_startup_commands_wait_for_the_active_document_to_fill() {
+    // A tab bound to its document but still showing the empty placeholder
+    // holds the queue too: the command would act on no text. The first
+    // snapshot fills the tab and drains it.
+    let dir = test_dir("startup-command-fill");
+    write_file(&dir, "main.rs", b"fn main() {}\n");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.open_path(&dir.join("main.rs"));
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(9));
+    }
+    app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
+
+    app.run_startup_commands_when_ready();
+    assert_eq!(
+        app.startup_commands.len(),
+        1,
+        "an unfilled tab holds the queue"
+    );
+
+    let snapshot = buffer_snapshot(TextBuffer::from_text("fn main() {}\n"));
+    app.on_snapshot(DocumentId(9), &snapshot);
+    assert!(app.startup_commands.is_empty(), "the fill drains the queue");
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn queued_startup_commands_run_at_once_without_a_code_tab() {
     // Nothing to wait for: a session with no open document must not strand its
     // `--command` work forever.
@@ -682,7 +713,7 @@ fn queued_startup_commands_run_at_once_without_a_code_tab() {
 
 #[test]
 fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
-    use crate::app::state::placeholders_in;
+    use crate::term_caps::placeholders_in;
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |key: &str| {
             pairs
@@ -699,4 +730,40 @@ fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
         "/tmp/tmux-1/default,1,0"
     )])));
     assert!(!placeholders_in(env(&[("KONSOLE_VERSION", "240401")])));
+}
+
+/// The app's capabilities are read off the same probe `--doctor` reports: a
+/// confirmed handshake upgrades halfblocks to Kitty, only a positive OSC 22
+/// answer enables pointer shapes, and an unanswered terminal keeps every
+/// confirmed capability off.
+#[test]
+fn terminal_caps_are_read_off_the_doctor_probe() {
+    use crate::color_depth::ColorDepth;
+    use crate::term_caps::TerminalCapabilities;
+    let answered = TerminalCapabilities {
+        keyboard_enhancement: true,
+        graphics_env: GraphicsProtocol::Halfblocks,
+        kitty_graphics: Some(true),
+        osc22_pointer_shape: Some(true),
+        undercurl: true,
+        color_depth: ColorDepth::TrueColor,
+        placeholders: true,
+    };
+    let caps = TerminalCaps::from_capabilities(&answered);
+    assert_eq!(caps.graphics, GraphicsProtocol::Kitty);
+    assert!(caps.kitty_graphics && caps.kitty_keyboard && caps.pointer_shapes);
+    assert!(caps.placeholders && caps.undercurl);
+    assert_eq!(caps.pointer_shape, None);
+
+    let silent = TerminalCapabilities {
+        keyboard_enhancement: false,
+        kitty_graphics: None,
+        osc22_pointer_shape: None,
+        undercurl: false,
+        ..answered
+    };
+    let caps = TerminalCaps::from_capabilities(&silent);
+    assert_eq!(caps.graphics, GraphicsProtocol::Halfblocks);
+    assert!(!caps.kitty_graphics && !caps.kitty_keyboard && !caps.pointer_shapes);
+    assert!(!caps.placeholders && !caps.undercurl);
 }

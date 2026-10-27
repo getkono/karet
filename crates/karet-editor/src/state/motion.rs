@@ -367,10 +367,10 @@ impl EditorState {
     fn rows<'a>(&'a self, buffer: &'a TextBuffer) -> Rows<'a> {
         Rows {
             buffer,
-            folds: &self.last_folds,
+            folds: &self.frame.folds,
             layout: self.row_layout(
-                u32::from(self.last_content_width.max(1)),
-                self.last_word_wrap,
+                u32::from(self.frame.content_width.max(1)),
+                self.frame.word_wrap,
             ),
         }
     }
@@ -393,7 +393,7 @@ impl EditorState {
             subrow: self.scroll_subrow,
         };
         let mut at = normalize_visual_anchor(rows.buffer, rows.folds, rows.layout, top);
-        for row in 0..u32::from(self.last_height) {
+        for row in 0..u32::from(self.frame.height) {
             if at == target {
                 return Some(row);
             }
@@ -424,7 +424,7 @@ impl EditorState {
     /// scrolls the view by the rows the primary caret moved, so the caret
     /// keeps its place on screen.
     pub fn move_carets(&mut self, buffer: &TextBuffer, motion: Motion, extend: bool) {
-        let page = u32::from(self.last_height.max(1));
+        let page = u32::from(self.frame.height.max(1));
         let rows = self.rows(buffer);
         let goals = self.live_goals(buffer);
         let paging = matches!(motion, Motion::PageUp | Motion::PageDown);

@@ -316,6 +316,46 @@ fn a_tarred_bundle_keeps_its_executable_bit() -> TestResult {
     Ok(())
 }
 
+/// A hard link shares its target's inode, so the link entry's own header mode
+/// must not be applied: it would rewrite the mode of the file it links to.
+#[cfg(unix)]
+#[test]
+fn a_tarred_hard_link_leaves_its_targets_mode_alone() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut file = tar::Header::new_gnu();
+    file.set_size(6);
+    file.set_mode(0o755);
+    file.set_cksum();
+    builder.append_data(&mut file, "bin/tool", &b"binary"[..])?;
+    let mut link = tar::Header::new_gnu();
+    link.set_size(0);
+    link.set_mode(0o600);
+    link.set_entry_type(tar::EntryType::Link);
+    builder.append_link(&mut link, "bin/alias", "bin/tool")?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&builder.into_inner()?)?;
+    extract_archive(&encoder.finish()?, Archive::TarGzip, dir.path(), true)?;
+    assert!(dir.path().join("bin/alias").is_file());
+    assert_eq!(mode_of(&dir.path().join("bin/tool")), 0o755);
+    Ok(())
+}
+
+/// Extracting for a single executable (`all_files` off) still writes every
+/// regular file of a zip.
+#[test]
+fn a_zip_extracted_for_one_executable_still_writes_its_files() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    extract_archive(
+        &zip_with("bin/server", 0o755)?,
+        Archive::Zip,
+        dir.path(),
+        false,
+    )?;
+    assert!(dir.path().join("bin/server").is_file());
+    Ok(())
+}
+
 #[test]
 fn a_single_executable_is_extracted_and_made_runnable() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -716,6 +756,34 @@ fn the_ceiling_follows_the_publisher_but_never_exceeds_the_absolute_limit() {
     assert_eq!(download_ceiling(None), MAX_DOWNLOAD_BYTES);
     assert_eq!(download_ceiling(Some(1_000)), 1_000 + DECLARED_SIZE_SLACK);
     assert_eq!(download_ceiling(Some(u64::MAX)), MAX_DOWNLOAD_BYTES);
+}
+
+/// The sizes the constants document: 4 MiB of slack over a declared size, and
+/// a 512 MiB extraction budget that admits exactly that much and no more.
+#[test]
+fn the_slack_and_the_extraction_budget_are_the_documented_sizes() {
+    const MIB: u64 = 1024 * 1024;
+    assert_eq!(download_ceiling(Some(1_000)), 1_000 + 4 * MIB);
+    assert!(Budget::new().admits(512 * MIB).is_ok());
+    assert!(Budget::new().admits(512 * MIB + 1).is_err());
+}
+
+/// A body of exactly the ceiling is within it.
+#[test]
+fn a_body_exactly_at_the_ceiling_is_accepted() -> TestResult {
+    let declared = 10;
+    let payload = vec![7_u8; usize::try_from(download_ceiling(Some(declared)))?];
+    let server = responding_server(payload.clone(), None)?;
+    let client = Client::builder().build()?;
+    let bytes = download_verified(
+        &client,
+        &format!("http://{}/asset", server.address),
+        &sha256_of(&payload),
+        Some(declared),
+        |_, _| {},
+    )?;
+    assert_eq!(bytes.len(), payload.len());
+    Ok(())
 }
 
 /// A loopback server returning fixed bytes once.

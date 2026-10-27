@@ -1,15 +1,15 @@
 //! Color-literal detection for inline swatches: hex (`#rgb`, `#rgba`,
 //! `#rrggbb`, `#rrggbbaa`), `rgb()`/`rgba()`, and `hsl()`/`hsla()` forms.
 //!
-//! Pure text-in/data-out over one line at a time — the caller (an editor)
-//! scans its visible lines each frame and turns the answers into swatch
-//! decorations. Ranges are **character** columns, matching caret coordinates.
+//! Pure text-in/data-out over one line at a time — the swatch painter
+//! (`swatches.rs`) scans the visible lines each frame and turns the answers
+//! into swatch decorations. Ranges are **character** columns, matching caret coordinates.
 
 use std::ops::Range;
 
 /// Every color literal on `line`, as `(character range, straight RGBA)`.
 #[must_use]
-pub fn detect(line: &str) -> Vec<(Range<usize>, [u8; 4])> {
+pub(super) fn detect(line: &str) -> Vec<(Range<usize>, [u8; 4])> {
     let chars: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -145,12 +145,8 @@ fn function_at(chars: &[char], at: usize) -> Option<(usize, [u8; 4])> {
         v[3] = alpha;
         v
     };
-    Some((at_len(name_len, close), rgba))
-}
-
-/// The literal's full character length (`name(` through `)`).
-const fn at_len(_name_len: usize, close: usize) -> usize {
-    close + 1
+    // The literal's full character length: `name(` through `)`.
+    Some((close + 1, rgba))
 }
 
 /// Standard HSL → sRGB conversion.

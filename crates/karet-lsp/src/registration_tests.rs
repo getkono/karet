@@ -185,6 +185,27 @@ async fn a_closed_document_no_longer_matches_by_language() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_closed_document_is_still_asked_about_as_the_language_it_was() -> TestResult {
+    let (client, mut server) = connect(json!({})).await?;
+    let doc = Path::new("/w/a.go");
+    client.did_open(doc, "go", 1, "").await?;
+    register(
+        &mut server,
+        "go",
+        "textDocument/definition",
+        json!({"documentSelector": [{"language": "go"}]}),
+    )
+    .await;
+    client.did_close(doc).await?;
+    let feature = ServerFeature::Definition;
+    assert!(client.supports_for_language(feature, doc, "go"));
+    assert!(!client.supports_for_language(feature, doc, "rust"));
+    unregister(&mut server, "go", "textDocument/definition").await;
+    assert!(!client.supports_for_language(feature, doc, "go"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn unregistering_never_disables_an_advertised_feature() -> TestResult {
     // A server may advertise a feature and also register it, scoped; taking
     // the registration back must not take back what the handshake promised.
@@ -216,5 +237,32 @@ async fn a_registration_or_its_withdrawal_marks_the_registrations_receiver() -> 
 
     unregister(&mut server, "pull", "textDocument/diagnostic").await;
     assert!(registrations.has_changed()?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pull_registration_carries_its_inter_file_dependencies_and_withdraws_them() -> TestResult
+{
+    let (client, mut server) = connect(json!({})).await?;
+    let rust = Path::new("/w/a.rs");
+    let toml = Path::new("/w/Cargo.toml");
+    register(
+        &mut server,
+        "pull",
+        "textDocument/diagnostic",
+        json!({"documentSelector": [{"pattern": "**/*.rs"}], "interFileDependencies": true}),
+    )
+    .await;
+    assert!(client.supports_for(ServerFeature::InterFileDiagnostics, rust));
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, toml));
+
+    // A second registration without the flag adds pulls, not dependencies.
+    register(&mut server, "plain", "textDocument/diagnostic", json!({})).await;
+    assert!(client.supports_for(ServerFeature::PullDiagnostics, toml));
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, toml));
+
+    unregister(&mut server, "pull", "textDocument/diagnostic").await;
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, rust));
+    assert!(client.supports_for(ServerFeature::PullDiagnostics, rust));
     Ok(())
 }

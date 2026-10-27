@@ -6,6 +6,51 @@ const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 /// Answer to a save abandoned by a [`Command::Cancel`] naming it.
 const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
 
+/// Every language identity a document carries, resolved together so the
+/// highlighter, the display name, per-language settings, and the language server
+/// never disagree about what the document is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DocumentLanguage {
+    /// The tree-sitter grammar that parses the document, when one is compiled in.
+    pub(super) lang_id: Option<LanguageId>,
+    /// The display name (e.g. `"Rust"`).
+    pub(super) name: Option<&'static str>,
+    /// The per-language configuration and server-routing selector.
+    pub(super) selector: Option<&'static str>,
+    /// The protocol `languageId` announced to the language server.
+    pub(super) lsp_id: Option<&'static str>,
+}
+
+impl DocumentLanguage {
+    /// The language `path` is detected as.
+    pub(super) fn for_path(path: &Path) -> Self {
+        Self {
+            lang_id: language_id_from_path(path),
+            name: language_name_for_path(path),
+            selector: language_selector_for_path(path),
+            lsp_id: lsp_language_id_for_path(path),
+        }
+    }
+
+    /// The language an explicit `id` names (an LSP language id such as
+    /// `"typescriptreact"`, a configuration selector such as `"c++"`, or a display
+    /// name such as `"Rust"`), falling back to detection from `path` when `id` is
+    /// `None` or names no known language.
+    pub(super) fn resolve(path: &Path, id: Option<&str>) -> Self {
+        let Some(file_type) = id.and_then(karet_filetype::file_type_for_language) else {
+            return Self::for_path(path);
+        };
+        Self {
+            lang_id: file_type
+                .grammar()
+                .and_then(karet_treesitter::language_id_from_injection_name),
+            name: Some(file_type.name()),
+            selector: file_type.config_selector(),
+            lsp_id: file_type.lsp_language_id(),
+        }
+    }
+}
+
 impl Document {
     /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
     /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
@@ -16,9 +61,16 @@ impl Document {
                 self.dirty_since = Some(tick);
             }
         } else {
-            self.dirty_since = None;
-            self.backed_up_version = None;
+            self.mark_saved();
         }
+    }
+
+    /// Disarm the backup bookkeeping because the buffer matches what is on
+    /// disk: either a save just wrote it or an edit returned it to the save
+    /// point. The next edit that dirties it starts the backup clock afresh.
+    pub(super) fn mark_saved(&mut self) {
+        self.dirty_since = None;
+        self.backed_up_version = None;
     }
 }
 
@@ -105,12 +157,14 @@ impl Session {
                 return;
             },
         };
-        let lang_id = language_id_from_path(&path);
-        let language = language
-            .and_then(name_for_language)
-            .or_else(|| language_name_for_path(&path));
-        let language_selector = language_selector_for_path(&path);
-        let lsp_language_id = lsp_language_id_for_path(&path);
+        // An explicit id the registry knows overrides detection; anything else,
+        // including an id it does not know, falls back to the path.
+        let DocumentLanguage {
+            lang_id,
+            name: language,
+            selector: language_selector,
+            lsp_id: lsp_language_id,
+        } = DocumentLanguage::resolve(&path, language);
         let (document_settings, editorconfig_error) =
             resolve_document_settings(&path, language_selector, &self.config.settings);
         apply_serialization_settings(&mut buffer, document_settings);
@@ -142,17 +196,12 @@ impl Session {
             format,
             must_create,
             settings: document_settings,
-            highlights: Arc::new(Highlights::default()),
-            folds: Arc::new(FoldRegions::default()),
-            semantic_blocks: Arc::new(SemanticBlocks::default()),
-            syntax_symbols: Arc::default(),
-            error_lines: Arc::default(),
-            table_lines: Arc::default(),
+            syntax: SyntaxState::default(),
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             semantic_tokens: None,
-            decorations: Vec::new(),
+            server_folds: None,
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
@@ -219,7 +268,7 @@ impl Session {
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                self.events.send((Some(id), unknown_document(doc_id))).ok();
+                self.events.emit(Some(id), unknown_document(doc_id));
                 return;
             };
             let ctx = edit_context(tick, cause, doc, change);
@@ -574,8 +623,7 @@ impl Session {
             Some(Ok(_)) => {
                 // The file is safely on disk: drop the backup and disarm the clock.
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     let path = doc.path.clone();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&path);
@@ -658,8 +706,7 @@ impl Session {
         match result {
             Some(Ok(())) => {
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&doc.path);
                     }
@@ -732,16 +779,19 @@ impl Session {
         let old_language = doc.language_selector;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
-        doc.lang_id = language_id_from_path(&path);
-        doc.language = language_name_for_path(&path);
-        doc.language_selector = language_selector_for_path(&path);
         let old_lsp_language = doc.lsp_language_id;
-        doc.lsp_language_id = lsp_language_id_for_path(&path);
+        // The new path decides the language, as it would on a fresh open.
+        let detected = DocumentLanguage::for_path(&path);
+        doc.lang_id = detected.lang_id;
+        doc.language = detected.name;
+        doc.language_selector = detected.selector;
+        doc.lsp_language_id = detected.lsp_id;
         // A new language is served by another server, or none: the old one's
         // overlay does not describe it, and the version did not move, so
         // `update_syntax` would keep it.
         if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
             doc.semantic_tokens = None;
+            doc.server_folds = None;
         }
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =
@@ -813,7 +863,7 @@ impl Session {
         let events = self.events.clone();
         std::thread::spawn(move || {
             let markdown = convert_document_file(&path);
-            let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
+            events.emit(Some(id), Event::DocumentConverted { path, markdown });
         });
     }
 

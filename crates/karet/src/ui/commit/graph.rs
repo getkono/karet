@@ -114,14 +114,11 @@ fn draw_header(f: &mut Frame, theme: &Theme, area: Rect, input: &CommitGraphInpu
             let mut spans = vec![
                 Span::styled(" \u{25C9} ", theme.style(ThemeRole::DiagnosticInfo)),
                 Span::styled(
-                    tip.short_hash.clone(),
+                    tip.short_hash().to_string(),
                     theme.style(ThemeRole::DiagnosticWarning),
                 ),
                 Span::styled(format!("  {}", tip.author), muted),
-                Span::styled(
-                    format!("  committed {}", list::relative_time(tip.time)),
-                    dim,
-                ),
+                Span::styled(format!("  committed {}", relative_time(tip.time)), dim),
             ];
             let loaded = input.commits.len();
             let more = if input.has_more { "+" } else { "" };

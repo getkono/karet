@@ -50,9 +50,14 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use super::account::FollowUpTask;
 use super::code_actions::ProbeFlight;
 use super::code_lens::LensFlight;
 use super::health::FailureTally;
+use super::inline_completion;
+use super::inline_completion::InlineFlight;
+use super::inline_completion::InlineStep;
+use super::link_color::LinkColorFlight;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -140,8 +145,9 @@ pub(super) type HintAnswer = Answer<Vec<InlayHint>>;
 pub(super) type HintFlight = Flight<Hints>;
 
 /// Every background request one server task has accepted and not yet
-/// answered: its inlay-hint requests, lightbulb probes and code-lens
-/// listings, each kind capped at one running per document on its own.
+/// answered: its inlay-hint requests, lightbulb probes, code-lens listings,
+/// inline-completion asks and link-and-colour listings, each kind capped at
+/// one running per document on its own.
 #[derive(Default)]
 pub(super) struct Flights {
     /// The inlay-hint requests.
@@ -150,14 +156,38 @@ pub(super) struct Flights {
     pub(super) probes: ProbeFlight,
     /// The code-lens listings.
     pub(super) lenses: LensFlight,
+    /// The inline-completion asks.
+    pub(super) inline: InlineFlight,
+    /// The document-link and colour listings.
+    pub(super) links: LinkColorFlight,
+    /// The running completing request of the last sign-in, which the next
+    /// account step supersedes (see `account`).
+    sign_in: FollowUpTask,
 }
 
 impl Flights {
+    /// Run an inline-completion step that is not a background ask (see
+    /// [`inline_completion::serve`]), holding the sign-in completing request
+    /// it may start, so the next account step can supersede it.
+    pub(super) async fn run(
+        &mut self,
+        client: &Option<Arc<LspClient>>,
+        step: InlineStep,
+        slot: (&SlotKey, SlotToken),
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        generation: u64,
+    ) {
+        let sinks = (updates, &mut self.sign_in);
+        inline_completion::serve(client, step, slot, sinks, generation).await;
+    }
+
     /// [`Flight::launch_ready`] for every kind.
     pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
         self.hints.launch_ready(client, pending);
         self.probes.launch_ready(client, pending);
         self.lenses.launch_ready(client, pending);
+        self.inline.launch_ready(client, pending);
+        self.links.launch_ready(client, pending);
     }
 
     /// [`Flight::abandon`] for every kind.
@@ -165,6 +195,8 @@ impl Flights {
         self.hints.abandon(updates, generation);
         self.probes.abandon(updates, generation);
         self.lenses.abandon(updates, generation);
+        self.inline.abandon(updates, generation);
+        self.links.abandon(updates, generation);
     }
 
     /// [`Flight::shutdown`] for every kind.
@@ -176,6 +208,8 @@ impl Flights {
         self.hints.shutdown(updates, generation).await;
         self.probes.shutdown(updates, generation).await;
         self.lenses.shutdown(updates, generation).await;
+        self.inline.shutdown(updates, generation).await;
+        self.links.shutdown(updates, generation).await;
     }
 }
 
@@ -810,6 +844,53 @@ mod tests {
         )));
     }
 
+    /// Records the level of every event logged while it is the default.
+    #[derive(Clone, Default)]
+    struct Levels(std::sync::Arc<std::sync::Mutex<Vec<tracing::Level>>>);
+
+    impl tracing::Subscriber for Levels {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if let Ok(mut levels) = self.0.lock() {
+                levels.push(*event.metadata().level());
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The levels of the log lines delivering one hint request with `result` writes.
+    fn logged_levels(result: Result<Vec<InlayHint>, LspError>) -> Vec<tracing::Level> {
+        let levels = Levels::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        tracing::subscriber::with_default(levels.clone(), || {
+            deliver_one(&mut FailureTally::default(), &mut false, &tx, result);
+        });
+        levels.0.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_cancelled_hint_request_logs_at_debug_and_a_failed_one_warns() {
+        // Cancellation is routine while typing and must not warn; any other
+        // failure must stay visible, or a server rejecting every hint request
+        // would fail quietly forever.
+        let cancelled = LspError::Server(
+            "textDocument/inlayHint failed with code -32801: content modified".to_owned(),
+        );
+        assert_eq!(logged_levels(Err(cancelled)), [tracing::Level::DEBUG]);
+        let failed = LspError::Server(
+            "textDocument/inlayHint failed with code -32602: bad params".to_owned(),
+        );
+        assert_eq!(logged_levels(Err(failed)), [tracing::Level::WARN]);
+    }
+
     #[test]
     fn a_hint_request_on_a_closed_connection_is_still_a_death() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -832,5 +913,14 @@ mod tests {
         answered.sort_unstable();
         assert_eq!(answered, vec![(1, None), (2, None)]);
         assert!(!flight.is_busy());
+    }
+
+    #[test]
+    fn abandoning_every_flight_reaches_the_hint_requests() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flights = Flights::default();
+        flights.hints.ask(ask(1, 7), &tx, 0);
+        flights.abandon(&tx, 0);
+        assert_eq!(answers(&mut rx), vec![(1, None)]);
     }
 }

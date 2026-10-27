@@ -1,12 +1,18 @@
 use std::ops::RangeInclusive;
 
+use karet_core::LineCol;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::cluster_bounds;
+use crate::view::gutter_width;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct VisualAnchor {
@@ -781,39 +787,34 @@ pub(super) fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
-    let gutter = gutter_width(line_count, state.last_line_numbers, state.last_change_lane);
+    let frame = &state.frame;
+    let gutter = gutter_width(line_count, frame.line_numbers, frame.change_lane);
     let content_x = area.x.saturating_add(gutter);
-    let content_y = area.y.saturating_add(state.sticky_height);
-    let content_height = area.height.saturating_sub(state.sticky_height);
+    let content_y = area.y.saturating_add(frame.sticky_height);
+    let content_height = area.height.saturating_sub(frame.sticky_height);
     if content_x >= area.right() || content_height == 0 {
         return None;
     }
     let content_width = area.right().saturating_sub(content_x);
-    let wrap = state.last_word_wrap;
+    let wrap = frame.word_wrap;
     let chars = line_chars(buffer, at.line);
     // Off the buffer, past the line's end, or (unwrapped) scrolled off to
     // the left: not on screen. Drawing it pinned to an edge would show it
     // over text it is not on.
-    if at.line >= line_count || at.col > chars.len() as u32 || (!wrap && at.col < state.scroll_col)
+    if at.line >= line_count
+        || at.col > chars.len() as u32
+        || (!wrap && at.col < state.scroll_col())
     {
         return None;
     }
     let layout = state.row_layout(u32::from(content_width.max(1)), wrap);
     let target = visual_anchor_for_position(buffer, layout, at, state.upstream.contains(&at));
-    let mut anchor = normalize_visual_anchor(
-        buffer,
-        folds,
-        layout,
-        VisualAnchor {
-            line: state.scroll_line,
-            subrow: state.scroll_subrow,
-        },
-    );
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, state.top_anchor());
     // Walked row by row, virtual lines included: a line hidden in a
     // collapsed fold is never reached, so its caret is never drawn.
     for row in 0..content_height {
         if anchor == target {
-            let ranges = layout.text_rows(buffer, at.line, state.scroll_col);
+            let ranges = layout.text_rows(buffer, at.line, state.scroll_col());
             let index = target.subrow.saturating_sub(layout.above(at.line)) as usize;
             let range = ranges
                 .get(index)
@@ -824,7 +825,7 @@ pub(super) fn caret_cell(
                 &chars,
                 range.start,
                 at.col,
-                state.last_tab_width,
+                frame.tab_width,
                 layout.hints_on(at.line),
             )
             .saturating_add(range.indent);

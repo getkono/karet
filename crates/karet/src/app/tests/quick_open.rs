@@ -411,6 +411,7 @@ fn a_file_query_ending_in_a_line_opens_the_file_there() {
     type_keys(&mut app, ":3");
     assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("rs:2:3"));
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     let tab = &app.tabs[app.active];
     assert_eq!(tab.path(), Some(dir.path().join("b.rs").as_path()));
     assert_eq!(tab.editor.cursor(), LineCol::new(1, 2));
@@ -548,6 +549,7 @@ fn ctrl_t_searches_the_workspace_once_typing_pauses_and_opens_the_pick() {
         "the server's answer is shown as it gave it"
     );
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     assert!(app.overlay.is_none());
     let tab = &app.tabs[app.active];
     assert_eq!(tab.path(), Some(lib.as_path()));

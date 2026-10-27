@@ -162,18 +162,6 @@ impl SeamPreview {
         self.tokens.get(row).map_or(&[], Vec::as_slice)
     }
 
-    /// Whether `row` is one of the node's own lines rather than surrounding context.
-    #[must_use]
-    pub fn is_body(&self, row: usize) -> bool {
-        row >= self.body_start && row < self.body_end
-    }
-
-    /// Whether `row` belongs to the node's declaration head.
-    #[must_use]
-    pub fn is_head(&self, row: usize) -> bool {
-        row >= self.body_start && row < self.head_end
-    }
-
     /// The 0-based file line `lines[row]` came from.
     ///
     /// Saturates at the last known line for a row past the end, so a renderer that walks
@@ -190,22 +178,6 @@ impl SeamPreview {
     #[must_use]
     pub fn last_line(&self) -> u32 {
         self.numbers.last().copied().unwrap_or(0)
-    }
-
-    /// Whether `row` starts a run of lines that does not follow the row before it.
-    ///
-    /// True exactly where the fetch cap cut the node's middle out, which is where a
-    /// renderer has to say so rather than letting two distant lines read as neighbours.
-    #[must_use]
-    pub fn is_after_gap(&self, row: usize) -> bool {
-        let (Some(previous), Some(current)) = (
-            row.checked_sub(1)
-                .and_then(|before| self.numbers.get(before)),
-            self.numbers.get(row),
-        ) else {
-            return false;
-        };
-        *current > previous.saturating_add(1)
     }
 }
 
@@ -289,41 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn context_rows_are_not_body_rows() {
-        let preview = preview();
-        let body: Vec<bool> = (0..preview.lines.len())
-            .map(|r| preview.is_body(r))
-            .collect();
-        assert_eq!(body, [false, false, false, true, true, false, false]);
-    }
-
-    #[test]
     fn a_preview_numbers_its_rows_from_the_file_it_came_from() {
         let preview = preview();
         assert_eq!(preview.line_number(0), 8);
         assert_eq!(preview.line_number(preview.body_start), 11);
         assert_eq!(preview.last_line(), 14);
-    }
-
-    #[test]
-    fn the_head_is_the_front_of_the_body_and_never_the_context() {
-        let preview = preview();
-        let head: Vec<bool> = (0..preview.lines.len())
-            .map(|r| preview.is_head(r))
-            .collect();
-        assert_eq!(head, [false, false, false, true, false, false, false]);
-    }
-
-    #[test]
-    fn a_window_with_a_cut_middle_says_where_the_cut_is() {
-        let mut preview = preview();
-        // Rows 0..5 are lines 8..13; the tail then jumps to line 400.
-        preview.numbers = vec![8, 9, 10, 11, 12, 400, 401];
-        preview.dropped = 387;
-        let gaps: Vec<bool> = (0..preview.lines.len())
-            .map(|r| preview.is_after_gap(r))
-            .collect();
-        assert_eq!(gaps, [false, false, false, false, false, true, false]);
     }
 
     #[test]

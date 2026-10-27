@@ -15,7 +15,6 @@ use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
 use karet_vcs::StashOptions;
 
-use crate::app::hierarchy::HierarchyTree;
 use crate::command::Command;
 use crate::command::{self};
 use crate::keymap;
@@ -67,6 +66,13 @@ pub enum OverlayEvent {
     AcceptSeamRoot(PathBuf),
     /// Apply the chosen color theme for this session.
     AcceptTheme(crate::app::theme_picker::ThemeChoice),
+    /// Run the configured task with this label.
+    AcceptTask {
+        /// The task's `tasks` key.
+        label: String,
+        /// Its command line, shown beside the label but not matched.
+        command: String,
+    },
     /// Jump to one of several definition locations.
     AcceptLocation {
         /// The defining file.
@@ -128,6 +134,9 @@ pub(crate) struct BranchForm {
 }
 
 impl BranchForm {
+    /// The index of the form's last row, "Set upstream".
+    const LAST_ROW: usize = 4;
+
     fn new(remotes: Vec<String>) -> Self {
         let mut form = Self {
             name: String::new(),
@@ -206,6 +215,9 @@ pub(crate) struct StashForm {
 }
 
 impl StashForm {
+    /// The index of the form's last row, "Keep index".
+    const LAST_ROW: usize = 2;
+
     fn new() -> Self {
         let mut form = Self {
             message: String::new(),
@@ -251,6 +263,7 @@ pub(crate) struct TextPrompt {
     purpose: TextPurpose,
 }
 
+/// A boolean form row's value.
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -290,8 +303,6 @@ pub enum Overlay {
     AiCommit(aicommit::AiCommitForm),
     /// Single-value follow-up prompt.
     Text(TextPrompt),
-    /// A call or type hierarchy, expanded one level at a time.
-    Hierarchy(Box<HierarchyTree>),
 }
 
 /// The interactive-rebase plan being edited: one row per commit, oldest
@@ -338,6 +349,10 @@ impl RebaseTodoForm {
 
 /// The quick-open picker's title, which is also how it is told apart.
 const QUICK_OPEN_TITLE: &str = "Go to File";
+
+/// The Seam start-point picker's title, which is also how its rows are recognised when
+/// discovery fills them in.
+const SEAM_ROOTS_TITLE: &str = "Open Seam View at";
 
 impl Overlay {
     /// Build a quick-open overlay over `(display, path)` pairs, in rank order.
@@ -398,7 +413,37 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
             .collect();
-        Self::Picker(Picker::new("Open Seam View at", items))
+        Self::Picker(Picker::new(SEAM_ROOTS_TITLE, items))
+    }
+
+    /// Replace a Seam start-point picker's rows with ones that arrived after it opened,
+    /// keeping the query and the highlighted start point where it is still offered. Any
+    /// other overlay is left alone.
+    pub fn set_seam_roots(&mut self, items: Vec<(String, PathBuf)>) {
+        let Self::Picker(picker) = self else {
+            return;
+        };
+        if picker.title() != SEAM_ROOTS_TITLE {
+            return;
+        }
+        let highlighted = match picker.accepted() {
+            Some(OverlayEvent::AcceptSeamRoot(root)) => Some(root.clone()),
+            _ => None,
+        };
+        picker.set_items(
+            items
+                .into_iter()
+                .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
+                .collect(),
+        );
+        let row = highlighted.and_then(|highlighted| {
+            picker.values().iter().position(
+                |event| matches!(event, OverlayEvent::AcceptSeamRoot(root) if *root == highlighted),
+            )
+        });
+        for _ in 0..row.unwrap_or_default() {
+            picker.select_down();
+        }
     }
 
     /// Build the picker offered when navigation (definitions, references, …)
@@ -614,7 +659,6 @@ impl Overlay {
             Self::StashForm(_) => "Stash changes · ↑↓ fields · Space toggles",
             Self::AiCommit(_) => "AI commit options · ↑↓ fields · Space cycles · Enter saves",
             Self::Text(prompt) => &prompt.title,
-            Self::Hierarchy(tree) => tree.title(),
         }
     }
 
@@ -626,7 +670,6 @@ impl Overlay {
             Self::RebaseTodo(_) => "oldest first, as git applies them",
             Self::CreateBranch(_) | Self::StashForm(_) | Self::AiCommit(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
-            Self::Hierarchy(tree) => tree.query(),
         }
     }
 
@@ -639,7 +682,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
             Self::AiCommit(form) => form.rows().iter().map(String::as_str).collect(),
-            Self::Hierarchy(tree) => tree.rows(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -659,13 +701,13 @@ impl Overlay {
                     },
                     OverlayEvent::AcceptSymbol { detail, .. } => Some(detail.clone()),
                     OverlayEvent::AcceptTheme(choice) => Some(choice.source.label().into()),
+                    OverlayEvent::AcceptTask { command, .. } => Some(command.clone()),
                     _ => None,
                 })
                 .collect(),
             Self::CreateBranch(form) => form.rows.iter().map(|_| None).collect(),
             Self::StashForm(form) => form.rows.iter().map(|_| None).collect(),
             Self::AiCommit(form) => form.rows().iter().map(|_| None).collect(),
-            Self::Hierarchy(tree) => tree.row_hints(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -679,7 +721,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
             Self::AiCommit(form) => form.selected(),
-            Self::Hierarchy(tree) => tree.selected(),
             Self::Text(_) => 0,
         }
     }
@@ -697,7 +738,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.selected = form.selected.saturating_sub(1),
             Self::StashForm(form) => form.selected = form.selected.saturating_sub(1),
             Self::AiCommit(form) => form.select_up(),
-            Self::Hierarchy(tree) => tree.select_up(),
             Self::Text(_) => {},
         }
     }
@@ -712,10 +752,11 @@ impl Overlay {
                     .saturating_add_signed(1)
                     .min(form.steps.len().saturating_sub(1));
             },
-            Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
-            Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
+            Self::CreateBranch(form) => {
+                form.selected = (form.selected + 1).min(BranchForm::LAST_ROW);
+            },
+            Self::StashForm(form) => form.selected = (form.selected + 1).min(StashForm::LAST_ROW),
             Self::AiCommit(form) => form.select_down(),
-            Self::Hierarchy(tree) => tree.select_down(),
             Self::Text(_) => {},
         }
     }
@@ -742,7 +783,6 @@ impl Overlay {
             Self::StashForm(form) => form.push_char(c),
             Self::AiCommit(form) => form.push_char(c),
             Self::Text(prompt) => prompt.text.push(c),
-            Self::Hierarchy(_) => {},
         }
     }
 
@@ -750,7 +790,7 @@ impl Overlay {
     pub fn pop_char(&mut self) {
         match self {
             Self::Picker(p) => p.pop_char(),
-            Self::RebaseTodo(_) | Self::Hierarchy(_) => {},
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => form.pop_char(),
             Self::StashForm(form) => {
                 if form.selected == 0 {
@@ -769,7 +809,7 @@ impl Overlay {
     pub fn push_str(&mut self, text: &str) {
         match self {
             Self::Picker(p) => p.push_str(text),
-            Self::RebaseTodo(_) | Self::Hierarchy(_) => {},
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => {
                 for character in text.chars() {
                     form.push_char(character);
@@ -811,7 +851,6 @@ impl Overlay {
             Self::CreateBranch(form) => OverlayEvent::AcceptCreateBranch(form.options()),
             Self::StashForm(form) => OverlayEvent::AcceptStash(form.options()),
             Self::AiCommit(form) => OverlayEvent::AcceptAiCommit(Box::new(form.options())),
-            Self::Hierarchy(tree) => tree.accept(),
             Self::Text(prompt) => OverlayEvent::AcceptText {
                 purpose: prompt.purpose.clone(),
                 text: prompt.text.clone(),

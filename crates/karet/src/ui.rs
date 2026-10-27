@@ -31,7 +31,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub(crate) use commit::relative_time;
 use commit::*;
 use content::*;
 use display::EditorDisplay;
@@ -44,7 +43,7 @@ use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
-use karet_fileview::HexView;
+use karet_fileview::hex::HexView;
 use karet_fileview::image::GraphicsProtocol;
 #[cfg(feature = "pdf")]
 use karet_fileview::image::Image;
@@ -111,6 +110,8 @@ use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
+use crate::app::is_markdown;
+pub(crate) use crate::app::relative_time;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
@@ -300,11 +301,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
-        // Quick-open over a first walk (or a symbol request), or a hierarchy
-        // waiting on its server, that is taking a while says so.
+        // Quick-open over a first walk (or a symbol request) that is taking a
+        // while says so.
         let loading = app
             .quick_open_loading()
-            .or_else(|| app.hierarchy_loading())
             .is_some_and(|pending| pending.visible());
         draw_overlay(f, overlay, loading, &theme, area);
     }
@@ -494,6 +494,9 @@ struct PaneCtx<'a> {
     /// Code lenses keyed by backend document, in buffer columns; empty while
     /// `editor.codeLens` is off.
     code_lenses: &'a HashMap<DocumentId, Vec<karet_core::CodeLens>>,
+    /// The language servers' colours keyed by backend document, each with the
+    /// buffer version its ranges are positioned against.
+    document_colors: &'a crate::app::HeldColors,
     /// Cached document symbols keyed by backend document, for the breadcrumb's
     /// enclosing-symbol chain.
     symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,
@@ -514,6 +517,12 @@ struct PaneCtx<'a> {
     definition_underline: Option<Decoration>,
     /// The code-action lightbulb on the caret line (focused pane only).
     code_action_bulb: Option<Decoration>,
+    /// The ghost text on show at the caret: its first line after the caret
+    /// and its further lines as rows below (focused pane only).
+    inline_ghost: Option<(
+        Option<karet_core::VirtualText>,
+        Vec<karet_core::VirtualLine>,
+    )>,
     /// The occurrences of the symbol under the caret (focused pane only).
     occurrences: Vec<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
@@ -692,9 +701,7 @@ fn draw_pane_tabs(
 
 fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
     match &tab.kind {
-        TabKind::Code { path, .. }
-            if karet_filetype::file_type_for_path(path).name() == "Markdown" =>
-        {
+        TabKind::Code { path, .. } if is_markdown(path) => {
             vec![
                 (
                     UiIcon::Preview,

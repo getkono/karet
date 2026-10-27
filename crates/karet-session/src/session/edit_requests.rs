@@ -5,8 +5,9 @@
 //! Split from [`super::lsp_requests`] and [`super::documents`] to keep both
 //! under the workspace's per-file code line ceiling.
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::edits_to_buffer_columns;
+use super::columns::utf16_caret;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::api::SaveCause;
 use crate::lsp::EditingAnswer;
@@ -177,7 +178,7 @@ impl Session {
                 doc,
                 version,
                 edits: current.map_or_else(Vec::new, |document| {
-                    in_buffer_columns(&document.buffer, edits)
+                    edits_to_buffer_columns(&document.buffer, edits, Columns::Utf16)
                 }),
                 triggers,
             },
@@ -236,7 +237,7 @@ impl Session {
             let _ = self.finish_format_on_save(request, doc_id, version, Vec::new());
             return;
         };
-        let edits = in_buffer_columns(&document.buffer, edits);
+        let edits = edits_to_buffer_columns(&document.buffer, edits, Columns::Utf16);
         if !edits.is_empty() {
             let _ = self.apply_format_edits(doc_id, edits, true);
         }
@@ -289,7 +290,9 @@ impl Session {
             .filter(|document| document.buffer.version() == version);
         let edits = match current {
             None => Vec::new(),
-            Some(document) if formatted => in_buffer_columns(&document.buffer, edits),
+            Some(document) if formatted => {
+                edits_to_buffer_columns(&document.buffer, edits, Columns::Utf16)
+            },
             // No language server formatted this file -- it never offered the
             // method, was not reachable, or failed the request. That is
             // exactly the case the built-in formatter exists for, and it
@@ -301,12 +304,4 @@ impl Session {
         };
         let _ = self.finish_format_on_save(request, doc, version, edits);
     }
-}
-
-/// `edits`, from UTF-16 columns to `buffer`'s.
-fn in_buffer_columns(buffer: &TextBuffer, mut edits: Vec<TextEdit>) -> Vec<TextEdit> {
-    for edit in &mut edits {
-        edit.range = utf16_range_to_buffer(buffer, edit.range);
-    }
-    edits
 }

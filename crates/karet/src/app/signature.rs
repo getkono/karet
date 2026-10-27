@@ -260,7 +260,7 @@ impl App {
     /// while the hover popup is open: the signature popup is hidden under it,
     /// so the arrows move the caret instead of cycling an unseen overload.
     pub(super) fn signature_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_some()
+        if self.completion.popup.is_some()
             || self.hover_ui.is_some()
             || !self.editor_owns_keyboard()
             || !key.modifiers.is_empty()

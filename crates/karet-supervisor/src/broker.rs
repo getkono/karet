@@ -10,19 +10,22 @@
 //!
 //! # Layout
 //!
-//! The process-management skeleton and the message semantics are separate, so a
-//! future agent daemon can reuse the former without inheriting LSP:
+//! The process-management skeleton and the message semantics are separate, so
+//! election, endpoint publication and request routing are written and tested
+//! without knowing what any LSP message means:
 //!
 //! - [`key`], [`endpoint`], [`lease`] and [`serve`] are the skeleton — broker
 //!   identity, the published endpoint file, `O_EXCL` election plus the hidden
 //!   entry point, and the accept/serve loop with its pending-request map.
-//! - [`protocol`] is the seam: [`BrokerProtocol`] says what messages mean, and
-//!   names a [`Framing`] from `karet-jsonrpc` for how they sit on the wire. The
+//! - [`protocol`] is the seam: `BrokerProtocol` says what messages mean, and
+//!   names a `Framing` from `karet-jsonrpc` for how they sit on the wire. The
 //!   skeleton parses each frame into JSON itself, so a framing moves only bytes.
 //! - [`lsp`] is the one implementation, and the **only** module here permitted to
-//!   name the `karet-lsp` crate. Keep it that way — `grep -rn` for that crate
-//!   across `src/` should find nothing outside `src/broker/lsp.rs`: nothing in
-//!   the skeleton may learn what `initialize` or `textDocument/didOpen` is.
+//!   use the `karet-lsp` crate. Keep it that way — `grep -rn 'use karet_lsp'`
+//!   across `src/` should find nothing outside `src/broker/lsp.rs`; the skeleton
+//!   mentions that crate only in prose (as `failure` and `serve` do, to say which
+//!   of its bounds they restate): nothing in the skeleton may learn what
+//!   `initialize` or `textDocument/didOpen` is.
 
 mod endpoint;
 mod failure;
@@ -33,32 +36,25 @@ mod protocol;
 mod serve;
 
 pub use failure::BrokeredLaunchFailure;
-pub use karet_jsonrpc::Framing;
 pub use key::Launch;
-pub use lsp::MODE_ENV;
-pub use lsp::connect;
 pub use lsp::managed_payload_in_use;
 pub use lsp::requested;
 pub use lsp::run_from_env;
-pub use protocol::BrokerProtocol;
-pub use protocol::ClientFlow;
-pub use protocol::ClientId;
-pub use protocol::ClientLink;
-pub use protocol::ServerLink;
-pub use protocol::ServerRoute;
 
-/// Connect to the shared LSP broker for `launch`, and say which broker
-/// answered.
+/// Connect to the shared LSP broker for `launch`, starting it when absent, and
+/// say which broker answered.
 ///
-/// [`connect`] is the same call with the identity dropped. A caller that has to
-/// decide, after a handshake fails, whether its *own* broker is the reason
-/// needs the process id: `{key}.error` is one path shared by every broker the
-/// key ever had, and the verdict it carries is permanent, so a report credited
-/// to the wrong attempt retires a server that never failed. Pair it with
-/// [`reported_failure`].
+/// Name the launch with [`Launch::for_lsp`]. The returned stream has already
+/// completed the broker authentication prelude and can be passed directly to
+/// `karet_lsp::LspClient::connect`. The process id is what a caller needs to
+/// decide, after a handshake fails, whether its *own* broker is the reason:
+/// `{key}.error` is one path shared by every broker the key ever had, and the
+/// verdict it carries is permanent, so a report credited to the wrong attempt
+/// retires a server that never failed. Pair it with [`reported_failure`].
 ///
 /// # Errors
-/// As [`connect`].
+/// Returns [`BrokerError`] if the state directory, hidden process, or loopback
+/// connection cannot be established before the startup deadline.
 pub async fn connect_observed(
     executable: &std::path::Path,
     state_root: &std::path::Path,

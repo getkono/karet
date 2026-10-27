@@ -16,7 +16,7 @@ readme = "README.md"
 keywords.workspace     = true
 categories.workspace   = true
 
-# Zero karet dependencies by design: an ACP/LSP/DAP client core a downstream
+# Zero karet dependencies by design: a JSON-RPC 2.0 client core a downstream
 # consumer can take without inheriting `lsp-types` or the karet model crates.
 [dependencies]
 serde.workspace = true

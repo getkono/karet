@@ -5,7 +5,8 @@
 //! keep the UI loop from ever blocking on the shell: a reader feeds PTY output
 //! through the VT parser into the shared grid, and a writer drains the bytes the
 //! UI queued (keys, pastes, mouse reports, the emulator's own replies). A third
-//! waits on the child so its exit status reaches the tab.
+//! waits on the child so its exit status reaches the tab, announcing it only
+//! after the reader has parsed the output to its end (or a short bound passes).
 //!
 //! Closing a pane ends both PTY threads, so every copy of the PTY master closes
 //! and the kernel hangs up the terminal, also for a job that ignored the SIGHUP
@@ -70,6 +71,10 @@ pub(crate) const WHEEL_LINES: i32 = 3;
 /// PTY for a zero-sized window (which some shells treat as an error).
 const MIN_COLUMNS: u16 = 2;
 const MIN_ROWS: u16 = 1;
+
+/// The longest the exit announcement waits, after the shell ends, for the
+/// reader to reach the end of the PTY output.
+const EXIT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The PTY master, shared by the pane (which resizes it) and, on Unix, the
 /// reader thread (which keeps it open while it polls its descriptor).
@@ -232,18 +237,27 @@ impl TerminalHost {
         let term = Arc::new(FairMutex::new(Emulator::new_term(columns, rows, listener)));
 
         spawn_thread("karet-term-write", move || write_loop(writer, &write_rx))?;
+        // Never sent on: the reader drops it as it ends, which is what the wait
+        // thread waits for.
+        let (read_done, reader_ended) = std::sync::mpsc::channel::<()>();
         {
             let term = Arc::clone(&term);
             let events = self.tx.clone();
             let pending = Arc::clone(&output_pending);
             spawn_thread("karet-term-read", move || {
                 read_loop(output, &term, &events, id, &pending);
+                drop(read_done);
             })?;
         }
         {
             let events = self.tx.clone();
             spawn_thread("karet-term-wait", move || {
                 let status = child.wait().ok().map(|status| describe_exit(&status));
+                // Announce the exit only once the reader has parsed the shell's
+                // last output, so whoever reads the grid on the exit sees all of
+                // it. Bounded: a background job still holding the terminal open
+                // keeps the reader going, and the exit must not wait on it.
+                let _ = reader_ended.recv_timeout(EXIT_DRAIN_TIMEOUT);
                 let _ = events.send(TerminalEvent {
                     id,
                     kind: TerminalEventKind::Exited(status),

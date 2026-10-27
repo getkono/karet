@@ -42,7 +42,7 @@ pub const LENSES: [Lens; 5] = [
 impl Lens {
     /// The lens's stable name, as written in a query (`lens:substitution`).
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Api => "api",
             Self::Substitution => "substitution",

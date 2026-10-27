@@ -52,6 +52,14 @@
       "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
     },
+    "tasks": {
+      "description": "Named shell commands the Run Task picker offers, keyed by label.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Task"
+      },
+      "default": {}
+    },
     "toml": {
       "description": "TOML-specific behaviour.",
       "$ref": "#/$defs/Toml"
@@ -242,12 +250,42 @@
       },
       "additionalProperties": false
     },
+    "BuiltinMatcher": {
+      "description": "The built-in problem matchers.",
+      "oneOf": [
+        {
+          "description": "`rustc` and `cargo` (clippy included): an `error[E0308]: message` or\n`warning: message` heading followed by its ` --> file:line:column` line.",
+          "type": "string",
+          "const": "$rustc"
+        },
+        {
+          "description": "GCC and Clang: `file:line:column: error: message`.",
+          "type": "string",
+          "const": "$gcc"
+        },
+        {
+          "description": "The TypeScript compiler, plain or `--pretty`:\n`file(line,column): error TS2322: message` or\n`file:line:column - error TS2322: message`.",
+          "type": "string",
+          "const": "$tsc"
+        },
+        {
+          "description": "The Go toolchain: `file.go:line:column: message`, column optional.",
+          "type": "string",
+          "const": "$go"
+        },
+        {
+          "description": "ESLint's `compact` formatter:\n`file: line 3, col 7, Error - message (rule)`.",
+          "type": "string",
+          "const": "$eslint-compact"
+        }
+      ]
+    },
     "ColorHighlight": {
-      "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
+      "description": "`editor.colorHighlight.*` — inline swatches on color literals and on the\ncolours a language server reports.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)\nwith their own color, on the visible lines of the editor.",
+          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),\nand the colours the file's language server reports, with their own\ncolor, on the visible lines of the editor.",
           "type": "boolean",
           "default": true
         }
@@ -447,7 +485,7 @@
           "default": true
         },
         "colorHighlight": {
-          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
+          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the\ncolours a language server reports.",
           "$ref": "#/$defs/ColorHighlight",
           "default": {
             "enabled": true
@@ -514,6 +552,13 @@
             "enabled": true
           }
         },
+        "inlineCompletion": {
+          "description": "`editor.inlineCompletion.*` — ghost text a language server (such as\nCopilot) proposes at the caret.",
+          "$ref": "#/$defs/InlineCompletion",
+          "default": {
+            "enabled": true
+          }
+        },
         "inlineDiagnostics": {
           "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at\nthe end of their line.",
           "$ref": "#/$defs/InlineDiagnostics",
@@ -531,6 +576,11 @@
           "description": "Insert spaces instead of a hard tab when indenting.",
           "type": "boolean",
           "default": true
+        },
+        "keymap": {
+          "description": "The editing model of a code tab: `\"default\"` types at the caret, as in\nVS Code; `\"vim\"` and `\"helix\"` add a modal Normal/Insert layer with\nthat editor's motions, operators, text objects, registers and macros.",
+          "$ref": "#/$defs/KeymapPreset",
+          "default": "default"
         },
         "lineNumbers": {
           "description": "How the line-number gutter is numbered.",
@@ -716,6 +766,18 @@
             "boolean",
             "null"
           ]
+        },
+        "inlineCompletion": {
+          "description": "Partially override inline completion (ghost text).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineCompletionOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "inlineDiagnostics": {
           "description": "Partially override which diagnostics show their message inline.",
@@ -1067,6 +1129,33 @@
         }
       ]
     },
+    "InlineCompletion": {
+      "description": "`editor.inlineCompletion.*` — ghost text proposed at the caret by a\nlanguage server offering LSP 3.18 inline completions (such as\n`copilot-language-server`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing\nis shown unless a server attached to the document offers it, so this\ncosts nothing where none does; switch it off per language with\n`\"[markdown]\": { \"inlineCompletion\": { \"enabled\": false } }`.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlineCompletionOverride": {
+      "description": "A partial per-language patch for `editor.inlineCompletion`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Override whether ghost text is asked for.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "InlineDiagnostics": {
       "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at the\nend of their line.",
       "type": "object",
@@ -1134,6 +1223,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "KeymapPreset": {
+      "description": "`editor.keymap` — which editing model a code tab uses.",
+      "oneOf": [
+        {
+          "description": "Modeless editing: a printable key types at the caret.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Vim's modal editing: Normal, Insert and Visual modes, operators over\nmotions and text objects, registers, macros and `.` repeat.",
+          "type": "string",
+          "const": "vim"
+        },
+        {
+          "description": "Helix's selection-first modal editing: a motion selects, then an\naction applies to the selection.",
+          "type": "string",
+          "const": "helix"
+        }
+      ]
     },
     "Latex": {
       "description": "`latex.*` — external LaTeX compilation and preview behavior.",
@@ -1418,6 +1527,31 @@
       },
       "additionalProperties": false
     },
+    "MatcherSeverity": {
+      "description": "A problem's severity as a matcher names it.",
+      "oneOf": [
+        {
+          "description": "An error.",
+          "type": "string",
+          "const": "error"
+        },
+        {
+          "description": "A warning.",
+          "type": "string",
+          "const": "warning"
+        },
+        {
+          "description": "Information.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "A hint.",
+          "type": "string",
+          "const": "hint"
+        }
+      ]
+    },
     "NotebookKernel": {
       "description": "`notebook.kernel.*` — the kernel lifecycle behind Run All / Run Cell.",
       "type": "object",
@@ -1443,6 +1577,92 @@
         }
       },
       "additionalProperties": false
+    },
+    "PatternMatcher": {
+      "description": "A matcher of your own. `regexp` is tried on every output line (after the\nterminal has interpreted colours and cursor movement, so escape codes never\nreach it); a line it matches is a problem, read from its capture groups.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The capture group holding a diagnostic code such as `E0308`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "column": {
+          "description": "The capture group holding the 1-based column; unset puts the problem at\nthe start of its line.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "defaultSeverity": {
+          "description": "The severity of a problem whose own severity is not captured.",
+          "$ref": "#/$defs/MatcherSeverity",
+          "default": "error"
+        },
+        "file": {
+          "description": "The capture group holding the file: absolute, or relative to the task's\nworking directory.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 0
+        },
+        "line": {
+          "description": "The capture group holding the 1-based line.",
+          "type": "integer",
+          "format": "uint",
+          "default": 2,
+          "minimum": 0
+        },
+        "message": {
+          "description": "The capture group holding the message; unset uses the whole line.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "regexp": {
+          "description": "The regular expression (Rust `regex` syntax).",
+          "type": "string"
+        },
+        "severity": {
+          "description": "The capture group holding the severity (`error`, `warning`, `info`,\n`note`, `hint`, any case); unset, or a word it does not know, uses\n`defaultSeverity`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "regexp"
+      ]
+    },
+    "ProblemMatcher": {
+      "description": "A problem matcher: a built-in by name, or a regular expression of your own.",
+      "anyOf": [
+        {
+          "description": "A built-in matcher, named with a leading `$`.",
+          "$ref": "#/$defs/BuiltinMatcher"
+        },
+        {
+          "description": "A matcher of your own: one regular expression tried on every output line.",
+          "$ref": "#/$defs/PatternMatcher"
+        }
+      ]
     },
     "RenderWhitespace": {
       "description": "Which whitespace characters are drawn visibly (`editor.renderWhitespace`):\na space as `·`, a tab as `→`.",
@@ -1725,6 +1945,39 @@
         }
       ]
     },
+    "Task": {
+      "description": "One `tasks` entry: a command line and how to read its output.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "The command line, run by the platform shell: `/bin/sh -c` on Unix,\n`cmd /C` on Windows.",
+          "type": "string",
+          "default": ""
+        },
+        "cwd": {
+          "description": "The working directory: absolute, or relative to the workspace root.\nEmpty runs in the workspace root.",
+          "type": "string",
+          "default": ""
+        },
+        "env": {
+          "description": "Environment variables set for the command, over the editor's own.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "problemMatcher": {
+          "description": "The matchers that read the command's output for problems, which the\nProblems panel lists until the task runs again. Empty matches nothing.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProblemMatcher"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Toml": {
       "description": "`toml.*` — TOML-specific behaviour.",
       "type": "object",
@@ -1784,6 +2037,11 @@
           "description": "Icon glyph set for the file tree and activity bar.",
           "$ref": "#/$defs/IconStyleSetting",
           "default": "nerdFont"
+        },
+        "restoreLayout": {
+          "description": "Reopen a workspace's tabs, splits, and cursors as the last clean exit\nleft them, when karet starts on it without a file to open.",
+          "type": "boolean",
+          "default": true
         },
         "startupPanel": {
           "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",

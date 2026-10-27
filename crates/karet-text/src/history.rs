@@ -71,7 +71,7 @@ struct Revision {
     cursor_after: Option<CursorState>,
 }
 
-/// The undo/redo stacks plus coalescing and save-point bookkeeping.
+/// The undo/redo stacks plus coalescing bookkeeping.
 #[derive(Clone, Default)]
 pub(crate) struct History {
     /// Oldest revision at the front, so the cap can forget it cheaply.
@@ -83,7 +83,6 @@ pub(crate) struct History {
     /// The most undo groups kept, or `None` for no cap.
     limit: Option<usize>,
     next_group: u64,
-    saved_group: u64,
     last_tick_ms: u64,
     last_caret_after: Option<LineCol>,
 }
@@ -185,9 +184,7 @@ impl History {
         }
     }
 
-    /// Rebuild a history from `snapshot`, keeping this one's cap, with the
-    /// restored head as the save point (the caller restores it into text that
-    /// is on disk). Every change is stamped with `base_version`, which the
+    /// Rebuild a history from `snapshot`, keeping this one's cap. Every change is stamped with `base_version`, which the
     /// caller keeps below every version the buffer reaches afterwards, so no
     /// restored step is mistaken for the edit that produced a later version.
     pub(crate) fn restored(&self, snapshot: HistorySnapshot, base_version: u64) -> Self {
@@ -209,7 +206,6 @@ impl History {
             next_group,
             ..Self::default()
         };
-        history.mark_saved();
         history.enforce_limit();
         history
     }
@@ -227,17 +223,6 @@ impl History {
     /// The group id of the current head state (0 == the initial, never-edited state).
     fn current_group(&self) -> u64 {
         self.undo.back().map_or(0, |r| r.group)
-    }
-
-    /// Whether the head differs from the last save point.
-    #[cfg(test)]
-    pub(crate) fn is_dirty(&self) -> bool {
-        self.current_group() != self.saved_group
-    }
-
-    /// Mark the current head as the saved state (clears dirty).
-    pub(crate) fn mark_saved(&mut self) {
-        self.saved_group = self.current_group();
     }
 
     /// Record an applied edit, coalescing with the previous one when eligible.
@@ -466,6 +451,56 @@ mod tests {
     }
 
     #[test]
+    fn only_a_single_non_newline_char_coalesces() {
+        // Every pair below is adjacent, typed and inside the window, so the
+        // shape of the second insert is the only thing that can break the group.
+        for second in ["bc", "\n", ""] {
+            let mut h = History::default();
+            h.record(
+                insert(0, 0, "a"),
+                insert(0, 0, "a"),
+                &typed(0, 0, 0),
+                Some(LineCol::new(0, 1)),
+            );
+            h.record(
+                insert(0, 1, second),
+                insert(0, 1, second),
+                &typed(10, 0, 1),
+                Some(LineCol::new(0, 1)),
+            );
+            assert_ne!(group_of(&h, 0), group_of(&h, 1), "{second:?} coalesced");
+        }
+    }
+
+    #[test]
+    fn a_single_char_replacement_does_not_coalesce() {
+        let mut h = History::default();
+        h.record(
+            insert(0, 0, "a"),
+            insert(0, 0, "a"),
+            &typed(0, 0, 0),
+            Some(LineCol::new(0, 1)),
+        );
+        let replace = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 1),
+                    end: LineCol::new(0, 2),
+                },
+                new_text: "b".to_string(),
+            }],
+        );
+        h.record(
+            replace.clone(),
+            replace,
+            &typed(10, 0, 1),
+            Some(LineCol::new(0, 2)),
+        );
+        assert_ne!(group_of(&h, 0), group_of(&h, 1));
+    }
+
+    #[test]
     fn time_gap_breaks_coalescing() {
         let mut h = History::default();
         h.record(
@@ -481,36 +516,6 @@ mod tests {
             Some(LineCol::new(0, 2)),
         );
         assert_ne!(group_of(&h, 0), group_of(&h, 1));
-    }
-
-    #[test]
-    fn dirty_tracks_save_point() {
-        let mut h = History::default();
-        assert!(!h.is_dirty());
-        h.record(
-            insert(0, 0, "a"),
-            insert(0, 0, "a"),
-            &typed(0, 0, 0),
-            Some(LineCol::new(0, 1)),
-        );
-        assert!(h.is_dirty());
-        h.mark_saved();
-        assert!(!h.is_dirty());
-        // A new (non-coalescing) edit re-dirties.
-        h.record(
-            insert(0, 1, "X"),
-            insert(0, 1, "X"),
-            &EditContext {
-                tick_ms: 9_999,
-                cause: EditCause::Replace,
-                cursor_before: CursorState::default(),
-            },
-            None,
-        );
-        assert!(h.is_dirty());
-        // Undoing back to the saved group clears dirty again.
-        h.take_undo();
-        assert!(!h.is_dirty());
     }
 
     #[test]
@@ -696,7 +701,6 @@ mod tests {
         let restored = History::default().restored(snapshot, 5);
         assert_eq!(restored.undo_len(), 2);
         assert_eq!(restored.redo.len(), 1);
-        assert!(!restored.is_dirty(), "the restored head is the save point");
         assert!(
             restored
                 .undo
@@ -724,5 +728,18 @@ mod tests {
     #[test]
     fn empty_history_snapshots_empty() {
         assert!(History::default().snapshot(0).is_empty());
+    }
+
+    #[test]
+    fn either_stack_alone_makes_a_snapshot_non_empty() {
+        let mut undo_only = History::default();
+        record_steps(&mut undo_only, 1);
+        assert!(!undo_only.snapshot(0).is_empty(), "an undo step alone");
+
+        let mut redo_only = History::default();
+        record_steps(&mut redo_only, 1);
+        redo_only.take_undo();
+        assert_eq!(redo_only.undo_len(), 0);
+        assert!(!redo_only.snapshot(0).is_empty(), "a redo step alone");
     }
 }

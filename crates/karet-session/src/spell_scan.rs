@@ -24,23 +24,19 @@ use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_treesitter::LayeredParser;
 use spellbook::Dictionary;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
+use crate::scan_walk::BatchedScan;
+use crate::scan_walk::Walk;
+use crate::scan_walk::resolve_path;
 use crate::spell::check::LineIndex;
 use crate::spell::check::SpellInput;
 use crate::spell::check::word_in_line;
-
-/// Flush a partial batch after this many files, so a long walk over clean files
-/// still reports progress rather than looking stalled.
-const FILES_PER_BATCH: usize = 200;
-/// Flush a partial batch once it holds this many hits, so a dirty workspace fills
-/// the list steadily instead of in one late lump.
-const HITS_PER_BATCH: usize = 64;
 
 /// One workspace scan request.
 pub(crate) struct SpellScanJob {
@@ -68,9 +64,7 @@ pub(crate) struct SpellScanJob {
 
 /// Start the worker; the session sends [`SpellScanJob`]s and answers arrive on the
 /// shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<SpellScanJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<SpellScanJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-spell-scan".to_owned())
@@ -78,10 +72,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(
-    jobs: &Receiver<SpellScanJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) {
+fn run(jobs: &Receiver<SpellScanJob>, events: &EventTx) {
     // The parse host and dictionary cache outlive individual scans: a re-scan of the
     // same workspace re-uses every compiled grammar and the loaded dictionary.
     let mut host = ScanHost {
@@ -112,25 +103,47 @@ struct ParseHost {
     highlighter: LayeredHighlighter,
 }
 
-/// Everything one scan accumulates while walking.
+/// Everything one scan accumulates while walking, beyond what the shared walk
+/// counts itself.
 struct ScanState {
-    hits: Vec<SpellingHit>,
-    files_scanned: usize,
-    files_since_flush: usize,
     total_hits: usize,
-    truncated: bool,
-    cancelled: bool,
     /// Per directory, whether any `.editorconfig` above it selects a spelling
     /// locale. See [`ancestry_selects_locale`].
     locale_overrides: HashMap<PathBuf, bool>,
 }
 
+/// One scan as the shared walk sees it: the job, the worker's machinery, and
+/// the scan's own running state.
+struct SpellScan<'a> {
+    job: &'a SpellScanJob,
+    host: &'a mut ScanHost,
+    state: ScanState,
+}
+
+impl BatchedScan for SpellScan<'_> {
+    type Hit = SpellingHit;
+
+    fn visit(&mut self, path: &Path, text: &str, hits: &mut Vec<SpellingHit>) -> ControlFlow<()> {
+        if !self.job.open.contains(&resolve_path(path)) {
+            check_file(path, text, self.job, self.host, &mut self.state, hits);
+        }
+        if self.state.total_hits >= self.job.limit {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    fn progress(&self, hits: Vec<SpellingHit>, files_scanned: usize) -> Option<Event> {
+        Some(Event::SpellingScanProgress {
+            hits,
+            files_scanned,
+        })
+    }
+}
+
 /// Resolve the job's dictionary (cached for the worker's lifetime), then walk.
-fn execute(
-    job: SpellScanJob,
-    host: &mut ScanHost,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+fn execute(job: SpellScanJob, host: &mut ScanHost, events: &EventTx) -> ControlFlow<()> {
     // Load the workspace's own dictionary first: a missing one is the user's
     // environment, not a bug, and saying so once beats a silently empty scan.
     // Per-file EditorConfig locales are resolved lazily during the walk.
@@ -139,18 +152,16 @@ fn execute(
         .entry(job.spelling_language)
         .or_insert_with(|| crate::spell::load_dictionary(job.spelling_language));
     if let Err(error) = dictionary {
-        send(
-            events,
-            job.id,
+        events.try_emit(
+            Some(job.id),
             Event::Notification {
                 severity: Severity::Warning,
                 kind: NotificationKind::System,
                 message: error.clone(),
             },
         )?;
-        return send(
-            events,
-            job.id,
+        return events.try_emit(
+            Some(job.id),
             Event::SpellingScanFinished {
                 files_scanned: 0,
                 truncated: false,
@@ -162,94 +173,42 @@ fn execute(
 }
 
 /// Walk the workspace, streaming batches as it goes.
-fn scan(
-    job: &SpellScanJob,
-    host: &mut ScanHost,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    let mut state = ScanState {
-        hits: Vec::new(),
-        files_scanned: 0,
-        files_since_flush: 0,
-        total_hits: 0,
-        truncated: false,
-        cancelled: false,
-        locale_overrides: HashMap::new(),
+fn scan(job: &SpellScanJob, host: &mut ScanHost, events: &EventTx) -> ControlFlow<()> {
+    let mut scan = SpellScan {
+        job,
+        host,
+        state: ScanState {
+            total_hits: 0,
+            locale_overrides: HashMap::new(),
+        },
     };
-    let mut disconnected = false;
-    // One `ScanState` across every root, so the limit, the batching, and
-    // cancellation stay global to the scan rather than resetting per root.
-    for root in &job.roots {
-        let _ =
-            karet_search::walk_text_files(root, &[], &job.settings.search.exclude, |path, text| {
-                if job.cancel.is_cancelled() {
-                    state.cancelled = true;
-                    return ControlFlow::Break(());
-                }
-                state.files_scanned += 1;
-                state.files_since_flush += 1;
-                if !job.open.contains(&resolve_path(path)) {
-                    check_file(path, &text, job, host, &mut state);
-                }
-                if state.total_hits >= job.limit {
-                    state.truncated = true;
-                    return ControlFlow::Break(());
-                }
-                if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH
-                {
-                    state.files_since_flush = 0;
-                    let hits = std::mem::take(&mut state.hits);
-                    if send(
-                        events,
-                        job.id,
-                        Event::SpellingScanProgress {
-                            hits,
-                            files_scanned: state.files_scanned,
-                        },
-                    )
-                    .is_break()
-                    {
-                        disconnected = true;
-                        return ControlFlow::Break(());
-                    }
-                }
-                ControlFlow::Continue(())
-            });
-        if disconnected || state.cancelled || state.truncated {
-            break;
-        }
-    }
-    if disconnected {
-        return ControlFlow::Break(());
-    }
-    if !state.hits.is_empty() {
-        send(
-            events,
-            job.id,
-            Event::SpellingScanProgress {
-                hits: std::mem::take(&mut state.hits),
-                files_scanned: state.files_scanned,
-            },
-        )?;
-    }
-    send(
-        events,
-        job.id,
+    let walk = Walk {
+        roots: &job.roots,
+        includes: &[],
+        excludes: &job.settings.search.exclude,
+        cancel: &job.cancel,
+    };
+    // A walk error is a bad exclude glob from the settings; the scan has never
+    // reported one, and finishes as an empty scan instead.
+    let walked = crate::scan_walk::walk_batched(&walk, &mut scan, job.id, events, Vec::new())?;
+    events.try_emit(
+        Some(job.id),
         Event::SpellingScanFinished {
-            files_scanned: state.files_scanned,
-            truncated: state.truncated,
-            cancelled: state.cancelled,
+            files_scanned: walked.files_scanned,
+            truncated: walked.truncated,
+            cancelled: walked.cancelled,
         },
     )
 }
 
-/// Check one walked file, appending its misspellings to `state`.
+/// Check one walked file, appending its misspellings to `hits`.
 fn check_file(
     path: &Path,
     text: &str,
     job: &SpellScanJob,
     host: &mut ScanHost,
     state: &mut ScanState,
+    hits: &mut Vec<SpellingHit>,
 ) {
     let language = crate::session::language_name_for_path(path);
     let language_selector = crate::session::language_selector_for_path(path);
@@ -305,7 +264,7 @@ fn check_file(
     let index = LineIndex::new(text);
     let room = job.limit.saturating_sub(state.total_hits);
     for diagnostic in diagnostics.into_iter().take(room) {
-        state.hits.push(SpellingHit {
+        hits.push(SpellingHit {
             path: path.to_path_buf(),
             range: diagnostic.range,
             word: word_in_line(index.line(diagnostic.range.start.line), diagnostic.range),
@@ -313,16 +272,6 @@ fn check_file(
         });
         state.total_hits += 1;
     }
-}
-
-/// The comparable form of `path`, for matching a walked file against the open
-/// documents the scan must not re-read from disk.
-///
-/// Falls back to the path as given when it cannot be resolved (it was deleted
-/// under us, or permissions bite): an unresolvable path is no worse a key than
-/// the raw one, and both sides run through here.
-pub(crate) fn resolve_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The dictionary this path should be checked against, resolved exactly as an
@@ -370,19 +319,6 @@ fn ancestry_selects_locale(dir: &Path) -> bool {
     })
 }
 
-/// Send one event, mapping a closed stream to [`ControlFlow::Break`].
-fn send(
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    event: Event,
-) -> ControlFlow<()> {
-    if events.send((Some(id), event)).is_err() {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,7 +345,7 @@ mod tests {
         // `ParseDictionaryError` is not a `std::error::Error`, so carry its message.
         let dictionary = Dictionary::new(AFF, DIC)
             .map_err(|err| format!("the fixture dictionary does not parse: {err}"))?;
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::event_tx::EventTx::channel();
         let hub = CancellationHub::default();
         let mut settings = crate::config::Settings::default();
         settings.spellcheck.enabled = true;

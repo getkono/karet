@@ -111,3 +111,59 @@ async fn installing_a_provider_lets_it_report_being_missing_again() -> TestResul
     );
     Ok(())
 }
+
+/// The providers attached to a Rust document opened with `settings`.
+fn attached_to_a_rust_document(settings: LspSettings) -> Vec<String> {
+    let (mut manager, _updates) = LspManager::new(settings, None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = crate::lsp::absolute_path(Path::new("/tmp/ghost.rs"));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    let mut attached: Vec<String> = manager
+        .servers
+        .iter()
+        .filter(|(_, slot)| slot.documents.contains(&path))
+        .map(|(key, _)| key.provider.key().to_owned())
+        .collect();
+    attached.sort();
+    attached
+}
+
+/// Copilot sends the code being edited to a remote service, so it rides
+/// along every document only once the user opted in -- here by an
+/// `lsp.servers` entry -- and an entry switching it off keeps it off.
+///
+/// Falsified by: `inline_companion` answering Copilot unconditionally (it
+/// then attaches with no entry), or not at all (the entry attaches nothing).
+#[tokio::test]
+async fn copilot_rides_along_every_document_only_once_opted_in() -> TestResult {
+    let copilot = crate::lsp::catalog::COPILOT.to_owned();
+    assert_eq!(
+        attached_to_a_rust_document(LspSettings::default()),
+        ["rust-analyzer"],
+        "Copilot attached without the user opting in"
+    );
+    let mut opted_in = LspSettings::default();
+    opted_in
+        .servers
+        .insert(copilot.clone(), crate::config::schema::LspServer::default());
+    assert_eq!(
+        attached_to_a_rust_document(opted_in),
+        [copilot.as_str(), "rust-analyzer"]
+    );
+    let mut switched_off = LspSettings::default();
+    switched_off.servers.insert(
+        copilot,
+        crate::config::schema::LspServer {
+            enabled: false,
+            ..crate::config::schema::LspServer::default()
+        },
+    );
+    assert_eq!(attached_to_a_rust_document(switched_off), ["rust-analyzer"]);
+    Ok(())
+}

@@ -85,6 +85,7 @@ fn a_single_location_opens_the_file_and_lands_on_the_range_start() {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     // The caret lands on the definition's start, as a bare caret — the end of the
@@ -227,6 +228,7 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
     );
 
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
 }
@@ -249,6 +251,7 @@ fn jumped(name: &str) -> (App, PathBuf, PathBuf) {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
     (app, origin, other)
 }
 
@@ -466,7 +469,6 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
         highlights: Arc::new(karet_syntax::Highlights::default()),
         semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),
@@ -780,6 +782,7 @@ fn a_single_reference_still_opens_the_picker() {
     assert_ne!(app.tabs[app.active].path(), Some(other.as_path()));
 
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
 }
@@ -800,6 +803,7 @@ fn a_single_implementation_is_jumped_to() {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
 
     assert!(app.overlay.is_none());
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));

@@ -104,6 +104,12 @@ impl App {
         };
         if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
             tab.editor.goto(&buffer, position);
+            // A tab still waiting for its text would clamp the jump to the top
+            // of the empty buffer; the first snapshot places the caret instead.
+            if tab.fill_caret.is_some() {
+                tab.fill_caret = Some(position);
+                tab.fill_view = None;
+            }
         }
     }
 
@@ -200,7 +206,7 @@ impl App {
     /// view is what strands a caller from another view: the tab becomes active and
     /// takes the keyboard while staying invisible, and `FocusTarget::from` then routes
     /// keys to whatever view is still on screen.
-    fn show_editor(&mut self) {
+    pub(super) fn show_editor(&mut self) {
         self.view = View::Editor;
         self.focus = Focus::Editor;
     }
@@ -349,6 +355,9 @@ impl App {
         docs.sort_by_key(|(doc, _)| *doc);
         docs.dedup_by_key(|(doc, _)| *doc);
         for (doc, path) in docs {
+            // The session may hand the moved document to another language's
+            // server, so what the old one said it formats on no longer holds.
+            self.on_type.triggers.remove(&doc);
             self.send_command(SessionCommand::RetargetDocument { doc, path });
         }
     }
@@ -361,7 +370,7 @@ impl App {
         for doc in stale {
             self.open_docs.remove(&doc);
             self.auto_save_pending.remove(&doc);
-            self.completion_chars.remove(&doc);
+            self.completion.chars.remove(&doc);
             self.signature.chars.remove(&doc);
             self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {

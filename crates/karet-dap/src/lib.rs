@@ -1,13 +1,15 @@
 //! `karet-dap` — an async Debug Adapter Protocol client for karet.
 //!
-//! Headless: drives one debug adapter over the Content-Length framing shared
-//! with `karet-lsp` ([`karet_jsonrpc::framing::content_length`]), exposing typed requests and a
-//! broadcast of adapter events. Presentation and orchestration live with the
+//! Headless: drives one debug adapter through `karet-jsonrpc`'s correlation
+//! [`Actor`](karet_jsonrpc::Actor) — the pending map, timeouts, bounded queue
+//! and Content-Length framing it shares with `karet-lsp` — speaking DAP's own
+//! envelope, and exposes typed requests and a broadcast of adapter events. Presentation and orchestration live with the
 //! consumer (the karet backend); this crate speaks protocol only.
 //!
 //! The lifecycle is the DAP-mandated dance, capability-gated throughout:
 //!
-//! 1. [`DapClient::spawn`] (stdio or spawn-then-TCP) or [`DapClient::connect`];
+//! 1. [`DapClient::spawn`] / [`DapClient::spawn_with`] (stdio or
+//!    spawn-then-TCP) or [`DapClient::connect`];
 //! 2. [`DapClient::initialize`] → the adapter's [`Capabilities`];
 //! 3. [`DapClient::start`] sends `launch`/`attach` *without awaiting it*,
 //!    waits for the `initialized` event, replays breakpoints per file, sets
@@ -145,28 +147,61 @@ impl DapClient {
 
     /// Launch the adapter described by `spec` and connect over its transport.
     ///
+    /// [`Self::spawn_with`] over a plain
+    /// `Command::new(&spec.command).args(&spec.args)`.
+    ///
     /// # Errors
     /// Returns [`DapError::Launch`] if the process cannot start or (under
     /// [`DapTransport::Tcp`]) its socket never accepts.
     pub async fn spawn(spec: &DapSpec) -> Result<Self, DapError> {
+        Self::spawn_with(spec, |spec| {
+            let mut command = tokio::process::Command::new(&spec.command);
+            command.args(&spec.args);
+            Ok(command)
+        })
+        .await
+    }
+
+    /// Launch the adapter described by `spec` through the command `prepare`
+    /// builds (e.g. one wrapped by a process supervisor), and connect over
+    /// its transport.
+    ///
+    /// The client owns transport dispatch and standard-I/O policy. `prepare`
+    /// receives the spec to launch — under [`DapTransport::Tcp`] with a free
+    /// loopback port already substituted for every `${port}` in its
+    /// arguments — and returns the command that runs it; any stdio it
+    /// configured is then overridden. Under [`DapTransport::Stdio`] the
+    /// protocol flows over piped stdin/stdout. Under [`DapTransport::Tcp`]
+    /// stdin is piped and held open, unwritten, for the client's lifetime (a
+    /// supervisor wrapper reads its EOF as the editor gone), and the client
+    /// connects to the port with retries while the adapter boots. Output the
+    /// protocol does not use is discarded, so no unread pipe can fill and
+    /// stall the adapter, and the process is killed when the client drops.
+    ///
+    /// # Errors
+    /// Propagates the error `prepare` returns. Returns [`DapError::Launch`]
+    /// if no free port is available, the process cannot start, or (under
+    /// [`DapTransport::Tcp`]) its socket never accepts.
+    pub async fn spawn_with<F>(spec: &DapSpec, prepare: F) -> Result<Self, DapError>
+    where
+        F: FnOnce(&DapSpec) -> Result<tokio::process::Command, DapError>,
+    {
         match spec.transport {
-            DapTransport::Stdio => Self::spawn_stdio(spec),
-            DapTransport::Tcp => Self::spawn_then_tcp(spec).await,
+            DapTransport::Stdio => Self::spawn_stdio(prepare(spec)?),
+            DapTransport::Tcp => {
+                let port =
+                    free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
+                let resolved = DapSpec {
+                    args: substitute_port(&spec.args, port),
+                    ..spec.clone()
+                };
+                Self::spawn_tcp(prepare(&resolved)?, port).await
+            },
         }
     }
 
-    fn spawn_stdio(spec: &DapSpec) -> Result<Self, DapError> {
-        let mut command = tokio::process::Command::new(&spec.command);
-        command.args(&spec.args);
-        Self::spawn_command(command)
-    }
-
-    /// Launch a *prepared* command (e.g. one wrapped by a process supervisor)
-    /// whose child speaks DAP on stdin/stdout.
-    ///
-    /// # Errors
-    /// Returns [`DapError::Launch`] if the process cannot start.
-    pub fn spawn_command(mut command: tokio::process::Command) -> Result<Self, DapError> {
+    /// Launch `command`, whose child speaks DAP on stdin/stdout.
+    fn spawn_stdio(mut command: tokio::process::Command) -> Result<Self, DapError> {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -184,19 +219,16 @@ impl DapClient {
         })
     }
 
-    /// Launch a prepared command whose child listens on `port` (already
-    /// substituted into its arguments — see [`substitute_port`]), then
-    /// connect with retries while it boots.
-    ///
-    /// # Errors
-    /// Returns [`DapError::Launch`] if the process cannot start or its socket
-    /// never accepts.
-    pub async fn spawn_command_tcp(
-        mut command: tokio::process::Command,
-        port: u16,
-    ) -> Result<Self, DapError> {
+    /// Launch `command`, whose child listens on `port` (already substituted
+    /// into its arguments), then connect with retries while it boots.
+    async fn spawn_tcp(mut command: tokio::process::Command, port: u16) -> Result<Self, DapError> {
+        // The piped stdin stays inside the held child, unwritten: a supervisor
+        // wrapper treats its EOF as the editor gone and kills the adapter, so
+        // it must not be null and must live exactly as long as the client.
         let child = command
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| DapError::Launch(e.to_string()))?;
@@ -207,16 +239,6 @@ impl DapClient {
             capabilities: Capabilities::default(),
             _child: Some(child),
         })
-    }
-
-    async fn spawn_then_tcp(spec: &DapSpec) -> Result<Self, DapError> {
-        let port = free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
-        let mut command = tokio::process::Command::new(&spec.command);
-        command
-            .args(substitute_port(&spec.args, port))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        Self::spawn_command_tcp(command, port).await
     }
 
     /// Perform the `initialize` handshake, storing and returning the
@@ -593,8 +615,7 @@ fn zero_based(value: Option<&Value>) -> u32 {
 }
 
 /// Replace every `${port}` occurrence in `args` (see [`DapTransport::Tcp`]).
-#[must_use]
-pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
+fn substitute_port(args: &[String], port: u16) -> Vec<String> {
     args.iter()
         .map(|arg| arg.replace("${port}", &port.to_string()))
         .collect()
@@ -605,7 +626,7 @@ pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
 ///
 /// # Errors
 /// Propagates the bind failure (exotic: no loopback at all).
-pub fn free_port() -> std::io::Result<u16> {
+fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }

@@ -119,8 +119,9 @@ fn resolve_requests(backend: &RecordingBackend) -> Vec<(RequestId, InlayHint)> {
         .unwrap_or_default()
 }
 
-/// The active tab's file and caret.
-fn landed(app: &App) -> (Option<PathBuf>, LineCol) {
+/// The active tab's file and caret, once a tab the follow opened has filled.
+fn landed(app: &mut App) -> (Option<PathBuf>, LineCol) {
+    fill_reserved_tabs(app);
     let tab = &app.tabs[app.active];
     (
         tab.path().map(std::path::Path::to_path_buf),
@@ -257,7 +258,7 @@ fn ctrl_click_on_a_part_with_a_location_goes_there() {
     let (backend, mut app) = painted_app(hint);
     let ty = part_hit(&app, 1).expect("painted");
     ctrl_click(&mut app, ty);
-    assert_eq!(landed(&app), (Some(vec.clone()), LineCol::new(1, 4)));
+    assert_eq!(landed(&mut app), (Some(vec.clone()), LineCol::new(1, 4)));
     assert!(resolve_requests(&backend).is_empty());
     let _ = std::fs::remove_dir_all(vec.parent().unwrap_or(&vec));
 }
@@ -270,10 +271,10 @@ fn ctrl_click_on_a_deferred_part_resolves_then_follows() {
     };
     let vec = target("inlay-resolve-follow");
     let (backend, mut app) = painted_app(hint.clone());
-    let before = landed(&app);
+    let before = landed(&mut app);
     let ty = part_hit(&app, 1).expect("painted");
     ctrl_click(&mut app, ty);
-    assert_eq!(landed(&app), before, "nothing to follow yet");
+    assert_eq!(landed(&mut app), before, "nothing to follow yet");
     let (id, _) = resolve_requests(&backend)
         .last()
         .cloned()
@@ -288,7 +289,7 @@ fn ctrl_click_on_a_deferred_part_resolves_then_follows() {
             hint: resolved,
         },
     );
-    assert_eq!(landed(&app), (Some(vec.clone()), LineCol::new(1, 2)));
+    assert_eq!(landed(&mut app), (Some(vec.clone()), LineCol::new(1, 2)));
     let _ = std::fs::remove_dir_all(vec.parent().unwrap_or(&vec));
 }
 
@@ -346,7 +347,7 @@ fn a_pending_follow_survives_hovering_another_deferred_hint() {
             hint: resolved,
         },
     );
-    assert_eq!(landed(&app), (Some(vec.clone()), LineCol::new(2, 3)));
+    assert_eq!(landed(&mut app), (Some(vec.clone()), LineCol::new(2, 3)));
     let _ = std::fs::remove_dir_all(vec.parent().unwrap_or(&vec));
 }
 

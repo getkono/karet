@@ -26,17 +26,11 @@ pub(crate) struct ReviewStore {
 ///
 /// Deliberately not `DefaultHasher`: the standard library does not promise its
 /// output stays the same across releases, and this names a file that has to be
-/// found again after a toolchain upgrade. FNV-1a is fixed by its definition, so
-/// the same workspace always resolves to the same entry.
+/// found again after a toolchain upgrade. [`karet_text::content_fingerprint`] is
+/// FNV-1a, fixed by its definition, so the same workspace always resolves to the
+/// same entry.
 fn workspace_key(root: &Path) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for byte in root.as_os_str().as_encoded_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
+    karet_text::content_fingerprint(root.as_os_str().as_encoded_bytes())
 }
 
 fn now_secs() -> u64 {
@@ -48,10 +42,8 @@ fn now_secs() -> u64 {
 
 impl ReviewStore {
     fn path(root: &Path) -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "karet").map(|dirs| {
-            dirs.cache_dir()
-                .join(format!("review-{:016x}.json", workspace_key(root)))
-        })
+        karet_session::dirs::cache_dir()
+            .map(|dir| dir.join(format!("review-{:016x}.json", workspace_key(root))))
     }
 
     fn ensure_loaded(&mut self, root: &Path) {
@@ -181,6 +173,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_store_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into:
+        // a store re-pointed elsewhere would lose the user's review marks.
+        let root = Path::new("/home/dev/project");
+        assert_eq!(
+            ReviewStore::path(root),
+            karet_session::dirs::cache_dir()
+                .map(|dir| dir.join(format!("review-{:016x}.json", workspace_key(root))))
+        );
+    }
 
     #[test]
     fn the_workspace_key_is_fixed_by_its_definition() {

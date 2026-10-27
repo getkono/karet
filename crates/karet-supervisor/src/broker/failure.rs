@@ -27,7 +27,7 @@ const MAX_REPORT_AGE: Duration = Duration::from_secs(60 * 60);
 ///
 /// The same bound `karet_lsp::launch` keeps for the direct fork, so the two
 /// forks describe one failure the same way. It is restated rather than shared
-/// because the broker skeleton may not name `karet-lsp` (see [`super`]).
+/// because the broker skeleton may not use `karet-lsp` (see [`super`]).
 const STDERR_TAIL: usize = 20;
 
 /// Why a brokered process never served.
@@ -96,7 +96,7 @@ impl BrokeredLaunchFailure {
 /// A bounded, shared view of the brokered child's most recent stderr.
 ///
 /// Deliberately the same shape as `karet_lsp::launch::StderrTail`, restated
-/// here because the broker skeleton may not name `karet-lsp`: only the lines
+/// here because the broker skeleton may not use `karet-lsp`: only the lines
 /// still in this window are kept, so a server that logs continuously cannot
 /// grow the report without limit.
 #[derive(Clone, Default)]

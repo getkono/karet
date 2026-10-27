@@ -4,9 +4,11 @@ use std::sync::atomic::AtomicUsize;
 
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::io::DuplexStream;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
+use tokio::sync::oneshot;
 
 use super::*;
 use crate::INTERNAL_ERROR;
@@ -180,7 +182,7 @@ async fn a_late_answer_to_a_timed_out_request_is_absorbed() -> TestResult {
         .await;
     assert!(matches!(err, Err(RpcError::Timeout)), "got {err:?}");
     assert!(
-        connection.pending.lock().is_ok_and(|map| map.is_empty()),
+        connection.in_flight() == 0,
         "the timed-out request is still pending"
     );
     let _ = timed_out.send(());
@@ -320,7 +322,7 @@ async fn unencodable_params_fail_with_encode_and_send_nothing() -> TestResult {
         "got {requested:?}"
     );
     assert!(
-        connection.pending.lock().is_ok_and(|map| map.is_empty()),
+        connection.in_flight() == 0,
         "a request that never encoded is pending"
     );
 

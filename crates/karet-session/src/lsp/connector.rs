@@ -47,15 +47,6 @@ fn unsupported_host(spec: &LspSpec, detail: &str) -> LspError {
     ))
 }
 
-/// The broker's description of this launch: what runs, and where.
-fn launch_of(spec: &LspSpec, root: &std::path::Path) -> Launch {
-    Launch {
-        command: spec.command.clone(),
-        args: spec.args.clone(),
-        root: root.to_path_buf(),
-    }
-}
-
 /// Turn a broker's own report of a dead child into a launch failure.
 ///
 /// The broker watched the process, so its verdict beats any guess made out
@@ -153,7 +144,7 @@ pub(super) fn spawn_connector(
                 ));
             };
             if let Some(registry_root) = registry_root {
-                let launch = launch_of(&spec, &root);
+                let launch = Launch::for_lsp(&spec, &root);
                 let (stream, broker) = karet_supervisor::broker::connect_observed(
                     &supervisor,
                     &registry_root,

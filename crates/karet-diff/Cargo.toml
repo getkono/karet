@@ -23,13 +23,14 @@ view = ["dep:ratatui", "dep:unicode-width"]
 
 [dependencies]
 karet-core.workspace = true
+# The shared binary sniff (`looks_binary`), so diff agrees with the explorer and
+# search about which files are binary. Dependency-free.
+karet-filetype.workspace = true
 imara-diff.workspace = true
 ratatui = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 unicode-width = { workspace = true, optional = true }
-# NOTE: tree-sitter structural diffing (DiffStrategy::Structural) is reserved but not
-# yet implemented; karet-treesitter will be re-added as a dependency when it lands.
 
 [dev-dependencies]
 # Scratch files for the `diff_files` tests (binary sniffing, i/o errors).

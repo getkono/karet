@@ -1,16 +1,18 @@
 //! Terminal image rendering: the Kitty graphics protocol with a truecolor
-//! halfblock fallback (merged from the former `karet-image` crate).
+//! halfblock fallback.
 //!
 //! [`ImageWidget`] renders halfblocks straight into the ratatui buffer, which
 //! works on any truecolor terminal. On a Kitty-graphics-capable terminal the
 //! application instead reserves the area and flushes [`Image::kitty_escape`] to
 //! the terminal after drawing, since the cell buffer cannot carry pixels. The
 //! placement lifecycle across scroll/resize is intentionally minimal (active tab
-//! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
+//! only) for now; Sixel/iTerm2 protocols are out of scope. PDF pages are
+//! rasterized by the consumer (karet uses `karet-pdf`) and can then be drawn
+//! through [`Image`].
 //!
 //! Pixel work sits behind two features so a lean build pulls no codec tree: the
 //! shared primitives ([`Image`], [`ImageWidget`]) and their built-in resampler
-//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by both `images` and `pdf`), while the
+//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by `images`), while the
 //! image-file decoders ([`decode`], [`dimensions`]) require `images`. Gamut owns
 //! every supported codec. Protocol detection ([`GraphicsProtocol`],
 //! [`detect_protocol`], [`fit_rect`]) carries no codec dependency and is always
@@ -33,7 +35,6 @@ use ratatui::style::Color;
 use ratatui::widgets::Widget;
 
 /// The maximum base64 payload per Kitty escape chunk.
-#[cfg(feature = "raster")]
 const KITTY_CHUNK: usize = 4096;
 
 /// The most source pixels a side the per-frame halfblock painters average for one
@@ -113,6 +114,64 @@ pub fn kitty_delete_all() -> String {
 #[must_use]
 pub fn kitty_delete_image(id: u32) -> String {
     format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
+}
+
+/// The Kitty escape giving image `id` (sent by [`Image::kitty_transmit`]) the
+/// *virtual* placement `placement`, `cols`×`rows` cells, for unicode-placeholder
+/// display, with the terminal's replies silenced.
+#[cfg(feature = "raster")]
+#[must_use]
+pub fn kitty_place(id: u32, placement: u32, cols: u16, rows: u16) -> String {
+    format!("\x1b_Ga=p,U=1,i={id},p={placement},c={cols},r={rows},q=2\x1b\\")
+}
+
+/// `payload` base64-encoded and split into Kitty escapes: `keys` lead the first,
+/// `more_keys` follow `m` in every later one.
+#[cfg(feature = "raster")]
+fn kitty_chunks(payload: &[u8], keys: &str, more_keys: &str) -> String {
+    kitty_chunked(
+        &base64::engine::general_purpose::STANDARD.encode(payload),
+        keys,
+        more_keys,
+    )
+}
+
+/// An already base64-encoded Kitty payload split into escapes of at most 4096
+/// payload bytes each, as the Kitty graphics protocol requires: `keys` lead the
+/// first escape, every escape but the last carries `m=1` and the last `m=0`, and
+/// `more_keys` (e.g. `",q=2"`) follow `m` in every escape after the first.
+///
+/// For callers that build their own pixels without the `raster` feature. The
+/// payload is split on byte boundaries, so it must be ASCII, as base64 is; an
+/// empty payload yields no escape.
+#[must_use]
+pub fn kitty_chunked(base64: &str, keys: &str, more_keys: &str) -> String {
+    // Base64 is ASCII, so every chunk boundary is a char boundary.
+    let chunks: Vec<&str> = base64
+        .as_bytes()
+        .chunks(KITTY_CHUNK)
+        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+        .collect();
+    let mut out = String::with_capacity(base64.len() + chunks.len() * (keys.len() + 16));
+    for (i, data) in chunks.iter().enumerate() {
+        let more = u8::from(i + 1 != chunks.len());
+        if i == 0 {
+            out.push_str(&format!("\x1b_G{keys},m={more};{data}\x1b\\"));
+        } else {
+            out.push_str(&format!("\x1b_Gm={more}{more_keys};{data}\x1b\\"));
+        }
+    }
+    out
+}
+
+/// `bytes` zlib-compressed at the fast level, or `None` if the encoder fails.
+#[cfg(feature = "raster")]
+fn zlib(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(bytes).ok()?;
+    encoder.finish().ok()
 }
 
 /// Approximate terminal cell aspect ratio (height ÷ width). A monospace cell is
@@ -210,21 +269,33 @@ impl Image {
         ))
     }
 
+    /// Build the Kitty escapes that transmit this image under image id `id`
+    /// without displaying it, with the terminal's replies silenced; nothing
+    /// appears until a placement (e.g. [`kitty_place`]) shows it.
+    ///
+    /// With `compress` the RGBA is zlib-compressed first (`o=z`), which shrinks
+    /// what crosses the terminal's input several times over for typical images;
+    /// should compression fail, the raw pixels are sent instead.
+    #[must_use]
+    pub fn kitty_transmit(&self, id: u32, compress: bool) -> String {
+        let compressed = compress.then(|| zlib(&self.rgba)).flatten();
+        let (payload, compression) = match &compressed {
+            Some(bytes) => (bytes.as_slice(), ",o=z"),
+            None => (self.rgba.as_slice(), ""),
+        };
+        kitty_chunks(
+            payload,
+            &format!(
+                "a=t,i={id},f=32,s={},v={}{compression},q=2",
+                self.width, self.height
+            ),
+            ",q=2",
+        )
+    }
+
     /// Chunk the base64 pixels into escapes, `keys` leading the first.
     fn kitty_escape_keys(&self, keys: &str) -> String {
-        let payload = base64::engine::general_purpose::STANDARD.encode(&self.rgba);
-        let chunks: Vec<&[u8]> = payload.as_bytes().chunks(KITTY_CHUNK).collect();
-        let mut out = String::new();
-        for (i, chunk) in chunks.iter().enumerate() {
-            let more = u8::from(i + 1 != chunks.len());
-            let data = std::str::from_utf8(chunk).unwrap_or("");
-            if i == 0 {
-                out.push_str(&format!("\x1b_G{keys},m={more};{data}\x1b\\"));
-            } else {
-                out.push_str(&format!("\x1b_Gm={more};{data}\x1b\\"));
-            }
-        }
-        out
+        kitty_chunks(&self.rgba, keys, "")
     }
 
     /// This image resampled to `width`×`height` pixels exactly as the halfblock

@@ -10,6 +10,7 @@ use std::path::Path;
 use imara_diff::Algorithm;
 use imara_diff::Diff as ImaraDiff;
 use imara_diff::InternedInput;
+use karet_filetype::looks_binary;
 
 use crate::DiffError;
 use crate::model::DiffLine;
@@ -51,13 +52,11 @@ pub fn diff_text(old: &str, new: &str, opts: &DiffOptions) -> FileDiff {
     build_file_diff(old, new, path, None, opts.context_lines)
 }
 
-/// How many leading bytes are inspected when deciding whether a file is binary.
-const BINARY_SNIFF_BYTES: usize = 8000;
-
 /// Read two files and diff their contents. The result's `path` reflects the new
 /// file; `old_path` is populated when the paths differ and `detect_rename` is set.
 ///
-/// When either side is binary, the result carries
+/// When either side is binary — not UTF-8, or holding a NUL byte that
+/// [`karet_filetype::looks_binary`] finds — the result carries
 /// [`is_binary`](FileDiff::is_binary) and no hunks — the same shape
 /// [`crate::parse`] produces for `Binary files … differ`.
 ///
@@ -92,12 +91,6 @@ pub fn diff_files(old: &Path, new: &Path, opts: &DiffOptions) -> Result<FileDiff
         old_path,
         opts.context_lines,
     ))
-}
-
-/// Whether `bytes` look like binary content: a NUL byte near the start is the
-/// same signal git itself uses.
-fn looks_binary(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0)
 }
 
 /// A hunk-less [`FileDiff`] for binary content, with the status still derived from
@@ -348,6 +341,23 @@ mod tests {
         Ok(())
     }
 
+    /// Diff sniffs with the shared window, so it agrees with search and the
+    /// explorer: a NUL past `BINARY_SNIFF_LEN` leaves the file diffable text.
+    #[test]
+    fn diff_files_ignores_a_nul_past_the_shared_sniff_window() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let mut bytes = vec![b'a'; karet_filetype::BINARY_SNIFF_LEN];
+        bytes.extend_from_slice(b"\n\x00\n");
+        let old = write(&dir, "old.txt", &bytes)?;
+        bytes.extend_from_slice(b"tail\n");
+        let new = write(&dir, "new.txt", &bytes)?;
+
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert!(!f.is_binary);
+        assert!(!f.hunks.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn diff_files_reports_invalid_utf8_as_binary() -> Result<(), DiffError> {
         let dir = scratch()?;
@@ -449,6 +459,16 @@ mod tests {
         assert_eq!(add.map(|l| l.content.as_str()), Some("B"));
         // The stripped `\r` is recorded, not lost.
         assert!(h.lines.iter().all(|l| l.crlf && !l.no_newline));
+    }
+
+    #[test]
+    fn line_parts_reads_each_terminator() {
+        assert_eq!(line_parts("a\n"), ("a", false, false));
+        assert_eq!(line_parts("a\r\n"), ("a", true, false));
+        assert_eq!(line_parts("a"), ("a", false, true));
+        // The `""` an out-of-range lookup yields is no line at all, so it must
+        // not be flagged as an unterminated last line.
+        assert_eq!(line_parts(at(&["a\n"], 5)), ("", false, false));
     }
 
     /// Each line of `hunk` as `(kind, content, crlf, no_newline)`.

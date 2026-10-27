@@ -102,7 +102,7 @@ impl App {
         }
         pendings.extend(self.active_outline_loading());
         pendings.extend(self.quick_open_loading());
-        pendings.extend(self.hierarchy_loading());
+        pendings.extend(self.visible_hierarchy_loading());
         for tab in self.all_tabs() {
             if let Some(conflict) = tab
                 .merge_conflict
@@ -112,6 +112,11 @@ impl App {
                 pendings.push(conflict.loading_since);
             }
             match &tab.kind {
+                // A code tab waiting for the session to load its text sends
+                // nothing until the first snapshot, so its reveal is scheduled.
+                TabKind::Code { .. } if tab.fill_caret.is_some() => {
+                    pendings.extend(tab.fill_since);
+                },
                 TabKind::LanguageServers(view) => pendings.extend(view.loading_since),
                 // Indexing a repository takes seconds, so the reveal has to be scheduled
                 // rather than left to whenever a key happens to arrive.

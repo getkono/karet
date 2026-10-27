@@ -60,7 +60,7 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
 
 /// Dispatch one job through the worker's `run` and collect what it emitted.
 fn dispatch(root: Option<PathBuf>, job: VcsJob) -> Vec<(Option<RequestId>, Event)> {
-    let (tx, mut rx): (_, Events) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx): (_, Events) = crate::event_tx::EventTx::channel();
     run(&root, &tx, &mut BlameCache::new(), &mut None, job);
     std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
@@ -170,6 +170,32 @@ fn a_log_without_a_repository_notifies_and_a_cancelled_one_stays_silent() {
     assert!(
         cancelled.is_empty(),
         "a cancelled request owes no answer: {cancelled:?}"
+    );
+}
+
+#[test]
+fn a_status_without_a_repository_answers_empty_and_a_spontaneous_one_stays_silent() {
+    // No root reaches the same branch as a repository that vanished after the
+    // session opened it: `repository` fails, and the refresh must still answer.
+    let requested = dispatch(
+        None,
+        VcsJob::Status {
+            id: Some(RequestId(1)),
+        },
+    );
+    assert!(
+        matches!(
+            requested.as_slice(),
+            [(Some(RequestId(1)), Event::VcsStatus { staged, working })]
+                if staged.is_empty() && working.is_empty()
+        ),
+        "an empty status, not a notification that would toast: {requested:?}"
+    );
+
+    let spontaneous = dispatch(None, VcsJob::Status { id: None });
+    assert!(
+        spontaneous.is_empty(),
+        "a spontaneous refresh has nobody to answer: {spontaneous:?}"
     );
 }
 
