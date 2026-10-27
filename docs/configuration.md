@@ -500,14 +500,16 @@ and cursor movement are interpreted, so coloured compiler output needs no
 workspace root when it is not there (cargo prints workspace-relative paths
 from inside a member). What they find replaces that task's entries in the
 **Problems** panel and the status-bar counts — at most twice a second while it
-runs with its tab on screen, and always when it exits — with the task's label as the source, and
-stays until the task runs again; F8 still walks only the language servers'
+runs, whether or not its tab is on screen, and always when it exits — with the
+task's label as the source, and stays until the task runs again or settings no
+longer define it; F8 still walks only the language servers'
 diagnostics. When a task ends, a notification gives its exit status and how
 many problems it found.
 
 Running a task whose last run is still going shows that run instead of starting
 a second (close its terminal to stop it); a finished run's tab is closed and
-replaced, so repeated builds do not pile up tabs.
+replaced once the new run has started, so repeated builds do not pile up tabs
+and a run that cannot start leaves the last one's output and problems in place.
 
 ```jsonc
 {
