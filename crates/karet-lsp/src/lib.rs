@@ -30,8 +30,9 @@
 //! - **Positions cross this API in UTF-16.** The client offers the LSP-default
 //!   `utf-16` as its only position encoding and stays faithful to it, so a
 //!   server's `positionEncoding` reply is not read: offered nothing else, a
-//!   conforming server has no other choice. Every [`LineCol`] and [`Range`] passed to or returned from this crate
-//!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
+//!   conforming server has no other choice. Every [`LineCol`] and [`Range`]
+//!   passed to or returned from this crate counts columns in UTF-16 code
+//!   units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
 //! - **Document sync is the consumer's choice of two.** [`LspClient::did_change`]
@@ -849,7 +850,11 @@ impl LspClient {
         version: i32,
         edits: &[TextEdit],
     ) -> Result<(), LspError> {
-        if self.server_options().text_sync != capability::TextSyncKind::Incremental {
+        let incremental = self
+            .gate
+            .read()
+            .is_ok_and(|gate| gate.options().text_sync == capability::TextSyncKind::Incremental);
+        if !incremental {
             return Err(LspError::Unsupported {
                 method: "incremental textDocument/didChange",
             });
