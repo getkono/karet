@@ -10,7 +10,7 @@ use karet_vcs::StatusKind;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 use crate::render::FileView;
 use crate::render::Section;
 use crate::tab::PagerState;

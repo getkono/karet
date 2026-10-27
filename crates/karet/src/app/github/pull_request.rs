@@ -15,8 +15,8 @@ use crate::app::github::state::GithubPullRequestEditor;
 use crate::app::github::state::GithubPullRequestSection;
 use crate::app::github::state::GithubViewState;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
 use crate::app::util::rect_contains;
+use crate::pending::Pending;
 
 impl App {
     pub(super) fn github_pull_request_key(&mut self, key: KeyEvent) -> bool {

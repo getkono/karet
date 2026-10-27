@@ -69,7 +69,7 @@ mod tests {
 
     use crate::app::github::forms::GithubPullRequestForm;
     use crate::app::github::state::GithubViewState;
-    use crate::app::pending::Pending;
+    use crate::pending::Pending;
 
     fn issue() -> GithubViewState {
         GithubViewState::Issue {

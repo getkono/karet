@@ -65,7 +65,7 @@ pub enum OverlayEvent {
     /// Open the Seam view on the chosen start point.
     AcceptSeamRoot(PathBuf),
     /// Apply the chosen color theme for this session.
-    AcceptTheme(crate::app::theme_picker::ThemeChoice),
+    AcceptTheme(ThemeChoice),
     /// Run the configured task with this label.
     AcceptTask {
         /// The task's `tasks` key.
@@ -280,6 +280,7 @@ pub struct DiffTarget {
 mod aicommit;
 mod goto_line;
 mod symbols;
+mod theme_choice;
 
 pub(crate) use aicommit::AiCommitForm;
 pub use goto_line::GO_TO_LINE_PREFIX;
@@ -288,6 +289,8 @@ pub use karet_widgets::picker::Picker;
 pub use symbols::DOCUMENT_SYMBOL_PREFIX;
 pub use symbols::QuickOpenMode;
 pub use symbols::WORKSPACE_SYMBOL_PREFIX;
+pub(crate) use theme_choice::ThemeChoice;
+pub(crate) use theme_choice::ThemeSource;
 
 /// A modal overlay.
 pub enum Overlay {

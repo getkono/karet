@@ -23,7 +23,6 @@ use karet_session::DocumentId;
 use karet_session::LspCommand;
 use karet_session::RequestId;
 
-use super::pending::Pending;
 use crate::app::App;
 use crate::app::language_servers::LanguageServerBadge;
 use crate::app::notifications::Report;
@@ -31,6 +30,7 @@ use crate::app::state::SpellingChrome;
 use crate::app::util::rect_contains;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
+use crate::pending::Pending;
 use crate::tab::TabKind;
 use crate::workspace;
 

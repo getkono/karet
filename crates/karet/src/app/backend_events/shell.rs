@@ -185,6 +185,7 @@ mod tests {
     use crate::app::tests::support::text_tab;
     use crate::app::*;
     use crate::completion::PendingCompletion;
+    use crate::tab::TabKind;
 
     const INCOMPATIBLE: &str = "graphical cursor is not compatible with this terminal";
 

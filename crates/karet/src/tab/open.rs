@@ -22,7 +22,7 @@ use karet_text::TextSnapshot;
 
 use super::Tab;
 use super::TabKind;
-use crate::app::Pending;
+use crate::pending::Pending;
 
 /// How many leading bytes to sample for file-type classification.
 const HEAD_BYTES: usize = 8192;

@@ -284,7 +284,7 @@ fn draw_dashboard_rows(
     if state.row_count() == 0 {
         let line = if state
             .loading_since
-            .is_some_and(crate::app::Pending::visible)
+            .is_some_and(crate::pending::Pending::visible)
         {
             "Loading GitHub data…"
         } else if state.loading_since.is_some() {

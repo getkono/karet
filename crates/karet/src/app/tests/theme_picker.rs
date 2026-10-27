@@ -1,10 +1,10 @@
 use super::support::*;
 use crate::app::theme_picker::THEME_PICKER_TITLE;
-use crate::app::theme_picker::ThemeSource;
 use crate::app::theme_picker::discover;
 use crate::app::theme_picker::same_theme;
 use crate::app::util::load_theme;
 use crate::app::*;
+use crate::overlay::ThemeSource;
 
 /// A VS Code theme whose editor background is `hex`, so each one loads to a
 /// theme distinct from the built-in dark one and from each other.

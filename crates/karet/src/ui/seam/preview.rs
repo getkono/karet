@@ -28,7 +28,7 @@ use ratatui::widgets::Paragraph;
 
 use super::PENDING;
 use super::UNRESOLVABLE;
-use crate::app::seam::SeamViewState;
+use crate::tab::seam::SeamViewState;
 
 /// Rows of context shown on each side of the node's own lines.
 const CONTEXT: usize = 3;

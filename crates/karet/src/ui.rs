@@ -104,7 +104,6 @@ use crate::app::App;
 use crate::app::LanguageServerBadgeSummary;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
-use crate::app::Pending;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
@@ -115,6 +114,7 @@ use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+use crate::pending::Pending;
 use crate::tab::CommitFiles;
 use crate::view::View;
 

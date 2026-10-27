@@ -78,12 +78,15 @@ pub(crate) use crate::keymap::Focus;
 pub(crate) use crate::keymap::FocusTarget;
 pub(crate) use crate::keymap::Modal;
 pub(crate) use crate::overlay::Overlay;
+pub(crate) use crate::pending::LOADING_REVEAL_DELAY;
+pub(crate) use crate::pending::Pending;
 pub(crate) use crate::render::FileView;
 pub(crate) use crate::render::Section;
 pub(crate) use crate::tab::CommitFiles;
 pub(crate) use crate::tab::CommitViewState;
 pub(crate) use crate::tab::PagerState;
 pub(crate) use crate::tab::SearchField;
+pub(crate) use crate::tab::TabKind;
 
 pub(crate) fn change(path: &str, status: StatusKind) -> ChangeSummary {
     ChangeSummary {

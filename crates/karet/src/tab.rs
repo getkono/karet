@@ -7,6 +7,7 @@
 mod kind;
 mod language_servers;
 mod open;
+pub(crate) mod seam;
 mod view_state;
 
 use std::collections::BTreeSet;
@@ -47,7 +48,7 @@ pub(crate) use view_state::MarkdownPreviewState;
 pub(crate) use view_state::PreviewKey;
 pub use view_state::ViewMode;
 
-use crate::app::Pending;
+use crate::pending::Pending;
 use crate::render::FileView;
 use crate::render::Section;
 
@@ -356,7 +357,7 @@ pub enum TabKind {
     ///
     /// Reserved with its identity the moment it is opened, so the pane switches
     /// immediately and the index fills in behind it.
-    Seam(Box<crate::app::seam::SeamViewState>),
+    Seam(Box<seam::SeamViewState>),
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.

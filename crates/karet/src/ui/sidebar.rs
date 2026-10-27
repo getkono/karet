@@ -37,7 +37,7 @@ pub(super) fn draw_outline(
     let entries = app.active_outline_rows();
     if entries.is_empty() {
         let pending = app.active_outline_loading();
-        let label = if pending.is_some_and(crate::app::Pending::visible) {
+        let label = if pending.is_some_and(crate::pending::Pending::visible) {
             " Loading…"
         } else if pending.is_some() {
             ""

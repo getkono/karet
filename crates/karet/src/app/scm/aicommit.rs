@@ -32,8 +32,8 @@ use karet_session::VcsCommand;
 use karet_widgets::Spinner;
 
 use crate::app::App;
-use crate::app::Pending;
 use crate::app::Report;
+use crate::pending::Pending;
 
 /// How long a generation runs before the elapsed seconds join the spinner.
 ///

@@ -17,7 +17,7 @@ use crate::app::github::state::GithubPullRequestSupplement;
 use crate::app::github::state::GithubPullRequestView;
 use crate::app::github::state::GithubViewState;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 
 fn human_github_error(operation: GithubOperation, message: &str) -> String {
     let action = match operation {

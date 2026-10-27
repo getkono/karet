@@ -33,11 +33,11 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-pub(super) use crate::app::seam::LENS_NAMES;
-use crate::app::seam::LensFilter;
-use crate::app::seam::SeamFocus;
-use crate::app::seam::SeamViewState;
-use crate::app::seam::geometry::span_rect;
+pub(super) use crate::tab::seam::LENS_NAMES;
+use crate::tab::seam::LensFilter;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::SeamViewState;
+use crate::tab::seam::geometry::span_rect;
 
 mod facets;
 mod header;

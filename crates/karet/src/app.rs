@@ -138,7 +138,6 @@ pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use link_color::HeldColors;
 pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
-pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
 pub(crate) use problems::ProblemsChrome;
 pub(crate) use problems::ProblemsPanel;
@@ -189,8 +188,8 @@ use crate::keymap::KeyChord;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
+use crate::pending::Pending;
 use crate::tab::Tab;
-use crate::tab::TabKind;
 use crate::tab::ViewMode;
 use crate::view::View;
 use crate::workspace;
@@ -246,9 +245,6 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
-/// Delay before rendering non-blocking loading text. Fast operations can complete
-/// without visual churn; slower ones get an explicit, stable placeholder.
-pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
 /// How soon a press must follow the last one to continue its multi-click streak,
 /// in the editor, the shell's other surfaces, and the terminal grid alike.
 pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);

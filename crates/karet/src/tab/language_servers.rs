@@ -8,7 +8,7 @@ use karet_session::LanguageServerPlanId;
 use karet_session::LanguageServerStatus;
 use ratatui::layout::Rect;
 
-use crate::app::Pending;
+use crate::pending::Pending;
 
 /// A clickable operation in the language-server manager's action strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

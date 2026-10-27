@@ -30,6 +30,7 @@ mod notify;
 mod outline;
 mod overlay;
 mod paths;
+mod pending;
 mod preview_images;
 mod remote;
 mod render;

@@ -27,6 +27,8 @@ use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::overlay::Picker;
 use crate::overlay::PickerKind;
+use crate::overlay::ThemeChoice;
+use crate::overlay::ThemeSource;
 
 /// The picker's title. An open overlay is recognised as it by
 /// [`PickerKind::ColorTheme`], not by this.
@@ -34,53 +36,6 @@ pub(crate) const THEME_PICKER_TITLE: &str = "Select Color Theme";
 
 /// The directory, beside a `setting.jsonc`, that holds the themes offered.
 pub(crate) const THEMES_DIR: &str = "themes";
-
-/// Where a theme the picker offers comes from, shown beside its name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ThemeSource {
-    /// Compiled in.
-    BuiltIn,
-    /// The user's `themes` directory.
-    User,
-    /// The project's `.karet/themes` directory.
-    Project,
-    /// Named by `workbench.colorTheme`, outside both directories.
-    Settings,
-}
-
-impl ThemeSource {
-    /// The hint shown at the right of the theme's row.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::BuiltIn => "built-in",
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Settings => "settings",
-        }
-    }
-}
-
-/// One theme the picker offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ThemeChoice {
-    /// The row's name: the file stem, or `Dark` for the built-in theme.
-    pub(crate) label: String,
-    /// The `workbench.colorTheme` value that loads it.
-    pub(crate) setting: String,
-    /// Where it comes from.
-    pub(crate) source: ThemeSource,
-}
-
-impl ThemeChoice {
-    /// The built-in dark theme.
-    fn built_in() -> Self {
-        Self {
-            label: "Dark".to_string(),
-            setting: "dark".to_string(),
-            source: ThemeSource::BuiltIn,
-        }
-    }
-}
 
 /// The picker's preview and the session's pick.
 #[derive(Debug, Default)]
