@@ -23,6 +23,7 @@ use crate::formatting_options;
 fn formatting_capability_reads_every_shape_the_spec_allows() {
     let reads = |capabilities: Value| {
         capability::parse(&json!({"capabilities": capabilities}))
+            .0
             .supports(ServerFeature::Formatting)
     };
 
@@ -42,7 +43,9 @@ fn formatting_capability_reads_every_shape_the_spec_allows() {
         "an unadvertised capability is not a supported one"
     );
     assert!(
-        !capability::parse(&json!({})).supports(ServerFeature::Formatting),
+        !capability::parse(&json!({}))
+            .0
+            .supports(ServerFeature::Formatting),
         "a result with no capabilities at all supports nothing"
     );
 }

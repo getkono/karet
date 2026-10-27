@@ -1,4 +1,6 @@
-//! Reading a server's `initialize` reply into [`Capabilities`].
+//! Reading a server's `initialize` reply into [`Capabilities`] — the neutral
+//! record a consumer gates on — and [`ServerOptions`], what this crate alone
+//! needs to talk to the server.
 //!
 //! Parsed from the raw JSON rather than `lsp_types::ServerCapabilities`, on
 //! purpose. The typed struct is a snapshot of one crate version's view of the
@@ -14,13 +16,59 @@
 
 use karet_core::Capabilities;
 use karet_core::CompletionOptions;
-use karet_core::OnTypeFormattingOptions;
-use karet_core::PositionEncoding;
-use karet_core::SemanticTokensLegend;
 use karet_core::ServerFeature;
 use karet_core::SignatureHelpOptions;
-use karet_core::TextSyncKind;
 use serde_json::Value;
+
+use crate::SemanticTokensLegend;
+
+/// How much text a server wants on each change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TextSyncKind {
+    /// The server wants no change notifications at all.
+    None,
+    /// The server wants the whole document on every change.
+    #[default]
+    Full,
+    /// The server wants only the ranges that changed.
+    Incremental,
+}
+
+/// The characters that trigger formatting as you type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OnTypeFormattingOptions {
+    /// The one character that always triggers it.
+    pub(crate) first_trigger_character: char,
+    /// Further characters that also trigger it.
+    pub(crate) more_trigger_characters: Vec<char>,
+}
+
+impl OnTypeFormattingOptions {
+    /// Every trigger, the first one first.
+    pub(crate) fn triggers(&self) -> Vec<char> {
+        let mut all = vec![self.first_trigger_character];
+        all.extend(&self.more_trigger_characters);
+        all
+    }
+}
+
+/// What the handshake negotiated beyond the feature set: how this crate must
+/// talk to the server, which nothing above it reads.
+///
+/// `Default` is a server that negotiated nothing: whole-document sync, no
+/// legend, no listed commands, no format-on-type triggers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ServerOptions {
+    /// How much text it wants on a change.
+    pub(crate) text_sync: TextSyncKind,
+    /// The semantic-token legend, when it emits semantic tokens.
+    pub(crate) semantic_tokens_legend: Option<SemanticTokensLegend>,
+    /// The commands `workspace/executeCommand` will accept; empty when it
+    /// listed none.
+    pub(crate) execute_commands: Vec<String>,
+    /// The format-on-type triggers, when it formats on type.
+    pub(crate) on_type_formatting: Option<OnTypeFormattingOptions>,
+}
 
 /// Whether `caps[key]` advertises a provider.
 ///
@@ -87,14 +135,15 @@ fn strings(value: Option<&Value>, key: &str) -> Vec<String> {
 
 /// Read the `capabilities` member of an `initialize` result.
 ///
-/// A reply that carries no capabilities object yields the default — a server
-/// that supports nothing — which is the safe reading: every gated request is
-/// then refused rather than issued blind.
-pub(crate) fn parse(result: &Value) -> Capabilities {
+/// A reply that carries no capabilities object yields the defaults — a server
+/// that supports nothing and negotiated nothing — which is the safe reading:
+/// every gated request is then refused rather than issued blind.
+pub(crate) fn parse(result: &Value) -> (Capabilities, ServerOptions) {
     let Some(caps) = result.get("capabilities") else {
-        return Capabilities::default();
+        return (Capabilities::default(), ServerOptions::default());
     };
     let mut out = Capabilities::default();
+    let mut options = ServerOptions::default();
 
     for (key, feature) in [
         ("hoverProvider", ServerFeature::Hover),
@@ -187,16 +236,10 @@ pub(crate) fn parse(result: &Value) -> Capabilities {
         flag(caps.get("diagnosticProvider"), "interFileDependencies"),
     );
 
-    parse_semantic_tokens(caps, &mut out);
-    parse_text_sync(caps, &mut out);
+    options.semantic_tokens_legend = parse_semantic_tokens(caps, &mut out);
+    options.text_sync = parse_text_sync(caps, &mut out);
     parse_workspace(caps, &mut out);
 
-    out.position_encoding = match caps.get("positionEncoding").and_then(Value::as_str) {
-        Some("utf-8") => PositionEncoding::Utf8,
-        Some("utf-32") => PositionEncoding::Utf32,
-        // Absent means UTF-16, which the spec states outright.
-        _ => PositionEncoding::Utf16,
-    };
     out.completion = CompletionOptions {
         trigger_characters: chars(caps.get("completionProvider"), "triggerCharacters"),
         commit_characters: chars(caps.get("completionProvider"), "allCommitCharacters"),
@@ -205,24 +248,21 @@ pub(crate) fn parse(result: &Value) -> Capabilities {
         trigger_characters: chars(caps.get("signatureHelpProvider"), "triggerCharacters"),
         retrigger_characters: chars(caps.get("signatureHelpProvider"), "retriggerCharacters"),
     };
-    out.code_action_kinds = strings(caps.get("codeActionProvider"), "codeActionKinds");
-    out.execute_commands = strings(caps.get("executeCommandProvider"), "commands");
-    out.on_type_formatting = parse_on_type_formatting(caps);
-    out
+    options.execute_commands = strings(caps.get("executeCommandProvider"), "commands");
+    options.on_type_formatting = parse_on_type_formatting(caps);
+    (out, options)
 }
 
 /// Semantic tokens carry a legend whose *order* is the meaning of every packed
 /// index, so a result is only interpretable against the legend from the same
-/// connection.
-fn parse_semantic_tokens(caps: &Value, out: &mut Capabilities) {
-    let Some(provider) = caps.get("semanticTokensProvider") else {
-        return;
-    };
+/// connection. Returns that legend, when the server emits semantic tokens.
+fn parse_semantic_tokens(caps: &Value, out: &mut Capabilities) -> Option<SemanticTokensLegend> {
+    let provider = caps.get("semanticTokensProvider")?;
     let legend = provider.get("legend");
-    out.semantic_tokens_legend = Some(SemanticTokensLegend {
+    let legend = SemanticTokensLegend {
         token_types: strings(legend, "tokenTypes"),
         token_modifiers: strings(legend, "tokenModifiers"),
-    });
+    };
     let full = provider.get("full");
     let full_on = matches!(full, Some(Value::Bool(true)) | Some(Value::Object(_)));
     out.set(ServerFeature::SemanticTokensFull, full_on);
@@ -231,40 +271,29 @@ fn parse_semantic_tokens(caps: &Value, out: &mut Capabilities) {
         ServerFeature::SemanticTokensRange,
         provides(provider, "range"),
     );
+    Some(legend)
 }
 
 /// `textDocumentSync` is either a bare number or an options object; both
-/// shapes are current, and servers use both.
-fn parse_text_sync(caps: &Value, out: &mut Capabilities) {
+/// shapes are current, and servers use both. Returns the sync kind it asks for.
+fn parse_text_sync(caps: &Value, out: &mut Capabilities) -> TextSyncKind {
     let Some(sync) = caps.get("textDocumentSync") else {
-        return;
+        return TextSyncKind::default();
     };
     let kind = sync
         .as_i64()
         .or_else(|| sync.get("change").and_then(Value::as_i64));
-    out.text_sync = match kind {
+    out.set(
+        ServerFeature::WillSaveWaitUntil,
+        flag(Some(sync), "willSaveWaitUntil"),
+    );
+    match kind {
         Some(0) => TextSyncKind::None,
         Some(2) => TextSyncKind::Incremental,
         // 1 is Full, and so is anything unrecognised: resending the whole
         // document is always correct, just wasteful.
         _ => TextSyncKind::Full,
-    };
-    // `save` is `boolean | SaveOptions`, and the boolean says only whether the
-    // server wants save notifications at all -- `includeText` lives in the
-    // options form. Reading `save: true` as "send the whole document" would
-    // push a full copy of every file at every save to a server that never
-    // asked for one.
-    out.save_includes_text = match sync.get("save") {
-        Some(Value::Bool(_)) | None => false,
-        Some(save) => save
-            .get("includeText")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    };
-    out.set(
-        ServerFeature::WillSaveWaitUntil,
-        flag(Some(sync), "willSaveWaitUntil"),
-    );
+    }
 }
 
 /// Workspace-scoped capabilities live one level down.

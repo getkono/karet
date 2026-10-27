@@ -7,22 +7,45 @@
 use serde_json::json;
 
 use super::*;
+use crate::gate::Gate;
+
+/// The feature half of a parsed reply.
+fn features(result: &Value) -> Capabilities {
+    parse(result).0
+}
+
+/// The negotiated half of a parsed reply.
+fn options(result: &Value) -> ServerOptions {
+    parse(result).1
+}
+
+/// A gate seeded with `result`, as the handshake seeds a connection's.
+fn gate(result: &Value) -> Gate {
+    let (capabilities, options) = parse(result);
+    let mut gate = Gate::default();
+    gate.advertise(capabilities, options);
+    gate
+}
 
 #[test]
 fn a_reply_with_no_capabilities_supports_nothing() {
     // Not a hypothetical: a server that fails its own initialization can
     // answer with an empty result, and issuing every request at it afterwards
     // is exactly what this change exists to stop.
-    let caps = parse(&json!({}));
+    let (caps, negotiated) = parse(&json!({}));
     assert!(caps.is_empty());
     assert!(!caps.supports(ServerFeature::Hover));
+    // Nor did it negotiate anything: whole-document sync, no legend, no
+    // commands, no format-on-type triggers.
+    assert_eq!(negotiated, ServerOptions::default());
+    assert_eq!(negotiated.text_sync, TextSyncKind::Full);
 }
 
 #[test]
 fn both_spellings_of_a_provider_are_understood() {
     // `true` and an options object both mean yes; `false` and absent mean no.
     // Servers use all four, often in the same reply.
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "hoverProvider": true,
         "referencesProvider": false,
         "definitionProvider": {},
@@ -33,14 +56,13 @@ fn both_spellings_of_a_provider_are_understood() {
     assert!(caps.supports(ServerFeature::Definition));
     assert!(caps.supports(ServerFeature::CodeAction));
     assert!(!caps.supports(ServerFeature::Rename));
-    assert_eq!(caps.code_action_kinds, vec!["quickfix", "refactor"]);
 }
 
 #[test]
 fn a_resolve_provider_is_read_separately_from_its_feature() {
     // The distinction that matters: offering completion says nothing about
     // whether `completionItem/resolve` will be answered.
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "completionProvider": {"resolveProvider": true, "triggerCharacters": [".", ":"]},
         "codeActionProvider": true,
         "inlayHintProvider": {"resolveProvider": false},
@@ -57,11 +79,11 @@ fn a_resolve_provider_is_read_separately_from_its_feature() {
 
 #[test]
 fn rename_and_prepare_rename_are_independent() {
-    let plain = parse(&json!({"capabilities": {"renameProvider": true}}));
+    let plain = features(&json!({"capabilities": {"renameProvider": true}}));
     assert!(plain.supports(ServerFeature::Rename));
     assert!(!plain.supports(ServerFeature::PrepareRename));
 
-    let prepared = parse(&json!({"capabilities": {
+    let prepared = features(&json!({"capabilities": {
         "renameProvider": {"prepareProvider": true},
     }}));
     assert!(prepared.supports(ServerFeature::Rename));
@@ -70,7 +92,7 @@ fn rename_and_prepare_rename_are_independent() {
 
 #[test]
 fn trigger_characters_survive_and_multi_character_entries_do_not() {
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "completionProvider": {
             "triggerCharacters": [".", "::", ":"],
             "allCommitCharacters": ["("],
@@ -93,7 +115,7 @@ fn trigger_characters_survive_and_multi_character_entries_do_not() {
 fn the_semantic_token_legend_keeps_its_order() {
     // The order *is* the meaning: a packed token indexes into these lists, so
     // a reordered legend recolours the whole file.
-    let caps = parse(&json!({"capabilities": {
+    let (caps, negotiated) = parse(&json!({"capabilities": {
         "semanticTokensProvider": {
             "legend": {
                 "tokenTypes": ["namespace", "type", "function"],
@@ -104,10 +126,10 @@ fn the_semantic_token_legend_keeps_its_order() {
         },
     }}));
     assert!(
-        caps.semantic_tokens_legend.is_some(),
+        negotiated.semantic_tokens_legend.is_some(),
         "a legend was advertised"
     );
-    let legend = caps.semantic_tokens_legend.clone().unwrap_or_default();
+    let legend = negotiated.semantic_tokens_legend.unwrap_or_default();
     assert_eq!(legend.token_types, vec!["namespace", "type", "function"]);
     assert_eq!(legend.token_modifiers, vec!["declaration", "readonly"]);
     assert!(caps.supports(ServerFeature::SemanticTokensFull));
@@ -117,7 +139,7 @@ fn the_semantic_token_legend_keeps_its_order() {
 
 #[test]
 fn semantic_tokens_without_delta_do_not_claim_it() {
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "semanticTokensProvider": {
             "legend": {"tokenTypes": ["type"], "tokenModifiers": []},
             "full": true,
@@ -131,10 +153,10 @@ fn semantic_tokens_without_delta_do_not_claim_it() {
 #[test]
 fn text_sync_reads_both_the_number_and_the_object_form() {
     // gopls sends the object; several servers send the bare number.
-    let bare = parse(&json!({"capabilities": {"textDocumentSync": 2}}));
+    let bare = options(&json!({"capabilities": {"textDocumentSync": 2}}));
     assert_eq!(bare.text_sync, TextSyncKind::Incremental);
 
-    let object = parse(&json!({"capabilities": {
+    let (object_caps, object) = parse(&json!({"capabilities": {
         "textDocumentSync": {
             "openClose": true,
             "change": 1,
@@ -143,41 +165,24 @@ fn text_sync_reads_both_the_number_and_the_object_form() {
         },
     }}));
     assert_eq!(object.text_sync, TextSyncKind::Full);
-    assert!(object.save_includes_text);
-    assert!(object.supports(ServerFeature::WillSaveWaitUntil));
+    assert!(object_caps.supports(ServerFeature::WillSaveWaitUntil));
 
-    let none = parse(&json!({"capabilities": {"textDocumentSync": 0}}));
+    let none = options(&json!({"capabilities": {"textDocumentSync": 0}}));
     assert_eq!(none.text_sync, TextSyncKind::None);
 
     // Unrecognised degrades to Full: resending everything is wasteful, never
     // wrong, where guessing Incremental would corrupt the server's copy.
-    let odd = parse(&json!({"capabilities": {"textDocumentSync": 99}}));
+    let odd = options(&json!({"capabilities": {"textDocumentSync": 99}}));
     assert_eq!(odd.text_sync, TextSyncKind::Full);
 }
 
 #[test]
-fn a_save_advertised_as_a_bare_bool_is_understood() {
-    let caps = parse(&json!({"capabilities": {
+fn a_save_advertised_as_a_bare_bool_leaves_the_sync_kind_alone() {
+    let (caps, negotiated) = parse(&json!({"capabilities": {
         "textDocumentSync": {"change": 2, "save": true},
     }}));
-    // `save: true` means notify-on-save, not include-the-text.
-    assert!(!caps.save_includes_text);
-    assert_eq!(caps.text_sync, TextSyncKind::Incremental);
-}
-
-#[test]
-fn position_encoding_is_taken_from_the_server_and_defaults_to_utf16() {
-    let default = parse(&json!({"capabilities": {}}));
-    assert_eq!(default.position_encoding, PositionEncoding::Utf16);
-
-    // clangd's preference, and the reason this is a live correctness bug:
-    // UTF-8 and UTF-16 agree on every ASCII line, so the mismatch only shows
-    // up once a line contains one non-ASCII character.
-    let utf8 = parse(&json!({"capabilities": {"positionEncoding": "utf-8"}}));
-    assert_eq!(utf8.position_encoding, PositionEncoding::Utf8);
-
-    let utf32 = parse(&json!({"capabilities": {"positionEncoding": "utf-32"}}));
-    assert_eq!(utf32.position_encoding, PositionEncoding::Utf32);
+    assert_eq!(negotiated.text_sync, TextSyncKind::Incremental);
+    assert!(!caps.supports(ServerFeature::WillSaveWaitUntil));
 }
 
 #[test]
@@ -185,15 +190,15 @@ fn type_hierarchy_is_read_even_though_lsp_types_has_no_field_for_it() {
     // The reason this module reads raw JSON. karet already issues
     // `textDocument/prepareTypeHierarchy`, and `lsp_types` 0.97 cannot
     // represent the capability that says whether it will be answered.
-    let caps = parse(&json!({"capabilities": {"typeHierarchyProvider": true}}));
+    let caps = features(&json!({"capabilities": {"typeHierarchyProvider": true}}));
     assert!(caps.supports(ServerFeature::TypeHierarchy));
 }
 
 #[test]
 fn inline_completion_is_read_though_lsp_types_hides_it_behind_a_feature() {
-    let caps = parse(&json!({"capabilities": {"inlineCompletionProvider": {}}}));
+    let caps = features(&json!({"capabilities": {"inlineCompletionProvider": {}}}));
     assert!(caps.supports(ServerFeature::InlineCompletion));
-    let off = parse(&json!({"capabilities": {"inlineCompletionProvider": false}}));
+    let off = features(&json!({"capabilities": {"inlineCompletionProvider": false}}));
     assert!(!off.supports(ServerFeature::InlineCompletion));
     assert_eq!(
         super::feature_for_method("textDocument/inlineCompletion"),
@@ -204,17 +209,35 @@ fn inline_completion_is_read_though_lsp_types_hides_it_behind_a_feature() {
 
 #[test]
 fn execute_command_carries_its_command_list() {
-    let caps = parse(&json!({"capabilities": {
+    let reply = json!({"capabilities": {
         "executeCommandProvider": {"commands": ["rust-analyzer.runSingle"]},
-    }}));
-    assert!(caps.supports(ServerFeature::ExecuteCommand));
-    assert!(caps.accepts_command("rust-analyzer.runSingle"));
-    assert!(!caps.accepts_command("gopls.tidy"));
+    }});
+    assert!(features(&reply).supports(ServerFeature::ExecuteCommand));
+    let listed = gate(&reply);
+    assert!(listed.accepts_command("rust-analyzer.runSingle"));
+    assert!(!listed.accepts_command("gopls.tidy"));
+}
+
+#[test]
+fn execute_command_is_refused_unless_offered_and_unlisted_means_any() {
+    // Not offered at all: every command is refused, listed or not.
+    assert!(!gate(&json!({"capabilities": {}})).accepts_command("rust-analyzer.runSingle"));
+
+    // Offered with no list: the list is optional in the protocol, so take the
+    // server at its word rather than refusing everything.
+    let unlisted = gate(&json!({"capabilities": {"executeCommandProvider": {}}}));
+    assert!(unlisted.accepts_command("rust-analyzer.runSingle"));
+    assert!(unlisted.accepts_command("gopls.tidy"));
+
+    // A registration offers it as surely as the handshake does.
+    let mut registered = gate(&json!({"capabilities": {}}));
+    registered.register("1".to_owned(), ServerFeature::ExecuteCommand, None);
+    assert!(registered.accepts_command("gopls.tidy"));
 }
 
 #[test]
 fn pull_diagnostics_separate_document_scope_from_workspace_scope() {
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "diagnosticProvider": {"interFileDependencies": true, "workspaceDiagnostics": false},
     }}));
     assert!(caps.supports(ServerFeature::PullDiagnostics));
@@ -225,7 +248,7 @@ fn pull_diagnostics_separate_document_scope_from_workspace_scope() {
 #[test]
 fn pull_diagnostics_without_inter_file_dependencies_pull_only_the_edited_file() {
     for provider in [json!(true), json!({"interFileDependencies": false})] {
-        let caps = parse(&json!({"capabilities": {"diagnosticProvider": provider}}));
+        let caps = features(&json!({"capabilities": {"diagnosticProvider": provider}}));
         assert!(caps.supports(ServerFeature::PullDiagnostics));
         assert!(!caps.supports(ServerFeature::InterFileDiagnostics));
     }
@@ -233,25 +256,29 @@ fn pull_diagnostics_without_inter_file_dependencies_pull_only_the_edited_file() 
 
 #[test]
 fn on_type_formatting_needs_its_first_trigger_to_count() {
-    let caps = parse(&json!({"capabilities": {
+    let negotiated = options(&json!({"capabilities": {
         "documentOnTypeFormattingProvider": {
             "firstTriggerCharacter": "}",
             "moreTriggerCharacter": [";", "\n"],
         },
     }}));
     assert!(
-        caps.on_type_formatting.is_some(),
+        negotiated.on_type_formatting.is_some(),
         "on-type formatting was advertised"
     );
-    let options = caps.on_type_formatting.unwrap_or(OnTypeFormattingOptions {
-        first_trigger_character: '\0',
-        more_trigger_characters: Vec::new(),
-    });
-    assert_eq!(options.first_trigger_character, '}');
-    assert_eq!(options.more_trigger_characters, vec![';', '\n']);
+    let triggers = negotiated
+        .on_type_formatting
+        .unwrap_or(OnTypeFormattingOptions {
+            first_trigger_character: '\0',
+            more_trigger_characters: Vec::new(),
+        });
+    assert_eq!(triggers.first_trigger_character, '}');
+    assert_eq!(triggers.more_trigger_characters, vec![';', '\n']);
+    // Every trigger, the first one first.
+    assert_eq!(triggers.triggers(), vec!['}', ';', '\n']);
 
     // Advertised but malformed: no usable trigger, so no options.
-    let broken = parse(&json!({"capabilities": {
+    let broken = options(&json!({"capabilities": {
         "documentOnTypeFormattingProvider": {"moreTriggerCharacter": [";"]},
     }}));
     assert!(broken.on_type_formatting.is_none());
@@ -261,7 +288,7 @@ fn on_type_formatting_needs_its_first_trigger_to_count() {
 fn a_realistic_rust_analyzer_reply_reads_as_expected() {
     // Trimmed from a real handshake. The point is the combination: plenty
     // advertised, and some conspicuously not.
-    let caps = parse(&json!({"capabilities": {
+    let (caps, negotiated) = parse(&json!({"capabilities": {
         "positionEncoding": "utf-16",
         "textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": false}},
         "hoverProvider": true,
@@ -292,7 +319,7 @@ fn a_realistic_rust_analyzer_reply_reads_as_expected() {
         "experimental": {"serverStatusNotification": true},
     }}));
 
-    assert_eq!(caps.text_sync, TextSyncKind::Incremental);
+    assert_eq!(negotiated.text_sync, TextSyncKind::Incremental);
     for supported in [
         ServerFeature::Hover,
         ServerFeature::Completion,
@@ -324,7 +351,7 @@ fn a_realistic_rust_analyzer_reply_reads_as_expected() {
 fn a_minimal_server_advertises_almost_nothing() {
     // What a small server really sends. Most of karet's feature set has to be
     // refused for this one, and refusing is the correct outcome.
-    let caps = parse(&json!({"capabilities": {
+    let caps = features(&json!({"capabilities": {
         "textDocumentSync": 1,
         "documentFormattingProvider": true,
     }}));

@@ -176,6 +176,9 @@ async fn the_first_trigger_and_a_newline_both_trigger() -> TestResult {
 #[tokio::test]
 async fn a_character_the_server_does_not_format_on_sends_nothing() -> TestResult {
     let (client, server) = connect(on_type_server()).await?;
+    // The triggers a caller is told about are exactly the advertised ones,
+    // the first one first.
+    assert_eq!(client.on_type_formatting_triggers(), vec!['}', ';', '\n']);
     let answered = tokio::spawn(answer(server, ON_TYPE, json!([])));
     let path = Path::new("/w/a.c");
     let at = LineCol::new(0, 1);
@@ -194,6 +197,7 @@ async fn a_character_the_server_does_not_format_on_sends_nothing() -> TestResult
 #[tokio::test]
 async fn unadvertised_on_type_formatting_is_refused_without_a_request() -> TestResult {
     let (client, _server) = connect(json!({"documentFormattingProvider": true})).await?;
+    assert!(client.on_type_formatting_triggers().is_empty());
     assert!(matches!(
         client
             .on_type_formatting(

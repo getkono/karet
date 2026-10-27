@@ -28,7 +28,8 @@
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
 //!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
 //!   [`merge_spans`].
-//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
+//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`CompletionOptions`],
+//!   [`SignatureHelpOptions`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
@@ -50,12 +51,8 @@ pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
 pub use capability::Capabilities;
 pub use capability::CompletionOptions;
-pub use capability::OnTypeFormattingOptions;
-pub use capability::PositionEncoding;
-pub use capability::SemanticTokensLegend;
 pub use capability::ServerFeature;
 pub use capability::SignatureHelpOptions;
-pub use capability::TextSyncKind;
 pub use coord::BytePoint;
 pub use coord::BytePos;
 pub use coord::LineCol;
