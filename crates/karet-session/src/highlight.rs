@@ -319,7 +319,7 @@ mod tests {
         HighlightRequest {
             doc: DocumentId(1),
             version,
-            lang: LanguageId(1),
+            lang: karet_treesitter::languages::RUST,
             text: text.into(),
             semantic: None,
             edits,
@@ -360,10 +360,14 @@ mod tests {
     #[test]
     fn merge_forces_a_full_parse_when_the_language_changed() {
         let mut older = request(1, "a", Some(vec![edit(0, 0, 1)]));
-        older.lang = LanguageId(2);
+        older.lang = karet_treesitter::languages::MARKDOWN;
         let merged = merge(older, request(2, "ab", Some(vec![edit(1, 1, 2)])));
         assert!(merged.edits.is_none());
-        assert_eq!(merged.lang, LanguageId(1), "the newer language wins");
+        assert_eq!(
+            merged.lang,
+            karet_treesitter::languages::RUST,
+            "the newer language wins"
+        );
     }
 
     #[test]

@@ -23,7 +23,6 @@
 
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
-use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
@@ -54,15 +53,15 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar id for Kotlin, when the grammar is compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    language_id_from_injection_name("kotlin")
+    Some(karet_treesitter::languages::KOTLIN)
 }
 
 /// Nothing is resolved semantically here yet; edges stay unresolved and the view degrades.
 const SEMANTIC: &[EdgeKind] = &[];
 
 impl SeamLanguage for Kotlin {
-    fn language(&self) -> LanguageId {
-        language_id().unwrap_or(LanguageId(u16::MAX))
+    fn language(&self) -> Option<LanguageId> {
+        language_id()
     }
 
     fn classify(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classified> {

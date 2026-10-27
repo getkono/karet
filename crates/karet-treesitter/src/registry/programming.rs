@@ -1,54 +1,11 @@
 //! Additional programming-language grammar entries.
 
 use super::GrammarInfo;
-#[cfg(any(
-    feature = "lang-kotlin",
-    feature = "lang-swift",
-    feature = "lang-scala",
-    feature = "lang-lua",
-    feature = "lang-haskell",
-    feature = "lang-ocaml",
-    feature = "lang-elixir",
-    feature = "lang-erlang",
-    feature = "lang-dart",
-    feature = "lang-r",
-    feature = "lang-perl",
-    feature = "lang-clojure",
-    feature = "lang-elisp",
-    feature = "lang-vim"
-))]
-use crate::LanguageId;
-
-#[cfg(feature = "lang-kotlin")]
-pub(super) const KOTLIN: LanguageId = LanguageId(39);
-#[cfg(feature = "lang-swift")]
-pub(super) const SWIFT: LanguageId = LanguageId(40);
-#[cfg(feature = "lang-scala")]
-pub(super) const SCALA: LanguageId = LanguageId(41);
-#[cfg(feature = "lang-lua")]
-pub(crate) const LUA: LanguageId = LanguageId(42);
-#[cfg(feature = "lang-haskell")]
-pub(super) const HASKELL: LanguageId = LanguageId(43);
-#[cfg(feature = "lang-ocaml")]
-pub(super) const OCAML: LanguageId = LanguageId(44);
-#[cfg(feature = "lang-ocaml")]
-pub(super) const OCAML_INTERFACE: LanguageId = LanguageId(45);
-#[cfg(feature = "lang-elixir")]
-pub(super) const ELIXIR: LanguageId = LanguageId(46);
-#[cfg(feature = "lang-erlang")]
-pub(super) const ERLANG: LanguageId = LanguageId(47);
-#[cfg(feature = "lang-dart")]
-pub(super) const DART: LanguageId = LanguageId(48);
-#[cfg(feature = "lang-r")]
-pub(super) const R: LanguageId = LanguageId(49);
-#[cfg(feature = "lang-perl")]
-pub(super) const PERL: LanguageId = LanguageId(50);
-#[cfg(feature = "lang-clojure")]
-pub(super) const CLOJURE: LanguageId = LanguageId(51);
-#[cfg(feature = "lang-elisp")]
-pub(super) const ELISP: LanguageId = LanguageId(52);
-#[cfg(feature = "lang-vim")]
-pub(super) const VIM: LanguageId = LanguageId(53);
+#[allow(
+    unused_imports,
+    reason = "a build with none of these grammars compiles no constant to import"
+)]
+use crate::languages::*;
 
 #[cfg(feature = "lang-kotlin")]
 const KOTLIN_HIGHLIGHTS: &str = r#"

@@ -74,7 +74,7 @@ pub fn fingerprint() -> u64 {
     for mapping in crate::lang::registered() {
         for language in mapping.language_ids() {
             let source = mapping.call_query(language).unwrap_or_default();
-            for byte in language.0.to_le_bytes().iter().chain(source.as_bytes()) {
+            for byte in language.get().to_le_bytes().iter().chain(source.as_bytes()) {
                 hash ^= u64::from(*byte);
                 hash = hash.wrapping_mul(PRIME);
             }

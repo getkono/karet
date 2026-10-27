@@ -27,7 +27,6 @@
 
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
-use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
@@ -59,21 +58,22 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// Every grammar id this mapping serves, when compiled in.
 #[must_use]
 pub fn language_ids() -> Vec<LanguageId> {
-    ["javascript", "typescript", "tsx"]
-        .into_iter()
-        .filter_map(language_id_from_injection_name)
-        .collect()
+    use karet_treesitter::languages;
+    vec![
+        languages::JAVASCRIPT,
+        #[cfg(feature = "lang-typescript")]
+        languages::TYPESCRIPT,
+        #[cfg(feature = "lang-typescript")]
+        languages::TSX,
+    ]
 }
 
 /// Nothing is resolved semantically here yet; edges stay unresolved and the view degrades.
 const SEMANTIC: &[EdgeKind] = &[];
 
 impl SeamLanguage for TypeScript {
-    fn language(&self) -> LanguageId {
-        language_ids()
-            .first()
-            .copied()
-            .unwrap_or(LanguageId(u16::MAX))
+    fn language(&self) -> Option<LanguageId> {
+        language_ids().first().copied()
     }
 
     fn language_ids(&self) -> Vec<LanguageId> {

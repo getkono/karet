@@ -50,7 +50,8 @@ const SCHEMA: u32 = 2;
 fn languages() -> Vec<u16> {
     let mut out: Vec<u16> = karet_seam::lang::registered()
         .iter()
-        .map(|language| language.language().0)
+        .filter_map(|language| language.language())
+        .map(karet_treesitter::LanguageId::get)
         .collect();
     out.sort_unstable();
     out

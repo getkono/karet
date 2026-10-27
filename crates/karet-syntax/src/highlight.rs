@@ -416,13 +416,17 @@ mod tests {
             .collect()
     }
 
+    /// A `LanguageId` cannot be forged, so every one names a compiled grammar and
+    /// `UnsupportedLanguage` is unreachable through it: each resolvable id builds.
     #[test]
-    fn a_language_without_a_grammar_is_unsupported() {
-        let unregistered = LanguageId(60000);
-        assert!(matches!(
-            Highlighter::new(unregistered),
-            Err(SyntaxError::UnsupportedLanguage)
-        ));
+    fn every_resolvable_language_builds_a_highlighter() {
+        let ids: Vec<LanguageId> = ["rust", "python", "markdown", "markdown_inline", "json"]
+            .into_iter()
+            .filter_map(karet_treesitter::language_id_from_injection_name)
+            .collect();
+        for lang in ids {
+            assert!(Highlighter::new(lang).is_ok(), "{lang:?}");
+        }
     }
 
     #[test]

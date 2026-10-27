@@ -1,8 +1,8 @@
 //! The compile-time registry of bundled tree-sitter grammars.
 //!
 //! Each entry is wired by a `lang-*` cargo feature, so [`all`] returns exactly the
-//! grammars compiled in. [`LanguageId`] values are stable and must **never** be
-//! renumbered once shipped.
+//! grammars compiled in. Each entry's id is its typed constant in
+//! [`crate::languages`], whose numbering must **never** change once shipped.
 
 use std::sync::OnceLock;
 
@@ -55,86 +55,14 @@ pub(crate) struct GrammarInfo {
     pub indents: Option<&'static str>,
 }
 
-// Stable language ids — never renumber once shipped. Each is cfg-gated to its
-// grammar feature so feature-subset builds don't carry unused constants.
-#[cfg(feature = "lang-rust")]
-pub(crate) const RUST: LanguageId = LanguageId(1);
-#[cfg(feature = "lang-python")]
-pub(crate) const PYTHON: LanguageId = LanguageId(2);
-#[cfg(feature = "lang-javascript")]
-pub(crate) const JAVASCRIPT: LanguageId = LanguageId(3);
-#[cfg(feature = "lang-typescript")]
-pub(crate) const TYPESCRIPT: LanguageId = LanguageId(4);
-#[cfg(feature = "lang-typescript")]
-pub(crate) const TSX: LanguageId = LanguageId(5);
-#[cfg(feature = "lang-json")]
-pub(crate) const JSON: LanguageId = LanguageId(6);
-#[cfg(feature = "lang-go")]
-pub(crate) const GO: LanguageId = LanguageId(7);
-#[cfg(feature = "lang-c")]
-pub(crate) const C: LanguageId = LanguageId(8);
-#[cfg(feature = "lang-cpp")]
-pub(crate) const CPP: LanguageId = LanguageId(9);
-#[cfg(feature = "lang-csharp")]
-pub(crate) const CSHARP: LanguageId = LanguageId(10);
-#[cfg(feature = "lang-java")]
-pub(crate) const JAVA: LanguageId = LanguageId(11);
-#[cfg(feature = "lang-ruby")]
-pub(crate) const RUBY: LanguageId = LanguageId(12);
-#[cfg(feature = "lang-php")]
-pub(crate) const PHP: LanguageId = LanguageId(13);
-#[cfg(feature = "lang-bash")]
-pub(crate) const BASH: LanguageId = LanguageId(14);
-#[cfg(feature = "lang-toml")]
-pub(crate) const TOML: LanguageId = LanguageId(15);
-#[cfg(feature = "lang-html")]
-pub(crate) const HTML: LanguageId = LanguageId(16);
-#[cfg(feature = "lang-css")]
-pub(crate) const CSS: LanguageId = LanguageId(17);
-#[cfg(feature = "lang-yaml")]
-pub(crate) const YAML: LanguageId = LanguageId(18);
-#[cfg(feature = "lang-markdown")]
-pub(crate) const MARKDOWN: LanguageId = LanguageId(19);
-/// tree-sitter-md's companion *inline* grammar. Never resolved from a path — the
-/// block grammar reaches it only through an `markdown_inline` injection.
-#[cfg(feature = "lang-markdown")]
-pub(crate) const MARKDOWN_INLINE: LanguageId = LanguageId(20);
-#[cfg(feature = "lang-latex")]
-pub(crate) const LATEX: LanguageId = LanguageId(21);
-#[cfg(feature = "lang-zig")]
-pub(crate) const ZIG: LanguageId = LanguageId(22);
-#[cfg(feature = "lang-xml")]
-pub(crate) const XML: LanguageId = LanguageId(23);
-#[cfg(feature = "lang-svelte")]
-pub(crate) const SVELTE: LanguageId = LanguageId(24);
-#[cfg(feature = "lang-astro")]
-pub(crate) const ASTRO: LanguageId = LanguageId(25);
-#[cfg(feature = "lang-vue")]
-pub(crate) const VUE: LanguageId = LanguageId(26);
-#[cfg(feature = "lang-sql")]
-pub(crate) const SQL: LanguageId = LanguageId(27);
-#[cfg(feature = "lang-graphql")]
-pub(crate) const GRAPHQL: LanguageId = LanguageId(28);
-#[cfg(feature = "lang-protobuf")]
-pub(crate) const PROTOBUF: LanguageId = LanguageId(29);
-#[cfg(feature = "lang-containerfile")]
-pub(crate) const CONTAINERFILE: LanguageId = LanguageId(30);
-#[cfg(feature = "lang-make")]
-pub(crate) const MAKE: LanguageId = LanguageId(31);
-#[cfg(feature = "lang-cmake")]
-pub(crate) const CMAKE: LanguageId = LanguageId(32);
-#[cfg(feature = "lang-rst")]
-pub(crate) const RST: LanguageId = LanguageId(33);
-#[cfg(feature = "lang-asciidoc")]
-pub(crate) const ASCIIDOC: LanguageId = LanguageId(34);
-#[cfg(feature = "lang-zsh")]
-pub(crate) const ZSH: LanguageId = LanguageId(35);
-#[cfg(feature = "lang-fish")]
-pub(crate) const FISH: LanguageId = LanguageId(36);
-#[cfg(feature = "lang-powershell")]
-pub(crate) const POWERSHELL: LanguageId = LanguageId(37);
-#[cfg(feature = "lang-batch")]
-pub(crate) const BATCH: LanguageId = LanguageId(38);
+// The stable ids live in [`crate::languages`], the published home of the
+// numbering; re-exported here so the grammar tables below and the shell/outline
+// submodules name them unqualified.
+#[allow(
+    unused_imports,
+    reason = "a build with no `lang-*` feature compiles no constant to import"
+)]
+pub(crate) use crate::languages::*;
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
 (comment) @comment

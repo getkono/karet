@@ -16,7 +16,6 @@
 
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
-use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
@@ -46,10 +45,13 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// Every grammar this mapping serves, when compiled in: C first, then C++.
 #[must_use]
 pub fn language_ids() -> Vec<LanguageId> {
-    ["c", "cpp"]
-        .into_iter()
-        .filter_map(language_id_from_injection_name)
-        .collect()
+    use karet_treesitter::languages;
+    vec![
+        #[cfg(feature = "lang-c")]
+        languages::C,
+        #[cfg(feature = "lang-cpp")]
+        languages::CPP,
+    ]
 }
 
 /// A function with internal linkage: visible only in its translation unit.
@@ -84,11 +86,8 @@ const UNREAD: &[Lens] = &[
 ];
 
 impl SeamLanguage for CFamily {
-    fn language(&self) -> LanguageId {
-        language_ids()
-            .first()
-            .copied()
-            .unwrap_or(LanguageId(u16::MAX))
+    fn language(&self) -> Option<LanguageId> {
+        language_ids().first().copied()
     }
 
     fn language_ids(&self) -> Vec<LanguageId> {
@@ -153,11 +152,12 @@ impl SeamLanguage for CFamily {
     }
 
     fn call_query(&self, language: LanguageId) -> Option<&'static str> {
-        if language_id_from_injection_name("cpp") == Some(language) {
-            Some(include_str!("../../../queries/calls/cpp.scm"))
-        } else {
-            Some(include_str!("../../../queries/calls/c.scm"))
+        #[cfg(feature = "lang-cpp")]
+        if language == karet_treesitter::languages::CPP {
+            return Some(include_str!("../../../queries/calls/cpp.scm"));
         }
+        let _ = language;
+        Some(include_str!("../../../queries/calls/c.scm"))
     }
 
     fn implicit_receiver(&self) -> bool {

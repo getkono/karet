@@ -4,6 +4,7 @@ use super::*;
 fn language_ids_compare() {
     assert_eq!(LanguageId(1), LanguageId(1));
     assert_ne!(LanguageId(1), LanguageId(2));
+    assert_eq!(LanguageId(7).get(), 7);
 }
 
 #[test]
@@ -557,8 +558,102 @@ fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
-    assert!(language_id_from_path(p).is_some());
-    assert_eq!(language_name_from_path(p), Some("Rust"));
+    assert_eq!(language_id_from_path(p), Some(languages::RUST));
+    assert_eq!(
+        language_id_from_injection_name("rust"),
+        Some(languages::RUST)
+    );
+}
+
+/// Every typed constant is the id its grammar registered under, and each one
+/// resolves back from that grammar's own primary injection name, so a constant
+/// cannot drift from the table it names.
+#[cfg(feature = "all-languages")]
+#[test]
+fn typed_constants_name_their_registered_grammars() {
+    let expected = [
+        (languages::RUST, "Rust"),
+        (languages::PYTHON, "Python"),
+        (languages::JAVASCRIPT, "JavaScript"),
+        (languages::TYPESCRIPT, "TypeScript"),
+        (languages::TSX, "TSX"),
+        (languages::JSON, "JSON"),
+        (languages::GO, "Go"),
+        (languages::C, "C"),
+        (languages::CPP, "C++"),
+        (languages::CSHARP, "C#"),
+        (languages::JAVA, "Java"),
+        (languages::RUBY, "Ruby"),
+        (languages::PHP, "PHP"),
+        (languages::BASH, "Bash"),
+        (languages::TOML, "TOML"),
+        (languages::HTML, "HTML"),
+        (languages::CSS, "CSS"),
+        (languages::YAML, "YAML"),
+        (languages::MARKDOWN, "Markdown"),
+        (languages::MARKDOWN_INLINE, "Markdown (inline)"),
+        (languages::LATEX, "TeX"),
+        (languages::ZIG, "Zig"),
+        (languages::XML, "XML"),
+        (languages::SVELTE, "Svelte"),
+        (languages::ASTRO, "Astro"),
+        (languages::VUE, "Vue"),
+        (languages::SQL, "SQL"),
+        (languages::GRAPHQL, "GraphQL"),
+        (languages::PROTOBUF, "Protobuf"),
+        (languages::CONTAINERFILE, "Dockerfile"),
+        (languages::MAKE, "Makefile"),
+        (languages::CMAKE, "CMake"),
+        (languages::RST, "reStructuredText"),
+        (languages::ASCIIDOC, "AsciiDoc"),
+        (languages::ZSH, "Zsh"),
+        (languages::FISH, "Fish"),
+        (languages::POWERSHELL, "PowerShell"),
+        (languages::BATCH, "Batch"),
+        (languages::KOTLIN, "Kotlin"),
+        (languages::SWIFT, "Swift"),
+        (languages::SCALA, "Scala"),
+        (languages::LUA, "Lua"),
+        (languages::HASKELL, "Haskell"),
+        (languages::OCAML, "OCaml"),
+        // Both OCaml grammars share a display name; the primary-name round trip
+        // below is what tells them apart.
+        (languages::OCAML_INTERFACE, "OCaml"),
+        (languages::ELIXIR, "Elixir"),
+        (languages::ERLANG, "Erlang"),
+        (languages::DART, "Dart"),
+        (languages::R, "R"),
+        (languages::PERL, "Perl"),
+        (languages::CLOJURE, "Clojure"),
+        (languages::ELISP, "Emacs Lisp"),
+        (languages::VIM, "Vim script"),
+        (languages::SCSS, "SCSS"),
+        (languages::SASS, "Sass"),
+        (languages::LESS, "Less"),
+        (languages::ERB, "ERB"),
+        (languages::MDX, "MDX"),
+        (languages::JSON5, "JSON5"),
+        (languages::INI, "INI"),
+        (languages::PROPERTIES, "Properties"),
+        (languages::EDN, "EDN"),
+        (languages::CBOR, "CBOR diagnostic notation"),
+        (languages::LOCKFILE, "Yarn lockfile"),
+    ];
+    assert_eq!(
+        expected.len(),
+        registry::all().len(),
+        "one constant per grammar"
+    );
+    for (id, name) in expected {
+        let grammar = registry::grammar(id);
+        assert_eq!(grammar.map(|g| g.name), Some(name), "{name}");
+        let primary = grammar.and_then(|g| g.names.first().copied());
+        assert_eq!(
+            primary.and_then(language_id_from_injection_name),
+            Some(id),
+            "{name}"
+        );
+    }
 }
 
 #[cfg(all(
