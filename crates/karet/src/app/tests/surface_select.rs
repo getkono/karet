@@ -6,6 +6,7 @@ use karet_widgets::RowSelection;
 
 use super::support::*;
 use crate::app::*;
+use crate::tab::rows::SurfaceRow;
 
 /// An app showing a diff tab for a one-line change, already rendered once so the
 /// selectable regions of the last frame are recorded.

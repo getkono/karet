@@ -152,7 +152,6 @@ pub(crate) use search::SearchPanelField;
 pub(crate) use search::SearchRow;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
-pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
 pub(crate) use spelling::SpellingPanel;
 pub(crate) use spelling::SpellingRow;

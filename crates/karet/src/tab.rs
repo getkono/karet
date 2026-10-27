@@ -8,6 +8,7 @@ mod kind;
 mod language;
 mod language_servers;
 mod open;
+pub(crate) mod rows;
 pub(crate) mod seam;
 mod view_state;
 

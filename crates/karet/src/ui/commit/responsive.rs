@@ -292,7 +292,7 @@ pub(crate) fn document_row(
     prefix_rows: usize,
     toggled_files: &BTreeSet<usize>,
     row: usize,
-) -> Option<crate::app::SurfaceRow> {
+) -> Option<crate::tab::rows::SurfaceRow> {
     if row < prefix_rows {
         return None;
     }
@@ -321,7 +321,7 @@ pub(crate) fn document_row(
                 return None;
             }
             let content = karet_diff::unified_row(&file.change.diff, local - 1)?;
-            return Some(crate::app::SurfaceRow {
+            return Some(crate::tab::rows::SurfaceRow {
                 text: content.text,
                 content_x: content.gutter_width.saturating_add(CARD_RAIL_WIDTH),
             });

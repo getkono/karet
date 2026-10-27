@@ -4,6 +4,8 @@
 
 pub(crate) mod commit;
 mod commit_console;
+#[cfg(test)]
+pub(crate) use commit_console::console_lines;
 mod confirm;
 mod content;
 mod display;
