@@ -292,6 +292,15 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    #[test]
+    fn the_default_dir_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into.
+        assert_eq!(
+            default_cache_dir(),
+            crate::dirs::cache_dir().map(|dir| dir.join("seam"))
+        );
+    }
+
     fn contribution(file: &Path) -> FileContribution {
         FileContribution {
             file: file.to_path_buf(),

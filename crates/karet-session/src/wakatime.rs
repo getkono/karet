@@ -299,6 +299,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_queue_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into:
+        // a queue re-pointed elsewhere would strand undelivered heartbeats.
+        assert_eq!(
+            queue_path(),
+            crate::dirs::cache_dir().map(|dir| dir.join("wakatime-queue.jsonl"))
+        );
+    }
+
+    #[test]
     fn the_settings_section_parses_key_and_url() {
         let config = WakaConfig::parse(
             "[other]\napi_key = wrong\n[settings]\napi_key = waka_abc\napi_url = https://wakapi.dev/api/\n",

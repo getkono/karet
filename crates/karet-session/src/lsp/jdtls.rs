@@ -167,6 +167,17 @@ mod tests {
     }
 
     #[test]
+    fn data_dir_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into.
+        let dir = workspace_data_dir(Path::new("/work/a"));
+        let jdtls = dir.as_deref().and_then(Path::parent);
+        assert_eq!(
+            jdtls.map(Path::to_path_buf),
+            crate::dirs::cache_dir().map(|cache| cache.join("jdtls"))
+        );
+    }
+
+    #[test]
     fn data_dir_is_stable_and_per_root() {
         let mut first = spec("jdtls", &[]);
         let mut again = spec("jdtls", &[]);

@@ -175,6 +175,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_store_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into:
+        // a store re-pointed elsewhere would lose the user's review marks.
+        let root = Path::new("/home/dev/project");
+        assert_eq!(
+            ReviewStore::path(root),
+            karet_session::dirs::cache_dir()
+                .map(|dir| dir.join(format!("review-{:016x}.json", workspace_key(root))))
+        );
+    }
+
+    #[test]
     fn the_workspace_key_is_fixed_by_its_definition() {
         // The key names a file that must still be found after a toolchain
         // upgrade, so these are golden FNV-1a values, not whatever the
