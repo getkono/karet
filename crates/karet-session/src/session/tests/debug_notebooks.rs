@@ -259,3 +259,68 @@
         }
         Ok(())
     }
+
+    /// `DocumentCommand::Convert` warms the notebook's kernel when
+    /// `notebook.kernel.autoStart` is on and the path is a `.ipynb`, and the
+    /// conversion still answers. With the setting off, or for another file
+    /// type, no kernel starts: a following `Restart` finds none.
+    #[cfg(feature = "notebook-kernel")]
+    #[tokio::test]
+    async fn convert_warms_the_notebook_kernel_only_when_auto_start_asks() -> TestResult {
+        use crate::api::NotebookCommand;
+
+        let dir = tempfile::tempdir()?;
+        let notebook = dir.path().join("broken.ipynb");
+        std::fs::write(&notebook, "not json")?;
+        let document = dir.path().join("broken.docx");
+        std::fs::write(&document, "not a zip")?;
+        let session_with = |auto_start: bool| {
+            let mut settings = crate::config::Settings::default();
+            settings.notebook.kernel.auto_start = auto_start;
+            Session::new(SessionConfig {
+                settings,
+                ..SessionConfig::default()
+            })
+        };
+
+        // Warmed: the kernel task diagnoses the unparsable notebook before it
+        // discovers or launches anything, and the conversion answers too.
+        let (mut session, mut events, _snaps) = session_with(true);
+        session.handle(RequestId(1), DocumentCommand::Convert { path: notebook.clone() });
+        let (mut kernel, mut converted) = (None, None);
+        let both = next_matching(&mut events, |id, event| {
+            match event {
+                Event::Notification { message, .. } => kernel = Some(message),
+                Event::DocumentConverted { path, markdown } => {
+                    converted = Some((id, path, markdown.is_err()));
+                },
+                _ => {},
+            }
+            (kernel.is_some() && converted.is_some()).then_some(())
+        })
+        .await;
+        assert_eq!(both, Some(()), "kernel {kernel:?}, converted {converted:?}");
+        let kernel = kernel.unwrap_or_default();
+        assert!(kernel.starts_with("notebook:"), "{kernel}");
+        assert_eq!(converted, Some((Some(RequestId(1)), notebook.clone(), true)));
+
+        // Not warmed: auto-start off for a notebook, or on for another type.
+        for (auto_start, path) in [(false, &notebook), (true, &document)] {
+            let (mut session, mut events, _snaps) = session_with(auto_start);
+            session.handle(RequestId(1), DocumentCommand::Convert { path: path.clone() });
+            let converted = next_matching(&mut events, |id, event| match event {
+                Event::DocumentConverted { path, .. } => Some((id, path)),
+                _ => None,
+            })
+            .await;
+            assert_eq!(converted, Some((Some(RequestId(1)), path.clone())));
+            session.handle(RequestId(2), NotebookCommand::Restart);
+            assert_eq!(
+                next_notification(&mut events).await.as_deref(),
+                Some("no notebook kernel to restart"),
+                "auto_start {auto_start}, {}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
