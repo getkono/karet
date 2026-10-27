@@ -64,6 +64,7 @@ impl Command {
             Self::ProblemsFilterCancel => "clear",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
+            Self::OpenLinkAtCaret => "open link",
             Self::GoToDeclaration => "declaration",
             Self::GoToTypeDefinition => "type definition",
             Self::GoToImplementation => "implementation",

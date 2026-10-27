@@ -72,6 +72,82 @@ fn screen_cell_maps_arbitrary_visible_positions() {
     );
 }
 
+/// `line_cells` is `screen_cell` for every character of the line, so check
+/// it against that column by column.
+fn line_cells_agree(
+    state: &EditorState,
+    area: Rect,
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    line: u32,
+) {
+    let len = buffer
+        .line(line as usize)
+        .map_or(0, |text| text.chars().count()) as u32;
+    let expected: Vec<(u32, u16, u16)> = (0..len)
+        .filter_map(|col| {
+            state
+                .screen_cell(area, buffer, folds, LineCol::new(line, col))
+                .map(|(x, y)| (col, x, y))
+        })
+        .collect();
+    assert_eq!(
+        state.line_cells(area, buffer, folds, line),
+        expected,
+        "line {line}"
+    );
+}
+
+#[test]
+fn line_cells_are_screen_cells_wrapped_scrolled_and_folded() {
+    let buffer = TextBuffer::from_text("a\tb\u{4e2d}cdefghijklmnopqrstuvwxyz\nhidden\nlast\n");
+    let folds = [Fold {
+        start: 0,
+        end: 1,
+        collapsed: true,
+    }];
+    let area = Rect::new(2, 1, 12, 3);
+    let mut target = Buffer::empty(Rect::new(0, 0, 20, 6));
+
+    // Scrolled horizontally: columns left of the scroll and right of the
+    // area are not drawn.
+    let mut state = EditorState::new();
+    state.scroll_to_column(3);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    let cells = state.line_cells(area, &buffer, &[], 0);
+    assert_eq!(cells.first().map(|cell| cell.0), Some(3));
+    assert!(cells.iter().all(|&(_, x, _)| x < area.right()));
+    for line in 0..3 {
+        line_cells_agree(&state, area, &buffer, &[], line);
+    }
+
+    // Wrapped: the line takes every row, and the rows below it are cut off.
+    let mut state = EditorState::new();
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .render(area, &mut target, &mut state);
+    let rows: std::collections::BTreeSet<u16> = state
+        .line_cells(area, &buffer, &[], 0)
+        .iter()
+        .map(|cell| cell.2)
+        .collect();
+    assert_eq!(rows.len(), 3);
+    for line in 0..3 {
+        line_cells_agree(&state, area, &buffer, &[], line);
+    }
+
+    // A collapsed fold hides its interior.
+    let mut state = EditorState::new();
+    Editor::new(&buffer)
+        .folds(&folds)
+        .render(area, &mut target, &mut state);
+    assert!(state.line_cells(area, &buffer, &folds, 1).is_empty());
+    assert!(!state.line_cells(area, &buffer, &folds, 2).is_empty());
+    for line in 0..4 {
+        line_cells_agree(&state, area, &buffer, &folds, line);
+    }
+}
+
 #[test]
 fn set_carets_preserves_count_and_merges_coincident() {
     let mut state = EditorState::new();

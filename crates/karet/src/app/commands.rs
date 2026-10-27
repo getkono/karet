@@ -265,6 +265,7 @@ impl App {
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
+            Command::OpenLinkAtCaret => self.open_link_at_caret(),
             Command::GoToDeclaration => self.request_locations(Some(LocationKind::Declaration)),
             Command::GoToTypeDefinition => {
                 self.request_locations(Some(LocationKind::TypeDefinition));

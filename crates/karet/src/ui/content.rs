@@ -221,6 +221,18 @@ pub(super) fn draw_pane_content(
                     );
                 } else {
                     f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                    let source = swatches::LinkSource {
+                        buffer,
+                        path,
+                        root: ctx.root,
+                    };
+                    swatches::source_link_osc8(
+                        f.buffer_mut(),
+                        &source,
+                        &tab.editor,
+                        &fold_lines,
+                        editor_rect,
+                    );
                 }
                 // Read the extents back after the render: the widget clamps the
                 // offsets and measures the viewport as it paints, so the bar is

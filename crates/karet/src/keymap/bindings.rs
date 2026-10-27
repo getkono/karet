@@ -291,6 +291,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     // the palette reaches it everywhere.
     b(Editor, true,  true,  false, Char(' '), Command::SignatureHelp),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
+    // Ctrl+K Enter opens the link under the caret: the keyboard path for
+    // Ctrl/Cmd+click on a link, which macOS terminals turn into a right click.
+    // Plain Ctrl chords, so every terminal delivers it.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(false, false, false, Enter)], Command::OpenLinkAtCaret),
     // VS Code parity: Shift+F12 lists references, Ctrl+F12 jumps to the
     // implementations. Declaration and type definition have no default chord
     // there either; they are reached through the palette.

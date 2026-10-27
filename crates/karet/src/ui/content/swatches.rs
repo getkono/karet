@@ -317,6 +317,140 @@ pub(super) fn inlay_hits(
         .collect()
 }
 
+/// The source text an editor viewport shows: its buffer, the file it is
+/// (Markdown or not, and what relative link targets resolve against), and the
+/// workspace root that bounds them.
+pub(super) struct LinkSource<'a> {
+    /// The document's text.
+    pub(super) buffer: &'a TextBuffer,
+    /// The document's file.
+    pub(super) path: &'a std::path::Path,
+    /// The workspace root.
+    pub(super) root: &'a std::path::Path,
+}
+
+/// Paint the links written in the source that the editor just drew in `area`
+/// as OSC 8 hyperlinks, so the terminal's own link handling (Cmd+click in
+/// most macOS terminals) opens them too.
+///
+/// Only a target [`crate::links::LinkTarget::osc8_uri`] admits is painted: a
+/// link that resolves outside the workspace stays plain, so the confirmation
+/// karet's own Ctrl/Cmd+click asks for cannot be bypassed. The scan covers the
+/// lines the viewport can show, skipping collapsed folds; each link's cells
+/// come from the editor's own geometry, so a link scrolled half out of view,
+/// or wrapped across rows, links exactly the cells it occupies.
+///
+/// Each line's geometry is worked out once ([`EditorState::line_cells`]), and
+/// a link with no character on screen is passed over before it is resolved,
+/// so a minified line with thousands of links costs what its visible part
+/// does.
+pub(super) fn source_link_osc8(
+    buf: &mut ratatui::buffer::Buffer,
+    source: &LinkSource,
+    editor: &EditorState,
+    folds: &[karet_editor::Fold],
+    area: Rect,
+) {
+    let markdown = crate::app::is_markdown(source.path);
+    let mut line = editor.scroll_line();
+    let mut shown = 0;
+    while shown < area.height {
+        if let Some(fold) = folds
+            .iter()
+            .find(|fold| fold.collapsed && fold.start < line && line <= fold.end)
+        {
+            line = fold.end.saturating_add(1);
+            continue;
+        }
+        let Some(text) = source.buffer.line(line as usize) else {
+            break;
+        };
+        let links = crate::autolink::source_links(&text, markdown);
+        let cells = if links.is_empty() {
+            Vec::new()
+        } else {
+            editor.line_cells(area, source.buffer, folds, line)
+        };
+        for (slice, first, target) in visible_links(&text, links, &cells) {
+            let Ok(target) = crate::links::resolve(&target, source.path, source.root) else {
+                continue;
+            };
+            let Some(uri) = target.osc8_uri().and_then(crate::links::safe_external) else {
+                continue;
+            };
+            for (y, start, end) in link_runs(&cells, slice, first, area.right()) {
+                super::super::osc8::link_row(buf, y, start, end, uri);
+            }
+        }
+        shown += 1;
+        line = line.saturating_add(1);
+    }
+}
+
+/// The links of `text` with a character among `cells` (the line's drawn
+/// characters, as [`EditorState::line_cells`] reports them), each as its
+/// source slice, the column of its first character, and its target.
+///
+/// Columns are counted in one pass over the line, so the cost is the line's
+/// length however many links it holds.
+fn visible_links<'t>(
+    text: &'t str,
+    mut links: Vec<crate::autolink::SourceLink>,
+    cells: &[(u32, u16, u16)],
+) -> Vec<(&'t str, u32, String)> {
+    let (Some(&(lo, ..)), Some(&(hi, ..))) = (cells.first(), cells.last()) else {
+        return Vec::new();
+    };
+    links.sort_by_key(|link| link.range.start);
+    let (mut byte, mut col) = (0_usize, 0_u32);
+    let mut visible = Vec::new();
+    for link in links {
+        let (Some(prefix), Some(slice)) = (text.get(byte..link.range.start), text.get(link.range))
+        else {
+            continue;
+        };
+        col = col.saturating_add(u32::try_from(prefix.chars().count()).unwrap_or(u32::MAX));
+        byte += prefix.len();
+        if col > hi {
+            break;
+        }
+        let end = col.saturating_add(u32::try_from(slice.chars().count()).unwrap_or(u32::MAX));
+        if end > lo {
+            visible.push((slice, col, link.target));
+        }
+    }
+    visible
+}
+
+/// The screen runs `(row, first column, end column)` the characters of
+/// `slice`, whose first character is column `first`, occupy among `cells`
+/// (the line's drawn characters, in column order): one run normally, one per
+/// row where the link wraps, and none for what is scrolled out of view. No
+/// run reaches past `right`, the editor area's right edge.
+fn link_runs(
+    cells: &[(u32, u16, u16)],
+    slice: &str,
+    first: u32,
+    right: u16,
+) -> Vec<(u16, u16, u16)> {
+    use unicode_width::UnicodeWidthChar;
+    let width = |ch: char| u16::try_from(ch.width().unwrap_or(1).max(1)).unwrap_or(1);
+    let from = cells.partition_point(|&(col, ..)| col < first);
+    let mut chars = slice.chars().zip(first..);
+    let mut runs: Vec<(u16, u16, u16)> = Vec::new();
+    for &(col, x, y) in cells.get(from..).unwrap_or_default() {
+        let Some((ch, _)) = chars.find(|&(_, at)| at == col) else {
+            break;
+        };
+        let end = x.saturating_add(width(ch)).min(right);
+        match runs.last_mut() {
+            Some((row, start, stop)) if *row == y && x >= *start => *stop = (*stop).max(end),
+            _ => runs.push((y, x, end)),
+        }
+    }
+    runs
+}
+
 #[cfg(test)]
 mod diagnostic_text_tests {
     use karet_core::EolAlign;
@@ -610,5 +744,47 @@ mod manifest_hint_tests {
             manifest_hint_text(&[hint(ManifestHintState::Patch, Some("0.1.45"), &[])]);
         assert_eq!(decorations[0].line, 7);
         assert_eq!(decorations[0].role, ThemeRole::DiagnosticInfo);
+    }
+}
+
+#[cfg(test)]
+mod source_link_tests {
+    use super::*;
+
+    #[test]
+    fn only_links_with_a_drawn_character_are_kept() {
+        let text = "é https://a.io/1 x https://b.io/2 y https://c.io/3";
+        assert_eq!(crate::autolink::source_links(text, false).len(), 3);
+        // Columns 20..26 are on screen: inside the second URL (19..33) only.
+        let cells: Vec<(u32, u16, u16)> = (20..26_u16).map(|x| (u32::from(x), x, 0)).collect();
+        let visible = visible_links(text, crate::autolink::source_links(text, false), &cells);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|(slice, first, _)| (*slice, *first))
+                .collect::<Vec<_>>(),
+            [("https://b.io/2", 19)],
+            "columns count chars, not bytes"
+        );
+        assert!(visible_links(text, crate::autolink::source_links(text, false), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_link_runs_one_row_per_wrap_and_stops_at_the_right_edge() {
+        // `abcd` at columns 3..7: two on row 0 from x 10, two on row 1.
+        let cells = [
+            (2, 9, 0),
+            (3, 10, 0),
+            (4, 11, 0),
+            (5, 0, 1),
+            (6, 1, 1),
+            (7, 2, 1),
+        ];
+        assert_eq!(link_runs(&cells, "abcd", 3, 40), [(0, 10, 12), (1, 0, 2)]);
+        // A wide last character is clipped to the area.
+        assert_eq!(link_runs(&cells[..3], "a\u{4e2d}", 3, 12), [(0, 10, 12)]);
+        // Scrolled so only its tail shows.
+        assert_eq!(link_runs(&cells[3..], "abcd", 3, 40), [(1, 0, 2)]);
+        assert!(link_runs(&cells, "ab", 9, 40).is_empty(), "off screen");
     }
 }

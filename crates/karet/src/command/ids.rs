@@ -266,6 +266,7 @@ command_ids! {
     CommitUnfoldFileTree => "commitUnfoldFileTree",
     CommitGraphCopyIssueUrls => "commitGraphCopyIssueUrls",
     GoToDefinition => "goToDefinition",
+    OpenLinkAtCaret => "openLinkAtCaret",
     GoToDeclaration => "goToDeclaration",
     GoToTypeDefinition => "goToTypeDefinition",
     GoToImplementation => "goToImplementation",

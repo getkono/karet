@@ -80,6 +80,7 @@ static PALETTE: &[Command] = &[
     Command::NotebookInterrupt,
     Command::NotebookRestartKernel,
     Command::GoToDefinition,
+    Command::OpenLinkAtCaret,
     Command::GoToDeclaration,
     Command::GoToTypeDefinition,
     Command::GoToImplementation,
