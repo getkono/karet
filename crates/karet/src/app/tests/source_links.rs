@@ -389,10 +389,11 @@ fn a_source_link_scrolled_half_out_of_view_links_only_its_drawn_cells() {
     let _ = frame(&mut app, 40, 8);
     // Scrolled right past the URL's start at column 11, in a pane too narrow
     // for its end: it is cut off on both sides.
+    let area = app.last_frame.editor_rect();
     let wheel = MouseEvent {
         kind: MouseEventKind::ScrollRight,
-        column: app.editor_rect.x.saturating_add(5),
-        row: app.editor_rect.y,
+        column: area.x.saturating_add(5),
+        row: area.y,
         modifiers: KeyModifiers::NONE,
     };
     for _ in 0..4 {
