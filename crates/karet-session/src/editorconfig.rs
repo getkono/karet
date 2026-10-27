@@ -16,6 +16,7 @@ use crate::api::DocumentLineEnding;
 use crate::api::DocumentSettings;
 use crate::api::SpellingLanguage;
 use crate::config::Settings;
+use crate::config::schema::Encoding;
 use crate::config::schema::Eol;
 
 /// Resolve application/language defaults, then overlay every matching
@@ -52,7 +53,11 @@ pub(crate) fn defaults(language: Option<&str>, settings: &Settings) -> DocumentS
             Eol::Lf => Some(DocumentLineEnding::Lf),
             Eol::Crlf => Some(DocumentLineEnding::Crlf),
         },
-        encoding: None,
+        encoding: match settings.files.encoding {
+            Encoding::Auto => None,
+            Encoding::Utf8 => Some(DocumentEncoding::Utf8),
+            Encoding::Utf8Bom => Some(DocumentEncoding::Utf8Bom),
+        },
         spelling_language: settings
             .spellcheck
             .enabled
@@ -228,6 +233,44 @@ mod tests {
         let resolved = resolve(&file, Some("Markdown"), &Settings::default())?;
 
         assert_eq!(resolved.spelling_language, None);
+        Ok(())
+    }
+
+    #[test]
+    fn files_encoding_resolves_beside_eol() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            defaults(None, &settings).encoding,
+            None,
+            "auto keeps the detected encoding"
+        );
+        settings.files.encoding = Encoding::Utf8;
+        assert_eq!(
+            defaults(None, &settings).encoding,
+            Some(DocumentEncoding::Utf8)
+        );
+        settings.files.encoding = Encoding::Utf8Bom;
+        assert_eq!(
+            defaults(None, &settings).encoding,
+            Some(DocumentEncoding::Utf8Bom)
+        );
+    }
+
+    #[test]
+    fn editorconfig_charset_overrides_files_encoding() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x\n")?;
+        std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*]\ncharset = utf-8\n",
+        )?;
+        let mut settings = Settings::default();
+        settings.files.encoding = Encoding::Utf8Bom;
+
+        let resolved = resolve(&file, None, &settings)?;
+
+        assert_eq!(resolved.encoding, Some(DocumentEncoding::Utf8));
         Ok(())
     }
 }

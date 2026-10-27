@@ -11,7 +11,7 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(

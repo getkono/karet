@@ -3,8 +3,8 @@
 //! `scrollOff`.
 
 use karet_core::ThemeRole;
+use karet_session::Settings;
 use karet_session::config::schema::LineNumbers;
-use karet_session::config::schema::Settings;
 
 use super::harness::*;
 use super::support::frame;

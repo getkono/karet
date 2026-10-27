@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The full, validated karet configuration. Load it with
-/// [`crate::config::load`]; the sane baseline is [`Settings::default`].
+/// [`crate::config::load_report`]; the sane baseline is [`Settings::default`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -672,8 +672,8 @@ pub struct Files {
     pub auto_save: AutoSave,
     /// Delay in milliseconds before `afterDelay` auto-save fires.
     pub auto_save_delay: u64,
-    /// Default text encoding label (informational; karet edits UTF-8).
-    pub encoding: String,
+    /// Text encoding used when saving. An `.editorconfig` `charset` overrides it.
+    pub encoding: Encoding,
     /// Line-ending style used when saving.
     pub eol: Eol,
     /// Glob patterns hidden from the file explorer.
@@ -711,7 +711,7 @@ impl Default for Files {
         Self {
             auto_save: AutoSave::Off,
             auto_save_delay: 1000,
-            encoding: "utf-8".to_string(),
+            encoding: Encoding::Auto,
             eol: Eol::Auto,
             exclude: Vec::new(),
             watcher_exclude: Vec::new(),
@@ -750,6 +750,25 @@ pub enum Eol {
     Lf,
     /// Carriage return + line feed (`\r\n`).
     Crlf,
+}
+
+/// Text encoding used when saving. karet edits UTF-8 only; the choice is
+/// whether a byte-order mark is written. Spelled as EditorConfig's `charset`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum Encoding {
+    /// Preserve the encoding the file was opened with (UTF-8 without a BOM for
+    /// a new file).
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    /// UTF-8 without a byte-order mark: one an existing file carries is dropped
+    /// on save.
+    #[serde(rename = "utf-8", alias = "utf8")]
+    Utf8,
+    /// UTF-8 with a leading byte-order mark.
+    #[serde(rename = "utf-8-bom", alias = "utf8bom")]
+    Utf8Bom,
 }
 
 /// `search.*` — workspace search behaviour.

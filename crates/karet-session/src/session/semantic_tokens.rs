@@ -81,7 +81,7 @@ impl Session {
         else {
             return;
         };
-        if !self.config.settings.editor.semantic_highlighting.enabled {
+        if !self.config.settings().editor.semantic_highlighting.enabled {
             return;
         }
         let Some(&doc_id) = self.store.by_path.get(&path) else {

@@ -245,8 +245,8 @@ impl App {
             return;
         };
         state.lens_filter = match settings.lens_filter {
-            karet_session::config::SeamLensFilter::Demote => super::LensFilter::Demote,
-            karet_session::config::SeamLensFilter::Hide => super::LensFilter::Hide,
+            karet_session::config::schema::SeamLensFilter::Demote => super::LensFilter::Demote,
+            karet_session::config::schema::SeamLensFilter::Hide => super::LensFilter::Hide,
         };
         state.hide_inactive = settings.hide_inactive;
         state.spine = settings.spine;

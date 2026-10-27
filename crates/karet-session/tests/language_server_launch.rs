@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use karet_core::Severity;
+use karet_session::SessionConfig;
 use karet_session::api::DocumentCommand;
 use karet_session::api::Event;
 use karet_session::api::LanguageServerRuntimeState;
@@ -25,7 +26,6 @@ use karet_session::api::LspCommand;
 use karet_session::backend::Backend;
 use karet_session::backend::local;
 use karet_session::config::schema::LspServer;
-use karet_session::session::SessionConfig;
 
 /// The process double, built by the `testbed` feature this test requires.
 const TESTBED: &str = env!("CARGO_BIN_EXE_karet-testbed");
@@ -111,7 +111,7 @@ fn harness(behavior: &str, brokered: bool) -> Result<Harness, SetupError> {
         lsp_registry_dir: registry.as_ref().map(|dir| dir.path().to_path_buf()),
         ..SessionConfig::default()
     };
-    config.settings.lsp.servers.insert(
+    config.loaded_config.settings.lsp.servers.insert(
         "rust".to_owned(),
         LspServer {
             command: TESTBED.to_owned(),
@@ -480,7 +480,7 @@ async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever()
         process_supervisor: Some(PathBuf::from(TESTBED)),
         ..SessionConfig::default()
     };
-    config.settings.lsp.servers.insert(
+    config.loaded_config.settings.lsp.servers.insert(
         "rust".to_owned(),
         LspServer {
             command: "karet-testbed-no-such-binary".to_owned(),
@@ -600,7 +600,7 @@ async fn two_sessions_on_one_root_share_a_single_server_process() -> Result<(), 
         lsp_registry_dir: Some(registry),
         ..SessionConfig::default()
     };
-    config.settings.lsp.servers.insert(
+    config.loaded_config.settings.lsp.servers.insert(
         "rust".to_owned(),
         LspServer {
             command: TESTBED.to_owned(),
@@ -824,7 +824,7 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() -> Result<(), S
         roots: vec![root.to_path_buf()],
         ..SessionConfig::default()
     };
-    config.settings.lsp.enabled = false;
+    config.loaded_config.settings.lsp.enabled = false;
     let (backend, _snapshots) = local(config);
     let mut events = backend
         .take_events()

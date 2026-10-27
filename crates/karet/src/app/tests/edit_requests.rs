@@ -207,7 +207,7 @@ fn a_server_with_no_triggers_is_offered_nothing_more() {
 }
 
 /// Reload the settings with `edit` applied, keeping on-type formatting on.
-fn reload_settings(app: &mut App, edit: impl FnOnce(&mut karet_session::config::Settings)) {
+fn reload_settings(app: &mut App, edit: impl FnOnce(&mut karet_session::Settings)) {
     let mut config = app.loaded_config.clone();
     config.settings.editor.format_on_type = true;
     edit(&mut config.settings);

@@ -24,7 +24,7 @@ impl Session {
     /// [`DocumentCommand::Convert`](crate::api::DocumentCommand::Convert)
     /// without consuming it: the conversion still runs.
     pub(super) fn warm_notebook_kernel(&mut self, path: &Path) {
-        if self.config.settings.notebook.kernel.auto_start
+        if self.config.settings().notebook.kernel.auto_start
             && path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))

@@ -534,7 +534,12 @@ async fn disabling_semantic_comments_leaves_comments_plain() -> TestResult {
     std::fs::write(&path, "// TODO: fix bug here\nfn main() {}\n")?;
 
     let mut config = SessionConfig::default();
-    config.settings.editor.semantic_comments.enabled = false;
+    config
+        .loaded_config
+        .settings
+        .editor
+        .semantic_comments
+        .enabled = false;
     let (session, _events, mut snaps) = Session::new(config);
     let backend = local_session(session, None);
     assert!(

@@ -174,11 +174,11 @@ impl Session {
             lsp_id: lsp_language_id,
         } = DocumentLanguage::resolve(&path, language);
         let (document_settings, editorconfig_error) =
-            resolve_document_settings(&path, language_selector, &self.config.settings);
+            resolve_document_settings(&path, language_selector, self.config.settings());
         apply_serialization_settings(&mut buffer, document_settings);
         if must_create {
             // No file, so no history of it to restore.
-            buffer.set_undo_limit(self.config.settings.files.undo_cap());
+            buffer.set_undo_limit(self.config.settings().files.undo_cap());
         } else {
             self.prepare_undo(&path, &mut buffer);
         }
@@ -217,7 +217,7 @@ impl Session {
             formatted_version: None,
         };
         let spell_without_syntax = update_syntax(
-            &self.config.settings,
+            self.config.settings(),
             &self.highlight_tx,
             doc_id,
             &mut doc,
@@ -273,7 +273,7 @@ impl Session {
         let mut retired = crate::lsp::Retired::default();
         let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 self.events.emit(Some(id), unknown_document(doc_id));
@@ -331,7 +331,7 @@ impl Session {
         let mut retired = crate::lsp::Retired::default();
         let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let retired = &mut retired;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
@@ -426,7 +426,7 @@ impl Session {
             indentation,
             will_save: None,
             save_timeout: std::time::Duration::from_millis(
-                self.config.settings.editor.format_on_save_timeout,
+                self.config.settings().editor.format_on_save_timeout,
             ),
         }
     }
@@ -436,7 +436,7 @@ impl Session {
     pub(super) fn has_builtin_formatter(&self, doc: &Document) -> bool {
         cfg!(feature = "toml-format")
             && doc.language_selector == Some("toml")
-            && self.config.settings.toml.format
+            && self.config.settings().toml.format
     }
 
     /// Built-in formatter edits when no language server offered formatting.
@@ -470,7 +470,7 @@ impl Session {
         let tick = self.elapsed_ms();
         let (spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return false;
@@ -602,7 +602,7 @@ impl Session {
     /// Takes `now` rather than reading the clock, so the deadline is reachable
     /// from a unit test without waiting out its wall-clock duration.
     pub(super) fn expire_format_on_save(&mut self, now: u64) {
-        let deadline = self.config.settings.editor.format_on_save_timeout;
+        let deadline = self.config.settings().editor.format_on_save_timeout;
         let expired: Vec<(RequestId, DocumentId)> = self
             .pending_format_saves
             .iter()
@@ -643,7 +643,7 @@ impl Session {
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
                 self.wakatime_beat(doc_id, true);
-                if self.config.settings.latex.build_on_save
+                if self.config.settings().latex.build_on_save
                     && self.store.docs.get(&doc_id).is_some_and(|doc| {
                         doc.path
                             .extension()
@@ -735,7 +735,7 @@ impl Session {
     fn apply_save_cleanup(&mut self, doc_id: DocumentId) -> bool {
         let tick = self.elapsed_ms();
         let highlight_tx = &self.highlight_tx;
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let lsp = &mut self.lsp;
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             return false;
@@ -800,8 +800,13 @@ impl Session {
             doc.server_folds = None;
         }
         // The language may have changed with the extension; re-highlight from scratch.
-        let spell_without_syntax =
-            update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
+        let spell_without_syntax = update_syntax(
+            self.config.settings(),
+            &self.highlight_tx,
+            doc_id,
+            doc,
+            None,
+        );
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         let mut retired = self.lsp.document_closed(old_language, &old);
@@ -935,7 +940,7 @@ impl Session {
     /// Send one WakaTime heartbeat for `doc_id`, spawning the worker on first
     /// use. Inert unless `wakatime.enabled` is set.
     pub(super) fn wakatime_beat(&mut self, doc_id: DocumentId, is_write: bool) {
-        if !self.config.settings.wakatime.enabled {
+        if !self.config.settings().wakatime.enabled {
             return;
         }
         let Some(doc) = self.store.docs.get(&doc_id) else {

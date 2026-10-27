@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use karet_session::SessionConfig;
 use karet_session::api::DocumentCommand;
 use karet_session::api::Event;
 use karet_session::api::LanguageServerCommand;
@@ -32,7 +33,6 @@ use karet_session::api::LanguageServerId;
 use karet_session::api::LanguageServerRuntimeState;
 use karet_session::backend::Backend;
 use karet_session::backend::local;
-use karet_session::session::SessionConfig;
 
 /// Downloading a Node runtime plus a package, or a large native release, over
 /// an ordinary connection.

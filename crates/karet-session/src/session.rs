@@ -131,7 +131,7 @@ use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
 
-/// Configuration for a [`Session`].
+/// Configuration for a session, started from it by [`crate::local`].
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// Workspace root directories.
@@ -140,13 +140,17 @@ pub struct SessionConfig {
     /// presentation choice (e.g. a `--no-syntax` flag or `NO_COLOR`); defaults
     /// to `true`.
     pub diff_syntax: bool,
-    /// The loaded, verified settings (see [`crate::config`]). Producers read editing
-    /// behaviour (format-on-save, spell-check, …) from here.
-    pub settings: crate::config::Settings,
-    /// The loaded settings plus layer and explicit-key provenance for inspection.
+    /// The loaded, verified settings plus their layer and explicit-key provenance
+    /// (see [`crate::config`]). This is the one settings source: producers read
+    /// editing behaviour (format-on-save, spell-check, …) through
+    /// [`Self::settings`], and [`WorkspaceCommand::LoadedConfig`] answers with
+    /// this same report, so the two cannot disagree. Its `layers` name the files
+    /// the session watches for live reload; a report without layers (as
+    /// [`LoadedConfig::from_settings`](crate::config::LoadedConfig::from_settings)
+    /// builds) watches none.
     pub loaded_config: crate::config::LoadedConfig,
     /// Directory for crash-recovery swap files. The application sets this to the real
-    /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
+    /// user data directory ([`crate::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
     /// Executable that can enter [`karet_supervisor::supervisor`] mode.
@@ -163,7 +167,7 @@ pub struct SessionConfig {
     /// Directory for the stored seam index, which turns a cold start into a warm one.
     ///
     /// The application sets this to the real user cache directory
-    /// ([`crate::seam_cache::default_cache_dir`]); left `None` (as in tests) every index
+    /// ([`crate::default_seam_cache_dir`]); left `None` (as in tests) every index
     /// is built from source and no user directory is touched.
     pub seam_cache_dir: Option<PathBuf>,
 }
@@ -173,13 +177,20 @@ impl Default for SessionConfig {
         Self {
             roots: Vec::new(),
             diff_syntax: true,
-            settings: crate::config::Settings::default(),
             loaded_config: crate::config::LoadedConfig::default(),
             swap_dir: None,
             process_supervisor: None,
             lsp_registry_dir: None,
             seam_cache_dir: None,
         }
+    }
+}
+
+impl SessionConfig {
+    /// The settings in effect: [`Self::loaded_config`]'s, the only copy.
+    #[must_use]
+    pub fn settings(&self) -> &crate::config::schema::Settings {
+        &self.loaded_config.settings
     }
 }
 
@@ -285,7 +296,7 @@ struct DocumentStore {
 /// Construct with [`Session::new`], which also returns the [`EventRx`] and
 /// [`SnapshotRx`] halves of its output streams; drive it in-process with
 /// [`crate::backend::local`].
-pub struct Session {
+pub(crate) struct Session {
     config: SessionConfig,
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
@@ -533,7 +544,7 @@ impl Session {
                     // The cap stops being theoretical once the root is a whole
                     // repository rather than one crate.
                     options: karet_seam::IndexOptions {
-                        max_files: self.config.settings.seam.max_indexed_files,
+                        max_files: self.config.settings().seam.max_indexed_files,
                     },
                 }
             },
@@ -543,6 +554,20 @@ impl Session {
             SeamCommand::SetConfiguration { name } => SeamJob::SetConfiguration { id, name },
         };
         let _ = self.seam_worker.send(job);
+    }
+
+    /// Apply an in-session settings write (a dictionary word, the blame toggle,
+    /// the AI commit options) to the live settings.
+    ///
+    /// The single writer for a change the session makes itself, so the settings
+    /// producers read and the report [`WorkspaceCommand::LoadedConfig`] answers
+    /// with are one value and cannot drift apart. A whole reloaded report is
+    /// adopted by [`Self::apply_config_report`] instead.
+    pub(super) fn adopt_settings(
+        &mut self,
+        edit: impl FnOnce(&mut crate::config::schema::Settings),
+    ) {
+        edit(&mut self.config.loaded_config.settings);
     }
 
     fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
@@ -587,7 +612,7 @@ impl Session {
                 doc,
                 source,
                 workspace: self.config.roots.first().cloned(),
-                settings: self.config.settings.latex.clone(),
+                settings: self.config.settings().latex.clone(),
                 cancel: self.cancellations.register(cancel_id),
                 supervisor: self.config.process_supervisor.clone(),
             })

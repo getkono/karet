@@ -20,10 +20,10 @@ impl Session {
     pub(crate) fn scan_workspace_spelling(&mut self, id: RequestId, limit: usize) {
         let spelling_language = self
             .config
-            .settings
+            .settings()
             .spellcheck
             .enabled
-            .then(|| SpellingLanguage::parse(&self.config.settings.spellcheck.language))
+            .then(|| SpellingLanguage::parse(&self.config.settings().spellcheck.language))
             .flatten();
         let roots = self.config.roots.clone();
         let (false, Some(spelling_language)) = (roots.is_empty(), spelling_language) else {
@@ -81,7 +81,7 @@ impl Session {
             id,
             roots,
             spelling_language,
-            settings: self.config.settings.clone(),
+            settings: self.config.settings().clone(),
             open,
             limit: limit - seeded,
             cancel: self.cancellations.register(id),
@@ -140,7 +140,7 @@ impl Session {
     /// immediately.
     pub(crate) fn scan_workspace_todos(&mut self, id: RequestId, limit: usize) {
         let roots = self.config.roots.clone();
-        let semantic = &self.config.settings.editor.semantic_comments;
+        let semantic = &self.config.settings().editor.semantic_comments;
         if roots.is_empty() || !semantic.enabled || semantic.tags.is_empty() {
             self.emit(
                 Some(id),
@@ -158,7 +158,7 @@ impl Session {
             config: karet_syntax::SemanticCommentConfig {
                 tags: semantic.tags.clone(),
             },
-            excludes: self.config.settings.search.exclude.clone(),
+            excludes: self.config.settings().search.exclude.clone(),
             open: self
                 .store
                 .docs
@@ -201,10 +201,12 @@ impl Session {
         };
         match result {
             Ok(path) => {
-                let words = &mut self.config.settings.spellcheck.words;
-                if !words.iter().any(|existing| existing == &word) {
-                    words.push(word.clone());
-                }
+                self.adopt_settings(|settings| {
+                    let words = &mut settings.spellcheck.words;
+                    if !words.iter().any(|existing| existing == &word) {
+                        words.push(word.clone());
+                    }
+                });
                 // Re-check now rather than waiting for the settings write to
                 // round-trip through the file watcher: the user just told us the
                 // word is fine, so the squiggle should go on that keystroke — and

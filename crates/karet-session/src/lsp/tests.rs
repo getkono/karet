@@ -357,7 +357,7 @@ async fn disabled_setting_spawns_nothing() -> TestResult {
     let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
     let spawns = Arc::new(AtomicUsize::new(0));
     let mut config = SessionConfig::default();
-    config.settings.lsp.enabled = false;
+    config.loaded_config.settings.lsp.enabled = false;
     let (mut session, mut events, _snaps) = Session::new(config);
     session.set_lsp_connector(test_connector(Behavior::Normal, None, Arc::clone(&spawns)));
     let backend = local_session(session, None);

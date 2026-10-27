@@ -477,7 +477,7 @@
         settings.seam.max_indexed_files = 1;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), SeamCommand::Index {

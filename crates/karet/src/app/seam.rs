@@ -130,7 +130,7 @@ pub(crate) struct SeamViewState {
     /// Whether configuration-excluded nodes are hidden rather than dimmed.
     pub(crate) hide_inactive: bool,
     /// How the containment tree is rendered.
-    pub(crate) spine: karet_session::config::SeamSpine,
+    pub(crate) spine: karet_session::config::schema::SeamSpine,
     /// The query text as typed.
     pub(crate) query: String,
     /// The query's parse failure, when it has one.
@@ -194,7 +194,7 @@ impl SeamViewState {
             lenses: BTreeSet::new(),
             lens_filter: LensFilter::default(),
             hide_inactive: false,
-            spine: karet_session::config::SeamSpine::default(),
+            spine: karet_session::config::schema::SeamSpine::default(),
             query: String::new(),
             query_error: None,
             query_matches: None,

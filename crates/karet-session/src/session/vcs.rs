@@ -359,7 +359,7 @@ impl Session {
     /// owner's own files.
     #[cfg(feature = "aicommit")]
     pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
-        let mut options = self.config.settings.git.ai_commit.clone();
+        let mut options = self.config.settings().git.ai_commit.clone();
         let from_project = self
             .config
             .loaded_config
@@ -572,7 +572,7 @@ impl Session {
     /// [`crate::api::AiCommitAvailability::ready`] report not-ready rather than
     /// implying an agent was found.
     pub(super) fn emit_unprobed_ai_commit_availability(&mut self, id: Option<RequestId>) {
-        let options = self.config.settings.git.ai_commit.clone();
+        let options = self.config.settings().git.ai_commit.clone();
         let status = crate::api::AiCommitAvailability {
             supported: cfg!(feature = "aicommit"),
             enabled: options.enabled,
@@ -598,7 +598,7 @@ impl Session {
             Ok(path) => {
                 // Apply in memory too: the settings watcher will reload the file,
                 // but the client must not see its own change bounce back stale.
-                self.config.settings.git.ai_commit = options;
+                self.adopt_settings(|settings| settings.git.ai_commit = options);
                 self.emit(
                     Some(id),
                     Event::Notification {
@@ -627,7 +627,7 @@ impl Session {
 
     /// Persist the inline-blame toggle and adopt it into the live settings.
     pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
-        self.config.settings.git.blame = enabled;
+        self.adopt_settings(|settings| settings.git.blame = enabled);
         if let Err(error) = crate::config::set_user_blame(enabled) {
             self.emit(
                 Some(id),

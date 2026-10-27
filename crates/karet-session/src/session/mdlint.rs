@@ -66,7 +66,7 @@ impl Session {
     /// Re-lint `doc` when it is a Markdown document (clearing the layer when
     /// the setting is off), publishing only when the layer changed.
     pub(crate) fn refresh_markdown_lint(&mut self, doc_id: DocumentId) {
-        let enabled = self.config.settings.markdown.lint.enabled;
+        let enabled = self.config.settings().markdown.lint.enabled;
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             return;
         };

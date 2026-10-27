@@ -451,7 +451,7 @@ fn the_project_file_sits_beside_the_project_settings() {
     assert!(found.contains(&(Source::Project, root.join(".karet").join(FILE_NAME))));
     // Outside a worktree there is only (at most) the user file, beside the user's
     // `setting.jsonc`.
-    let settings_dir = karet_session::config::load::user_config_dir();
+    let settings_dir = karet_session::config::user_config_dir();
     for (source, path) in paths(&[]) {
         assert_eq!(source, Source::User);
         assert_eq!(

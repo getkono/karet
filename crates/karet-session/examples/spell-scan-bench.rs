@@ -45,7 +45,7 @@ async fn main() {
 
     let (backend, _snapshots) = karet_session::local(SessionConfig {
         roots: vec![root.clone()],
-        settings,
+        loaded_config: karet_session::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     let Some(mut events) = backend.take_events() else {

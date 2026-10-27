@@ -144,8 +144,8 @@ impl KeymapReport {
 /// The keymap files for a workspace rooted at `roots`, lowest precedence first.
 #[must_use]
 pub fn paths(roots: &[PathBuf]) -> Vec<(Source, PathBuf)> {
-    use karet_session::config::load::project_config_dir;
-    use karet_session::config::load::user_config_dir;
+    use karet_session::config::project_config_dir;
+    use karet_session::config::user_config_dir;
     [
         user_config_dir().map(|dir| (Source::User, dir.join(FILE_NAME))),
         project_config_dir(roots).map(|dir| (Source::Project, dir.join(FILE_NAME))),

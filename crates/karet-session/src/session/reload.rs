@@ -36,7 +36,7 @@ impl Session {
     pub(super) fn reload(&mut self, doc_id: DocumentId) {
         let (version, spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;

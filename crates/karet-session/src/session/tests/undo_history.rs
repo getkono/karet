@@ -14,7 +14,7 @@
         let mut settings = crate::config::Settings::default();
         configure(&mut settings.files);
         let (session, events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             swap_dir: Some(swapdir.to_path_buf()),
             ..SessionConfig::default()
         });
@@ -210,7 +210,7 @@
         let undo_len = |session: &Session| session.document(doc).map_or(0, |d| d.buffer().undo_len());
         assert_eq!(undo_len(&session), 2, "the oldest step was forgotten");
 
-        let mut settings = session.config.settings.clone();
+        let mut settings = session.config.settings().clone();
         settings.files.undo_limit = 1;
         session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
         assert_eq!(undo_len(&session), 1, "a lowered cap applies to open buffers");

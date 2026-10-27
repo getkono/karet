@@ -46,7 +46,6 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
     SessionConfig {
         roots: vec![app.root.clone()],
         diff_syntax: app.syntax,
-        settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
         swap_dir,
         // Every external process is owned by a hidden copy of this executable.
@@ -56,7 +55,7 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
             .map(|dir| dir.join("language-servers")),
         // The stored seam index, so opening the view a second time does not re-parse a
         // repository that has not changed. Losing it costs a rebuild and nothing else.
-        seam_cache_dir: karet_session::seam_cache::default_cache_dir(),
+        seam_cache_dir: karet_session::default_seam_cache_dir(),
     }
 }
 
@@ -165,7 +164,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     }
     // The real app persists crash-recovery swaps to the user data directory;
     // headless/test sessions leave this unset and keep no backups.
-    let config = session_config(&app, karet_session::backup::default_swap_dir());
+    let config = session_config(&app, karet_session::default_swap_dir());
     // Only the live editor remembers what was opened: tests and `--capture`
     // keep the in-memory store and never write the user's state directory.
     if let Some(path) = workspace::RecentStore::default_path() {
@@ -220,7 +219,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
 
     // The saved workspace layout lives beside the swaps. Only the live editor
     // reads or writes it: `--capture` and tests never touch the user's state.
-    let layout_dir = karet_session::backup::default_swap_dir();
+    let layout_dir = karet_session::default_swap_dir();
 
     let result = runtime.block_on(async {
         // Restored before the backend attaches, so attaching registers every
