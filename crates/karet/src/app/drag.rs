@@ -22,10 +22,10 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use karet_core::LineCol;
-use karet_editor::class_run_at;
-use karet_editor::line_span;
 use karet_session::ViewId;
 use karet_text::TextBuffer;
+use karet_text::words::class_run_at;
+use karet_text::words::line_span;
 use karet_widgets::PaneId;
 use ratatui::layout::Rect;
 

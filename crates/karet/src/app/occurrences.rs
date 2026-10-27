@@ -77,33 +77,16 @@ fn decoration(range: Range, kind: HighlightKind) -> Decoration {
     Decoration::new(range, DecorationKind::TextBackground, Some(role_for(kind)))
 }
 
-/// The word (alphanumeric and `_`) the caret touches: the one it is on, else
-/// the one ending at it.
-fn word_at_caret(buffer: &TextBuffer, caret: LineCol) -> Option<Range> {
-    let before = caret
-        .col
-        .checked_sub(1)
-        .map(|col| LineCol::new(caret.line, col));
-    let (start, end) = karet_editor::identifier_at(buffer, caret)
-        .or_else(|| before.and_then(|at| karet_editor::identifier_at(buffer, at)))?;
-    Some(Range { start, end })
-}
-
 /// The fallback when no server answered: every whole-word, case-sensitive
 /// match of the word the caret touches, as textual occurrences. Empty off a
 /// word.
 pub(crate) fn text_occurrences(buffer: &TextBuffer, caret: LineCol) -> Vec<Decoration> {
-    let Some(word) = word_at_caret(buffer, caret) else {
+    let Some((start, end)) = karet_text::words::word_at(buffer, caret) else {
         return Vec::new();
     };
-    let Some(line) = buffer.line(word.start.line as usize) else {
+    let Some(pattern) = buffer.slice_range(Range { start, end }) else {
         return Vec::new();
     };
-    let pattern: String = line
-        .chars()
-        .skip(word.start.col as usize)
-        .take((word.end.col - word.start.col) as usize)
-        .collect();
     let query = SearchQuery {
         pattern,
         case_sensitive: true,
@@ -160,7 +143,7 @@ impl App {
             self.occurrences = Occurrences::default();
             return;
         };
-        let on_word = word_at_caret(buffer, key.caret).is_some();
+        let on_word = karet_text::words::word_at(buffer, key.caret).is_some();
         let state = &mut self.occurrences;
         if state.shown.as_ref().is_some_and(|shown| {
             shown.view != key.view

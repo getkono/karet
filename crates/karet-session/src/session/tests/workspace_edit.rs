@@ -639,6 +639,39 @@
             Ok(())
         }
 
+        /// The client-side identifier walks grapheme clusters: a caret just
+        /// past a combining mark is still at the end of its word, and the
+        /// mark stays in the placeholder. Falsified by a per-`char` walk,
+        /// which sees U+0301 as a non-word character and finds nothing.
+        #[test]
+        fn prepare_rename_keeps_a_combining_mark_in_its_identifier() -> TestResult {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "let cafe\u{301} = 1;\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let doc = open(&mut session, &mut events, &path).ok_or("open")?;
+            let word = Range {
+                start: LineCol::new(0, 4),
+                end: LineCol::new(0, 9),
+            };
+            for caret in [4, 8, 9] {
+                let (target, _) = prepared(
+                    &mut session,
+                    &mut events,
+                    doc,
+                    LineCol::new(0, caret),
+                    RenameAnswer::Identifier,
+                )
+                .ok_or("answer")?;
+                assert_eq!(
+                    target.map(|target| (target.range, target.placeholder)),
+                    Some((word, "cafe\u{301}".into())),
+                    "caret at {caret}"
+                );
+            }
+            Ok(())
+        }
+
         /// One frame of the fake server's side of an in-memory LSP wire.
         async fn read_json(
             reader: &mut tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,

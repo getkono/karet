@@ -1,7 +1,8 @@
 //! Editing steps over extended grapheme clusters, never through one: a
 //! combining sequence, a ZWJ emoji, a regional-indicator flag and a wide CJK
 //! character each behave as the single character the user sees, for caret
-//! motion, deletion, word bounds, cell widths, wrapping and hit-testing.
+//! motion, deletion, cell widths, wrapping and hit-testing. Word bounds over
+//! clusters are tested where they live, in `karet_text::words`.
 
 use super::*;
 use crate::editing;
@@ -67,21 +68,6 @@ fn span(start: u32, end: u32) -> Option<Range> {
         start: at(0, start),
         end: at(0, end),
     })
-}
-
-#[test]
-fn cluster_bounds_mark_only_user_perceived_character_edges() {
-    assert_eq!(cluster_bounds(&chars("")), vec![0]);
-    assert_eq!(
-        cluster_bounds(&chars(&format!("{E_ACUTE}x"))),
-        vec![0, 2, 3]
-    );
-    assert_eq!(
-        cluster_bounds(&chars(&format!("a{FAMILY}b"))),
-        vec![0, 1, 6, 7]
-    );
-    assert_eq!(cluster_bounds(&chars(FLAGS)), vec![0, 2, 4]);
-    assert_eq!(cluster_bounds(&chars("日本")), vec![0, 1, 2]);
 }
 
 #[test]
@@ -157,28 +143,6 @@ fn backspace_and_delete_remove_a_whole_cluster() {
         deleted(editing::backspace(at(0, 2), None, &cjk, 0)),
         span(1, 2)
     );
-}
-
-#[test]
-fn a_combining_mark_stays_inside_its_word() {
-    // `café` spelled with a combining accent: `caf`, `e`, U+0301.
-    let buffer = TextBuffer::from_text(&format!("caf{E_ACUTE} x\n"));
-    assert_eq!(next_word_boundary(&buffer, at(0, 0)), at(0, 5));
-    assert_eq!(previous_word_boundary(&buffer, at(0, 5)), at(0, 0));
-    assert_eq!(word_bounds(&buffer, at(0, 2)), (at(0, 0), at(0, 5)));
-    assert_eq!(identifier_at(&buffer, at(0, 4)), Some((at(0, 0), at(0, 5))));
-    assert_eq!(class_run_at(&buffer, at(0, 1)), (at(0, 0), at(0, 5)));
-}
-
-#[test]
-fn word_motions_treat_an_emoji_sequence_as_one_symbol() {
-    let buffer = TextBuffer::from_text(&format!("ab {FAMILY} cd\n"));
-    assert_eq!(next_word_boundary(&buffer, at(0, 2)), at(0, 8));
-    assert_eq!(previous_word_boundary(&buffer, at(0, 8)), at(0, 3));
-    assert_eq!(class_run_at(&buffer, at(0, 5)), (at(0, 3), at(0, 8)));
-    // Off a word, a double-click falls back to the whole cluster.
-    assert_eq!(word_bounds(&buffer, at(0, 3)), (at(0, 3), at(0, 8)));
-    assert_eq!(identifier_at(&buffer, at(0, 4)), None);
 }
 
 #[test]

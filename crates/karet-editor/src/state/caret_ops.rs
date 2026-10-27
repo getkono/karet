@@ -96,7 +96,11 @@ impl EditorState {
             let whole_word = bare || state.whole_word_run();
             let primary = state.cursors.primary().range();
             let found = non_overlapping(
-                find_all(buffer, &range_text(buffer, primary), whole_word),
+                find_all(
+                    buffer,
+                    &buffer.slice_range(primary).unwrap_or_default(),
+                    whole_word,
+                ),
                 primary,
             );
             let at = found.iter().position(|r| *r == primary).unwrap_or(0);

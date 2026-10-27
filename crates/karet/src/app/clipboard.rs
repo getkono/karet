@@ -184,9 +184,9 @@ fn runs(lines: &BTreeSet<u32>) -> Vec<(u32, u32)> {
     runs
 }
 
-/// What a copy (or cut) of `cursors` over `buffer` (whose text is `source`)
-/// takes, with the deletions a cut against version `base` makes.
-fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> Taken {
+/// What a copy (or cut) of `cursors` over `buffer` takes, with the deletions a
+/// cut against version `base` makes.
+fn take(buffer: &TextBuffer, cursors: &CursorState, base: u64) -> Taken {
     let order = in_document_order(cursors);
     let selected = cursors.selections.iter().any(|s| !s.range().is_empty());
     if selected {
@@ -196,7 +196,7 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
             .selections
             .iter()
             .map(|s| Some(s.range()).filter(|r| !r.is_empty()))
-            .map(|range| range.and_then(|range| selection_text(buffer, source, range)))
+            .map(|range| range.and_then(|range| buffer.slice_range(range)))
             .collect();
         let pieces = order.iter().filter_map(|&i| texts[i].clone()).collect();
         let indents = order
@@ -428,13 +428,12 @@ impl App {
                 kind:
                     TabKind::Code {
                         buffer,
-                        text,
                         next_version,
                         ..
                     },
                 editor,
                 ..
-            }) => Some(take(buffer, text, editor.cursors(), *next_version)),
+            }) => Some(take(buffer, editor.cursors(), *next_version)),
             _ => None,
         }
     }

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The word model moved to `karet_text::words`: `word_bounds`, `class_run_at`, `identifier_at`, `previous_word_boundary`, `next_word_boundary` and `line_span` remain here as deprecated forwarding paths for one release, and `cluster_bounds` is now a re-export of `karet_text::words::cluster_bounds`
+- `selection_text` is deprecated in favour of `karet_text::TextBuffer::slice_range`, which reads the range off the buffer instead of requiring a copy of its text
+
 ## [0.7.0](https://github.com/getkono/karet/compare/karet-editor-v0.6.1...karet-editor-v0.7.0) - 2026-09-24
 
 ### Added

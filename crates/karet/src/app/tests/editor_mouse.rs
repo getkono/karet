@@ -3,18 +3,14 @@ use super::support::*;
 use crate::app::*;
 
 #[test]
-fn selection_text_slices_the_source() {
+fn a_selection_slices_the_buffer() {
     use karet_text::TextBuffer;
-    let src = "foo bar\nbaz";
-    let buffer = TextBuffer::from_text(src);
+    let buffer = TextBuffer::from_text("foo bar\nbaz");
     let range = Range {
         start: LineCol::new(0, 4),
         end: LineCol::new(1, 3),
     };
-    assert_eq!(
-        selection_text(&buffer, src, range).as_deref(),
-        Some("bar\nbaz")
-    );
+    assert_eq!(buffer.slice_range(range).as_deref(), Some("bar\nbaz"));
 }
 
 #[test]
