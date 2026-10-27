@@ -64,13 +64,6 @@ pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
 pub use editing::LinkedEditingRanges;
 pub use editing::SaveReason;
-/// What [`LspClient::document_highlights`] answers with; defined once in
-/// [`karet_core`] and re-exported so the `karet_lsp::DocumentHighlight` path
-/// this crate published keeps working.
-pub use karet_core::DocumentHighlight;
-/// How a [`DocumentHighlight`] uses its symbol; re-exported from
-/// [`karet_core`] for the same reason.
-pub use karet_core::HighlightKind;
 /// `Content-Length` message framing (the LSP base protocol).
 ///
 /// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where

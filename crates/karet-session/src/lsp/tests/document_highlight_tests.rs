@@ -4,9 +4,10 @@
 //! that moved on, an answer fenced out by reconfiguration -- still answers,
 //! with `None`, and raises no notice.
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
+
 use super::*;
-use crate::api::DocumentHighlight;
-use crate::api::HighlightKind;
 use crate::lsp::DocumentHighlightsAnswer;
 
 /// Line 0 opens with an emoji: one buffer column, two UTF-16 code units, so

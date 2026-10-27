@@ -31,7 +31,6 @@ pub use conflict::conflict_decorations;
 pub use diagnostic::InlineDiagnostics;
 pub use diagnostic::diagnostic_messages;
 pub use diagnostic::diagnostic_signs;
-pub use diagnostic::severity_role;
 pub use diagnostic::severity_sign;
 use karet_core::LineCol;
 use karet_core::Range;

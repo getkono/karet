@@ -4,10 +4,10 @@
 //! when the caret leaves every occurrence, the text changes, or a selection
 //! is made.
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
 use karet_core::Range;
 use karet_session::LSP_CHANGE_DEBOUNCE;
-use karet_session::api::DocumentHighlight;
-use karet_session::api::HighlightKind;
 
 use super::support::*;
 use crate::app::*;

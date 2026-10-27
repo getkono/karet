@@ -496,7 +496,7 @@ impl Editor<'_> {
             .iter()
             .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
             .min_by_key(|diagnostic| diagnostic.severity)
-            .map(|diagnostic| theme.role(diagnostic::severity_role(diagnostic.severity)))
+            .map(|diagnostic| theme.role(karet_core::severity_role(diagnostic.severity)))
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
