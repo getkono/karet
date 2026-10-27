@@ -360,7 +360,12 @@ fn opens(backend: &RecordingBackend) -> Vec<RequestId> {
         |_| Vec::new(),
         |sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::Open { .. })))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::Open { .. })
+                    )
+                })
                 .map(|(id, _)| *id)
                 .collect()
         },
