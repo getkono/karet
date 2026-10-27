@@ -513,3 +513,34 @@ fn settings_that_drop_a_task_drop_its_problems_and_its_run() -> TestResult {
     assert_eq!(terminal_titles(&app).len(), 1, "and stays open");
     Ok(())
 }
+
+/// A malformed save resets `tasks` to its empty default, but the section's
+/// failure says the tasks are unknown, not gone: the run keeps its problems and
+/// its already-running guard.
+#[cfg(unix)]
+#[test]
+fn a_malformed_reload_keeps_task_runs_and_problems() -> TestResult {
+    let (_dir, mut app, mut events) = task_app(&[(
+        "build",
+        task("touch m.c; echo 'm.c:1:1: error: kept'; sleep 30"),
+    )])?;
+    app.run_task("build");
+    assert!(pump(&mut app, &mut events, |app| task_messages(app).len() == 1));
+    let mut fixed = app.loaded_config.clone();
+    fixed.settings.tasks = app.settings.tasks.clone();
+    let mut malformed = fixed.clone();
+    malformed.settings.tasks.clear();
+    malformed.failed_sections.insert("tasks".to_owned());
+    app.apply_loaded_config(malformed, false);
+    assert_eq!(task_messages(&app), ["kept"]);
+    assert_eq!(app.tasks.runs.len(), 1, "the run is still tracked");
+
+    app.apply_loaded_config(fixed, false);
+    app.run_task("build");
+    assert_eq!(
+        terminal_titles(&app),
+        ["Task: build"],
+        "rerunning after the fix shows the running task, not a second copy"
+    );
+    Ok(())
+}

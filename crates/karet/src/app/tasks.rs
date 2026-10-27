@@ -251,7 +251,12 @@ mod running {
 
         /// Settings were applied: forget the runs and problems of tasks they no
         /// longer define. A forgotten run's terminal stays open as a plain one.
+        /// A `tasks` section that failed to load says nothing about which tasks
+        /// exist, so a malformed save keeps every run and its problems.
         pub(in crate::app) fn forget_removed_tasks(&mut self) {
+            if self.loaded_config.failed_sections.contains("tasks") {
+                return;
+            }
             let tasks = &self.settings.tasks;
             self.tasks
                 .runs

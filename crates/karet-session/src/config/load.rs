@@ -95,6 +95,13 @@ pub struct LoadedConfig {
     pub layers: Vec<ConfigLayerReport>,
     /// Effective setting key paths that were explicitly set by a valid layer.
     pub explicit: BTreeMap<String, ConfigLayer>,
+    /// Top-level sections (`"tasks"`, `"editor"`, …) whose value here is a
+    /// fallback rather than what the files say: the section failed to
+    /// deserialize, or a layer that could set it is malformed (so its last valid
+    /// value, or the default, stands in). A consumer that reconciles state against
+    /// a section — dropping what it no longer lists — should skip one named here.
+    #[serde(default)]
+    pub failed_sections: BTreeSet<String>,
     /// Parsed per-layer values used to seed live reload without rereading files.
     /// Loader machinery, not report data: never crosses the seam.
     #[serde(skip)]
@@ -111,6 +118,7 @@ impl LoadedConfig {
             diagnostics: Vec::new(),
             layers: Vec::new(),
             explicit: BTreeMap::new(),
+            failed_sections: BTreeSet::new(),
             sources: None,
         }
     }
@@ -371,11 +379,21 @@ fn report_from_sources(sources: &[CachedLayer]) -> LoadedConfig {
             SECTIONS.contains(&section) && !invalid_sections.contains(section)
         })
     });
+    let mut failed_sections = invalid_sections;
+    // A malformed layer contributes its last valid value (or nothing), so no
+    // section can be trusted to say what the files on disk now say.
+    if sources
+        .iter()
+        .any(|source| matches!(source.status, ConfigLayerStatus::Invalid(_)))
+    {
+        failed_sections.extend(SECTIONS.iter().map(|section| (*section).to_owned()));
+    }
     LoadedConfig {
         settings,
         diagnostics: diags,
         layers: reports,
         explicit,
+        failed_sections,
         sources: Some(sources.to_vec()),
     }
 }

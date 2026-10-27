@@ -341,6 +341,71 @@ fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() -> TestResu
 }
 
 #[test]
+fn a_section_that_fails_to_deserialize_is_named_failed_and_no_other() -> TestResult {
+    let (_dir, path) = scratch(
+        "setting.jsonc",
+        r#"{ "tasks": { "build": { "command": 5 } }, "editor": { "tabSize": 3 } }"#,
+    )?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    assert!(report.settings.tasks.is_empty());
+    assert_eq!(report.failed_sections, BTreeSet::from(["tasks".to_owned()]));
+
+    std::fs::write(&path, r#"{ "tasks": { "build": { "command": "make" } } }"#)?;
+    let valid = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert!(valid.failed_sections.is_empty(), "{valid:?}");
+    Ok(())
+}
+
+#[test]
+fn a_layer_that_does_not_parse_fails_every_section() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "tasks": { "#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert!(matches!(
+        report.layers[0].status,
+        ConfigLayerStatus::Invalid(_)
+    ));
+    let all: BTreeSet<String> = SECTIONS.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(report.failed_sections, all);
+    assert!(
+        LoadedConfig::from_settings(Settings::default())
+            .failed_sections
+            .is_empty(),
+        "a report without provenance claims no failure"
+    );
+    Ok(())
+}
+
+/// A live edit that breaks `tasks` keeps the last valid tasks and flags the
+/// section failed until a valid edit lands.
+#[test]
+fn a_malformed_tasks_reload_keeps_the_tasks_and_flags_the_section() -> TestResult {
+    let valid = r#"{ "tasks": { "build": { "command": "make" } } }"#;
+    let (_dir, path) = scratch("setting.jsonc", valid)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
+
+    for broken in [
+        r#"{ "tasks": { "build": { "command": 5 } } }"#,
+        r#"{ "tasks": { "build": "#,
+    ] {
+        std::fs::write(&path, broken)?;
+        let reloaded = manager
+            .reload(std::slice::from_ref(&path))
+            .ok_or("reload of the changed layer reported no update")?;
+        assert!(reloaded.settings.tasks.contains_key("build"), "{broken}");
+        assert!(reloaded.failed_sections.contains("tasks"), "{broken}");
+
+        std::fs::write(&path, valid)?;
+        let recovered = manager
+            .reload(std::slice::from_ref(&path))
+            .ok_or("reload of the recovered layer reported no update")?;
+        assert!(recovered.failed_sections.is_empty(), "{broken}");
+    }
+    Ok(())
+}
+
+#[test]
 fn invalid_sections_do_not_remain_explicit() -> TestResult {
     let (_dir, path) = scratch(
         "setting.jsonc",
