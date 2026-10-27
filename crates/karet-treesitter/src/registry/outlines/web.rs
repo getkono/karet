@@ -66,15 +66,15 @@ const MDX: &str = r#"
 
 pub(super) fn query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-scss")]
-    if _lang == crate::languages::SCSS {
+    if _lang == crate::languages::ids::SCSS {
         return Some(Cow::Owned(format!("{CSS_LIKE}\n{SCSS}")));
     }
     #[cfg(feature = "lang-sass")]
-    if _lang == crate::languages::SASS {
+    if _lang == crate::languages::ids::SASS {
         return Some(Cow::Borrowed(SASS));
     }
     #[cfg(feature = "lang-less")]
-    if _lang == crate::languages::LESS {
+    if _lang == crate::languages::ids::LESS {
         return Some(Cow::Owned(format!("{CSS_LIKE}\n{LESS}")));
     }
     #[cfg(feature = "lang-vue")]
@@ -86,7 +86,7 @@ pub(super) fn query(_lang: LanguageId) -> Option<Cow<'static, str>> {
         return Some(Cow::Borrowed(COMPONENT));
     }
     #[cfg(feature = "lang-mdx")]
-    if _lang == crate::languages::MDX {
+    if _lang == crate::languages::ids::MDX {
         return Some(Cow::Borrowed(MDX));
     }
     None

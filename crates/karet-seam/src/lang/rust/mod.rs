@@ -52,11 +52,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar id for Rust, when the grammar is compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    #[cfg(feature = "lang-rust")]
-    let id = Some(karet_treesitter::languages::RUST);
-    #[cfg(not(feature = "lang-rust"))]
-    let id = None;
-    id
+    karet_treesitter::languages::RUST
 }
 
 /// Every facet subtype the Rust mapping can emit.

@@ -6,10 +6,6 @@ use karet_core::Span;
 use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_treesitter::LanguageId;
-#[allow(
-    unused_imports,
-    reason = "used only by the lockfile/JSON5/CBOR/EDN arms, each behind its grammar"
-)]
 use karet_treesitter::languages;
 
 use super::Candidate;
@@ -50,11 +46,17 @@ struct Parsed {
 }
 
 pub(super) fn analyze(lang: LanguageId, text: &str) -> Option<Vec<Symbol>> {
-    #[cfg(feature = "lang-lockfile")]
+    let lang = Some(lang);
     if lang == languages::LOCKFILE {
         return Some(analyze_lockfile(text));
     }
-    let syntax = syntax_of(lang)?;
+    let syntax = if lang == languages::JSON5 || lang == languages::CBOR {
+        Syntax::Json
+    } else if lang == languages::EDN {
+        Syntax::Edn
+    } else {
+        return None;
+    };
     let tokens = lex(text, syntax);
     let starts = karet_core::LineIndex::new(text);
     let mut candidates = Vec::new();
@@ -100,25 +102,6 @@ fn analyze_lockfile(text: &str) -> Vec<Symbol> {
         );
     }
     finish(candidates)
-}
-
-/// Which hand-rolled lexer reads `lang`, or `None` when its grammar's own tree
-/// outlines it.
-fn syntax_of(lang: LanguageId) -> Option<Syntax> {
-    #[cfg(feature = "lang-json5")]
-    if lang == languages::JSON5 {
-        return Some(Syntax::Json);
-    }
-    #[cfg(feature = "lang-cbor")]
-    if lang == languages::CBOR {
-        return Some(Syntax::Json);
-    }
-    #[cfg(feature = "lang-edn")]
-    if lang == languages::EDN {
-        return Some(Syntax::Edn);
-    }
-    let _ = lang;
-    None
 }
 
 fn lex(text: &str, syntax: Syntax) -> Vec<Token> {

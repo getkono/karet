@@ -65,12 +65,11 @@ impl OutlineExtractor {
             return symbols;
         }
         let root_candidates = self.candidates(tree.root(), text);
-        #[cfg(feature = "lang-markdown")]
-        if tree.root().language() == karet_treesitter::languages::MARKDOWN {
+        let root = Some(tree.root().language());
+        if root == karet_treesitter::languages::MARKDOWN {
             return finish(root_candidates);
         }
-        #[cfg(feature = "lang-mdx")]
-        if tree.root().language() == karet_treesitter::languages::MDX {
+        if root == karet_treesitter::languages::MDX {
             let (headings, declarations) = root_candidates
                 .into_iter()
                 .partition(|candidate| candidate.heading_level.is_some());

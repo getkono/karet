@@ -55,14 +55,14 @@ pub(crate) struct GrammarInfo {
     pub indents: Option<&'static str>,
 }
 
-// The stable ids live in [`crate::languages`], the published home of the
-// numbering; re-exported here so the grammar tables below and the shell/outline
-// submodules name them unqualified.
+// The stable ids live in [`crate::languages`], the one table of the numbering;
+// re-exported here so the grammar tables below and the shell/outline submodules
+// name them unqualified.
 #[allow(
     unused_imports,
-    reason = "a build with no `lang-*` feature compiles no constant to import"
+    reason = "a build with no `lang-*` feature compiles no id to import"
 )]
-pub(crate) use crate::languages::*;
+pub(crate) use crate::languages::ids::*;
 #[cfg(feature = "lang-graphql")]
 const GRAPHQL_HIGHLIGHTS: &str = r#"
 (comment) @comment

@@ -46,12 +46,10 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 #[must_use]
 pub fn language_ids() -> Vec<LanguageId> {
     use karet_treesitter::languages;
-    vec![
-        #[cfg(feature = "lang-c")]
-        languages::C,
-        #[cfg(feature = "lang-cpp")]
-        languages::CPP,
-    ]
+    [languages::C, languages::CPP]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// A function with internal linkage: visible only in its translation unit.
@@ -152,12 +150,11 @@ impl SeamLanguage for CFamily {
     }
 
     fn call_query(&self, language: LanguageId) -> Option<&'static str> {
-        #[cfg(feature = "lang-cpp")]
-        if language == karet_treesitter::languages::CPP {
-            return Some(include_str!("../../../queries/calls/cpp.scm"));
+        if Some(language) == karet_treesitter::languages::CPP {
+            Some(include_str!("../../../queries/calls/cpp.scm"))
+        } else {
+            Some(include_str!("../../../queries/calls/c.scm"))
         }
-        let _ = language;
-        Some(include_str!("../../../queries/calls/c.scm"))
     }
 
     fn implicit_receiver(&self) -> bool {

@@ -41,7 +41,8 @@ enum ExpansionKind {
 
 #[derive(Clone, Copy)]
 struct MacroDefinition {
-    language: LanguageId,
+    /// `None` when the grammar is not compiled in, so the entry never matches.
+    language: Option<LanguageId>,
     trigger: InlineMacroTrigger,
     kind: ExpansionKind,
 }
@@ -49,21 +50,17 @@ struct MacroDefinition {
 // Seeded v1 catalog. Each macro is intentionally named one-by-one so adding a
 // language does not silently opt it into text-only heuristics. Follow-up: grow
 // this catalog with per-language generated rules and explicit gap-fillers.
-// Each entry exists only when its grammar is compiled in.
 const DEFINITIONS: &[MacroDefinition] = &[
-    #[cfg(feature = "lang-markdown")]
     MacroDefinition {
         language: karet_treesitter::languages::MARKDOWN,
         trigger: InlineMacroTrigger::Character('['),
         kind: ExpansionKind::MarkdownLink,
     },
-    #[cfg(feature = "lang-markdown")]
     MacroDefinition {
         language: karet_treesitter::languages::MARKDOWN,
         trigger: InlineMacroTrigger::Character('<'),
         kind: ExpansionKind::MarkdownTag,
     },
-    #[cfg(feature = "lang-rust")]
     MacroDefinition {
         language: karet_treesitter::languages::RUST,
         trigger: InlineMacroTrigger::Tab,
@@ -124,9 +121,9 @@ impl InlineMacroEngine {
         indentation: &str,
         tree: impl FnOnce() -> Option<T>,
     ) -> Option<InlineMacroExpansion> {
-        let definition = DEFINITIONS
-            .iter()
-            .find(|definition| definition.trigger == trigger && definition.language == language)?;
+        let definition = DEFINITIONS.iter().find(|definition| {
+            definition.trigger == trigger && definition.language == Some(language)
+        })?;
         match definition.kind {
             ExpansionKind::MarkdownLink | ExpansionKind::MarkdownTag => {
                 expand_markdown(text, selection, definition.kind, tree)

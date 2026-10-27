@@ -38,7 +38,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar this mapping serves, when compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    Some(karet_treesitter::languages::JAVA)
+    karet_treesitter::languages::JAVA
 }
 
 /// Declared `public`.

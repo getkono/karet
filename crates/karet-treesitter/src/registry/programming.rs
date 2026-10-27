@@ -5,7 +5,7 @@ use super::GrammarInfo;
     unused_imports,
     reason = "a build with none of these grammars compiles no constant to import"
 )]
-use crate::languages::*;
+use crate::languages::ids::*;
 
 #[cfg(feature = "lang-kotlin")]
 const KOTLIN_HIGHLIGHTS: &str = r#"

@@ -558,11 +558,18 @@ fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
-    assert_eq!(language_id_from_path(p), Some(languages::RUST));
-    assert_eq!(
-        language_id_from_injection_name("rust"),
-        Some(languages::RUST)
-    );
+    assert!(languages::RUST.is_some());
+    assert_eq!(language_id_from_path(p), languages::RUST);
+    assert_eq!(language_id_from_injection_name("rust"), languages::RUST);
+}
+
+/// A grammar whose feature is off has no id at all: its constant is `None`,
+/// never a placeholder that some query would have to reject.
+#[cfg(not(feature = "lang-rust"))]
+#[test]
+fn an_uncompiled_grammar_has_no_id() {
+    assert_eq!(languages::RUST, None);
+    assert_eq!(language_id_from_injection_name("rust"), None);
 }
 
 /// Every typed constant is the id its grammar registered under, and each one
@@ -645,12 +652,13 @@ fn typed_constants_name_their_registered_grammars() {
         "one constant per grammar"
     );
     for (id, name) in expected {
-        let grammar = registry::grammar(id);
+        assert!(id.is_some(), "{name}: compiled in, so its constant is set");
+        let grammar = id.and_then(registry::grammar);
         assert_eq!(grammar.map(|g| g.name), Some(name), "{name}");
         let primary = grammar.and_then(|g| g.names.first().copied());
         assert_eq!(
             primary.and_then(language_id_from_injection_name),
-            Some(id),
+            id,
             "{name}"
         );
     }

@@ -99,43 +99,43 @@ const VIM: &str = r#"
 
 pub(super) fn query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-kotlin")]
-    if _lang == crate::languages::KOTLIN {
+    if _lang == crate::languages::ids::KOTLIN {
         return Some(Cow::Borrowed(KOTLIN));
     }
     #[cfg(feature = "lang-swift")]
-    if _lang == crate::languages::SWIFT {
+    if _lang == crate::languages::ids::SWIFT {
         return Some(Cow::Borrowed(SWIFT));
     }
     #[cfg(feature = "lang-scala")]
-    if _lang == crate::languages::SCALA {
+    if _lang == crate::languages::ids::SCALA {
         return Some(Cow::Borrowed(SCALA));
     }
     #[cfg(feature = "lang-lua")]
-    if _lang == crate::languages::LUA {
+    if _lang == crate::languages::ids::LUA {
         return Some(Cow::Borrowed(tree_sitter_lua::TAGS_QUERY));
     }
     #[cfg(feature = "lang-haskell")]
-    if _lang == crate::languages::HASKELL {
+    if _lang == crate::languages::ids::HASKELL {
         return Some(Cow::Borrowed(HASKELL));
     }
     #[cfg(feature = "lang-ocaml")]
-    if _lang == crate::languages::OCAML || _lang == crate::languages::OCAML_INTERFACE {
+    if _lang == crate::languages::ids::OCAML || _lang == crate::languages::ids::OCAML_INTERFACE {
         return Some(Cow::Borrowed(tree_sitter_ocaml::TAGS_QUERY));
     }
     #[cfg(feature = "lang-elixir")]
-    if _lang == crate::languages::ELIXIR {
+    if _lang == crate::languages::ids::ELIXIR {
         return Some(Cow::Borrowed(tree_sitter_elixir::TAGS_QUERY));
     }
     #[cfg(feature = "lang-erlang")]
-    if _lang == crate::languages::ERLANG {
+    if _lang == crate::languages::ids::ERLANG {
         return Some(Cow::Borrowed(ERLANG));
     }
     #[cfg(feature = "lang-dart")]
-    if _lang == crate::languages::DART {
+    if _lang == crate::languages::ids::DART {
         return Some(Cow::Borrowed(tree_sitter_dart::TAGS_QUERY));
     }
     #[cfg(feature = "lang-r")]
-    if _lang == crate::languages::R {
+    if _lang == crate::languages::ids::R {
         return Some(Cow::Borrowed(tree_sitter_r::TAGS_QUERY));
     }
     #[cfg(feature = "lang-zig")]
@@ -143,19 +143,19 @@ pub(super) fn query(_lang: LanguageId) -> Option<Cow<'static, str>> {
         return Some(Cow::Borrowed(ZIG));
     }
     #[cfg(feature = "lang-perl")]
-    if _lang == crate::languages::PERL {
+    if _lang == crate::languages::ids::PERL {
         return Some(Cow::Borrowed(PERL));
     }
     #[cfg(feature = "lang-clojure")]
-    if _lang == crate::languages::CLOJURE {
+    if _lang == crate::languages::ids::CLOJURE {
         return Some(Cow::Borrowed(CLOJURE));
     }
     #[cfg(feature = "lang-elisp")]
-    if _lang == crate::languages::ELISP {
+    if _lang == crate::languages::ids::ELISP {
         return Some(Cow::Borrowed(tree_sitter_elisp::TAGS_QUERY));
     }
     #[cfg(feature = "lang-vim")]
-    if _lang == crate::languages::VIM {
+    if _lang == crate::languages::ids::VIM {
         return Some(Cow::Borrowed(VIM));
     }
     None

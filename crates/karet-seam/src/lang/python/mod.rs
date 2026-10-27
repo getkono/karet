@@ -50,11 +50,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar id for Python, when the grammar is compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    #[cfg(feature = "lang-python")]
-    let id = Some(karet_treesitter::languages::PYTHON);
-    #[cfg(not(feature = "lang-python"))]
-    let id = None;
-    id
+    karet_treesitter::languages::PYTHON
 }
 
 /// Python resolves nothing semantically here yet; edges stay unresolved and the view

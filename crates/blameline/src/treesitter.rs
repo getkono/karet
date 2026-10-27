@@ -10,7 +10,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
-use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::language_id_from_path;
 
 use crate::LineRange;
@@ -59,63 +58,46 @@ pub fn enclosing_function_range(source: &str, file: &Path, line: u32) -> Option<
 /// JSX/`.mli` narrowing). A malformed/unknown query simply yields `None`
 /// upstream (the query fails to compile), degrading to whole-file blame.
 fn function_query(lang: LanguageId) -> Option<&'static str> {
-    #[allow(
-        unused_imports,
-        reason = "a build with no `lang-*` feature names no grammar"
-    )]
     use karet_treesitter::languages;
-    #[cfg(any(feature = "lang-javascript", feature = "lang-typescript"))]
     const JS: &str = "[(function_declaration) (method_definition) (arrow_function) \
                        (function_expression)] @function";
-    // (query, grammars it applies to); each grammar is listed only when this
-    // crate's own feature for it compiles it in. JSX parses with the JavaScript
+    // (query, grammars it applies to) — a grammar not compiled into this build
+    // has a `None` constant and matches nothing. JSX parses with the JavaScript
     // grammar, so it needs no entry of its own.
-    let queries: &[(&str, &[LanguageId])] = &[
-        #[cfg(feature = "lang-rust")]
+    const QUERIES: &[(&str, &[Option<LanguageId>])] = &[
         ("(function_item) @function", &[languages::RUST]),
-        #[cfg(feature = "lang-python")]
-        ("(function_definition) @function", &[languages::PYTHON]),
-        #[cfg(feature = "lang-bash")]
-        ("(function_definition) @function", &[languages::BASH]),
-        #[cfg(feature = "lang-javascript")]
-        (JS, &[languages::JAVASCRIPT]),
-        #[cfg(feature = "lang-typescript")]
-        (JS, &[languages::TYPESCRIPT, languages::TSX]),
-        #[cfg(feature = "lang-go")]
+        (
+            "(function_definition) @function",
+            &[languages::PYTHON, languages::BASH, languages::ZSH],
+        ),
+        (
+            JS,
+            &[languages::JAVASCRIPT, languages::TYPESCRIPT, languages::TSX],
+        ),
         (
             "[(function_declaration) (method_declaration)] @function",
             &[languages::GO],
         ),
-        #[cfg(feature = "lang-c")]
-        ("(function_definition) @function", &[languages::C]),
-        #[cfg(feature = "lang-cpp")]
-        ("(function_definition) @function", &[languages::CPP]),
-        #[cfg(feature = "lang-java")]
-        ("(method_declaration) @function", &[languages::JAVA]),
-        #[cfg(feature = "lang-csharp")]
-        ("(method_declaration) @function", &[languages::CSHARP]),
-        #[cfg(feature = "lang-ruby")]
+        (
+            "(function_definition) @function",
+            &[languages::C, languages::CPP],
+        ),
+        (
+            "(method_declaration) @function",
+            &[languages::JAVA, languages::CSHARP],
+        ),
         (
             "[(method) (singleton_method)] @function",
             &[languages::RUBY],
         ),
-        #[cfg(feature = "lang-php")]
         (
             "[(function_definition) (method_declaration)] @function",
             &[languages::PHP],
         ),
     ];
-    if let Some(query) = queries
+    QUERIES
         .iter()
-        .find_map(|(query, ids)| ids.contains(&lang).then_some(*query))
-    {
-        return Some(query);
-    }
-    // blameline has no `lang-zsh` feature: the Zsh grammar is compiled in only
-    // when feature unification turns on `karet-treesitter/lang-zsh`, which this
-    // crate cannot test with `cfg`, so Zsh alone is resolved by name.
-    (language_id_from_injection_name("zsh") == Some(lang))
-        .then_some("(function_definition) @function")
+        .find_map(|(query, ids)| ids.contains(&Some(lang)).then_some(*query))
 }
 
 /// Byte offset of the start of each line (index 0 is byte 0).

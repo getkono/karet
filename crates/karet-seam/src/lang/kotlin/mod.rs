@@ -53,7 +53,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar id for Kotlin, when the grammar is compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    Some(karet_treesitter::languages::KOTLIN)
+    karet_treesitter::languages::KOTLIN
 }
 
 /// Nothing is resolved semantically here yet; edges stay unresolved and the view degrades.

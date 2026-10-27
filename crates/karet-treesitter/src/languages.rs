@@ -1,12 +1,16 @@
 //! Typed identities of the bundled grammars.
 //!
-//! One constant per grammar, each gated on the `lang-*` feature that compiles the
-//! grammar in, so naming a grammar this build lacks is a compile error rather than
-//! a runtime miss. These are the only [`LanguageId`]s that exist: the type has no
-//! public constructor, so a value always names a registered grammar.
+//! One constant per grammar, `Some` exactly when the `lang-*` feature that
+//! compiles the grammar is on *in this crate*. The value is decided here rather
+//! than by a `cfg` in the consumer because a grammar's feature is often switched
+//! on by another crate in the build (the `karet` app turns on
+//! `karet-treesitter/all-languages` while depending on `karet-syntax` with none of
+//! its pass-through features), and a consumer's own `cfg` cannot see that.
 //!
-//! Engines compare against these instead of resolving a string per call. The
-//! string resolver [`language_id_from_injection_name`](crate::language_id_from_injection_name)
+//! [`LanguageId`] has no public constructor, so these constants and the resolvers
+//! are the only way to hold one, and every value names a grammar compiled into
+//! this build. Engines compare against these instead of resolving a string per
+//! call; [`language_id_from_injection_name`](crate::language_id_from_injection_name)
 //! stays for names that arrive *inside* source text (an injection query, a
 //! markdown fence's info string), and
 //! [`language_id_from_path`](crate::language_id_from_path) for file paths.
@@ -14,202 +18,167 @@
 //! The numbers behind these constants are stable and are **never** renumbered once
 //! shipped.
 
-#[allow(
-    unused_imports,
-    reason = "a build with no `lang-*` feature compiles no constant to type"
-)]
 use crate::LanguageId;
 
-/// Rust.
-#[cfg(feature = "lang-rust")]
-pub const RUST: LanguageId = LanguageId(1);
-/// Python.
-#[cfg(feature = "lang-python")]
-pub const PYTHON: LanguageId = LanguageId(2);
-/// JavaScript (including JSX).
-#[cfg(feature = "lang-javascript")]
-pub const JAVASCRIPT: LanguageId = LanguageId(3);
-/// TypeScript.
-#[cfg(feature = "lang-typescript")]
-pub const TYPESCRIPT: LanguageId = LanguageId(4);
-/// TSX, TypeScript's JSX dialect (compiled by `lang-typescript`).
-#[cfg(feature = "lang-typescript")]
-pub const TSX: LanguageId = LanguageId(5);
-/// JSON (and JSONC).
-#[cfg(feature = "lang-json")]
-pub const JSON: LanguageId = LanguageId(6);
-/// Go.
-#[cfg(feature = "lang-go")]
-pub const GO: LanguageId = LanguageId(7);
-/// C.
-#[cfg(feature = "lang-c")]
-pub const C: LanguageId = LanguageId(8);
-/// C++.
-#[cfg(feature = "lang-cpp")]
-pub const CPP: LanguageId = LanguageId(9);
-/// C#.
-#[cfg(feature = "lang-csharp")]
-pub const CSHARP: LanguageId = LanguageId(10);
-/// Java.
-#[cfg(feature = "lang-java")]
-pub const JAVA: LanguageId = LanguageId(11);
-/// Ruby.
-#[cfg(feature = "lang-ruby")]
-pub const RUBY: LanguageId = LanguageId(12);
-/// PHP.
-#[cfg(feature = "lang-php")]
-pub const PHP: LanguageId = LanguageId(13);
-/// Bash.
-#[cfg(feature = "lang-bash")]
-pub const BASH: LanguageId = LanguageId(14);
-/// TOML.
-#[cfg(feature = "lang-toml")]
-pub const TOML: LanguageId = LanguageId(15);
-/// HTML.
-#[cfg(feature = "lang-html")]
-pub const HTML: LanguageId = LanguageId(16);
-/// CSS.
-#[cfg(feature = "lang-css")]
-pub const CSS: LanguageId = LanguageId(17);
-/// YAML.
-#[cfg(feature = "lang-yaml")]
-pub const YAML: LanguageId = LanguageId(18);
-/// Markdown's block grammar, the entry point for a markdown file.
-#[cfg(feature = "lang-markdown")]
-pub const MARKDOWN: LanguageId = LanguageId(19);
-/// tree-sitter-md's companion *inline* grammar. Never resolved from a path — the
-/// block grammar reaches it only through a `markdown_inline` injection.
-#[cfg(feature = "lang-markdown")]
-pub const MARKDOWN_INLINE: LanguageId = LanguageId(20);
-/// TeX and LaTeX.
-#[cfg(feature = "lang-latex")]
-pub const LATEX: LanguageId = LanguageId(21);
-/// Zig.
-#[cfg(feature = "lang-zig")]
-pub const ZIG: LanguageId = LanguageId(22);
-/// XML (including SVG).
-#[cfg(feature = "lang-xml")]
-pub const XML: LanguageId = LanguageId(23);
-/// Svelte.
-#[cfg(feature = "lang-svelte")]
-pub const SVELTE: LanguageId = LanguageId(24);
-/// Astro.
-#[cfg(feature = "lang-astro")]
-pub const ASTRO: LanguageId = LanguageId(25);
-/// Vue single-file components.
-#[cfg(feature = "lang-vue")]
-pub const VUE: LanguageId = LanguageId(26);
-/// SQL.
-#[cfg(feature = "lang-sql")]
-pub const SQL: LanguageId = LanguageId(27);
-/// GraphQL.
-#[cfg(feature = "lang-graphql")]
-pub const GRAPHQL: LanguageId = LanguageId(28);
-/// Protocol Buffers.
-#[cfg(feature = "lang-protobuf")]
-pub const PROTOBUF: LanguageId = LanguageId(29);
-/// Dockerfile / Containerfile.
-#[cfg(feature = "lang-containerfile")]
-pub const CONTAINERFILE: LanguageId = LanguageId(30);
-/// Makefile.
-#[cfg(feature = "lang-make")]
-pub const MAKE: LanguageId = LanguageId(31);
-/// CMake.
-#[cfg(feature = "lang-cmake")]
-pub const CMAKE: LanguageId = LanguageId(32);
-/// reStructuredText.
-#[cfg(feature = "lang-rst")]
-pub const RST: LanguageId = LanguageId(33);
-/// AsciiDoc.
-#[cfg(feature = "lang-asciidoc")]
-pub const ASCIIDOC: LanguageId = LanguageId(34);
-/// Zsh.
-#[cfg(feature = "lang-zsh")]
-pub const ZSH: LanguageId = LanguageId(35);
-/// Fish.
-#[cfg(feature = "lang-fish")]
-pub const FISH: LanguageId = LanguageId(36);
-/// PowerShell.
-#[cfg(feature = "lang-powershell")]
-pub const POWERSHELL: LanguageId = LanguageId(37);
-/// Windows batch files.
-#[cfg(feature = "lang-batch")]
-pub const BATCH: LanguageId = LanguageId(38);
-/// Kotlin.
-#[cfg(feature = "lang-kotlin")]
-pub const KOTLIN: LanguageId = LanguageId(39);
-/// Swift.
-#[cfg(feature = "lang-swift")]
-pub const SWIFT: LanguageId = LanguageId(40);
-/// Scala.
-#[cfg(feature = "lang-scala")]
-pub const SCALA: LanguageId = LanguageId(41);
-/// Lua.
-#[cfg(feature = "lang-lua")]
-pub const LUA: LanguageId = LanguageId(42);
-/// Haskell.
-#[cfg(feature = "lang-haskell")]
-pub const HASKELL: LanguageId = LanguageId(43);
-/// OCaml implementation files (`.ml`).
-#[cfg(feature = "lang-ocaml")]
-pub const OCAML: LanguageId = LanguageId(44);
-/// OCaml interface files (`.mli`, compiled by `lang-ocaml`).
-#[cfg(feature = "lang-ocaml")]
-pub const OCAML_INTERFACE: LanguageId = LanguageId(45);
-/// Elixir.
-#[cfg(feature = "lang-elixir")]
-pub const ELIXIR: LanguageId = LanguageId(46);
-/// Erlang.
-#[cfg(feature = "lang-erlang")]
-pub const ERLANG: LanguageId = LanguageId(47);
-/// Dart.
-#[cfg(feature = "lang-dart")]
-pub const DART: LanguageId = LanguageId(48);
-/// R.
-#[cfg(feature = "lang-r")]
-pub const R: LanguageId = LanguageId(49);
-/// Perl.
-#[cfg(feature = "lang-perl")]
-pub const PERL: LanguageId = LanguageId(50);
-/// Clojure.
-#[cfg(feature = "lang-clojure")]
-pub const CLOJURE: LanguageId = LanguageId(51);
-/// Emacs Lisp.
-#[cfg(feature = "lang-elisp")]
-pub const ELISP: LanguageId = LanguageId(52);
-/// Vim script.
-#[cfg(feature = "lang-vim")]
-pub const VIM: LanguageId = LanguageId(53);
-/// SCSS.
-#[cfg(feature = "lang-scss")]
-pub const SCSS: LanguageId = LanguageId(54);
-/// Sass (indented syntax).
-#[cfg(feature = "lang-sass")]
-pub const SASS: LanguageId = LanguageId(55);
-/// Less.
-#[cfg(feature = "lang-less")]
-pub const LESS: LanguageId = LanguageId(56);
-/// ERB templates.
-#[cfg(feature = "lang-erb")]
-pub const ERB: LanguageId = LanguageId(57);
-/// MDX.
-#[cfg(feature = "lang-mdx")]
-pub const MDX: LanguageId = LanguageId(58);
-/// JSON5.
-#[cfg(feature = "lang-json5")]
-pub const JSON5: LanguageId = LanguageId(59);
-/// INI.
-#[cfg(feature = "lang-ini")]
-pub const INI: LanguageId = LanguageId(60);
-/// Java properties and dotenv files.
-#[cfg(feature = "lang-properties")]
-pub const PROPERTIES: LanguageId = LanguageId(61);
-/// EDN.
-#[cfg(feature = "lang-edn")]
-pub const EDN: LanguageId = LanguageId(62);
-/// CBOR diagnostic notation.
-#[cfg(feature = "lang-cbor")]
-pub const CBOR: LanguageId = LanguageId(63);
-/// Yarn lockfiles.
-#[cfg(feature = "lang-lockfile")]
-pub const LOCKFILE: LanguageId = LanguageId(64);
+/// Declares every grammar once: the public `Option` constant, and the
+/// crate-private [`ids`] constant the registry tables are keyed by.
+macro_rules! grammars {
+    ($($(#[doc = $doc:literal])* $name:ident = $number:literal, $feature:literal;)*) => {
+        $(
+            $(#[doc = $doc])*
+            #[doc = ""]
+            #[doc = concat!("`Some` when the `", $feature, "` feature compiles the grammar in.")]
+            pub const $name: Option<LanguageId> = if cfg!(feature = $feature) {
+                Some(LanguageId($number))
+            } else {
+                None
+            };
+        )*
+
+        /// The registry's own keys: each grammar's id, present only when its
+        /// grammar is compiled in, so a table entry cannot name a missing grammar.
+        pub(crate) mod ids {
+            #[allow(
+                unused_imports,
+                reason = "a build with no `lang-*` feature compiles no id to type"
+            )]
+            use crate::LanguageId;
+            $(
+                #[cfg(feature = $feature)]
+                pub(crate) const $name: LanguageId = LanguageId($number);
+            )*
+        }
+    };
+}
+
+grammars! {
+    /// Rust.
+    RUST = 1, "lang-rust";
+    /// Python.
+    PYTHON = 2, "lang-python";
+    /// JavaScript (including JSX).
+    JAVASCRIPT = 3, "lang-javascript";
+    /// TypeScript.
+    TYPESCRIPT = 4, "lang-typescript";
+    /// TSX, TypeScript's JSX dialect.
+    TSX = 5, "lang-typescript";
+    /// JSON (and JSONC).
+    JSON = 6, "lang-json";
+    /// Go.
+    GO = 7, "lang-go";
+    /// C.
+    C = 8, "lang-c";
+    /// C++.
+    CPP = 9, "lang-cpp";
+    /// C#.
+    CSHARP = 10, "lang-csharp";
+    /// Java.
+    JAVA = 11, "lang-java";
+    /// Ruby.
+    RUBY = 12, "lang-ruby";
+    /// PHP.
+    PHP = 13, "lang-php";
+    /// Bash.
+    BASH = 14, "lang-bash";
+    /// TOML.
+    TOML = 15, "lang-toml";
+    /// HTML.
+    HTML = 16, "lang-html";
+    /// CSS.
+    CSS = 17, "lang-css";
+    /// YAML.
+    YAML = 18, "lang-yaml";
+    /// Markdown's block grammar, the entry point for a markdown file.
+    MARKDOWN = 19, "lang-markdown";
+    /// tree-sitter-md's companion *inline* grammar. Never resolved from a path —
+    /// the block grammar reaches it only through a `markdown_inline` injection.
+    MARKDOWN_INLINE = 20, "lang-markdown";
+    /// TeX and LaTeX.
+    LATEX = 21, "lang-latex";
+    /// Zig.
+    ZIG = 22, "lang-zig";
+    /// XML (including SVG).
+    XML = 23, "lang-xml";
+    /// Svelte.
+    SVELTE = 24, "lang-svelte";
+    /// Astro.
+    ASTRO = 25, "lang-astro";
+    /// Vue single-file components.
+    VUE = 26, "lang-vue";
+    /// SQL.
+    SQL = 27, "lang-sql";
+    /// GraphQL.
+    GRAPHQL = 28, "lang-graphql";
+    /// Protocol Buffers.
+    PROTOBUF = 29, "lang-protobuf";
+    /// Dockerfile / Containerfile.
+    CONTAINERFILE = 30, "lang-containerfile";
+    /// Makefile.
+    MAKE = 31, "lang-make";
+    /// CMake.
+    CMAKE = 32, "lang-cmake";
+    /// reStructuredText.
+    RST = 33, "lang-rst";
+    /// AsciiDoc.
+    ASCIIDOC = 34, "lang-asciidoc";
+    /// Zsh.
+    ZSH = 35, "lang-zsh";
+    /// Fish.
+    FISH = 36, "lang-fish";
+    /// PowerShell.
+    POWERSHELL = 37, "lang-powershell";
+    /// Windows batch files.
+    BATCH = 38, "lang-batch";
+    /// Kotlin.
+    KOTLIN = 39, "lang-kotlin";
+    /// Swift.
+    SWIFT = 40, "lang-swift";
+    /// Scala.
+    SCALA = 41, "lang-scala";
+    /// Lua.
+    LUA = 42, "lang-lua";
+    /// Haskell.
+    HASKELL = 43, "lang-haskell";
+    /// OCaml implementation files (`.ml`).
+    OCAML = 44, "lang-ocaml";
+    /// OCaml interface files (`.mli`).
+    OCAML_INTERFACE = 45, "lang-ocaml";
+    /// Elixir.
+    ELIXIR = 46, "lang-elixir";
+    /// Erlang.
+    ERLANG = 47, "lang-erlang";
+    /// Dart.
+    DART = 48, "lang-dart";
+    /// R.
+    R = 49, "lang-r";
+    /// Perl.
+    PERL = 50, "lang-perl";
+    /// Clojure.
+    CLOJURE = 51, "lang-clojure";
+    /// Emacs Lisp.
+    ELISP = 52, "lang-elisp";
+    /// Vim script.
+    VIM = 53, "lang-vim";
+    /// SCSS.
+    SCSS = 54, "lang-scss";
+    /// Sass (indented syntax).
+    SASS = 55, "lang-sass";
+    /// Less.
+    LESS = 56, "lang-less";
+    /// ERB templates.
+    ERB = 57, "lang-erb";
+    /// MDX.
+    MDX = 58, "lang-mdx";
+    /// JSON5.
+    JSON5 = 59, "lang-json5";
+    /// INI.
+    INI = 60, "lang-ini";
+    /// Java properties and dotenv files.
+    PROPERTIES = 61, "lang-properties";
+    /// EDN.
+    EDN = 62, "lang-edn";
+    /// CBOR diagnostic notation.
+    CBOR = 63, "lang-cbor";
+    /// Yarn lockfiles.
+    LOCKFILE = 64, "lang-lockfile";
+}

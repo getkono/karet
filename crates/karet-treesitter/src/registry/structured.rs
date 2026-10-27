@@ -5,7 +5,7 @@ use super::GrammarInfo;
     unused_imports,
     reason = "a build with none of these grammars compiles no constant to import"
 )]
-use crate::languages::*;
+use crate::languages::ids::*;
 
 // Pkl deliberately has no entry: no suitable published pure-Rust binding is
 // available, and issue #137 explicitly prefers deferral to a policy violation.

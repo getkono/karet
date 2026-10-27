@@ -59,13 +59,10 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 #[must_use]
 pub fn language_ids() -> Vec<LanguageId> {
     use karet_treesitter::languages;
-    vec![
-        languages::JAVASCRIPT,
-        #[cfg(feature = "lang-typescript")]
-        languages::TYPESCRIPT,
-        #[cfg(feature = "lang-typescript")]
-        languages::TSX,
-    ]
+    [languages::JAVASCRIPT, languages::TYPESCRIPT, languages::TSX]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Nothing is resolved semantically here yet; edges stay unresolved and the view degrades.
