@@ -365,7 +365,7 @@
         // funnels through the heartbeat call site.
         let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        assert!(!session.config.settings.wakatime.enabled, "off by default");
+        assert!(!session.config.settings().wakatime.enabled, "off by default");
 
         session.handle(
             RequestId(1),

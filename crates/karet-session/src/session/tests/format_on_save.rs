@@ -19,7 +19,7 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
@@ -51,7 +51,7 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
@@ -92,7 +92,7 @@
             },
         );
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
@@ -125,7 +125,7 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
@@ -471,7 +471,7 @@
         std::fs::write(&path, "original\n")?;
         let (mut session, _doc, mut events, _request) =
             parked_save(&path).ok_or("the save never parked")?;
-        session.config.settings.editor.format_on_save_timeout = 2_500;
+        session.config.loaded_config.settings.editor.format_on_save_timeout = 2_500;
 
         // Just short of the deadline the save is still the formatter's to finish.
         session.expire_format_on_save(2_499);
@@ -592,7 +592,7 @@
             let mut settings = crate::config::Settings::default();
             settings.editor.format_on_save = true;
             let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-                settings,
+                loaded_config: crate::config::LoadedConfig::from_settings(settings),
                 ..SessionConfig::default()
             });
             session.handle(

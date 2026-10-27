@@ -145,7 +145,7 @@
         let mut settings = crate::config::Settings::default();
         settings.deps.enabled = false;
         let (mut disabled, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         let doc = open(&mut disabled, &mut events, &manifest).ok_or("Cargo.toml never opened")?;

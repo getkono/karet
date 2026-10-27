@@ -668,3 +668,29 @@ fn a_manager_knows_its_files_and_rereads_only_the_ones_named() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_report_without_layers_seeds_no_live_reload() {
+    // `from_settings` records no files, so there is nothing to watch.
+    assert!(ConfigManager::from_loaded(&LoadedConfig::default()).is_none());
+}
+
+#[test]
+fn the_manager_seeds_from_the_report_layers_not_a_hidden_cache() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    // A report that crossed the seam (serialized and back) still seeds live
+    // reload: all the manager needs is the report's own `layers`.
+    let crossed: LoadedConfig = serde_json::from_value(serde_json::to_value(&report)?)?;
+    assert_eq!(crossed, report);
+    let mut manager =
+        ConfigManager::from_loaded(&crossed).ok_or("a report with layers seeds a manager")?;
+    assert_eq!(manager.paths(), vec![path.clone()]);
+
+    std::fs::write(&path, r#"{ "editor": { "tabSize": 5 } }"#)?;
+    let updated = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("the changed layer reported no update")?;
+    assert_eq!(updated.settings.editor.tab_size, 5);
+    Ok(())
+}

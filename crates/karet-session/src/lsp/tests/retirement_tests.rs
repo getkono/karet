@@ -358,10 +358,10 @@ async fn retiring_one_provider_leaves_another_providers_markers_alone() -> TestR
     }
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![root.clone()],
-        settings: crate::config::Settings {
+        loaded_config: crate::config::LoadedConfig::from_settings(crate::config::Settings {
             lsp: settings,
             ..crate::config::Settings::default()
-        },
+        }),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));
@@ -445,10 +445,10 @@ async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
     }
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![root.clone()],
-        settings: crate::config::Settings {
+        loaded_config: crate::config::LoadedConfig::from_settings(crate::config::Settings {
             lsp: settings,
             ..crate::config::Settings::default()
-        },
+        }),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));

@@ -203,11 +203,11 @@
         std::fs::write(dir.path().join("a.rs"), "needle\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings: {
+            loaded_config: crate::config::LoadedConfig::from_settings({
                 let mut settings = crate::config::Settings::default();
                 settings.search.exclude = vec!["vendor/**".to_owned()];
                 settings
-            },
+            }),
             ..SessionConfig::default()
         });
 

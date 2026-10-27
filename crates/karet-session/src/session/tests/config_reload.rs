@@ -46,7 +46,6 @@
             Some(settings_path.clone()),
         ));
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings: loaded.settings.clone(),
             loaded_config: loaded,
             ..SessionConfig::default()
         });
@@ -87,7 +86,6 @@
             Some(settings_path.clone()),
         ));
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings: loaded.settings.clone(),
             loaded_config: loaded,
             ..SessionConfig::default()
         });

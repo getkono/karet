@@ -7,7 +7,6 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
     SessionConfig {
         roots: vec![app.root.clone()],
         diff_syntax: app.syntax,
-        settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
         swap_dir,
         // Every external process is owned by a hidden copy of this executable.

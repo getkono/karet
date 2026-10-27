@@ -63,8 +63,8 @@ impl Session {
     /// left for it. A history whose content fingerprint no longer matches the
     /// file (it was edited elsewhere since) is deleted rather than restored.
     pub(super) fn prepare_undo(&self, path: &Path, buffer: &mut TextBuffer) {
-        buffer.set_undo_limit(self.config.settings.files.undo_cap());
-        if !self.config.settings.files.persistent_undo {
+        buffer.set_undo_limit(self.config.settings().files.undo_cap());
+        if !self.config.settings().files.persistent_undo {
             return;
         }
         let Some(store) = self.swaps.as_ref() else {
@@ -86,7 +86,7 @@ impl Session {
         let (Some(store), Some(doc)) = (self.swaps.as_ref(), self.store.docs.get(&doc_id)) else {
             return;
         };
-        if !self.config.settings.files.persistent_undo {
+        if !self.config.settings().files.persistent_undo {
             store.remove_undo(&doc.path);
             return;
         }
@@ -152,10 +152,10 @@ impl Session {
         // Cheap short-circuits for a sweep that usually has nothing to do.
         // [`Self::back_up_document`] asks the same two questions per document,
         // so a swap is never written past them whichever way it is reached.
-        if !self.config.settings.files.backup || self.swaps.is_none() {
+        if !self.config.settings().files.backup || self.swaps.is_none() {
             return;
         }
-        let interval = self.config.settings.files.backup_interval;
+        let interval = self.config.settings().files.backup_interval;
         let now = self.elapsed_ms();
         let due: Vec<DocumentId> = self
             .store
@@ -184,7 +184,7 @@ impl Session {
     /// is deferred for as long as the formatter takes, and for that whole window
     /// the swap is the only other copy of the buffer there is.
     pub(super) fn back_up_document(&mut self, doc_id: DocumentId) {
-        if !self.config.settings.files.backup {
+        if !self.config.settings().files.backup {
             return;
         }
         let due = self.store.docs.get(&doc_id).is_some_and(|doc| {

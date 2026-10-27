@@ -410,7 +410,7 @@ impl Session {
             LspUpdate::InstallRequired {
                 server, language, ..
             } => {
-                match self.config.settings.lsp.managed_downloads {
+                match self.config.settings().lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {
                         // Ask at most once. A provider Karet has installed before
                         // has had this question answered already, and a refusal the
@@ -425,7 +425,7 @@ impl Session {
                         }
                         let enabled = self
                             .config
-                            .settings
+                            .settings()
                             .lsp
                             .servers
                             .get(&language)
@@ -632,7 +632,7 @@ impl Session {
             text: doc.buffer.text(),
             highlights: doc.syntax.highlights().clone(),
             syntax_error_lines: doc.syntax.error_lines().clone(),
-            settings: self.config.settings.spellcheck.clone(),
+            settings: self.config.settings().spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
             self.clear_spell_diagnostics(doc_id);
@@ -810,15 +810,15 @@ impl Session {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
         self.set_semantic_highlighting(report.settings.editor.semantic_highlighting.enabled);
-        let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
-        self.config.settings = report.settings.clone();
+        let ai_commit_changed =
+            self.config.settings().git.ai_commit != report.settings.git.ai_commit;
         self.config.loaded_config = report.clone();
         let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
         self.refresh_document_settings(&docs);
 
         // Semantic-comment settings can vary by language. Requeue every open
         // document from scratch so both global and selector changes take effect.
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let highlight_tx = &self.highlight_tx;
         let mut spell_without_syntax = Vec::new();
         let undo_cap = settings.files.undo_cap();
@@ -874,7 +874,7 @@ impl Session {
 
     /// Re-resolve per-path behavior after an application or EditorConfig change.
     pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
-        let settings = self.config.settings.clone();
+        let settings = self.config.settings().clone();
         let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
             .iter()
             .filter_map(|doc_id| {

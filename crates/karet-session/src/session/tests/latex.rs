@@ -6,7 +6,7 @@
         settings.latex.command = "karet-test-definitely-missing-latex".to_owned();
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(

@@ -42,7 +42,7 @@ impl Session {
         };
         let editor = self
             .config
-            .settings
+            .settings()
             .editor
             .for_language(doc.language_selector);
         let format = editor.format_on_save();

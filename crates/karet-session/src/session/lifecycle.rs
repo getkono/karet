@@ -58,7 +58,7 @@ impl Session {
             .swap_dir
             .clone()
             .map(|dir| SwapStore::with_dir(dir, session_id));
-        let pending_swaps = if config.settings.files.backup {
+        let pending_swaps = if config.settings().files.backup {
             swaps
                 .as_ref()
                 .map(|store| scan(store.dir()))
@@ -76,7 +76,7 @@ impl Session {
         // Language servers spawn lazily, one per provider at a repository root, on
         // the first matching open.
         let debug = crate::dap::DebugManager::new(
-            config.settings.debug.clone(),
+            config.settings().debug.clone(),
             config.roots.first().cloned(),
             config.process_supervisor.clone(),
             events.clone(),
@@ -87,12 +87,12 @@ impl Session {
             events.clone(),
         );
         let (mut lsp, lsp_rx) = LspManager::new(
-            config.settings.lsp.clone(),
+            config.settings().lsp.clone(),
             config.roots.first().cloned(),
             config.process_supervisor.clone(),
             config.lsp_registry_dir.clone(),
         );
-        lsp.set_semantic_highlighting(config.settings.editor.semantic_highlighting.enabled);
+        lsp.set_semantic_highlighting(config.settings().editor.semantic_highlighting.enabled);
         let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
             config.lsp_registry_dir.clone(),
             config.process_supervisor.clone(),

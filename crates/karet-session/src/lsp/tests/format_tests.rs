@@ -24,7 +24,7 @@ fn formatting_session(connector: Connector) -> (Session, EventRx) {
     let mut settings = crate::config::Settings::default();
     settings.editor.format_on_save = true;
     let (mut session, events, _snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(connector);
@@ -42,7 +42,7 @@ fn formatting_session_with_swaps(
     settings.editor.format_on_save = true;
     settings.files.backup = backup;
     let (mut session, events, _snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         swap_dir: Some(swap_dir.to_path_buf()),
         ..SessionConfig::default()
     });
@@ -400,7 +400,7 @@ async fn a_save_hands_the_server_the_configured_format_timeout() -> TestResult {
     settings.editor.format_on_save = true;
     settings.editor.format_on_save_timeout = 2_500;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(test_connector(
@@ -490,7 +490,7 @@ async fn a_formatting_request_carries_the_configured_indentation() -> TestResult
         );
     }
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(test_connector(
@@ -561,7 +561,7 @@ async fn a_formatting_request_carries_the_editorconfig_indentation() -> TestResu
     settings.editor.tab_size = 2;
     settings.editor.insert_spaces = true;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(test_connector(
@@ -612,7 +612,7 @@ fn manual_session(connector: Option<Connector>) -> (Session, EventRx, crate::loc
     let mut settings = crate::config::Settings::default();
     settings.editor.format_on_save = false;
     let (mut session, events, snaps) = Session::new(SessionConfig {
-        settings,
+        loaded_config: crate::config::LoadedConfig::from_settings(settings),
         ..SessionConfig::default()
     });
     if let Some(connector) = connector {

@@ -102,10 +102,6 @@ pub struct LoadedConfig {
     /// a section — dropping what it no longer lists — should skip one named here.
     #[serde(default)]
     pub failed_sections: BTreeSet<String>,
-    /// Parsed per-layer values used to seed live reload without rereading files.
-    /// Loader machinery, not report data: never crosses the seam.
-    #[serde(skip)]
-    sources: Option<Vec<CachedLayer>>,
 }
 
 impl LoadedConfig {
@@ -119,7 +115,6 @@ impl LoadedConfig {
             layers: Vec::new(),
             explicit: BTreeMap::new(),
             failed_sections: BTreeSet::new(),
-            sources: None,
         }
     }
 }
@@ -135,14 +130,32 @@ struct CachedLayer {
 }
 
 /// Cached live configuration owned by the session actor.
+///
+/// The parsed per-layer values that let a live reload re-merge without
+/// rereading every file live here, not in the [`LoadedConfig`] report: the
+/// report crosses the seam, and this cache is loader machinery.
 pub(crate) struct ConfigManager {
     sources: Vec<CachedLayer>,
     report: LoadedConfig,
 }
 
 impl ConfigManager {
+    /// Seed live reload for the layers `report` was loaded from, reading each
+    /// layer file once. `None` for a report that names no layers (one built by
+    /// [`LoadedConfig::from_settings`]), which has nothing to watch.
+    ///
+    /// `report` stays the baseline a reload is compared against, so a layer that
+    /// changed between the load and this read is reported by the first reload
+    /// that touches any layer.
     pub(crate) fn from_loaded(report: &LoadedConfig) -> Option<Self> {
-        let sources = report.sources.clone()?;
+        if report.layers.is_empty() {
+            return None;
+        }
+        let sources = report
+            .layers
+            .iter()
+            .map(|layer| read_cached_layer(layer.layer, layer.path.clone()))
+            .collect();
         Some(Self {
             sources,
             report: report.clone(),
@@ -394,7 +407,6 @@ fn report_from_sources(sources: &[CachedLayer]) -> LoadedConfig {
         layers: reports,
         explicit,
         failed_sections,
-        sources: Some(sources.to_vec()),
     }
 }
 

@@ -194,7 +194,7 @@
             arguments: serde_json::json!({"program": "/w/a.out"}),
         }];
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
@@ -286,7 +286,7 @@
             let mut settings = crate::config::Settings::default();
             settings.notebook.kernel.auto_start = auto_start;
             Session::new(SessionConfig {
-                settings,
+                loaded_config: crate::config::LoadedConfig::from_settings(settings),
                 ..SessionConfig::default()
             })
         };

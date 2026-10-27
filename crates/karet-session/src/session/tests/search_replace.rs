@@ -49,7 +49,7 @@
         settings.search.exclude = vec!["vendor/**".to_owned()];
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![one.path().to_path_buf(), two.path().to_path_buf()],
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
 

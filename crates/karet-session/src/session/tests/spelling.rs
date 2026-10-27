@@ -62,7 +62,7 @@
         settings.spellcheck.language = "fr_FR".to_owned();
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
 
@@ -85,7 +85,7 @@
         std::fs::write(&path, "hello world\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings: spellcheck_settings(),
+            loaded_config: crate::config::LoadedConfig::from_settings(spellcheck_settings()),
             ..SessionConfig::default()
         });
         session.handle(
@@ -134,7 +134,7 @@
         std::fs::write(&path, "hello world\nthe wrld ends\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings: spellcheck_settings(),
+            loaded_config: crate::config::LoadedConfig::from_settings(spellcheck_settings()),
             ..SessionConfig::default()
         });
         session.handle(
@@ -196,7 +196,7 @@
         std::fs::write(&path, "the wrld ends here\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings: spellcheck_settings(),
+            loaded_config: crate::config::LoadedConfig::from_settings(spellcheck_settings()),
             ..SessionConfig::default()
         });
         session.handle(
@@ -316,12 +316,26 @@
         assert!(
             session
                 .config
-                .settings
+                .settings()
                 .spellcheck
                 .words
                 .iter()
                 .any(|word| word == "wrod"),
             "the word is live for the next check"
+        );
+        // The report the client inspects is the same settings, not a copy the
+        // write left behind.
+        session.handle(RequestId(3), WorkspaceCommand::LoadedConfig);
+        let report = std::iter::from_fn(|| events.try_recv())
+            .find_map(|(_, event)| match event {
+                Event::LoadedConfig { report } => Some(report),
+                _ => None,
+            })
+            .ok_or("no LoadedConfig answer")?;
+        assert!(
+            report.settings.spellcheck.words.iter().any(|word| word == "wrod"),
+            "LoadedConfig reports the adopted word: {:?}",
+            report.settings.spellcheck.words
         );
         Ok(())
     }

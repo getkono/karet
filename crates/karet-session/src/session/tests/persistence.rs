@@ -21,7 +21,7 @@
         settings.files.backup_interval = 0; // any dirty doc is immediately due
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: Vec::new(),
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             swap_dir: None,
             ..SessionConfig::default()
         });
@@ -90,9 +90,8 @@
     fn loaded_config_command_returns_in_memory_report() -> TestResult {
         let mut settings = crate::config::Settings::default();
         settings.editor.tab_size = 2;
-        let report = crate::config::LoadedConfig::from_settings(settings.clone());
+        let report = crate::config::LoadedConfig::from_settings(settings);
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
             loaded_config: report,
             ..SessionConfig::default()
         });
@@ -117,7 +116,7 @@
 
         session.apply_config_report(report);
 
-        assert_eq!(session.config.settings.editor.tab_size, 7);
+        assert_eq!(session.config.settings().editor.tab_size, 7);
         let received = events.try_recv();
         assert!(
             matches!(
@@ -137,7 +136,6 @@
         // A session pointed at that swap dir scans it on construction and announces.
         let (_session, mut events, _snaps) = Session::new(SessionConfig {
             roots: Vec::new(),
-            settings: crate::config::Settings::default(),
             swap_dir: Some(swapdir.path().to_path_buf()),
             ..SessionConfig::default()
         });
