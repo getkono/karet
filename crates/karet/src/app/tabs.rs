@@ -686,6 +686,26 @@ impl App {
         }
     }
 
+    /// Set the active document tab's current page (clamped to the page range). A
+    /// no-op without the `pdf` feature, where no document tab exists.
+    pub(super) fn set_document_page(&mut self, page: usize) {
+        #[cfg(feature = "pdf")]
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
+        #[cfg(not(feature = "pdf"))]
+        let _ = page;
+    }
+
     /// Fill the reserved DOCX preview owned by the answering conversion request
     /// with its markdown, or degrade it to a placeholder on failure. A closed
     /// tab drops the answer.

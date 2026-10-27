@@ -1,7 +1,6 @@
 pub(super) mod column;
 mod folding;
 mod gutter;
-mod render;
 
 use std::time::Instant;
 

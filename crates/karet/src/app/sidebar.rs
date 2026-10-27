@@ -205,26 +205,6 @@ impl App {
         self.outline_activate();
     }
 
-    /// Set the active document tab's current page (clamped to the page range). A
-    /// no-op without the `pdf` feature, where no document tab exists.
-    pub(super) fn set_document_page(&mut self, page: usize) {
-        #[cfg(feature = "pdf")]
-        if let Some(Tab {
-            kind:
-                TabKind::Document {
-                    page: current,
-                    page_count,
-                    ..
-                },
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            *current = page.min(page_count.saturating_sub(1));
-        }
-        #[cfg(not(feature = "pdf"))]
-        let _ = page;
-    }
-
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
     /// whichever of its three regions the pointer is over, while the explorer and
     /// search move their selection one step per notch.
