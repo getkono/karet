@@ -59,7 +59,7 @@ top; the find bar is a one-line strip above the main area.
 
 ### File-type dispatch (the code window)
 
-Opening a file classifies it (`karet-fileview::viewer::classify`) and picks a renderer —
+Opening a file classifies it (`karet_filetype::classify`) and picks a renderer —
 everything unsupported fails gracefully. Text and code open in the editable
 `karet-editor` with tree-sitter highlights; the other kinds and their renderers are
 listed in [docs/file-formats.md](../../docs/file-formats.md#non-text-renderers).
