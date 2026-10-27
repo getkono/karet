@@ -6,27 +6,9 @@
 
 use std::path::PathBuf;
 
+use crate::coord::BytePoint;
 use crate::coord::LineCol;
 use crate::coord::Range;
-
-/// A `(row, byte-column)` grid point, as tree-sitter counts them: the column is a
-/// **byte** offset from the line start, not a `char` column like [`LineCol`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BytePoint {
-    /// Zero-based row (line) index.
-    pub row: usize,
-    /// Byte offset from the start of the row.
-    pub col: usize,
-}
-
-impl BytePoint {
-    /// Create a point at `row` / byte-`col`.
-    #[must_use]
-    pub const fn new(row: usize, col: usize) -> Self {
-        Self { row, col }
-    }
-}
 
 /// One edit as applied to a text buffer, in tree-sitter `InputEdit` shape.
 ///

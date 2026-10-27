@@ -17,7 +17,8 @@
 //!
 //! # Vocabulary map
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
-//! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
+//! - Text coordinates: [`BytePos`], [`BytePoint`], [`LineCol`], [`Span`], [`Range`],
+//!   [`LineIndex`].
 //! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
 //!   [`CompletionItem`], [`Hover`], [`DocumentHighlight`], [`InlayHint`], [`VirtualText`],
 //!   [`SignatureHelp`], [`CodeAction`], ….
@@ -58,6 +59,7 @@ pub use capability::SemanticTokensLegend;
 pub use capability::ServerFeature;
 pub use capability::SignatureHelpOptions;
 pub use capability::TextSyncKind;
+pub use coord::BytePoint;
 pub use coord::BytePos;
 pub use coord::LineCol;
 pub use coord::LineIndex;
@@ -65,7 +67,6 @@ pub use coord::Range;
 pub use coord::Span;
 pub use edit::AppliedEdit;
 pub use edit::ApplyWorkspaceEditResult;
-pub use edit::BytePoint;
 pub use edit::Change;
 pub use edit::CursorState;
 pub use edit::DeleteOptions;
