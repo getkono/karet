@@ -279,6 +279,8 @@ impl App {
             self.forget_on_type_triggers();
         }
         self.settings = settings;
+        #[cfg(feature = "terminal")]
+        self.forget_removed_tasks();
         if inlay_changed {
             self.inlay_ui.flipped = false;
         }

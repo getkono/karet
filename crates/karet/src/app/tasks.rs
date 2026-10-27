@@ -6,7 +6,12 @@
 //! environment. While it runs, and once more when it exits, its problem
 //! matchers read the terminal's whole output (history included) and what they
 //! find replaces that task's entries in the Problems panel; the entries stay
-//! until the task runs again.
+//! until the task runs again, or until settings no longer define it.
+//!
+//! A task's terminal is scanned whether or not any pane shows it: each scan
+//! acknowledges the terminal's output itself, so a run in a background tab
+//! keeps announcing new output, and output the throttle holds back is scanned
+//! at a scheduled wake rather than waiting for more of it.
 //!
 //! Running a task whose last run is still going shows that run instead of
 //! starting a second; a finished run's tab is closed and replaced, so repeated
@@ -77,9 +82,9 @@ mod running {
     use crate::terminal::TerminalId;
 
     /// The least time between two scans of a running task's output. Output
-    /// arriving sooner waits for a later batch or for the exit, which always
-    /// scans, so the last word is never lost to the throttle.
-    const LIVE_SCAN_INTERVAL: Duration = Duration::from_millis(500);
+    /// arriving sooner schedules a scan for when the interval is up
+    /// ([`App::task_next_wake`]), so the last word is never lost to the throttle.
+    pub(super) const LIVE_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 
     /// One task run, keyed by the terminal it runs in.
     #[derive(Debug)]
@@ -89,6 +94,8 @@ mod running {
         matchers: Vec<matcher::Matcher>,
         exited: bool,
         scanned: Option<Instant>,
+        /// When output the throttle held back is to be scanned.
+        due: Option<Instant>,
     }
 
     /// The task runs whose terminals may still be open.
@@ -144,29 +151,32 @@ mod running {
                 .iter()
                 .find(|(_, run)| run.label == label)
                 .map(|(id, run)| (*id, run.exited));
-            if let Some((id, exited)) = previous
+            if let Some((id, false)) = previous
                 && let Some((pane, index)) = self.terminal_tab(id)
             {
                 self.focus_pane_switch(pane);
-                if !exited {
-                    self.select_tab(index);
-                    self.notify(
-                        Report::Refusal,
-                        NotificationKind::System,
-                        format!(
-                            "task `{label}` is already running (close its terminal to stop it)"
-                        ),
-                    );
-                    return Ok(());
-                }
-                self.close_tab_at(index);
-                self.tasks.runs.remove(&id);
+                self.select_tab(index);
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    format!("task `{label}` is already running (close its terminal to stop it)"),
+                );
+                return Ok(());
             }
+            // Started before the finished run's tab goes, so a run that cannot
+            // start leaves that output, and its problems, where they were.
             let (columns, rows) = self.terminal_grid_size();
             let mut pane =
                 self.terminals
                     .spawn_command(shell_command(task, &cwd), columns, rows)?;
             pane.set_title(Some(&format!("Task: {label}")));
+            if let Some((id, _)) = previous
+                && let Some((pane, index)) = self.terminal_tab(id)
+            {
+                self.focus_pane_switch(pane);
+                self.close_tab_at(index);
+                self.tasks.runs.remove(&id);
+            }
             self.set_task_problems(label, Vec::new());
             self.tasks.runs.insert(
                 pane.id(),
@@ -176,6 +186,7 @@ mod running {
                     matchers,
                     exited: false,
                     scanned: None,
+                    due: None,
                 },
             );
             self.push_tab(Tab::terminal(pane));
@@ -183,17 +194,61 @@ mod running {
         }
 
         /// New output from terminal `id`: rescan it when it is a task's, at most
-        /// once per [`LIVE_SCAN_INTERVAL`] while it runs. After the exit every
+        /// once per [`LIVE_SCAN_INTERVAL`] while it runs; output arriving sooner
+        /// schedules the scan for when the interval is up. After the exit every
         /// batch rescans, since it is output the exit's own scan may have missed.
         pub(in crate::app) fn task_output(&mut self, id: TerminalId, now: Instant) {
-            let due = self.tasks.runs.get(&id).is_some_and(|run| {
-                run.exited
-                    || run
-                        .scanned
-                        .is_none_or(|scanned| now.duration_since(scanned) >= LIVE_SCAN_INTERVAL)
-            });
-            if due {
+            let Some(run) = self.tasks.runs.get_mut(&id) else {
+                return;
+            };
+            let next = run.scanned.map(|scanned| scanned + LIVE_SCAN_INTERVAL);
+            match next {
+                Some(next) if !run.exited && now < next => {
+                    run.due.get_or_insert(next);
+                },
+                _ => {
+                    self.scan_task(id, now);
+                },
+            }
+        }
+
+        /// How long until the soonest scan the throttle scheduled, if any.
+        pub(in crate::app) fn task_next_wake(&self, now: Instant) -> Option<Duration> {
+            self.tasks
+                .runs
+                .values()
+                .filter_map(|run| run.due)
+                .min()
+                .map(|due| due.saturating_duration_since(now))
+        }
+
+        /// Run every scan the throttle scheduled for `now` or earlier.
+        pub(in crate::app) fn fire_task_scans(&mut self, now: Instant) {
+            let due: Vec<TerminalId> = self
+                .tasks
+                .runs
+                .iter()
+                .filter(|(_, run)| run.due.is_some_and(|due| due <= now))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in due {
                 self.scan_task(id, now);
+            }
+        }
+
+        /// Settings were applied: forget the runs and problems of tasks they no
+        /// longer define. A forgotten run's terminal stays open as a plain one.
+        pub(in crate::app) fn forget_removed_tasks(&mut self) {
+            let tasks = &self.settings.tasks;
+            self.tasks
+                .runs
+                .retain(|_, run| tasks.contains_key(&run.label));
+            let before = self.problems.task_problems.len();
+            self.problems
+                .task_problems
+                .retain(|label, _| tasks.contains_key(label));
+            if self.problems.task_problems.len() != before {
+                self.refresh_problems();
             }
         }
 
@@ -229,9 +284,16 @@ mod running {
 
         /// Match task terminal `id`'s whole output and publish what was found.
         /// Returns `false`, forgetting the run, once its terminal is closed.
+        ///
+        /// The scan acknowledges the terminal's output, as painting it would, so
+        /// the terminal announces its next batch even when no pane shows it.
         fn scan_task(&mut self, id: TerminalId, now: Instant) -> bool {
             let lines = self.all_tabs().find_map(|tab| match &tab.kind {
-                TabKind::Terminal(pane) if pane.id() == id => Some(transcript(&pane.term())),
+                TabKind::Terminal(pane) if pane.id() == id => {
+                    // Before reading, so output parsed after the read is announced.
+                    pane.acknowledge_output();
+                    Some(transcript(&pane.term()))
+                },
                 _ => None,
             });
             let Some(lines) = lines else {
@@ -242,6 +304,7 @@ mod running {
                 return false;
             };
             run.scanned = Some(now);
+            run.due = None;
             let context = matcher::ScanContext {
                 cwd: &run.cwd,
                 root: &self.root,

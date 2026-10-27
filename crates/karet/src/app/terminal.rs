@@ -361,9 +361,11 @@ impl App {
     /// Apply one report from a terminal's background threads, wherever its tab
     /// is, at `now`. Returns whether the screen needs repainting now.
     ///
-    /// Output is acknowledged by painting the terminal (`ui::terminal`), never
+    /// Output is acknowledged by painting the terminal (`ui::terminal`), not
     /// here: a terminal no pane shows stays unacknowledged, so it announces no
-    /// more output, and wakes nothing, until it is shown again.
+    /// more output, and wakes nothing, until it is shown again. A task's
+    /// terminal is the exception: its scans acknowledge it (`app::tasks`), so
+    /// its problems stay live in a background tab.
     pub(super) fn on_terminal_event(&mut self, event: TerminalEvent, now: Instant) -> bool {
         if event.kind == TerminalEventKind::Output {
             self.task_output(event.id, now);

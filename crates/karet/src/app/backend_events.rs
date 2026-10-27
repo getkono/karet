@@ -60,9 +60,15 @@ impl App {
         let terminal = self.terminal_frame.next_wake(now);
         #[cfg(not(feature = "terminal"))]
         let terminal = None;
+        // A task's output the live-scan throttle held back.
+        #[cfg(feature = "terminal")]
+        let task_scan = self.task_next_wake(now);
+        #[cfg(not(feature = "terminal"))]
+        let task_scan = None;
         [
             notif,
             terminal,
+            task_scan,
             spinner,
             auto_save,
             caret,

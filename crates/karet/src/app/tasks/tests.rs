@@ -75,13 +75,25 @@ fn task(command: &str) -> Task {
 /// Apply terminal events the way the event loop and the painter do (output is
 /// acknowledged, as painting it would) until `done` holds or ten seconds pass.
 fn pump(app: &mut App, events: &mut TerminalEvents, done: impl Fn(&App) -> bool) -> bool {
+    pump_shown(app, events, true, done)
+}
+
+/// [`pump`], with the terminals painted (their output acknowledged) only when
+/// `shown`, and the throttle's scheduled scans fired as the event loop does.
+fn pump_shown(
+    app: &mut App,
+    events: &mut TerminalEvents,
+    shown: bool,
+    done: impl Fn(&App) -> bool,
+) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
+        app.fire_task_scans(Instant::now());
         while let Ok(event) = events.try_recv() {
             let id = event.id;
             let output = event.kind == TerminalEventKind::Output;
             app.on_terminal_event(event, Instant::now());
-            if output {
+            if output && shown {
                 for tab in app.all_tabs() {
                     if let TabKind::Terminal(pane) = &tab.kind
                         && pane.id() == id
@@ -281,5 +293,123 @@ fn closing_a_task_terminal_keeps_its_problems_until_the_next_run() -> TestResult
     // The hung-up shell's exit arrives for a terminal no tab shows.
     assert!(pump(&mut app, &mut events, |app| app.tasks.runs.is_empty()));
     assert_eq!(task_messages(&app), ["kept"]);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_running_task_in_a_background_tab_is_scanned_to_its_last_output() -> TestResult {
+    // The second line comes inside the throttle's interval and nothing follows
+    // it: only a scheduled scan finds it, and only if the hidden terminal was
+    // acknowledged so it could announce it at all.
+    let (_dir, mut app, mut events) = task_app(&[(
+        "build",
+        task(
+            "touch m.c; echo 'm.c:1:1: error: one'; sleep 0.1; echo 'm.c:2:1: error: two'; sleep \
+             30",
+        ),
+    )])?;
+    app.run_task("build");
+    app.select_tab(0);
+    assert!(app.active_terminal().is_none(), "the task's tab is hidden");
+    let found = pump_shown(&mut app, &mut events, false, |app| {
+        task_messages(app).len() == 2
+    });
+    assert!(found, "{:?}", task_messages(&app));
+    assert_eq!(app.task_next_wake(Instant::now()), None, "nothing left due");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn throttled_output_schedules_a_scan_for_when_the_interval_is_up() -> TestResult {
+    let (_dir, mut app, _events) = task_app(&[("watch", task("sleep 30"))])?;
+    app.run_task("watch");
+    let id = *app.tasks.runs.keys().next().ok_or("no run")?;
+    let start = Instant::now();
+    app.task_output(id, start);
+    assert_eq!(
+        app.task_next_wake(start),
+        None,
+        "the first batch scans at once"
+    );
+    app.task_output(id, start + Duration::from_millis(100));
+    assert_eq!(
+        app.task_next_wake(start),
+        Some(running::LIVE_SCAN_INTERVAL),
+        "a batch too soon after waits for the interval, not for more output"
+    );
+    app.fire_task_scans(start + Duration::from_millis(400));
+    assert!(app.task_next_wake(start).is_some(), "not due yet");
+    app.fire_task_scans(start + running::LIVE_SCAN_INTERVAL);
+    assert_eq!(app.task_next_wake(start), None);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn the_exit_scan_of_a_hidden_task_counts_its_whole_output() -> TestResult {
+    let (_dir, mut app, mut events) = task_app(&[(
+        "build",
+        task(
+            "touch m.c; i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo \"m.c:$i:1: error: e$i\"; done; exit 1",
+        ),
+    )])?;
+    app.run_task("build");
+    app.select_tab(0);
+    let exited = pump_shown(&mut app, &mut events, false, |app| {
+        last_message(app).is_some_and(|m| m.contains("exited"))
+    });
+    assert!(exited, "{:?}", last_message(&app));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("task `build` exited with code 1, 300 problems"),
+        "the exit is announced after the last output is parsed"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rerun_that_cannot_start_keeps_the_finished_run_and_its_problems() -> TestResult {
+    let (_dir, mut app, mut events) =
+        task_app(&[("build", task("touch m.c; echo 'm.c:1:1: error: old'"))])?;
+    app.run_task("build");
+    assert!(pump(&mut app, &mut events, |app| app
+        .all_tabs()
+        .any(|tab| tab.title.ends_with("(exited)"))));
+    // A NUL byte cannot reach `exec`, so the shell never starts.
+    let broken = task("echo \0");
+    app.settings.tasks.insert("build".to_owned(), broken);
+    app.run_task("build");
+    assert!(
+        last_message(&app).is_some_and(|m| m.starts_with("task `build`:")),
+        "{:?}",
+        last_message(&app)
+    );
+    assert_eq!(
+        terminal_titles(&app).len(),
+        1,
+        "the finished run's tab stays"
+    );
+    assert_eq!(task_messages(&app), ["old"]);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn settings_that_drop_a_task_drop_its_problems_and_its_run() -> TestResult {
+    let (_dir, mut app, mut events) = task_app(&[(
+        "build",
+        task("touch m.c; echo 'm.c:1:1: error: gone'; sleep 30"),
+    )])?;
+    app.run_task("build");
+    assert!(pump(&mut app, &mut events, |app| task_messages(app).len() == 1));
+    let mut config = app.loaded_config.clone();
+    config.settings.tasks.clear();
+    app.apply_loaded_config(config, false);
+    assert!(task_messages(&app).is_empty());
+    assert!(app.tasks.runs.is_empty(), "its terminal is a plain one now");
+    assert_eq!(terminal_titles(&app).len(), 1, "and stays open");
     Ok(())
 }
