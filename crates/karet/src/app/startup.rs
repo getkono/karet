@@ -399,7 +399,7 @@ impl App {
             self.open_path(path);
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);

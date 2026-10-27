@@ -18,7 +18,6 @@ use crate::app::App;
 use crate::app::notifications::Report;
 use crate::tab::Tab;
 use crate::tab::TabKind;
-use crate::workspace;
 
 impl App {
     /// Reserve a preview immediately, then compile the active editable TeX document
@@ -79,7 +78,7 @@ impl App {
             && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
         {
             if let Some(pdf) = pdf {
-                let mut tab = workspace::open_file(&pdf);
+                let mut tab = Tab::open(&pdf);
                 tab.view = view;
                 self.tabs[index] = tab;
                 self.set_active(index);

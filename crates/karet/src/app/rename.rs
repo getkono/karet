@@ -35,7 +35,6 @@ use crate::app::util::canonical;
 use crate::app::util::rebase_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
-use crate::workspace;
 
 /// The open rename prompt.
 #[derive(Clone, Debug)]
@@ -345,9 +344,9 @@ impl App {
                     && tab.path().is_some_and(|p| canonical(p) == target)
             });
             if !shown {
-                let mut tab = workspace::open_file(path);
+                let mut tab = Tab::open(path);
                 if !matches!(tab.kind, TabKind::Code { .. }) {
-                    tab = workspace::open_as_text(path);
+                    tab = Tab::open_as_text(path);
                 }
                 tab.view = self.alloc_view();
                 self.tabs.push(tab);

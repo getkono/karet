@@ -602,7 +602,7 @@ impl App {
             if !path.is_file() {
                 continue;
             }
-            let mut tab = workspace::open_file(&path);
+            let mut tab = Tab::open(&path);
             tab.view = self.alloc_view();
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;

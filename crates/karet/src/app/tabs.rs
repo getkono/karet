@@ -21,7 +21,6 @@ use crate::app::util::rebase_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::view::View;
-use crate::workspace;
 
 /// The activation history's hard ceiling. It only bounds memory in a very long
 /// session: entries this old are far past any "put me back where I was" reach, and
@@ -46,7 +45,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = workspace::open_file(path);
+        let tab = Tab::open(path);
         self.push_tab(tab);
     }
 
@@ -81,7 +80,7 @@ impl App {
             }
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -191,7 +190,7 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = workspace::open_file_ignoring_size(&path);
+        let mut tab = Tab::open_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
         self.keyboard.focus_editor();

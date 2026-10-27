@@ -6,6 +6,7 @@
 
 mod kind;
 mod language_servers;
+mod open;
 mod view_state;
 
 use std::collections::BTreeSet;
@@ -490,7 +491,7 @@ pub struct Tab {
     pub(crate) merge_conflict: Option<MergeConflictState>,
     /// Where the caret goes once a reserved code tab first fills, or `None`
     /// once it holds the document's text. A code tab opened before its content
-    /// arrives starts empty (see [`crate::workspace::open_file`]); the first
+    /// arrives starts empty (see [`Tab::open`]); the first
     /// document snapshot replaces that empty buffer with the whole file, which
     /// is a load, not an edit, so the caret is placed here rather than carried
     /// through the insertion. Edits are refused while this is set, since they
