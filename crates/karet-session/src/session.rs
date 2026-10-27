@@ -93,7 +93,6 @@ use karet_text::TextBuffer;
 use karet_text::TextError;
 use karet_treesitter::LanguageId;
 use karet_treesitter::language_id_from_path;
-use karet_treesitter::language_name_from_path;
 use karet_vcs::Repository;
 use karet_vcs::VcsError;
 use karet_watch::FsEvent;
@@ -735,11 +734,10 @@ pub(super) fn clamp_cursor(buffer: &TextBuffer, mut cursors: CursorState) -> Cur
 /// it yet. LSP routing follows the broader file-type registry; syntax parsing
 /// remains independently optional.
 pub(crate) fn language_name_for_path(path: &Path) -> Option<&'static str> {
-    language_name_from_path(path).or_else(|| {
-        let file_type = karet_filetype::file_type_for_path(path);
-        let name = file_type.name();
-        (!matches!(name, "Plain Text" | "Unknown" | "Binary")).then_some(name)
-    })
+    let file_type = karet_filetype::file_type_for_path(path);
+    let name = file_type.name();
+    (file_type.is_recognized() || !matches!(name, "Plain Text" | "Unknown" | "Binary"))
+        .then_some(name)
 }
 
 /// Resolve the stable per-language configuration/server selector for a path.

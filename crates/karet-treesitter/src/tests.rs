@@ -4,6 +4,7 @@ use super::*;
 fn language_ids_compare() {
     assert_eq!(LanguageId(1), LanguageId(1));
     assert_ne!(LanguageId(1), LanguageId(2));
+    assert_eq!(LanguageId(7).get(), 7);
 }
 
 #[test]
@@ -557,8 +558,9 @@ fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
-    assert!(language_id_from_path(p).is_some());
-    assert_eq!(language_name_from_path(p), Some("Rust"));
+    assert!(languages::RUST.is_some());
+    assert_eq!(language_id_from_path(p), languages::RUST);
+    assert_eq!(language_id_from_injection_name("rust"), languages::RUST);
 }
 
 #[cfg(all(

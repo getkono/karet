@@ -11,7 +11,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
 use karet_treesitter::LayeredTree;
 use karet_treesitter::SyntaxNode;
-use karet_treesitter::language_id_from_injection_name;
 
 /// The editor gesture that can activate an inline macro.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +41,8 @@ enum ExpansionKind {
 
 #[derive(Clone, Copy)]
 struct MacroDefinition {
-    language: &'static str,
+    /// `None` when the grammar is not compiled in, so the entry never matches.
+    language: Option<LanguageId>,
     trigger: InlineMacroTrigger,
     kind: ExpansionKind,
 }
@@ -52,17 +52,17 @@ struct MacroDefinition {
 // this catalog with per-language generated rules and explicit gap-fillers.
 const DEFINITIONS: &[MacroDefinition] = &[
     MacroDefinition {
-        language: "markdown",
+        language: karet_treesitter::languages::MARKDOWN,
         trigger: InlineMacroTrigger::Character('['),
         kind: ExpansionKind::MarkdownLink,
     },
     MacroDefinition {
-        language: "markdown",
+        language: karet_treesitter::languages::MARKDOWN,
         trigger: InlineMacroTrigger::Character('<'),
         kind: ExpansionKind::MarkdownTag,
     },
     MacroDefinition {
-        language: "rust",
+        language: karet_treesitter::languages::RUST,
         trigger: InlineMacroTrigger::Tab,
         kind: ExpansionKind::RustFunction,
     },
@@ -122,8 +122,7 @@ impl InlineMacroEngine {
         tree: impl FnOnce() -> Option<T>,
     ) -> Option<InlineMacroExpansion> {
         let definition = DEFINITIONS.iter().find(|definition| {
-            definition.trigger == trigger
-                && language_id_from_injection_name(definition.language) == Some(language)
+            definition.trigger == trigger && definition.language == Some(language)
         })?;
         match definition.kind {
             ExpansionKind::MarkdownLink | ExpansionKind::MarkdownTag => {

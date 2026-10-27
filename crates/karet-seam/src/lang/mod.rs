@@ -230,15 +230,16 @@ impl FacetContext<'_> {
 ///
 /// Object-safe, so languages are registered as trait objects and a new one is additive.
 pub trait SeamLanguage {
-    /// Which grammar this maps.
-    fn language(&self) -> LanguageId;
+    /// Which grammar this maps, or `None` when no grammar it maps is compiled into
+    /// this build — such a mapping reads no file.
+    fn language(&self) -> Option<LanguageId>;
 
     /// Every grammar this maps, [`Self::language`] first.
     ///
     /// One for most languages. A mapping serving several grammars — TypeScript and
     /// JavaScript, C and C++ — lists them all, since each reads with its own call query.
     fn language_ids(&self) -> Vec<LanguageId> {
-        vec![self.language()]
+        self.language().into_iter().collect()
     }
 
     /// Map one syntax node onto a universal kind, or `None` if it is not a node at all.
@@ -563,8 +564,8 @@ mod tests {
         // belong, so the regroup pass has nothing to do.
         struct Bare;
         impl SeamLanguage for Bare {
-            fn language(&self) -> LanguageId {
-                LanguageId(u16::MAX)
+            fn language(&self) -> Option<LanguageId> {
+                None
             }
             fn classify(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Option<Classified> {
                 None
@@ -588,6 +589,8 @@ mod tests {
         // Reached through the trait object, since that is how the extractor sees it.
         let language: &dyn SeamLanguage = &Bare;
         assert_eq!(language.subtypes().len(), 0);
+        // A mapping with no compiled grammar serves none, rather than a sentinel id.
+        assert!(language.language_ids().is_empty());
     }
 
     #[test]
@@ -602,8 +605,15 @@ mod tests {
 
     #[test]
     fn an_unmapped_language_resolves_to_nothing() {
-        // Language id 0 is never a mapped grammar; the caller degrades rather than failing.
-        assert!(for_language(LanguageId(u16::MAX)).is_none());
+        // Grammars the parse host compiles but no seam mapping reads; the caller
+        // degrades rather than failing. Each is checked only when this build has it.
+        let unmapped: Vec<LanguageId> = ["json", "toml", "markdown", "bash", "go"]
+            .into_iter()
+            .filter_map(karet_treesitter::language_id_from_injection_name)
+            .collect();
+        for language in unmapped {
+            assert!(for_language(language).is_none(), "{language:?}");
+        }
     }
 
     #[test]
@@ -611,7 +621,7 @@ mod tests {
         // `registered` and `for_language` must agree: a mapping listed in one and
         // unreachable through the other would classify nothing while looking present.
         for mapping in registered() {
-            let found = for_language(mapping.language());
+            let found = mapping.language().and_then(for_language);
             assert!(
                 found.is_some(),
                 "a registered mapping was not reachable by its language id"

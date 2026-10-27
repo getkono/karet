@@ -6,7 +6,7 @@ use karet_core::Span;
 use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_treesitter::LanguageId;
-use karet_treesitter::language_id_from_injection_name;
+use karet_treesitter::languages;
 
 use super::Candidate;
 use super::finish;
@@ -46,12 +46,13 @@ struct Parsed {
 }
 
 pub(super) fn analyze(lang: LanguageId, text: &str) -> Option<Vec<Symbol>> {
-    if is(lang, "lockfile") {
+    let lang = Some(lang);
+    if lang == languages::LOCKFILE {
         return Some(analyze_lockfile(text));
     }
-    let syntax = if is(lang, "json5") || is(lang, "cbor") {
+    let syntax = if lang == languages::JSON5 || lang == languages::CBOR {
         Syntax::Json
-    } else if is(lang, "edn") {
+    } else if lang == languages::EDN {
         Syntax::Edn
     } else {
         return None;
@@ -101,10 +102,6 @@ fn analyze_lockfile(text: &str) -> Vec<Symbol> {
         );
     }
     finish(candidates)
-}
-
-fn is(lang: LanguageId, name: &str) -> bool {
-    language_id_from_injection_name(name) == Some(lang)
 }
 
 fn lex(text: &str, syntax: Syntax) -> Vec<Token> {

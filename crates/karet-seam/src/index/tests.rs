@@ -227,31 +227,38 @@ fn a_path_the_index_never_held_has_no_handle() {
 
 #[test]
 fn a_files_owner_and_grammar_round_trip() {
+    // A grammar id exists only for a compiled grammar.
+    let Some(rust) = crate::lang::rust::language_id() else {
+        return;
+    };
     let mut index = SeamIndex::new();
     let owner = add(&mut index, "alpha", vec![]);
     let file = index.intern_file(Path::new("/alpha/src/lib.rs"));
     assert_eq!(index.file_attribution(file), None);
 
-    index.attribute_file(file, owner, LanguageId(7));
-    assert_eq!(index.file_attribution(file), Some((owner, LanguageId(7))));
+    index.attribute_file(file, owner, rust);
+    assert_eq!(index.file_attribution(file), Some((owner, rust)));
 }
 
 #[test]
 fn attribution_survives_removing_the_files_own_nodes() {
     // `remove_nodes_in_file` never removes the owner itself, so the record it was
     // built under stays valid across the re-index that clears its subtree.
+    let Some(rust) = crate::lang::rust::language_id() else {
+        return;
+    };
     let mut index = SeamIndex::new();
     let owner = add(&mut index, "alpha", vec![]);
     let child = add(&mut index, "alpha::inner", vec![]);
     let file = index.intern_file(Path::new("/alpha/src/inner.rs"));
-    index.attribute_file(file, owner, LanguageId(3));
+    index.attribute_file(file, owner, rust);
     if let Some(node) = index.node_mut(child) {
         node.location.file = file;
     }
 
     index.remove_nodes_in_file(file, owner);
     assert_eq!(index.node(child), None);
-    assert_eq!(index.file_attribution(file), Some((owner, LanguageId(3))));
+    assert_eq!(index.file_attribution(file), Some((owner, rust)));
 }
 
 #[test]

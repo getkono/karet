@@ -1,28 +1,11 @@
 //! Structured-data and configuration grammar entries.
 
 use super::GrammarInfo;
-#[cfg(any(
-    feature = "lang-json5",
-    feature = "lang-ini",
-    feature = "lang-properties",
-    feature = "lang-edn",
-    feature = "lang-cbor",
-    feature = "lang-lockfile"
-))]
-use crate::LanguageId;
-
-#[cfg(feature = "lang-json5")]
-pub(super) const JSON5: LanguageId = LanguageId(59);
-#[cfg(feature = "lang-ini")]
-pub(super) const INI: LanguageId = LanguageId(60);
-#[cfg(feature = "lang-properties")]
-pub(super) const PROPERTIES: LanguageId = LanguageId(61);
-#[cfg(feature = "lang-edn")]
-pub(super) const EDN: LanguageId = LanguageId(62);
-#[cfg(feature = "lang-cbor")]
-pub(super) const CBOR: LanguageId = LanguageId(63);
-#[cfg(feature = "lang-lockfile")]
-pub(super) const LOCKFILE: LanguageId = LanguageId(64);
+#[allow(
+    unused_imports,
+    reason = "a build with none of these grammars compiles no constant to import"
+)]
+use crate::languages::ids::*;
 
 // Pkl deliberately has no entry: no suitable published pure-Rust binding is
 // available, and issue #137 explicitly prefers deferral to a policy violation.

@@ -315,11 +315,16 @@ mod tests {
         }
     }
 
-    fn request(version: u64, text: &str, edits: Option<Vec<Edit>>) -> HighlightRequest {
+    fn request(
+        lang: LanguageId,
+        version: u64,
+        text: &str,
+        edits: Option<Vec<Edit>>,
+    ) -> HighlightRequest {
         HighlightRequest {
             doc: DocumentId(1),
             version,
-            lang: LanguageId(1),
+            lang,
             text: text.into(),
             semantic: None,
             edits,
@@ -328,9 +333,12 @@ mod tests {
 
     #[test]
     fn merge_takes_the_newer_text_and_concatenates_edits() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let merged = merge(
-            request(1, "a", Some(vec![edit(0, 0, 1)])),
-            request(2, "ab", Some(vec![edit(1, 1, 2)])),
+            request(rust, 1, "a", Some(vec![edit(0, 0, 1)])),
+            request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])),
         );
         assert_eq!(merged.version, 2);
         assert_eq!(merged.text.as_str(), "ab");
@@ -342,43 +350,54 @@ mod tests {
 
     #[test]
     fn merge_forces_a_full_parse_when_either_side_demands_one() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         // A reload (edits: None) invalidates the queued incremental edits before it.
         let merged = merge(
-            request(1, "a", Some(vec![edit(0, 0, 1)])),
-            request(2, "xyz", None),
+            request(rust, 1, "a", Some(vec![edit(0, 0, 1)])),
+            request(rust, 2, "xyz", None),
         );
         assert!(merged.edits.is_none());
 
         // ...and an incremental request cannot ride a tree that was never advanced.
         let merged = merge(
-            request(1, "a", None),
-            request(2, "ab", Some(vec![edit(1, 1, 2)])),
+            request(rust, 1, "a", None),
+            request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])),
         );
         assert!(merged.edits.is_none());
     }
 
     #[test]
     fn merge_forces_a_full_parse_when_the_language_changed() {
-        let mut older = request(1, "a", Some(vec![edit(0, 0, 1)]));
-        older.lang = LanguageId(2);
-        let merged = merge(older, request(2, "ab", Some(vec![edit(1, 1, 2)])));
+        let (Some(rust), Some(markdown)) = (
+            karet_treesitter::languages::RUST,
+            karet_treesitter::languages::MARKDOWN,
+        ) else {
+            return; // grammars not compiled in; nothing to test
+        };
+        let older = request(markdown, 1, "a", Some(vec![edit(0, 0, 1)]));
+        let merged = merge(older, request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])));
         assert!(merged.edits.is_none());
-        assert_eq!(merged.lang, LanguageId(1), "the newer language wins");
+        assert_eq!(merged.lang, rust, "the newer language wins");
     }
 
     #[test]
     fn absorb_collapses_repeat_updates_for_one_document() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let mut pending = HashMap::new();
         let mut trees = HashMap::new();
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(1, "a", Some(vec![edit(0, 0, 1)]))),
+            HighlightJob::Update(request(rust, 1, "a", Some(vec![edit(0, 0, 1)]))),
         );
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(2, "ab", Some(vec![edit(1, 1, 2)]))),
+            HighlightJob::Update(request(rust, 2, "ab", Some(vec![edit(1, 1, 2)]))),
         );
         assert_eq!(pending.len(), 1, "a burst collapses to one request");
         let request = pending.remove(&DocumentId(1));
@@ -534,15 +553,9 @@ mod tests {
         // The second edit opens a string the first edit's text precedes, so
         // applying only one of them, or both in the wrong frame, changes spans.
         let first = replace(&mut text, "fn a() {}", "// TODO: a\nfn a() {}");
-        let v1 = HighlightRequest {
-            lang: rust,
-            ..request(1, &text, Some(vec![first]))
-        };
+        let v1 = request(rust, 1, &text, Some(vec![first]));
         let second = replace(&mut text, "1;", "\"open");
-        let v2 = HighlightRequest {
-            lang: rust,
-            ..request(2, &text, Some(vec![second]))
-        };
+        let v2 = request(rust, 2, &text, Some(vec![second]));
         let merged = merge(v1, v2);
         assert_eq!(merged.text.as_str(), text, "the newer text wins");
         let edits = merged.edits.unwrap_or_default();
@@ -621,12 +634,15 @@ mod tests {
 
     #[test]
     fn absorb_drop_forgets_pending_work_and_trees() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let mut pending = HashMap::new();
         let mut trees = HashMap::new();
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(1, "a", None)),
+            HighlightJob::Update(request(rust, 1, "a", None)),
         );
         absorb(&mut pending, &mut trees, HighlightJob::Drop(DocumentId(1)));
         assert!(pending.is_empty());
