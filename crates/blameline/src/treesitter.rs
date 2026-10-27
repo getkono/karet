@@ -16,13 +16,16 @@ use karet_treesitter::language_id_from_path;
 use crate::LineRange;
 
 /// The 1-based line range of the innermost function/block enclosing `line`
-/// (0-based), if the language is supported and an enclosing function exists.
+/// (also 1-based, the numbering [`LineRange`] uses), if the language is
+/// supported and an enclosing function exists.
 ///
 /// This is a pure tree-sitter helper — no git access — so it is independently
 /// testable. Returns `None` (caller should fall back to whole-file blame) when the
-/// language has no bundled grammar/query or `line` is not inside any function.
+/// language has no bundled grammar/query, `line` is `0` or past the end of
+/// `source`, or `line` is not inside any function.
 #[must_use]
 pub fn enclosing_function_range(source: &str, file: &Path, line: u32) -> Option<LineRange> {
+    let index = line.checked_sub(1)?;
     let lang = language_id_from_path(file)?;
     let query_src = function_query(lang)?;
     let query = Query::compile(lang, query_src).ok()?;
@@ -30,7 +33,7 @@ pub fn enclosing_function_range(source: &str, file: &Path, line: u32) -> Option<
     let tree = SyntaxTree::parse(&mut pool, lang, source).ok()?;
 
     let starts = line_start_offsets(source);
-    let target = *starts.get(line as usize)?;
+    let target = *starts.get(index as usize)?;
 
     // Pick the smallest captured span that contains the target byte (innermost fn).
     let mut best: Option<(usize, usize)> = None;
@@ -112,26 +115,46 @@ mod tests {
 
     const SRC: &str =
         "fn first() {\n    let a = 1;\n}\n\nfn second() {\n    let b = 2;\n    let c = 3;\n}\n";
-    //  0-based lines: 0 `fn first`, 1 `let a`, 2 `}`, 3 blank, 4 `fn second`, 5 `let b`, 6 `let c`, 7 `}`
+    //  1-based lines: 1 `fn first`, 2 `let a`, 3 `}`, 4 blank, 5 `fn second`, 6 `let b`, 7 `let c`, 8 `}`
 
     #[test]
     fn finds_innermost_enclosing_function() {
-        // Line 5 (`let b`) is inside `second()`, which spans 1-based lines 5..=8.
+        // Line 6 (`let b`) is inside `second()`, which spans lines 5..=8.
         assert_eq!(
-            enclosing_function_range(SRC, Path::new("x.rs"), 5),
+            enclosing_function_range(SRC, Path::new("x.rs"), 6),
             Some(LineRange { start: 5, end: 8 })
         );
-        // Line 1 (`let a`) is inside `first()`, spanning 1-based lines 1..=3.
+        // Line 2 (`let a`) is inside `first()`, spanning lines 1..=3.
         assert_eq!(
-            enclosing_function_range(SRC, Path::new("x.rs"), 1),
+            enclosing_function_range(SRC, Path::new("x.rs"), 2),
             Some(LineRange { start: 1, end: 3 })
         );
     }
 
+    /// The parameter numbers lines the way the returned range does: a
+    /// function's own first and last lines narrow to that function. Falsified
+    /// by the parameter being read 0-based: line 3 would land on the blank
+    /// line and line 8 past the last function.
+    #[test]
+    fn a_function_s_boundary_lines_narrow_to_it() {
+        let range = |line| enclosing_function_range(SRC, Path::new("x.rs"), line);
+        assert_eq!(range(1), Some(LineRange { start: 1, end: 3 }));
+        assert_eq!(range(3), Some(LineRange { start: 1, end: 3 }));
+        assert_eq!(range(5), Some(LineRange { start: 5, end: 8 }));
+        assert_eq!(range(8), Some(LineRange { start: 5, end: 8 }));
+    }
+
     #[test]
     fn line_outside_any_function_is_none() {
-        // Line 3 (0-based) is the blank line between the two functions.
-        assert_eq!(enclosing_function_range(SRC, Path::new("x.rs"), 3), None);
+        // Line 4 is the blank line between the two functions.
+        assert_eq!(enclosing_function_range(SRC, Path::new("x.rs"), 4), None);
+    }
+
+    /// There is no line 0 in 1-based numbering: it narrows to nothing rather
+    /// than to the first line's function.
+    #[test]
+    fn line_zero_is_none() {
+        assert_eq!(enclosing_function_range(SRC, Path::new("x.rs"), 0), None);
     }
 
     #[test]
@@ -161,8 +184,8 @@ mod tests {
 mod language_tests {
     use super::*;
 
-    /// `(path, source, 0-based body line, expected 1-based function range,
-    /// 0-based line outside every function)`.
+    /// `(path, source, body line, expected function range, line outside every
+    /// function)`, all 1-based.
     type Case = (&'static str, &'static str, u32, LineRange, u32);
 
     const fn range(start: u32, end: u32) -> LineRange {
@@ -173,101 +196,101 @@ mod language_tests {
     fn cases() -> Vec<Case> {
         let mut cases: Vec<Case> = Vec::new();
         #[cfg(feature = "lang-rust")]
-        cases.push(("a.rs", "use x;\nfn f() {\n    1;\n}\n", 2, range(2, 4), 0));
+        cases.push(("a.rs", "use x;\nfn f() {\n    1;\n}\n", 3, range(2, 4), 1));
         #[cfg(feature = "lang-python")]
         cases.push((
             "a.py",
             "import x\ndef f():\n    return 1\n",
-            2,
+            3,
             range(2, 3),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-javascript")]
         cases.push((
             "a.js",
             "let x;\nfunction f() {\n  return 1;\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-javascript")]
         cases.push((
             "a.jsx",
             "let x;\nconst f = () => {\n  return <a/>;\n};\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-typescript")]
         cases.push((
             "a.ts",
             "let x: number;\nfunction f(): number {\n  return 1;\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-typescript")]
         cases.push((
             "a.tsx",
             "let x;\nconst f = function () {\n  return <a/>;\n};\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-go")]
         cases.push((
             "a.go",
             "package m\nfunc f() int {\n\treturn 1\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-c")]
         cases.push((
             "a.c",
             "int x;\nint f(void) {\n  return 1;\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-cpp")]
         cases.push((
             "a.cpp",
             "int x;\nint f() {\n  return 1;\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-java")]
         cases.push((
             "A.java",
             "class A {\n  int f() {\n    return 1;\n  }\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-ruby")]
-        cases.push(("a.rb", "x = 1\ndef f\n  1\nend\n", 2, range(2, 4), 0));
+        cases.push(("a.rb", "x = 1\ndef f\n  1\nend\n", 3, range(2, 4), 1));
         #[cfg(feature = "lang-csharp")]
         cases.push((
             "A.cs",
             "class A {\n  int F() {\n    return 1;\n  }\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-php")]
         cases.push((
             "a.php",
             "<?php\nfunction f() {\n  return 1;\n}\n",
-            2,
+            3,
             range(2, 4),
-            0,
+            1,
         ));
         #[cfg(feature = "lang-bash")]
-        cases.push(("a.sh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+        cases.push(("a.sh", "x=1\nf() {\n  echo 1\n}\n", 3, range(2, 4), 1));
         if zsh_compiled_in() {
-            cases.push(("a.zsh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+            cases.push(("a.zsh", "x=1\nf() {\n  echo 1\n}\n", 3, range(2, 4), 1));
         }
         cases
     }
@@ -311,7 +334,7 @@ mod language_tests {
     #[test]
     fn a_line_past_the_end_is_none() {
         assert_eq!(
-            enclosing_function_range("fn f() {\n}\n", Path::new("a.rs"), 9),
+            enclosing_function_range("fn f() {\n}\n", Path::new("a.rs"), 10),
             None
         );
     }

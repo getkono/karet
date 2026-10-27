@@ -292,3 +292,216 @@ fn a_failed_open_stops_the_wait_and_shows_why() {
     assert!(shown.contains("could not open notes.md: denied"), "{shown}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_split_of_a_waiting_tab_keeps_waiting_and_fills_with_its_held_view() {
+    let text = "one\ntwo\nthree\nfour\n";
+    let (mut app, _backend, dir) = reserved("fill-split", text);
+    let held = crate::tab::FillView {
+        cursors: CursorState::single(Selection::caret(LineCol::new(2, 1))),
+        scroll_line: 1,
+        scroll_col: 0,
+    };
+    app.tabs[app.active].fill_view = Some(held.clone());
+    let since = Pending::revealed();
+    app.tabs[app.active].fill_since = Some(since);
+    let source = app.tabs[app.active].view;
+
+    app.split_focused(SplitDir::Right);
+    let copy = &app.tabs[app.active];
+    assert_ne!(copy.view, source, "the split is a second view");
+    assert_eq!(copy.fill_caret, Some(LineCol::default()));
+    assert_eq!(copy.fill_since, Some(since));
+    assert!(copy.fill_view.is_some());
+    let waiting = screen(&mut app, 80, 10).join("\n");
+    assert!(waiting.contains("Loading file…"), "{waiting}");
+
+    // Typing into the copy is refused, not built against the placeholder.
+    app.focus = Focus::Editor;
+    app.dispatch(Command::InsertChar('x'));
+    assert_eq!(code_text(&app), "", "the placeholder is not edited");
+
+    app.on_snapshot(DOC, &buffer_snapshot(restored(text)));
+    let copy = &app.tabs[app.active];
+    assert_eq!(code_text(&app), text);
+    assert_eq!((copy.fill_caret, copy.fill_since), (None, None));
+    assert_eq!(
+        copy.editor.cursors(),
+        &held.cursors,
+        "the held caret comes back"
+    );
+    assert_eq!(copy.editor.scroll_line(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_split_carries_the_failed_open_it_was_made_from() {
+    let (mut app, _backend, dir) = reserved("fill-split-error", "text\n");
+    app.tabs[app.active].fill_since = None;
+    app.tabs[app.active].fill_error = Some("could not open notes.md: denied".to_string());
+
+    app.split_focused(SplitDir::Right);
+    assert_eq!(
+        app.tabs[app.active].fill_error.as_deref(),
+        Some("could not open notes.md: denied")
+    );
+    let shown = screen(&mut app, 160, 10).join("\n");
+    assert_eq!(
+        shown.matches("could not open notes.md: denied").count(),
+        2,
+        "both views show why: {shown}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The ids of every `DocumentCommand::Open` sent so far.
+fn opens(backend: &RecordingBackend) -> Vec<RequestId> {
+    backend.sent.lock().map_or_else(
+        |_| Vec::new(),
+        |sent| {
+            sent.iter()
+                .filter(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::Open { .. })))
+                .map(|(id, _)| *id)
+                .collect()
+        },
+    )
+}
+
+fn doc_of(tab: &Tab) -> Option<DocumentId> {
+    match &tab.kind {
+        TabKind::Code { doc, .. } => *doc,
+        _ => None,
+    }
+}
+
+#[test]
+fn a_split_made_before_the_open_is_answered_asks_for_its_own_document() {
+    let dir = test_dir("fill-split-unbound");
+    write_file(&dir, "notes.md", b"one\ntwo\n");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("notes.md"));
+    assert_eq!(opens(&backend).len(), 1, "the source asked for its text");
+
+    app.split_focused(SplitDir::Right);
+    let copy = app.tabs[app.active].view;
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "the copy asked for its own document");
+
+    let opened = SessionEvent::Opened {
+        doc: DOC,
+        version: 0,
+    };
+    app.on_backend_event(both.first().copied(), opened.clone());
+    app.on_backend_event(both.last().copied(), opened);
+    let copy_doc = app.all_tabs().find(|tab| tab.view == copy).and_then(doc_of);
+    assert_eq!(copy_doc, Some(DOC), "the copy is bound");
+    let code_views: Vec<_> = app
+        .all_tabs()
+        .filter(|tab| matches!(tab.kind, TabKind::Code { .. }))
+        .map(doc_of)
+        .collect();
+    assert_eq!(
+        code_views,
+        vec![Some(DOC), Some(DOC)],
+        "both views share it"
+    );
+    // The app holds one reference per document, so the second open's extra
+    // one goes straight back to the session.
+    let closes = backend.sent.lock().map_or(0, |sent| {
+        sent.iter()
+            .filter(|(_, command)| {
+                matches!(command, SessionCommand::Document(DocumentCommand::Close { doc }) if *doc == DOC)
+            })
+            .count()
+    });
+    assert_eq!(closes, 1);
+
+    app.on_snapshot(DOC, &buffer_snapshot(TextBuffer::from_text("one\ntwo\n")));
+    assert_eq!(code_text(&app), "one\ntwo\n", "the copy fills");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// How many active notifications read exactly `title`.
+fn cards(app: &App, title: &str) -> usize {
+    app.notifications
+        .active()
+        .iter()
+        .filter(|note| note.title == title)
+        .count()
+}
+
+/// A split made before the open is answered sends a second open, so a file
+/// that cannot open fails twice: once per view, but as one card either way.
+#[test]
+fn a_split_made_before_a_failed_open_shows_the_failure_once() {
+    let dir = test_dir("fill-split-failed");
+    write_file(&dir, "notes.md", b"text\n");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("notes.md"));
+    app.split_focused(SplitDir::Right);
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "each view asked for its own document");
+
+    let message = "could not open notes.md: denied";
+    for open in &both {
+        let failed = SessionEvent::Notification {
+            severity: Severity::Error,
+            kind: NotificationKind::Io,
+            message: message.to_string(),
+        };
+        app.on_backend_event(Some(*open), failed);
+    }
+    assert!(app.pending_open.is_empty(), "both opens are answered");
+    let failed_views = app
+        .all_tabs()
+        .filter(|tab| tab.fill_error.as_deref() == Some(message))
+        .count();
+    assert_eq!(failed_views, 2, "both views show why");
+    assert_eq!(cards(&app, message), 1, "one card for one file");
+
+    // A failure that answers no open is not an open's, and stays its own card.
+    let unrelated = SessionEvent::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::Io,
+        message: message.to_string(),
+    };
+    app.on_backend_event(None, unrelated);
+    assert_eq!(cards(&app, message), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for a file that turns out not to be UTF-8: both views fall back to
+/// the hex view, under one card.
+#[test]
+fn a_split_made_before_a_non_utf8_open_shows_the_fallback_once() {
+    let dir = test_dir("fill-split-not-utf8");
+    // Text in the sampled head, so it opens as a code tab; the session's full
+    // decode is what answers `NotUtf8`, simulated below.
+    write_file(&dir, "blob.txt", b"text\n");
+    let path = dir.join("blob.txt");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&path);
+    app.split_focused(SplitDir::Right);
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "each view asked for its own document");
+
+    for open in &both {
+        let not_utf8 = SessionEvent::NotUtf8 { path: path.clone() };
+        app.on_backend_event(Some(*open), not_utf8);
+    }
+    assert!(app.pending_open.is_empty(), "both opens are answered");
+    let hex_views = app
+        .all_tabs()
+        .filter(|tab| matches!(tab.kind, TabKind::Hex { .. }))
+        .count();
+    assert_eq!(hex_views, 2, "both views fall back to hex");
+    let title = format!("opened {} read-only: not valid UTF-8", path.display());
+    assert_eq!(cards(&app, &title), 1, "one card for one file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
