@@ -637,13 +637,28 @@ fn free_port() -> std::io::Result<u16> {
 
 /// Connect to the adapter's socket, retrying while it boots, for at most
 /// `timeout` (a parameter so tests can exercise the deadline quickly).
+///
+/// A connection to itself is dropped and retried like a refusal: while the
+/// adapter has not bound its port yet, a loopback connect can pick that very
+/// port as its source port, and the TCP simultaneous open then "succeeds"
+/// without any adapter on the other end.
 async fn connect_with_retries(
     port: u16,
     timeout: Duration,
 ) -> Result<tokio::net::TcpStream, DapError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        let attempt = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(stream) if is_self_connect(&stream) => {
+                discard_self_connect(stream);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "connected to itself (nothing listening yet)",
+                ))
+            },
+            other => other,
+        };
+        match attempt {
             Ok(stream) => return Ok(stream),
             Err(e) if tokio::time::Instant::now() >= deadline => {
                 return Err(DapError::Launch(format!(
@@ -653,6 +668,26 @@ async fn connect_with_retries(
             Err(_) => tokio::time::sleep(TCP_RETRY_DELAY).await,
         }
     }
+}
+
+/// Whether `stream` is a TCP self-connection: its local and peer addresses are
+/// the same socket, so no other process is on the far end.
+fn is_self_connect(stream: &tokio::net::TcpStream) -> bool {
+    matches!(
+        (stream.local_addr(), stream.peer_addr()),
+        (Ok(local), Ok(peer)) if local == peer
+    )
+}
+
+/// Drop a self-connected `stream` with an abortive close (zero linger, so an
+/// RST rather than a FIN). A normal close would leave the adapter's port in
+/// `TIME_WAIT` for about a minute, and the adapter could then never bind it
+/// before the connect deadline.
+fn discard_self_connect(stream: tokio::net::TcpStream) {
+    // Best effort: if the option cannot be set, the normal close is all
+    // that is left, and the deadline still bounds the launch.
+    let _ = stream.set_zero_linger();
+    drop(stream);
 }
 
 #[cfg(test)]
