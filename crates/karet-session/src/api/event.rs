@@ -468,7 +468,7 @@ pub enum Event {
         /// columns; empty when the server found none. `None` when no server
         /// answered, or the document changed before the answer arrived, so
         /// the server's ranges describe text that is no longer there.
-        highlights: Option<Vec<DocumentHighlight>>,
+        highlights: Option<Vec<karet_core::DocumentHighlight>>,
     },
     /// Linked ranges answering a [`LspCommand::LinkedEditingRanges`].
     LinkedEditingRanges {

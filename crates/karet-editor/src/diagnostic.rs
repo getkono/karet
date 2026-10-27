@@ -14,6 +14,7 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Severity;
 use karet_core::VirtualText;
+use karet_core::severity_role;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -32,9 +33,6 @@ pub enum InlineDiagnostics {
     /// Every line a diagnostic starts on.
     All,
 }
-
-/// The theme role a diagnostic of `severity` is colored in.
-pub use karet_core::severity_role;
 
 /// The one-cell gutter sign for a diagnostic of `severity`.
 #[must_use]

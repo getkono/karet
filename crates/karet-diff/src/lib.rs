@@ -32,8 +32,6 @@ pub use engine::diff_text;
 pub use intraline::HighlightedPair;
 pub use intraline::Segment;
 pub use intraline::compute_highlights;
-/// Re-exported from `karet-core`, its home since it stopped being diff-specific.
-pub use karet_core::TokenSpan;
 pub use layout::RowContent;
 pub use layout::side_by_side_hunk_at_row;
 pub use layout::side_by_side_hunk_row;

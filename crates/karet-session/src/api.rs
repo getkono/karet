@@ -72,13 +72,6 @@ pub use command::*;
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
-/// One occurrence of the symbol a [`LspCommand::DocumentHighlights`] asked
-/// about, as [`Event::DocumentHighlights`] carries it: its range in buffer
-/// columns. Re-exported from [`karet_core`], which defines it once.
-pub use karet_core::DocumentHighlight;
-/// How a [`DocumentHighlight`] uses its symbol; re-exported from
-/// [`karet_core`].
-pub use karet_core::HighlightKind;
 pub use language_servers::*;
 pub use navigation::*;
 pub use refactor::*;

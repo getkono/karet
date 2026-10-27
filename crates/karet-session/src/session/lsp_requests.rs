@@ -5,6 +5,7 @@
 //! per-file code line ceiling. Everything here has one shape: resolve the
 //! document, hand the request to the LSP manager, emit the answer.
 
+use karet_core::DocumentHighlight;
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::InlayHint;
@@ -15,7 +16,6 @@ use super::columns::utf16_caret;
 use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
-use crate::api::DocumentHighlight;
 use crate::api::FormatRequest;
 use crate::api::FormatScope;
 use crate::api::LocationKind;

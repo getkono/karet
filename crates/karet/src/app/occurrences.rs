@@ -20,6 +20,8 @@ use std::time::Instant;
 use karet_core::BytePos;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::ThemeRole;
@@ -30,8 +32,6 @@ use karet_session::LSP_CHANGE_DEBOUNCE;
 use karet_session::LspCommand;
 use karet_session::RequestId;
 use karet_session::ViewId;
-use karet_session::api::DocumentHighlight;
-use karet_session::api::HighlightKind;
 use karet_text::TextBuffer;
 
 use crate::app::App;
