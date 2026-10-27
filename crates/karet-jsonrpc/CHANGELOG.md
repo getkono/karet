@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-jsonrpc-v0.7.1...karet-jsonrpc-v0.8.0) - 2026-10-27
+
+### Fixed
+
+- *(jsonrpc)* name the message stream in CodecError::Io's message ([#703](https://github.com/getkono/karet/pull/703))
+
+### Other
+
+- *(jsonrpc)* share the correlation actor with karet-dap ([#697](https://github.com/getkono/karet/pull/697))
+- correct drifted prose in protocol, VCS, seam and widget crates ([#690](https://github.com/getkono/karet/pull/690))
+- pin karet-jsonrpc's queue/encode/timeout contracts and karet-lsp's gating ([#645](https://github.com/getkono/karet/pull/645))
+
 ## [0.7.0](https://github.com/getkono/karet/compare/karet-jsonrpc-v0.6.1...karet-jsonrpc-v0.7.0) - 2026-09-24
 
 ### Added

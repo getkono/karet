@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.7.1...karet-treesitter-v0.8.0) - 2026-10-27
+
+### Added
+
+- *(seam)* C, C++ and Java mappings with unread-lens state ([#620](https://github.com/getkono/karet/pull/620))
+- fold commands and per-language fold queries ([#505](https://github.com/getkono/karet/pull/505))
+- auto-indent from tree-sitter indent queries ([#469](https://github.com/getkono/karet/pull/469))
+- expand and shrink selection along the syntax tree ([#450](https://github.com/getkono/karet/pull/450))
+- toggle line and block comments ([#398](https://github.com/getkono/karet/pull/398))
+
+### Fixed
+
+- *(treesitter)* reparse without a prior edit as a cold parse ([#751](https://github.com/getkono/karet/pull/751))
+
+### Other
+
+- *(syntax,text,treesitter)* [**breaking**] name shared vocabulary only from karet-core ([#806](https://github.com/getkono/karet/pull/806))
+- *(treesitter)* [**breaking**] make LanguageId unforgeable and name grammars by typed constants ([#796](https://github.com/getkono/karet/pull/796))
+- *(core)* [**breaking**] trim karet-core to shared vocabulary and make its constructors honest ([#785](https://github.com/getkono/karet/pull/785))
+- remove duplicated helpers and dead code in the leaf engine crates ([#717](https://github.com/getkono/karet/pull/717))
+- *(core)* move shift_span and merge_spans into karet-core ([#702](https://github.com/getkono/karet/pull/702))
+- correct drifted prose and doc comments in the leaf engine crates ([#692](https://github.com/getkono/karet/pull/692))
+- run tests under the feature subsets CI only checked ([#674](https://github.com/getkono/karet/pull/674))
+- tighten karet-treesitter and karet-syntax assertions ([#653](https://github.com/getkono/karet/pull/653))
+- incremental highlighting via changed_ranges ([#490](https://github.com/getkono/karet/pull/490))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-treesitter-v0.5.0...karet-treesitter-v0.6.0) - 2026-08-29
 
 ### Added

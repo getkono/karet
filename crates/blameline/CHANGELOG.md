@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/getkono/karet/compare/blameline-v2.0.4...blameline-v3.0.0) - 2026-10-27
+
+### Fixed
+
+- *(blameline)* do not panic on a non-ASCII commit hash in short_hash ([#684](https://github.com/getkono/karet/pull/684))
+
+### Other
+
+- *(treesitter)* [**breaking**] make LanguageId unforgeable and name grammars by typed constants ([#796](https://github.com/getkono/karet/pull/796))
+- *(blameline,session)* [**breaking**] carry author time as data and number lines from 1 ([#783](https://github.com/getkono/karet/pull/783))
+- correct drifted prose and doc comments in the leaf engine crates ([#692](https://github.com/getkono/karet/pull/692))
+- run tests under the feature subsets CI only checked ([#674](https://github.com/getkono/karet/pull/674))
+- tighten karet-theme, karet-markdown and blameline tests ([#647](https://github.com/getkono/karet/pull/647))
+
 ## [2.0.4](https://github.com/getkono/karet/compare/blameline-v2.0.3...blameline-v2.0.4) - 2026-10-01
 
 ### Other
