@@ -170,6 +170,12 @@ pub enum StandardToken {
 }
 
 impl StandardToken {
+    /// How many standard classes there are: every [`id`](Self::id) is below
+    /// this, so a table indexed by id can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a class moves it.
+    pub const COUNT: usize = Self::CommentMark as usize + 1;
+
     /// The stable [`TokenId`] for this class (its discriminant).
     #[must_use]
     pub const fn id(self) -> TokenId {
@@ -375,6 +381,14 @@ pub enum ThemeRole {
     WordHighlightStrong,
 }
 
+impl ThemeRole {
+    /// How many roles there are: every `role as usize` is below this, so a
+    /// table indexed by role can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a role moves it.
+    pub const COUNT: usize = Self::WordHighlightStrong as usize + 1;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +462,21 @@ mod tests {
             None
         );
         assert_eq!(StandardToken::from_capture_name("Keyword"), None);
+        // `COUNT` is exactly one past the last id, so a table sized by it
+        // holds every class and nothing more.
+        assert_eq!(StandardToken::COUNT, ALL.len());
+    }
+
+    #[test]
+    fn theme_role_count_is_one_past_the_last_declared_role() {
+        // A table sized by `COUNT` and indexed by `role as usize` must hold the
+        // last role, and no slot past it.
+        assert_eq!(
+            ThemeRole::WordHighlightStrong as usize,
+            ThemeRole::COUNT - 1
+        );
+        assert_eq!(ThemeRole::Background as usize, 0);
+        assert_eq!(ThemeRole::COUNT, 41);
     }
 
     #[test]
