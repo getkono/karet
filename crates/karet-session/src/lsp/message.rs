@@ -780,7 +780,9 @@ pub(crate) enum LspUpdate {
         /// The regions, normalized.
         folds: karet_core::FoldRegions,
     },
-    /// The server binary could not be started (reported once per language).
+    /// The server binary could not be started (reported once per outage of the
+    /// slot: the first failed launch reports it, and only a later successful
+    /// connection re-arms the report).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.
         token: SlotToken,
@@ -806,7 +808,8 @@ pub(crate) enum LspUpdate {
         /// The human-readable diagnosis (what is missing and how to fix it).
         message: String,
     },
-    /// A running server's connection closed (reported once per language).
+    /// A running server's connection closed (reported once per connection of
+    /// the slot: the task drops the dead client after reporting it).
     ServerDied {
         /// The incarnation of the slot that died.
         token: SlotToken,
