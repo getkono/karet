@@ -10,7 +10,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredTree;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
-use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::outline_query;
 
 mod names;
@@ -66,10 +65,11 @@ impl OutlineExtractor {
             return symbols;
         }
         let root_candidates = self.candidates(tree.root(), text);
-        if language_id_from_injection_name("markdown") == Some(tree.root().language()) {
+        let root = Some(tree.root().language());
+        if root == karet_treesitter::languages::MARKDOWN {
             return finish(root_candidates);
         }
-        if language_id_from_injection_name("mdx") == Some(tree.root().language()) {
+        if root == karet_treesitter::languages::MDX {
             let (headings, declarations) = root_candidates
                 .into_iter()
                 .partition(|candidate| candidate.heading_level.is_some());

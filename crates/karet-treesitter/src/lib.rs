@@ -4,9 +4,10 @@
 //! and (via syntax) the editor reuse a single parse of each buffer. (`karet-diff`
 //! is purely textual today and does not depend on this crate.) Tree-sitter is
 //! karet's *sole* syntax backend — there is deliberately no second backend to
-//! abstract over. Grammars are compiled in behind `lang-*` features;
-//! [`language_id_from_path`] / [`language_name_from_path`] map a file to one (or
-//! to a plaintext fallback).
+//! abstract over. Grammars are compiled in behind `lang-*` features, and each one
+//! is named by its typed constant in [`languages`]; [`language_id_from_path`] maps
+//! a file to one (`None` means plaintext). A file's display name is
+//! [`karet_filetype`]'s concern, not the parse host's.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ mod detect;
 mod folds;
 mod indent;
 mod injection;
+pub mod languages;
 mod registry;
 mod walk;
 
@@ -28,7 +30,6 @@ mod tests;
 
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
-pub use detect::language_name_from_path;
 pub use indent::IndentAnchor;
 pub use injection::InjectionRegion;
 // The span helpers live in `karet-core` beside `Highlights::translate`, which
@@ -54,8 +55,24 @@ pub enum TsError {
 }
 
 /// An identifier for a registered tree-sitter grammar.
+///
+/// It has no public constructor: every value outside this crate is one of the
+/// typed constants in [`languages`] or comes from a resolver
+/// ([`language_id_from_path`], [`language_id_from_injection_name`]), so a
+/// `LanguageId` always names a grammar compiled into this build. "No grammar" is
+/// spelled `Option::<LanguageId>::None`, never a sentinel id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LanguageId(pub u16);
+pub struct LanguageId(u16);
+
+impl LanguageId {
+    /// The stable number behind this id, for a digest or cache key that outlives
+    /// the process. The numbering never changes once shipped; there is
+    /// deliberately no inverse, so a number read back cannot become an id.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
 
 /// The highlights query source for `lang`, if its grammar is compiled in.
 #[must_use]

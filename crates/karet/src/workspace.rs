@@ -21,7 +21,6 @@ use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextSnapshot;
-use karet_treesitter::language_name_from_path;
 
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -70,7 +69,13 @@ pub fn open_file_ignoring_size(path: &Path) -> Tab {
 /// a too-large placeholder, a notebook preview, or a byte view.
 #[must_use]
 pub fn open_as_text(path: &Path) -> Tab {
-    open_pending_code(path, language_name_from_path(path).unwrap_or("plaintext"))
+    let file_type = karet_filetype::file_type_for_path(path);
+    let language = if file_type.is_recognized() {
+        file_type.name()
+    } else {
+        "plaintext"
+    };
+    open_pending_code(path, language)
 }
 
 /// Read at most [`HEAD_BYTES`] leading bytes of `path` (empty on error) and its

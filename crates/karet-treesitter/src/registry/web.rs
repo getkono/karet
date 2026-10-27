@@ -4,25 +4,11 @@
 use tree_sitter_language::LanguageFn;
 
 use super::GrammarInfo;
-#[cfg(any(
-    feature = "lang-scss",
-    feature = "lang-sass",
-    feature = "lang-less",
-    feature = "lang-erb",
-    feature = "lang-mdx"
-))]
-use crate::LanguageId;
-
-#[cfg(feature = "lang-scss")]
-pub(super) const SCSS: LanguageId = LanguageId(54);
-#[cfg(feature = "lang-sass")]
-pub(super) const SASS: LanguageId = LanguageId(55);
-#[cfg(feature = "lang-less")]
-pub(super) const LESS: LanguageId = LanguageId(56);
-#[cfg(feature = "lang-erb")]
-pub(super) const ERB: LanguageId = LanguageId(57);
-#[cfg(feature = "lang-mdx")]
-pub(super) const MDX: LanguageId = LanguageId(58);
+#[allow(
+    unused_imports,
+    reason = "a build with none of these grammars compiles no constant to import"
+)]
+use crate::languages::ids::*;
 
 #[cfg(feature = "lang-sass")]
 unsafe extern "C" {

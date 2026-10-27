@@ -10,7 +10,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
-use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::language_id_from_path;
 
 use crate::LineRange;
@@ -53,41 +52,52 @@ pub fn enclosing_function_range(source: &str, file: &Path, line: u32) -> Option<
 
 /// Function-like node types captured as `@function` for a resolved grammar.
 ///
-/// Keyed on [`LanguageId`] via the injection-name resolver — never on display
-/// names, whose spelling belongs to a presentation catalogue this crate cannot
-/// see (dispatching on them silently broke JSX/`.mli` narrowing). A
-/// malformed/unknown query simply yields `None` upstream (the query fails to
-/// compile), degrading to whole-file blame.
+/// Keyed on [`LanguageId`] through `karet_treesitter::languages`' typed
+/// constants — never on display names, whose spelling belongs to a presentation
+/// catalogue this crate cannot see (dispatching on them silently broke
+/// JSX/`.mli` narrowing). A malformed/unknown query simply yields `None`
+/// upstream (the query fails to compile), degrading to whole-file blame.
 fn function_query(lang: LanguageId) -> Option<&'static str> {
+    use karet_treesitter::languages;
     const JS: &str = "[(function_declaration) (method_definition) (arrow_function) \
                        (function_expression)] @function";
-    // (query, grammar aliases it applies to) — resolved against the grammars
-    // actually compiled into this build.
-    const QUERIES: &[(&str, &[&str])] = &[
-        ("(function_item) @function", &["rust"]),
+    // (query, grammars it applies to) — a grammar not compiled into this build
+    // has a `None` constant and matches nothing. JSX parses with the JavaScript
+    // grammar, so it needs no entry of its own.
+    const QUERIES: &[(&str, &[Option<LanguageId>])] = &[
+        ("(function_item) @function", &[languages::RUST]),
         (
             "(function_definition) @function",
-            &["python", "bash", "zsh"],
+            &[languages::PYTHON, languages::BASH, languages::ZSH],
         ),
-        (JS, &["javascript", "jsx", "typescript", "tsx"]),
+        (
+            JS,
+            &[languages::JAVASCRIPT, languages::TYPESCRIPT, languages::TSX],
+        ),
         (
             "[(function_declaration) (method_declaration)] @function",
-            &["go"],
+            &[languages::GO],
         ),
-        ("(function_definition) @function", &["c", "cpp"]),
-        ("(method_declaration) @function", &["java", "c_sharp"]),
-        ("[(method) (singleton_method)] @function", &["ruby"]),
+        (
+            "(function_definition) @function",
+            &[languages::C, languages::CPP],
+        ),
+        (
+            "(method_declaration) @function",
+            &[languages::JAVA, languages::CSHARP],
+        ),
+        (
+            "[(method) (singleton_method)] @function",
+            &[languages::RUBY],
+        ),
         (
             "[(function_definition) (method_declaration)] @function",
-            &["php"],
+            &[languages::PHP],
         ),
     ];
-    QUERIES.iter().find_map(|(query, aliases)| {
-        aliases
-            .iter()
-            .any(|alias| language_id_from_injection_name(alias) == Some(lang))
-            .then_some(*query)
-    })
+    QUERIES
+        .iter()
+        .find_map(|(query, ids)| ids.contains(&Some(lang)).then_some(*query))
 }
 
 /// Byte offset of the start of each line (index 0 is byte 0).
