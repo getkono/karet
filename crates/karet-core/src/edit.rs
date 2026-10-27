@@ -251,12 +251,6 @@ impl Selection {
         self.anchor == self.head
     }
 
-    /// The caret (moving) end of the selection.
-    #[must_use]
-    pub const fn caret_pos(self) -> LineCol {
-        self.head
-    }
-
     /// The selection as a normalized half-open [`Range`] (`min..max`).
     #[must_use]
     pub fn range(self) -> Range {
@@ -301,14 +295,6 @@ impl CursorState {
             .get(self.primary)
             .copied()
             .unwrap_or_else(|| Selection::caret(LineCol::new(0, 0)))
-    }
-
-    /// Add `sel` as the new primary selection, then merge any overlaps. Use this to
-    /// grow the cursor set (add-caret, add-next-occurrence).
-    pub fn push(&mut self, sel: Selection) {
-        self.selections.push(sel);
-        self.primary = self.selections.len().saturating_sub(1);
-        self.normalize();
     }
 
     /// Collapse the set to just the primary selection (e.g. before a Shift+click
@@ -410,7 +396,7 @@ mod tests {
     fn selection_caret_and_range() {
         let c = Selection::caret(LineCol::new(2, 3));
         assert!(c.is_empty());
-        assert_eq!(c.caret_pos(), LineCol::new(2, 3));
+        assert_eq!(c.head, LineCol::new(2, 3));
 
         let s = Selection {
             anchor: LineCol::new(4, 0),
@@ -788,10 +774,14 @@ mod tests {
     }
 
     #[test]
-    fn push_sets_primary_then_collapse_keeps_it() {
-        let mut cs = CursorState::single(Selection::caret(LineCol::new(0, 0)));
-        cs.push(Selection::caret(LineCol::new(3, 1)));
-        assert_eq!(cs.selections.len(), 2);
+    fn collapse_keeps_only_the_primary() {
+        let mut cs = CursorState {
+            selections: vec![
+                Selection::caret(LineCol::new(0, 0)),
+                Selection::caret(LineCol::new(3, 1)),
+            ],
+            primary: 1,
+        };
         assert_eq!(cs.primary().head, LineCol::new(3, 1));
         cs.collapse_to_primary();
         assert_eq!(cs.selections, vec![Selection::caret(LineCol::new(3, 1))]);

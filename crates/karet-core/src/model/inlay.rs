@@ -176,28 +176,6 @@ impl InlayHint {
     }
 }
 
-impl From<&InlayHint> for VirtualText {
-    /// The hint's whole label at its position, with its padding as one space
-    /// either side, in its kind's color. [`InlayHint::virtual_texts`] keeps
-    /// the parts apart instead.
-    fn from(hint: &InlayHint) -> Self {
-        let mut text = String::with_capacity(hint.label.len().saturating_add(2));
-        if hint.padding_left {
-            text.push(' ');
-        }
-        text.push_str(&hint.label);
-        if hint.padding_right {
-            text.push(' ');
-        }
-        Self::inline(
-            hint.position.line,
-            hint.position.col,
-            text,
-            hint.kind.role(),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -238,19 +216,22 @@ mod tests {
             ..InlayHint::new(LineCol::new(2, 9), "i32", InlayHintKind::Type)
         };
         assert_eq!(
-            VirtualText::from(&hint),
-            VirtualText {
+            hint.virtual_texts(),
+            vec![VirtualText {
                 line: 2,
                 placement: VirtualTextPlacement::Inline { col: 9 },
                 text: " i32".to_owned(),
                 role: ThemeRole::InlayHintType,
-            }
+            }]
         );
         let both = InlayHint {
             padding_right: true,
             ..hint
         };
-        assert_eq!(VirtualText::from(&both).text, " i32 ");
+        assert_eq!(
+            both.virtual_texts().first().map(|text| text.text.as_str()),
+            Some(" i32 ")
+        );
     }
 
     #[test]

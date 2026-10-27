@@ -29,7 +29,6 @@
 //!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
 //!   [`merge_spans`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
-//! - Interop traits: [`SymbolProvider`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
@@ -43,7 +42,6 @@ mod graph;
 mod highlight;
 mod model;
 mod notify;
-mod provider;
 mod semantic_token;
 mod token;
 mod word;
@@ -139,7 +137,6 @@ pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
-pub use provider::SymbolProvider;
 pub use semantic_token::SemanticToken;
 pub use semantic_token::SemanticTokenModifiers;
 pub use semantic_token::SemanticTokenType;
