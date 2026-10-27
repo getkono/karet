@@ -1,3 +1,11 @@
+//! The actor's source-control surface: serving [`VcsCommand`]s.
+//!
+//! Index writes run inline here through `vcs_write`; history, diffs, blame and
+//! line changes are submitted as cancellable jobs to the VCS worker
+//! (`crate::vcs_worker`), which owns the repository reads. This module also
+//! emits status and log events, keeps the open log reconciled with the
+//! repository, and generates AI commit messages.
+
 use super::*;
 use crate::api::VcsCommand;
 use crate::vcs_worker::VcsJob;

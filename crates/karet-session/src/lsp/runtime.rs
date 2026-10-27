@@ -1,3 +1,12 @@
+//! The server task loop: one task per slot, owning its server's connection.
+//!
+//! [`server_task`] connects through the slot's `Connector`, serializes document
+//! sync ahead of requests, debounces edits, and restarts a closed process with
+//! backoff, replaying every open document. Per-request handling is delegated to
+//! the feature modules (`commands`, `code_actions`, `code_lens`, `link_color`,
+//! `inline_completion`, `semantic_tokens`, `hint_flight`), loss detection to
+//! `health`, and diagnostic forwarding to `forward`.
+
 use karet_core::ServerFeature;
 
 use super::code_actions;

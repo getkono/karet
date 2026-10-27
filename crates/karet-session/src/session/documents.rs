@@ -1,3 +1,11 @@
+//! The open-document lifecycle on the actor: open, edit, undo/redo, save,
+//! retarget, close, and conversion of read-only formats to text.
+//!
+//! This module owns the document store and the save pipeline, including
+//! format-on-save and its deadline. Reading and writing the file itself is
+//! delegated to `docfile`, server sync to the LSP manager, and swap removal to
+//! the backup store.
+
 use super::*;
 
 /// Answer to a save abandoned because its document was closed first.

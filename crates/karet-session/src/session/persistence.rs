@@ -1,5 +1,8 @@
 //! What the session keeps on disk across restarts: crash-recovery swaps (and
 //! the timer that writes them) and persisted undo history.
+//!
+//! This module decides when to write, recover, or discard; the on-disk formats
+//! and the store itself belong to [`crate::backup`].
 
 use super::*;
 
