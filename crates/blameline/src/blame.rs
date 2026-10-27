@@ -93,6 +93,7 @@ pub fn blame_file(repo_root: &Path, file: &Path) -> Result<Vec<BlameGroup>, Blam
             message: info.message,
             author: info.author,
             date: info.date,
+            author_time: info.author_time,
         });
     }
     Ok(groups)
@@ -104,9 +105,11 @@ struct CommitMeta {
     message: String,
     author: String,
     date: String,
+    author_time: i64,
 }
 
-/// Decode a commit's full message, author name, and ISO-8601 author date.
+/// Decode a commit's full message, author name, ISO-8601 author date, and
+/// author time in seconds since the Unix epoch.
 fn commit_meta(repo: &gix::Repository, id: ObjectId) -> Result<CommitMeta, BlameError> {
     let commit = repo.find_commit(id).map_err(to_git)?;
     let message = commit.message_raw().map_err(to_git)?.to_string();
@@ -119,6 +122,9 @@ fn commit_meta(repo: &gix::Repository, id: ObjectId) -> Result<CommitMeta, Blame
         message: message.trim_end().to_string(),
         author: author.name.to_string(),
         date,
+        // Lenient where `time()` is strict: a malformed offset still yields the
+        // seconds, and an unreadable timestamp yields 0 (the epoch), as git does.
+        author_time: author.seconds(),
     })
 }
 
