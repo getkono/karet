@@ -148,6 +148,7 @@ fn the_picker_lists_tasks_by_label_with_their_commands_beside() -> TestResult {
         task_app(&[("test", task("make test")), ("build", task("make"))])?;
     app.dispatch(Command::RunTask);
     let overlay = app.overlay.as_ref().ok_or("no picker")?;
+    assert_eq!(overlay.picker_kind(), Some(PickerKind::Tasks));
     assert_eq!(overlay.title(), RUN_TASK_TITLE);
     assert_eq!(overlay.rows(), ["build", "test"]);
     assert_eq!(

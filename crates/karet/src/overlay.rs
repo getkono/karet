@@ -391,6 +391,8 @@ pub enum PickerKind {
     DeleteLocalBranch,
     /// Delete remote branch.
     DeleteRemoteBranch,
+    /// Tasks: Run Task.
+    Tasks,
 }
 
 impl Overlay {

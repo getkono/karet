@@ -137,7 +137,8 @@ impl Overlay {
             | PickerKind::PullRequests
             | PickerKind::Stashes
             | PickerKind::DeleteLocalBranch
-            | PickerKind::DeleteRemoteBranch => None,
+            | PickerKind::DeleteRemoteBranch
+            | PickerKind::Tasks => None,
         }
     }
 
