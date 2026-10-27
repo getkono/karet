@@ -582,8 +582,6 @@ fn load_reads_the_project_layer_of_a_workspace() -> TestResult {
         r#"{ "editor": { "tabSize": 7 } }"#,
     )?;
     // The project layer outranks whatever user or system file this machine has.
-    let (settings, _) = load(std::slice::from_ref(&root));
-    assert_eq!(settings.editor.tab_size, 7);
     let report = load_report(std::slice::from_ref(&root));
     assert_eq!(report.settings.editor.tab_size, 7);
     assert_eq!(

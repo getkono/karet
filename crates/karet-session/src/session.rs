@@ -131,7 +131,7 @@ use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
 
-/// Configuration for a [`Session`].
+/// Configuration for a session, started from it by [`crate::local`].
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// Workspace root directories.
@@ -150,7 +150,7 @@ pub struct SessionConfig {
     /// builds) watches none.
     pub loaded_config: crate::config::LoadedConfig,
     /// Directory for crash-recovery swap files. The application sets this to the real
-    /// user data directory ([`crate::backup::default_swap_dir`]); left `None` (as in
+    /// user data directory ([`crate::default_swap_dir`]); left `None` (as in
     /// tests) the session keeps no backups and never touches the user's data dir.
     pub swap_dir: Option<PathBuf>,
     /// Executable that can enter [`karet_supervisor::supervisor`] mode.
@@ -167,7 +167,7 @@ pub struct SessionConfig {
     /// Directory for the stored seam index, which turns a cold start into a warm one.
     ///
     /// The application sets this to the real user cache directory
-    /// ([`crate::seam_cache::default_cache_dir`]); left `None` (as in tests) every index
+    /// ([`crate::default_seam_cache_dir`]); left `None` (as in tests) every index
     /// is built from source and no user directory is touched.
     pub seam_cache_dir: Option<PathBuf>,
 }
@@ -296,7 +296,7 @@ struct DocumentStore {
 /// Construct with [`Session::new`], which also returns the [`EventRx`] and
 /// [`SnapshotRx`] halves of its output streams; drive it in-process with
 /// [`crate::backend::local`].
-pub struct Session {
+pub(crate) struct Session {
     config: SessionConfig,
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,

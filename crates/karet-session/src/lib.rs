@@ -1,7 +1,7 @@
 //! `karet-session` — the headless editor backend for the karet toolkit.
 //!
-//! This is the business-logic (server) half of karet. A [`Session`] owns the open
-//! documents and workspace, orchestrates the headless producer engines (see the
+//! This is the business-logic (server) half of karet. A session, started from a
+//! [`SessionConfig`] by [`local`], owns the open documents and workspace, orchestrates the headless producer engines (see the
 //! worker map below), applies editing [`Command`]s and emits [`Event`]s. It pulls
 //! in **no** ratatui:
 //! the presentation/client half (the `karet` app, `karet-editor`, `karet-widgets`)
@@ -23,7 +23,7 @@
 //! - `dap` — debugger orchestration over `karet-dap`.
 //! - `vcs_worker` — ordered repository (`karet-vcs`, `blameline`) and forge
 //!   (`karet-github`, feature `github`) operations.
-//! - `seam_worker` — the `karet-seam` index, cached by [`seam_cache`].
+//! - `seam_worker` — the `karet-seam` index, cached by `seam_cache`.
 //! - `search_worker` — workspace search over `karet-search`.
 //! - `spell` / `spell_scan` — per-document spell-check and the workspace-wide scan.
 //! - `todo_scan` — the workspace codetag (`TODO:`-style) scan.
@@ -44,12 +44,30 @@
 //! File-watching runs over `karet-watch`, and external process trees are owned
 //! through `karet-supervisor`. In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
 //! stream (`local`), not by borrowing document state across the actor boundary.
+//!
+//! # Public surface
+//!
+//! One rule decides what a client names, and from where:
+//!
+//! - every [`api`] item is re-exported at the crate root (`pub use api::*`);
+//! - the root also carries what starting and wiring a backend needs:
+//!   [`SessionConfig`], [`local`] / [`Backend`] / [`LocalBackend`], the
+//!   [`EventRx`] and [`SnapshotRx`] streams, the default on-disk locations
+//!   ([`default_swap_dir`], [`default_seam_cache_dir`]), and the settings types
+//!   the seam's events carry ([`Settings`], [`LoadedConfig`], …);
+//! - [`config`] is the settings loader, and [`config::schema`] the full typed
+//!   settings tree; [`layout`] persists the client's workspace layout; [`dirs`]
+//!   resolves the per-user directories.
+//!
+//! Everything else -- the session actor, swap files, the seam cache, the
+//! settings-file writers -- is internal and reached only through the
+//! [`Command`]/[`Event`] seam.
 
 #[cfg(feature = "aicommit")]
 mod aicommit;
 pub mod api;
 pub mod backend;
-pub mod backup;
+mod backup;
 mod cancellation;
 pub mod config;
 mod dap;
@@ -59,7 +77,7 @@ mod editorconfig;
 mod event_tx;
 mod highlight;
 mod latex;
-pub mod local;
+mod local;
 mod lsp;
 mod lsp_registry;
 #[cfg(feature = "deps")]
@@ -67,10 +85,10 @@ mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
 mod scan_walk;
-pub mod seam_cache;
+mod seam_cache;
 mod seam_worker;
 mod search_worker;
-pub mod session;
+mod session;
 mod spell;
 mod spell_scan;
 mod todo_scan;
@@ -83,98 +101,41 @@ mod vcs_worker;
 mod viz;
 mod wakatime;
 
-pub use api::AiCommitAgentStatus;
-pub use api::AiCommitAvailability;
-pub use api::AppliedWorkspaceEdit;
-pub use api::ChangeSummary;
-pub use api::CodeActionTrigger;
-pub use api::Command;
-pub use api::DebugBreakpoint;
-pub use api::DebugCommand;
-pub use api::DebugSessionState;
-pub use api::DictionaryScope;
-pub use api::DocumentCommand;
-pub use api::DocumentEncoding;
-pub use api::DocumentId;
-pub use api::DocumentLineEnding;
-pub use api::DocumentSettings;
-pub use api::Event;
-pub use api::FormatRequest;
-pub use api::FormatScope;
-pub use api::GithubAuth;
-pub use api::GithubAuthSource;
-pub use api::GithubCheckRun;
-pub use api::GithubCommand;
-pub use api::GithubComment;
-pub use api::GithubIssue;
-pub use api::GithubLabel;
-pub use api::GithubNewIssue;
-pub use api::GithubNewPullRequest;
-pub use api::GithubOperation;
-pub use api::GithubPage;
-pub use api::GithubPullRequest;
-pub use api::GithubPullRequestActivity;
-pub use api::GithubPullRequestCommit;
-pub use api::GithubRepository;
-pub use api::GithubToken;
-pub use api::GithubVerification;
-pub use api::GithubWorkflow;
-pub use api::GithubWorkflowRun;
-pub use api::GraphKind;
-pub use api::LanguageServerChange;
-pub use api::LanguageServerCommand;
-pub use api::LanguageServerId;
-pub use api::LanguageServerInstanceStatus;
-pub use api::LanguageServerLogEntry;
-pub use api::LanguageServerMessageId;
-pub use api::LanguageServerPlanId;
-pub use api::LanguageServerRuntimeState;
-pub use api::LanguageServerSource;
-pub use api::LanguageServerStatus;
-pub use api::LanguageServerWork;
-pub use api::LocationKind;
-pub use api::LspCommand;
-pub use api::ManifestHint;
-pub use api::ManifestHintState;
-pub use api::NotebookCommand;
-pub use api::PreparedChange;
-pub use api::RangeSpec;
-pub use api::RemoteFacts;
-pub use api::RenameTarget;
-pub use api::RepositorySnapshot;
-pub use api::RequestId;
-pub use api::SaveCause;
-pub use api::SeamCommand;
-pub use api::SearchHit;
-pub use api::SearchMatch;
-pub use api::SpellingHit;
-pub use api::SpellingLanguage;
-pub use api::SwapInfo;
-pub use api::TodoHit;
-pub use api::VcsAction;
-pub use api::VcsCommand;
-pub use api::VcsOutcome;
-pub use api::ViewId;
-pub use api::WorkPhase;
-pub use api::WorkToken;
-pub use api::WorkspaceCommand;
+/// Persisting the client's workspace layout (panes, tabs, cursors) beside the
+/// crash-recovery swaps, keyed by workspace root.
+///
+/// The layout is the client's own state rather than a session model, so it is
+/// read and written directly instead of through the [`Command`] seam.
+pub mod layout {
+    pub use crate::backup::LayoutAxis;
+    pub use crate::backup::LayoutNode;
+    pub use crate::backup::LayoutPane;
+    pub use crate::backup::LayoutTab;
+    pub use crate::backup::WorkspaceLayout;
+    pub use crate::backup::read_layout;
+    pub use crate::backup::remove_layout;
+    pub use crate::backup::write_layout;
+}
+
+pub use api::*;
 pub use backend::Backend;
 pub use backend::BackendError;
 pub use backend::LocalBackend;
 pub use backend::local;
+pub use backup::default_swap_dir;
 pub use config::ConfigDiagnostic;
 pub use config::ConfigLayer;
 pub use config::ConfigLayerReport;
 pub use config::ConfigLayerStatus;
 pub use config::LoadedConfig;
-pub use config::Settings;
 pub use config::schema::AUTO_MODEL as AI_COMMIT_AUTO_MODEL;
 pub use config::schema::AiCommit;
 pub use config::schema::AiCommitAgent;
 pub use config::schema::AiCommitEffort;
+pub use config::schema::Settings;
 pub use local::DocSnapshot;
 pub use local::SnapshotRx;
 pub use lsp::CHANGE_DEBOUNCE as LSP_CHANGE_DEBOUNCE;
+pub use seam_cache::default_cache_dir as default_seam_cache_dir;
 pub use session::EventRx;
-pub use session::Session;
 pub use session::SessionConfig;

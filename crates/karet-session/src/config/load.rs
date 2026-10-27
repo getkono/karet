@@ -260,17 +260,9 @@ const SECTIONS: &[&str] = &[
     "tasks",
 ];
 
-/// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
-/// diagnostics. Reuses the same git discovery the session already performs to locate
-/// the project layer.
-#[must_use]
-pub fn load(roots: &[PathBuf]) -> (Settings, Vec<ConfigDiagnostic>) {
-    let report = load_report(roots);
-    (report.settings, report.diagnostics)
-}
-
 /// Load the merged, verified [`Settings`] plus layer and explicit-key provenance for
-/// a workspace rooted at `roots`.
+/// a workspace rooted at `roots`. Reuses the same git discovery the session
+/// already performs to locate the project layer.
 #[must_use]
 pub fn load_report(roots: &[PathBuf]) -> LoadedConfig {
     load_layer_reports(ordered_layers(

@@ -14,12 +14,6 @@ use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
 
 impl Session {
-    /// The session's configuration (workspace roots, format-on-save, spell-check).
-    #[must_use]
-    pub fn config(&self) -> &SessionConfig {
-        &self.config
-    }
-
     /// Take the file-watcher and its event stream, to be driven by the actor.
     ///
     /// The watcher is returned (rather than kept on the session) so the actor can

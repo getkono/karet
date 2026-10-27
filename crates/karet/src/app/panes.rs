@@ -1,11 +1,11 @@
 use karet_core::CursorState;
 use karet_core::Selection;
-use karet_session::backup;
-use karet_session::backup::LayoutAxis;
-use karet_session::backup::LayoutNode;
-use karet_session::backup::LayoutPane;
-use karet_session::backup::LayoutTab;
-use karet_session::backup::WorkspaceLayout;
+use karet_session::layout;
+use karet_session::layout::LayoutAxis;
+use karet_session::layout::LayoutNode;
+use karet_session::layout::LayoutPane;
+use karet_session::layout::LayoutTab;
+use karet_session::layout::WorkspaceLayout;
 use karet_widgets::pane::tree::PaneTree;
 
 use super::*;
@@ -308,9 +308,9 @@ impl App {
             .then(|| self.workspace_layout())
             .flatten();
         match layout {
-            Some(layout) => backup::write_layout(dir, &self.layout_root(), &layout),
+            Some(layout) => layout::write_layout(dir, &self.layout_root(), &layout),
             None => {
-                backup::remove_layout(dir, &self.layout_root());
+                layout::remove_layout(dir, &self.layout_root());
                 Ok(())
             },
         }
@@ -322,7 +322,7 @@ impl App {
         if !self.settings.workbench.restore_layout || !self.startup_is_pristine() {
             return;
         }
-        if let Some(layout) = backup::read_layout(dir, &self.layout_root()) {
+        if let Some(layout) = layout::read_layout(dir, &self.layout_root()) {
             self.apply_workspace_layout(layout);
         }
     }

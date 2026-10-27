@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The full, validated karet configuration. Load it with
-/// [`crate::config::load`]; the sane baseline is [`Settings::default`].
+/// [`crate::config::load_report`]; the sane baseline is [`Settings::default`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]

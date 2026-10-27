@@ -279,7 +279,7 @@ fn a_panel_that_never_scanned_ignores_document_spelling_updates() {
 }
 
 /// A `ConfigChanged` carrying `settings`, as the watcher's reload would deliver it.
-fn config_changed(app: &mut App, settings: karet_session::config::Settings) {
+fn config_changed(app: &mut App, settings: karet_session::Settings) {
     app.on_backend_event(
         None,
         SessionEvent::ConfigChanged {

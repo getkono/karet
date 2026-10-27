@@ -143,7 +143,7 @@ impl<'a> EditorDisplay<'a> {
 
 #[cfg(test)]
 mod tests {
-    use karet_session::config::schema::Settings;
+    use karet_session::Settings;
 
     use super::*;
 

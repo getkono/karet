@@ -107,7 +107,7 @@ pub trait Backend: Send + Sync {
     fn take_events(&self) -> Option<EventRx>;
 }
 
-/// An in-process backend that drives a [`Session`] on a background task.
+/// An in-process backend that drives a session on a background task.
 ///
 /// `send` pushes onto an unbounded command channel (an unbounded send is the only
 /// non-`async` send, which the synchronous [`Backend::send`] requires); the actor
@@ -138,7 +138,7 @@ impl Backend for LocalBackend {
     }
 }
 
-/// Build a [`Session`] from `config` and drive it in-process on a spawned task,
+/// Build a session from `config` and drive it in-process on a spawned task,
 /// returning the [`LocalBackend`] to submit commands to plus the local-only
 /// [`SnapshotRx`] render stream.
 ///

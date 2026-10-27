@@ -1,13 +1,17 @@
 //! The layered JSONC configuration system.
 //!
-//! [`Settings`] is the typed schema; [`load`] discovers and merges the project, user,
-//! and system `setting.jsonc` files over the sane defaults, verifying each against the
-//! schema and returning any [`ConfigDiagnostic`]s. [`json_schema`] emits the external
-//! `settings.schema.json` (referenced by a file's `"$schema"` for editor
-//! autocomplete) from the same [`Settings`] type, so the schema can never drift from
-//! the parser.
+//! [`schema::Settings`] is the typed schema, and [`schema`] holds every type in its
+//! tree; [`load_report`] discovers and merges the project, user, and system
+//! `setting.jsonc` files over the sane defaults, verifying each against the schema
+//! and reporting any [`ConfigDiagnostic`]s in its [`LoadedConfig`].
+//! [`json_schema`] emits the external `settings.schema.json` (referenced by a
+//! file's `"$schema"` for editor autocomplete) from the same type, so the schema
+//! can never drift from the parser.
+//!
+//! Writing a setting back to a file is the session's business, done in answer to
+//! a [`Command`](crate::Command), so the writers are not public.
 
-pub mod load;
+pub(crate) mod load;
 pub mod schema;
 
 use std::io::Write;
@@ -21,17 +25,15 @@ pub use load::ConfigLayer;
 pub use load::ConfigLayerReport;
 pub use load::ConfigLayerStatus;
 pub use load::LoadedConfig;
-pub use load::load;
 pub use load::load_report;
-pub use schema::Seam;
-pub use schema::SeamLensFilter;
-pub use schema::SeamSpine;
-pub use schema::Settings;
+pub use load::project_config_dir;
+pub use load::user_config_dir;
+pub(crate) use schema::Settings;
 
 /// Errors while updating a user-owned JSONC setting.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum ConfigWriteError {
+pub(crate) enum ConfigWriteError {
     /// The platform has no discoverable user configuration directory.
     #[error("user configuration directory is unavailable")]
     NoUserDirectory,
@@ -57,7 +59,7 @@ pub enum ConfigWriteError {
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// is invalid JSONC, or the atomic write fails.
-pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
+pub(crate) fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -80,7 +82,7 @@ pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// is invalid JSONC, or the atomic write fails.
-pub fn set_user_ai_commit(options: &schema::AiCommit) -> Result<PathBuf, ConfigWriteError> {
+pub(crate) fn set_user_ai_commit(options: &schema::AiCommit) -> Result<PathBuf, ConfigWriteError> {
     let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -162,7 +164,7 @@ fn update_ai_commit_jsonc(
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// has an incompatible JSON shape, or the atomic write fails.
-pub fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError> {
+pub(crate) fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError> {
     if word.trim().is_empty() {
         return Err(ConfigWriteError::Parse(
             "dictionary word cannot be empty".to_string(),
@@ -183,7 +185,7 @@ pub fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError>
 /// Returns [`ConfigWriteError`] when no project layer can be resolved, creation was
 /// not confirmed, the existing file has an incompatible JSON shape, or the atomic
 /// write fails.
-pub fn add_project_dictionary_word(
+pub(crate) fn add_project_dictionary_word(
     roots: &[PathBuf],
     word: &str,
     allow_create: bool,

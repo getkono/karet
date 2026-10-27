@@ -210,8 +210,8 @@ fn a_tab_still_waiting_for_its_text_saves_where_its_caret_will_go() {
     app.focus_by_file_line(&root.join("a.rs"), LineCol::new(3, 2), true);
     assert!(app.tabs[app.active].fill_caret.is_some(), "no text yet");
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = match karet_session::backup::read_layout(&state, &root).map(|layout| layout.root) {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+    let saved = match karet_session::layout::read_layout(&state, &root).map(|layout| layout.root) {
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => {
             pane.tabs.first().map(|tab| tab.cursors.clone())
         },
         _ => None,
@@ -237,9 +237,9 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
         tab.is_preview = true;
     }
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = karet_session::backup::read_layout(&state, &root).map(|layout| layout.root);
+    let saved = karet_session::layout::read_layout(&state, &root).map(|layout| layout.root);
     let previews = match &saved {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => {
             pane.tabs.iter().filter(|tab| tab.preview).count()
         },
         _ => 0,
@@ -361,9 +361,9 @@ fn only_file_tabs_are_saved_and_none_forgets_the_layout() {
     app.open_initial(&root.join("a.rs"));
     app.push_tab(Tab::welcome());
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = karet_session::backup::read_layout(&state, &root).map(|layout| layout.root);
+    let saved = karet_session::layout::read_layout(&state, &root).map(|layout| layout.root);
     let pane = match saved {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => Some((pane.tabs.len(), pane.active)),
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => Some((pane.tabs.len(), pane.active)),
         _ => None,
     };
     // The Welcome tab is not saved, and the front one yields to the file
@@ -373,7 +373,7 @@ fn only_file_tabs_are_saved_and_none_forgets_the_layout() {
     // Quitting with no file open leaves nothing to restore next time.
     let welcome = fresh(&root);
     assert!(welcome.save_workspace_layout(&state).is_ok());
-    assert_eq!(karet_session::backup::read_layout(&state, &root), None);
+    assert_eq!(karet_session::layout::read_layout(&state, &root), None);
     cleanup(&[&root, &state]);
 }
 
@@ -395,7 +395,7 @@ fn switching_restore_off_restores_nothing_and_forgets_the_layout() {
     session.settings.workbench.restore_layout = false;
     assert!(session.save_workspace_layout(&state).is_ok());
     assert_eq!(
-        karet_session::backup::read_layout(&state, &root),
+        karet_session::layout::read_layout(&state, &root),
         None,
         "the exit deletes the layout an earlier session saved"
     );

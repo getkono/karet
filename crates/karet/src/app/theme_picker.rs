@@ -102,8 +102,8 @@ struct Pick {
 /// The `themes` directories searched, user first: beside the user's
 /// `setting.jsonc` and beside the project's.
 pub(crate) fn theme_dirs(root: &Path) -> Vec<(ThemeSource, PathBuf)> {
-    use karet_session::config::load::project_config_dir;
-    use karet_session::config::load::user_config_dir;
+    use karet_session::config::project_config_dir;
+    use karet_session::config::user_config_dir;
     [
         user_config_dir().map(|dir| (ThemeSource::User, dir.join(THEMES_DIR))),
         project_config_dir(std::slice::from_ref(&root.to_path_buf()))

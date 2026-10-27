@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Settings",
-  "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
+  "description": "The full, validated karet configuration. Load it with\n[`crate::config::load_report`]; the sane baseline is [`Settings::default`].",
   "type": "object",
   "properties": {
     "debug": {
