@@ -245,7 +245,7 @@ fn write(dir: &Path, rel: &str, contents: &[u8]) -> std::io::Result<()> {
 /// Collect every hit from a workspace search into a path-sorted vector.
 fn collect(root: &Path, query: &SearchQuery) -> Vec<FileHit> {
     let mut hits = Vec::new();
-    let _ = WorkspaceSearch::new().run(root, query, |hit| hits.push(hit));
+    let _ = search_workspace(root, query, |hit| hits.push(hit));
     hits.sort_by(|a, b| a.path.cmp(&b.path));
     hits
 }
@@ -415,7 +415,7 @@ fn workspace_replace_writes_matching_files_only() -> TestResult {
     write(dir.path(), ".gitignore", b"ignored.txt\n")?;
     write(dir.path(), "ignored.txt", b"needle\n")?;
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!(summary.files_changed, 1);
     assert_eq!(summary.replacements, 2);
     assert_eq!(
@@ -428,6 +428,25 @@ fn workspace_replace_writes_matching_files_only() -> TestResult {
         "needle\n"
     );
     assert!(summary.failures.is_empty());
+    Ok(())
+}
+
+/// The deprecated namespace still answers exactly as the free functions do, so
+/// a caller can migrate without a behaviour change.
+#[test]
+#[allow(deprecated, reason = "pins the deprecated forwarders")]
+fn deprecated_workspace_search_forwards_to_the_free_functions() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "a.txt", b"needle\n")?;
+
+    let mut hits = Vec::new();
+    WorkspaceSearch::new().run(dir.path(), &literal("needle"), |hit| hits.push(hit))?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits.first().map(|hit| hit.matches.len()), Some(1));
+
+    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    assert_eq!((summary.files_changed, summary.replacements), (1, 1));
+    assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "pin\n");
     Ok(())
 }
 
@@ -452,7 +471,7 @@ fn workspace_replace_reports_a_file_it_could_not_write() -> TestResult {
         return Ok(());
     }
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!((summary.files_changed, summary.replacements), (1, 1));
     let failed: Vec<&Path> = summary.failures.iter().map(|f| f.path.as_path()).collect();
     assert_eq!(failed, [locked.as_path()]);
@@ -479,7 +498,7 @@ fn workspace_replace_never_leaves_a_failed_file_truncated() -> TestResult {
     // create files there, so the failure this test needs cannot be provoked.
     let sealed = std::fs::File::create(sub.join("probe")).is_err();
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin");
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin");
     let text = std::fs::read_to_string(sub.join("a.txt"));
     std::fs::set_permissions(&sub, original)?;
     if !sealed {
@@ -503,7 +522,7 @@ fn workspace_replace_keeps_file_permissions() -> TestResult {
     let path = dir.path().join("run.sh");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751))?;
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!(summary.files_changed, 1);
     assert_eq!(std::fs::read_to_string(&path)?, "pin\n");
     assert_eq!(
@@ -672,7 +691,7 @@ fn workspace_search_surfaces_invalid_pattern() -> TestResult {
         regex: true,
         ..Default::default()
     };
-    let result = WorkspaceSearch::new().run(dir.path(), &query, |_| {});
+    let result = search_workspace(dir.path(), &query, |_| {});
     assert_eq!(result, Err(SearchError::InvalidPattern));
     Ok(())
 }

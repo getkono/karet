@@ -8,9 +8,9 @@
 //! types.
 //!
 //! Search and replace (both in-file and workspace) are implemented via
-//! [`search_in_file`]/[`WorkspaceSearch::run`] (or [`search_chunks`] for a
+//! [`search_in_file`]/[`search_workspace`] (or [`search_chunks`] for a
 //! buffer held in pieces, such as a rope, with no whole-text copy) and
-//! [`plan_replacements`]/[`apply_replacements`]/[`WorkspaceSearch::replace`]. The
+//! [`plan_replacements`]/[`apply_replacements`]/[`replace_in_workspace`]. The
 //! walk itself is also public as [`walk_text_files`], for consumers that want the
 //! same filtered corpus without a pattern, and as [`walk_files`] for consumers
 //! that want only the file paths (a file picker). The workspace walk is currently
@@ -28,8 +28,14 @@ pub use lines::search_chunks;
 pub use walk::FileHit;
 pub use walk::IGNORED_DIRS;
 pub use walk::ReplaceSummary;
+#[allow(
+    deprecated,
+    reason = "re-exported for one release so callers can migrate"
+)]
 pub use walk::WorkspaceSearch;
 pub use walk::WriteFailure;
+pub use walk::replace_in_workspace;
+pub use walk::search_workspace;
 pub use walk::walk_files;
 pub use walk::walk_text_files;
 

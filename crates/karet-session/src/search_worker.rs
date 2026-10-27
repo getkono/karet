@@ -21,7 +21,7 @@ use std::sync::mpsc::Sender;
 
 use karet_search::Matcher;
 use karet_search::SearchQuery;
-use karet_search::WorkspaceSearch;
+use karet_search::replace_in_workspace;
 
 use crate::api::Event;
 use crate::api::RequestId;
@@ -205,7 +205,7 @@ fn replace_all(roots: &[PathBuf], query: &SearchQuery, replacement: &str) -> Eve
     let mut failures = Vec::new();
     let mut error = None;
     for root in roots {
-        match WorkspaceSearch::new().replace(root, query, replacement) {
+        match replace_in_workspace(root, query, replacement) {
             Ok(summary) => {
                 files_changed += summary.files_changed;
                 replacements += summary.replacements;
