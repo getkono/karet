@@ -84,10 +84,10 @@ fn blames_two_commits_into_ordered_groups() -> TestResult {
     assert_eq!(groups[2].message, groups[0].message);
     assert_eq!(groups[0].author, "Test One");
     assert_eq!(groups[0].date, AUTHOR_DATE);
-    assert_eq!(groups[0].author_time(), Some(1_773_657_296));
+    assert_eq!(groups[0].author_time, 1_773_657_296);
 
     // Function-scoped blame on a non-source file falls back to whole-file blame.
-    let scoped = blameline::blame_function(root, Path::new("file.txt"), "x\n", 0)?;
+    let scoped = blameline::blame_function(root, Path::new("file.txt"), "x\n", 1)?;
     assert_eq!(scoped, groups);
 
     // Called the way the karet app does — repo_root is the file's *parent* and the
@@ -231,8 +231,8 @@ fn blame_function_narrows_to_the_enclosing_function() -> TestResult {
     let whole = blameline::blame_file(root, Path::new("lib.rs"))?;
     assert_eq!(whole.len(), 3, "{whole:?}");
 
-    // 0-based line 4 (`1;`) is inside `b`, 1-based lines 4..=6.
-    let scoped = blameline::blame_function(root, Path::new("lib.rs"), source, 4)?;
+    // Line 5 (`1;`) is inside `b`, lines 4..=6.
+    let scoped = blameline::blame_function(root, Path::new("lib.rs"), source, 5)?;
     let shape: Vec<(u32, u32, &str)> = scoped
         .iter()
         .map(|g| (g.lines.start, g.lines.end, g.summary()))
@@ -243,7 +243,7 @@ fn blame_function_narrows_to_the_enclosing_function() -> TestResult {
     );
 
     // Inside `a`, which only `first` touched.
-    let in_a = blameline::blame_function(root, Path::new("lib.rs"), source, 0)?;
+    let in_a = blameline::blame_function(root, Path::new("lib.rs"), source, 1)?;
     let shape: Vec<(u32, u32, &str)> = in_a
         .iter()
         .map(|g| (g.lines.start, g.lines.end, g.summary()))
@@ -252,7 +252,12 @@ fn blame_function_narrows_to_the_enclosing_function() -> TestResult {
 
     // Between the functions there is nothing to narrow to: whole-file blame.
     assert_eq!(
-        blameline::blame_function(root, Path::new("lib.rs"), source, 2)?,
+        blameline::blame_function(root, Path::new("lib.rs"), source, 3)?,
+        whole
+    );
+    // Nor at line 0, which 1-based numbering does not have.
+    assert_eq!(
+        blameline::blame_function(root, Path::new("lib.rs"), source, 0)?,
         whole
     );
     Ok(())
