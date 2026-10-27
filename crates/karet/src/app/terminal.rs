@@ -365,11 +365,13 @@ impl App {
     /// here: a terminal no pane shows stays unacknowledged, so it announces no
     /// more output, and wakes nothing, until it is shown again. A task's
     /// terminal is the exception: its scans acknowledge it (`app::tasks`), so
-    /// its problems stay live in a background tab.
+    /// its problems stay live in a background tab, and a scan that changes them
+    /// asks for a repaint even when no pane shows the terminal.
     pub(super) fn on_terminal_event(&mut self, event: TerminalEvent, now: Instant) -> bool {
         if event.kind == TerminalEventKind::Output {
-            self.task_output(event.id, now);
-            return self.terminal_visible(event.id) && self.terminal_frame.output(now);
+            let problems_changed = self.task_output(event.id, now);
+            let shown = self.terminal_visible(event.id) && self.terminal_frame.output(now);
+            return problems_changed || shown;
         }
         let mut copied = None;
         let mut exited = None;
