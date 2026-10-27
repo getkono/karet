@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use karet_core::Capabilities;
 use karet_core::ServerFeature;
 
+use crate::capability::ServerOptions;
 use crate::selector::Selector;
 use crate::watch::FileChangeKind;
 use crate::watch::Watcher;
@@ -33,6 +34,8 @@ struct Registration {
 pub(crate) struct Gate {
     /// From the `initialize` reply: every document.
     advertised: Capabilities,
+    /// From the `initialize` reply: how to talk to the server.
+    options: ServerOptions,
     /// Keyed by the server's registration id: two registrations can name the
     /// same method, and unregistering one must leave the other.
     registrations: HashMap<String, Registration>,
@@ -45,9 +48,31 @@ pub(crate) struct Gate {
 }
 
 impl Gate {
-    /// Record what the handshake advertised.
-    pub(crate) fn advertise(&mut self, capabilities: Capabilities) {
+    /// Record what the handshake advertised and negotiated.
+    pub(crate) fn advertise(&mut self, capabilities: Capabilities, options: ServerOptions) {
         self.advertised = capabilities;
+        self.options = options;
+    }
+
+    /// What the handshake negotiated beyond the feature set.
+    pub(crate) fn options(&self) -> &ServerOptions {
+        &self.options
+    }
+
+    /// Whether `command` is one the server said it accepts.
+    ///
+    /// A server that offers [`ServerFeature::ExecuteCommand`] (advertised or
+    /// registered) without listing any command is taken at its word for every
+    /// command: the list is optional in the protocol, and refusing everything
+    /// would be worse than letting the server decline one it does not know.
+    pub(crate) fn accepts_command(&self, command: &str) -> bool {
+        self.supports(ServerFeature::ExecuteCommand)
+            && (self.options.execute_commands.is_empty()
+                || self
+                    .options
+                    .execute_commands
+                    .iter()
+                    .any(|known| known == command))
     }
 
     /// Record a registration of `feature` under `id`, for the documents

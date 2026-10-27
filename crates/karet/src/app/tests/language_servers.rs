@@ -21,7 +21,12 @@ fn language_server_manager_is_a_singleton_and_requests_inventory() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -52,9 +57,9 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::CheckLanguageServerUpdates {
+                    SessionCommand::LanguageServer(LanguageServerCommand::CheckUpdates {
                         server: Some(server)
-                    } if *server == LanguageServerId::RustAnalyzer
+                    }) if *server == LanguageServerId::RustAnalyzer
                 )
             })
         })
@@ -170,7 +175,12 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -291,9 +301,9 @@ fn language_server_row_action_targets_its_own_server() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::CheckLanguageServerUpdates {
+                    SessionCommand::LanguageServer(LanguageServerCommand::CheckUpdates {
                         server: Some(server)
-                    } if *server == LanguageServerId::RustAnalyzer
+                    }) if *server == LanguageServerId::RustAnalyzer
                 )
             })
         })
@@ -328,7 +338,7 @@ fn language_server_install_action_is_the_only_install_approval() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::InstallLanguageServer { server }
+                    SessionCommand::LanguageServer(LanguageServerCommand::Install { server })
                         if *server == LanguageServerId::Texlab
                 )
             })
@@ -372,7 +382,9 @@ fn language_server_installs_are_independent_per_provider() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::InstallLanguageServer { server } => Some(server.clone()),
+                    SessionCommand::LanguageServer(LanguageServerCommand::Install { server }) => {
+                        Some(server.clone())
+                    },
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -572,10 +584,10 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::ApplyLanguageServerPlan {
+                    SessionCommand::LanguageServer(LanguageServerCommand::ApplyPlan {
                         plan: applied,
                         servers,
-                    } if *applied == plan && servers == &[LanguageServerId::RustAnalyzer]
+                    }) if *applied == plan && servers == &[LanguageServerId::RustAnalyzer]
                 )
             })
         })
@@ -791,7 +803,7 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
                 .filter_map(|(request, command)| {
                     matches!(
                         command,
-                        SessionCommand::UninstallLanguageServer { server }
+                        SessionCommand::LanguageServer(LanguageServerCommand::Uninstall { server })
                             if *server == LanguageServerId::RustAnalyzer
                     )
                     .then_some(*request)

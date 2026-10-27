@@ -1,3 +1,10 @@
+//! The provider inventory the language-server panel is drawn from.
+//!
+//! It merges the built-in catalogue (from `provider`) with every provider the
+//! settings select, and reports each one's per-root instances and runtime state.
+//! It is built without touching the network; installation is the managed-LSP
+//! registry's job.
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 

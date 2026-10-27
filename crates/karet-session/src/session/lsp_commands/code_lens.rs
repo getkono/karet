@@ -17,7 +17,7 @@ use crate::lsp::CodeLensAnswer;
 use crate::lsp::CodeLensCmd;
 
 impl Session {
-    /// Serve [`Command::CodeLenses`]: ask the document's server, answering
+    /// Serve [`LspCommand::CodeLenses`]: ask the document's server, answering
     /// at once with no lenses when no server runs for it.
     pub(in crate::session) fn code_lenses(
         &mut self,
@@ -40,7 +40,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::RunCodeLens`]: run the lens's command on the
+    /// Serve [`LspCommand::RunCodeLens`]: run the lens's command on the
     /// document's server. A lens with no command has nothing to run, and is
     /// answered as done.
     pub(in crate::session) fn run_code_lens(

@@ -17,7 +17,8 @@
 //!
 //! # Vocabulary map
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
-//! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
+//! - Text coordinates: [`BytePos`], [`BytePoint`], [`LineCol`], [`Span`], [`Range`],
+//!   [`LineIndex`].
 //! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
 //!   [`CompletionItem`], [`Hover`], [`DocumentHighlight`], [`InlayHint`], [`VirtualText`],
 //!   [`SignatureHelp`], [`CodeAction`], ….
@@ -27,8 +28,8 @@
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
 //!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
 //!   [`merge_spans`].
-//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
-//! - Interop traits: [`SymbolProvider`].
+//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`CompletionOptions`],
+//!   [`SignatureHelpOptions`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
@@ -38,12 +39,10 @@ mod blame;
 mod capability;
 mod coord;
 mod edit;
-mod error;
 mod graph;
 mod highlight;
 mod model;
 mod notify;
-mod provider;
 mod semantic_token;
 mod token;
 mod word;
@@ -52,12 +51,9 @@ pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
 pub use capability::Capabilities;
 pub use capability::CompletionOptions;
-pub use capability::OnTypeFormattingOptions;
-pub use capability::PositionEncoding;
-pub use capability::SemanticTokensLegend;
 pub use capability::ServerFeature;
 pub use capability::SignatureHelpOptions;
-pub use capability::TextSyncKind;
+pub use coord::BytePoint;
 pub use coord::BytePos;
 pub use coord::LineCol;
 pub use coord::LineIndex;
@@ -65,7 +61,6 @@ pub use coord::Range;
 pub use coord::Span;
 pub use edit::AppliedEdit;
 pub use edit::ApplyWorkspaceEditResult;
-pub use edit::BytePoint;
 pub use edit::Change;
 pub use edit::CursorState;
 pub use edit::DeleteOptions;
@@ -76,7 +71,6 @@ pub use edit::FileOptions;
 pub use edit::Selection;
 pub use edit::TextEdit;
 pub use edit::WorkspaceEdit;
-pub use error::CoreError;
 pub use graph::GraphEdge;
 pub use graph::GraphEdgeKind;
 pub use graph::GraphNode;
@@ -130,7 +124,6 @@ pub use model::SignatureHelp;
 pub use model::Symbol;
 pub use model::SymbolKind;
 pub use model::Tabstop;
-pub use model::TextModifiers;
 pub use model::VirtualLine;
 pub use model::VirtualLineSide;
 pub use model::VirtualText;
@@ -140,7 +133,6 @@ pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
-pub use provider::SymbolProvider;
 pub use semantic_token::SemanticToken;
 pub use semantic_token::SemanticTokenModifiers;
 pub use semantic_token::SemanticTokenType;

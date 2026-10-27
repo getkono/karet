@@ -1,3 +1,12 @@
+//! Folding background results back into the actor's state.
+//!
+//! This module applies what the session's producers report: language-server
+//! updates (converting LSP UTF-16 positions to buffer columns, see `columns`),
+//! highlight and spell results, file-system events, and reloaded configuration.
+//! It also hands the actor loop the producers' receivers, and reopens or
+//! restarts language-server documents. Retiring a provider is settled in
+//! `retirement`.
+
 use super::columns::convert_symbol_columns;
 use super::columns::utf16_range_to_buffer;
 use super::*;

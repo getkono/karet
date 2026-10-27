@@ -269,7 +269,7 @@ fn symbol_requests(backend: &RecordingBackend) -> usize {
     backend.sent.lock().map_or(0, |sent| {
         sent.iter()
             .filter(|(_, command)| {
-                matches!(command, SessionCommand::DocumentSymbols { doc } if *doc == DocumentId(17))
+                matches!(command, SessionCommand::Lsp(LspCommand::DocumentSymbols { doc }) if *doc == DocumentId(17))
             })
             .count()
     })
@@ -473,7 +473,9 @@ fn workspace_queries(backend: &RecordingBackend) -> Vec<(RequestId, String)> {
         |sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::WorkspaceSymbols { query } => Some((*id, query.clone())),
+                    SessionCommand::Lsp(LspCommand::WorkspaceSymbols { query }) => {
+                        Some((*id, query.clone()))
+                    },
                     _ => None,
                 })
                 .collect()

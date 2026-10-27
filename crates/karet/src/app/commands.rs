@@ -203,16 +203,16 @@ impl App {
             Command::ToggleInlayHints => self.toggle_inlay_hints(),
             Command::ShowDiagnostic => self.show_diagnostic(),
             Command::DebugStart => self.debug_start_or_continue(),
-            Command::DebugStop => self.debug_send(SessionCommand::DebugStop),
-            Command::DebugPause => self.debug_send(SessionCommand::DebugPause),
+            Command::DebugStop => self.debug_send(DebugCommand::Stop),
+            Command::DebugPause => self.debug_send(DebugCommand::Pause),
             Command::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
-            Command::DebugStepOver => self.debug_step(SessionCommand::DebugStepOver),
-            Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
-            Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
+            Command::DebugStepOver => self.debug_step(DebugCommand::StepOver),
+            Command::DebugStepIn => self.debug_step(DebugCommand::StepIn),
+            Command::DebugStepOut => self.debug_step(DebugCommand::StepOut),
             Command::DebugEvaluatePrompt => self.debug_evaluate_prompt(),
             Command::NotebookRunAll => self.notebook_run_all(),
-            Command::NotebookInterrupt => self.debug_send(SessionCommand::NotebookInterrupt),
-            Command::NotebookRestartKernel => self.debug_send(SessionCommand::NotebookRestart),
+            Command::NotebookInterrupt => self.debug_send(NotebookCommand::Interrupt),
+            Command::NotebookRestartKernel => self.debug_send(NotebookCommand::Restart),
             Command::ToggleLineComment => self.toggle_comment(false),
             Command::ToggleBlockComment => self.toggle_comment(true),
             Command::ToggleBold => {
@@ -369,15 +369,15 @@ impl App {
             Command::SelectExtendDown => self.sidebar_select_extend(1),
             Command::SelectToggle => self.sidebar_select_toggle(),
             Command::SelectAll => self.sidebar_select_all(),
-            Command::ScmStage => self.scm_send_paths(|paths| SessionCommand::Stage { paths }),
-            Command::ScmUnstage => self.scm_send_paths(|paths| SessionCommand::Unstage { paths }),
+            Command::ScmStage => self.scm_send_paths(|paths| VcsCommand::Stage { paths }),
+            Command::ScmUnstage => self.scm_send_paths(|paths| VcsCommand::Unstage { paths }),
             Command::ScmToggleStage => self.scm_toggle_stage(),
-            Command::ScmStageAll => self.send_command(SessionCommand::StageAll),
-            Command::ScmUnstageAll => self.send_command(SessionCommand::UnstageAll),
+            Command::ScmStageAll => self.send_command(VcsCommand::StageAll),
+            Command::ScmUnstageAll => self.send_command(VcsCommand::UnstageAll),
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
             Command::ScmRefresh => {
-                self.send_command(SessionCommand::RefreshVcs);
+                self.send_command(VcsCommand::Refresh);
                 self.request_repository_snapshot();
             },
             Command::ScmSync => self.run_vcs_action(VcsAction::Sync),
@@ -403,7 +403,7 @@ impl App {
             Command::OpenBlameDetail => self.open_live_blame_detail(),
             Command::ShowLoadedConfig => {
                 if self.backend.is_some() {
-                    self.send_command(SessionCommand::LoadedConfig);
+                    self.send_command(WorkspaceCommand::LoadedConfig);
                 } else {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
@@ -514,11 +514,11 @@ impl App {
                         format!("recovering {} file(s)…", swaps.len()),
                     );
                 }
-                self.send_command(SessionCommand::RecoverSwaps);
+                self.send_command(DocumentCommand::RecoverSwaps);
             },
             Command::DiscardSwaps => {
                 self.pending_swaps = None;
-                self.send_command(SessionCommand::DiscardSwaps);
+                self.send_command(DocumentCommand::DiscardSwaps);
             },
             Command::CloseConfirmCancel => self.cancel_close(),
             Command::DismissSwaps => {
@@ -535,7 +535,7 @@ impl App {
                     NotificationKind::System,
                     "building dependency graph…",
                 );
-                self.send_command(SessionCommand::DependencyGraph);
+                self.send_command(WorkspaceCommand::DependencyGraph);
             },
             Command::SeamNextRow => self.seam_move_row(1),
             Command::SeamPrevRow => self.seam_move_row(-1),

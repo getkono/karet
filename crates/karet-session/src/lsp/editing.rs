@@ -73,13 +73,5 @@ pub(super) async fn ask(
 /// Every character `client`'s server formats on, its first trigger first;
 /// empty when it formats on none.
 pub(super) fn triggers(client: &LspClient) -> Vec<char> {
-    client
-        .capabilities()
-        .on_type_formatting
-        .map(|options| {
-            let mut all = vec![options.first_trigger_character];
-            all.extend(options.more_trigger_characters);
-            all
-        })
-        .unwrap_or_default()
+    client.on_type_formatting_triggers()
 }

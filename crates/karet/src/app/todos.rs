@@ -51,7 +51,7 @@ impl App {
             self.send(SessionCommand::Cancel { request: previous });
         }
         self.todos.clear();
-        self.todos.scanning = self.send(SessionCommand::ScanWorkspaceTodos {
+        self.todos.scanning = self.send(WorkspaceCommand::ScanTodos {
             limit: TODO_SCAN_RESULT_CAP,
         });
     }

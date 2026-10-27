@@ -41,7 +41,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -83,7 +83,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 3,
@@ -117,7 +117,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 2,
                 match_limit: 1000,
@@ -145,7 +145,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: karet_search::SearchQuery {
                     pattern: "(".to_owned(),
                     regex: true,
@@ -172,7 +172,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query(""),
                 file_limit: 100,
                 match_limit: 100,
@@ -213,7 +213,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -239,7 +239,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -264,7 +264,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("a"),
                 file_limit: 100,
                 match_limit: 10,

@@ -125,39 +125,6 @@ pub enum ServerFeature {
     Unknown,
 }
 
-/// How a server counts the columns in a position.
-///
-/// LSP's historical default is UTF-16, which is why it is the fallback here,
-/// but a server may negotiate something else and clangd prefers UTF-8. Getting
-/// this wrong misplaces every position in a line containing any non-ASCII
-/// character — and silently, because ASCII-only lines agree under all three.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum PositionEncoding {
-    /// Columns count UTF-8 bytes.
-    Utf8,
-    /// Columns count UTF-16 code units. The protocol's default.
-    #[default]
-    Utf16,
-    /// Columns count Unicode scalar values.
-    Utf32,
-}
-
-/// How much text a server wants on each change.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum TextSyncKind {
-    /// The server wants no change notifications at all.
-    None,
-    /// The server wants the whole document on every change.
-    #[default]
-    Full,
-    /// The server wants only the ranges that changed.
-    Incremental,
-}
-
 /// The characters that open, and close, a completion session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -178,32 +145,12 @@ pub struct SignatureHelpOptions {
     pub retrigger_characters: Vec<char>,
 }
 
-/// The token types and modifiers a server will emit, in the order its packed
-/// results index into.
+/// What a server said it can do, plus the trigger characters a consumer reacts
+/// to as the user types.
 ///
-/// The order is the whole meaning of a semantic-token result: an index is only
-/// interpretable against the legend the same connection advertised, so this
-/// must be re-read whenever a server is replaced.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SemanticTokensLegend {
-    /// Token types, indexed by the value in a token's `type` slot.
-    pub token_types: Vec<String>,
-    /// Token modifiers, indexed by bit position in a token's modifier mask.
-    pub token_modifiers: Vec<String>,
-}
-
-/// The characters that trigger formatting as you type.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct OnTypeFormattingOptions {
-    /// The one character that always triggers it.
-    pub first_trigger_character: char,
-    /// Further characters that also trigger it.
-    pub more_trigger_characters: Vec<char>,
-}
-
-/// What a server said it can do, plus the options that shape how karet asks.
+/// Only what a layer above the producer reads lives here. How the producer
+/// talks to the server — column encoding, document sync, the semantic-token
+/// legend, the commands it accepts — stays in the producer.
 ///
 /// `Default` is "a server that advertised nothing", which is the honest
 /// starting point before a handshake completes: every gated request is refused
@@ -214,24 +161,10 @@ pub struct OnTypeFormattingOptions {
 pub struct Capabilities {
     /// The features currently available.
     features: BTreeSet<ServerFeature>,
-    /// How this server counts columns.
-    pub position_encoding: PositionEncoding,
-    /// How much text it wants on a change.
-    pub text_sync: TextSyncKind,
-    /// Whether it wants the document's text with a save notification.
-    pub save_includes_text: bool,
     /// Completion trigger and commit characters.
     pub completion: CompletionOptions,
     /// Signature-help trigger and retrigger characters.
     pub signature_help: SignatureHelpOptions,
-    /// The code-action kinds it offers, empty when it did not say.
-    pub code_action_kinds: Vec<String>,
-    /// The semantic-token legend, when it emits semantic tokens.
-    pub semantic_tokens_legend: Option<SemanticTokensLegend>,
-    /// The commands `workspace/executeCommand` will accept.
-    pub execute_commands: Vec<String>,
-    /// The format-on-type triggers, when it formats on type.
-    pub on_type_formatting: Option<OnTypeFormattingOptions>,
 }
 
 impl Capabilities {
@@ -276,8 +209,8 @@ impl Capabilities {
 
     /// Whether no [`ServerFeature`] is available.
     ///
-    /// Only the feature set is consulted; the other fields (position encoding,
-    /// sync kind, trigger characters, …) may still carry advertised values.
+    /// Only the feature set is consulted; the trigger characters may still
+    /// carry advertised values.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.features.is_empty()
@@ -287,27 +220,6 @@ impl Capabilities {
     #[must_use]
     pub fn is_completion_trigger(&self, ch: char) -> bool {
         self.completion.trigger_characters.contains(&ch)
-    }
-
-    /// Whether signature help should open on `ch`.
-    #[must_use]
-    pub fn is_signature_help_trigger(&self, ch: char) -> bool {
-        self.signature_help.trigger_characters.contains(&ch)
-    }
-
-    /// Whether `command` is one the server said it accepts.
-    ///
-    /// A server that advertised [`ServerFeature::ExecuteCommand`] without
-    /// listing any command is taken at its word for every command: the list is
-    /// optional in the protocol, and refusing everything would be worse than
-    /// letting the server decline one it does not know.
-    #[must_use]
-    pub fn accepts_command(&self, command: &str) -> bool {
-        if !self.supports(ServerFeature::ExecuteCommand) {
-            return false;
-        }
-        self.execute_commands.is_empty()
-            || self.execute_commands.iter().any(|known| known == command)
     }
 }
 
@@ -324,10 +236,10 @@ mod tests {
         // request is refused rather than issued blind.
         assert!(!capabilities.supports(ServerFeature::Hover));
         assert!(!capabilities.supports(ServerFeature::Rename));
-        // LSP's historical default, and the one a server that omits the field
-        // is promising.
-        assert_eq!(capabilities.position_encoding, PositionEncoding::Utf16);
-        assert_eq!(capabilities.text_sync, TextSyncKind::Full);
+        // And no character opens anything.
+        assert_eq!(capabilities.completion, CompletionOptions::default());
+        assert_eq!(capabilities.signature_help, SignatureHelpOptions::default());
+        assert!(!capabilities.is_completion_trigger('.'));
     }
 
     #[test]
@@ -369,45 +281,25 @@ mod tests {
             ..Capabilities::default()
         };
         assert!(capabilities.is_completion_trigger('.'));
+        assert!(capabilities.is_completion_trigger(':'));
         assert!(!capabilities.is_completion_trigger('x'));
-        assert!(capabilities.is_signature_help_trigger('('));
-        assert!(!capabilities.is_signature_help_trigger('.'));
-    }
-
-    #[test]
-    fn execute_command_is_refused_unless_advertised() {
-        let mut capabilities = Capabilities::default();
-        assert!(!capabilities.accepts_command("rust-analyzer.runSingle"));
-
-        // Advertised with no list: the list is optional in the protocol, so
-        // take the server at its word rather than refusing everything.
-        capabilities.enable(ServerFeature::ExecuteCommand);
-        assert!(capabilities.accepts_command("rust-analyzer.runSingle"));
-
-        capabilities
-            .execute_commands
-            .push("rust-analyzer.runSingle".to_owned());
-        assert!(capabilities.accepts_command("rust-analyzer.runSingle"));
-        assert!(!capabilities.accepts_command("gopls.tidy"));
+        // A commit character is not a trigger, and neither is a signature-help
+        // trigger: each list answers only for itself.
+        assert!(!capabilities.is_completion_trigger('('));
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn capabilities_round_trip_and_degrade_to_what_was_said() -> Result<(), serde_json::Error> {
         let mut capabilities = Capabilities {
-            position_encoding: PositionEncoding::Utf8,
-            text_sync: TextSyncKind::Incremental,
-            save_includes_text: true,
             completion: CompletionOptions {
                 trigger_characters: vec!['.'],
                 commit_characters: vec!['('],
             },
-            code_action_kinds: vec!["quickfix".to_owned()],
-            execute_commands: vec!["run".to_owned()],
-            on_type_formatting: Some(OnTypeFormattingOptions {
-                first_trigger_character: '}',
-                more_trigger_characters: vec![';'],
-            }),
+            signature_help: SignatureHelpOptions {
+                trigger_characters: vec!['('],
+                retrigger_characters: vec![','],
+            },
             ..Capabilities::default()
         };
         capabilities.enable(ServerFeature::Hover);
@@ -422,9 +314,15 @@ mod tests {
             newer.iter().collect::<Vec<_>>(),
             vec![ServerFeature::Hover, ServerFeature::Unknown]
         );
-        assert_eq!(newer.position_encoding, PositionEncoding::Utf16);
-        assert_eq!(newer.text_sync, TextSyncKind::Full);
+        assert_eq!(newer.completion, CompletionOptions::default());
         assert!(!newer.supports(ServerFeature::Rename));
+
+        // An older peer still sends the negotiation fields this record no
+        // longer carries; they are ignored rather than failing the payload.
+        let older = serde_json::from_str::<Capabilities>(
+            r#"{"features":["Hover"],"position_encoding":"Utf8","text_sync":"Incremental","execute_commands":["run"]}"#,
+        )?;
+        assert_eq!(older.iter().collect::<Vec<_>>(), vec![ServerFeature::Hover]);
         Ok(())
     }
 }

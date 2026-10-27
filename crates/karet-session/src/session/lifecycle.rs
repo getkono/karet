@@ -1,3 +1,11 @@
+//! Bringing a session up: construction and the deferred start.
+//!
+//! [`Session::new`] builds the actor's state and spawns its background workers
+//! (file watcher, VCS, search, seam index, spell and TODO scans, highlighting,
+//! LaTeX, the managed-LSP registry); each worker's own module owns its loop.
+//! `start` runs what must not block construction -- the first VCS status, the
+//! commit-message agent probe, and the GitHub forge -- from the actor task.
+
 use super::*;
 
 impl Session {
@@ -65,7 +73,8 @@ impl Session {
         let (spell_tx, spell_rx) = crate::spell::spawn();
         #[cfg(feature = "mdlint")]
         let lint_config = super::mdlint::discover_config(&config.roots);
-        // Language servers spawn lazily, per language, on the first matching open.
+        // Language servers spawn lazily, one per provider at a repository root, on
+        // the first matching open.
         let debug = crate::dap::DebugManager::new(
             config.settings.debug.clone(),
             config.roots.first().cloned(),

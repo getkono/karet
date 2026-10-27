@@ -1,3 +1,11 @@
+//! Provider resolution: which server serves a language, and with what launch spec.
+//!
+//! This module maps a language to its built-in provider and builds that
+//! provider's [`LspSpec`] (argv from `catalog`, default initialization options),
+//! looks for a project-local executable and checks `PATH`, finds the repository
+//! root a slot is keyed by, and applies the per-project provider choices
+//! (Python diagnostics, Biome, the project's TypeScript SDK).
+
 use super::*;
 
 /// One built-in provider and the language IDs that resolve to it.

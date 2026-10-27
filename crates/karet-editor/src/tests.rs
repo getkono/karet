@@ -92,12 +92,8 @@ fn end_of_line_text_renders_after_the_line() {
 fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
     let buffer = TextBuffer::from_text("#ffcc00 and #222222\n");
     let theme = Theme::dark();
-    let Ok(light) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
-        return;
-    };
-    let Ok(dark) = Range::new(LineCol::new(0, 12), LineCol::new(0, 19)) else {
-        return;
-    };
+    let light = Range::new(LineCol::new(0, 0), LineCol::new(0, 7));
+    let dark = Range::new(LineCol::new(0, 12), LineCol::new(0, 19));
     let decorations = [
         Decoration::new(
             light,
@@ -148,9 +144,7 @@ fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
 fn color_swatch_yields_to_an_overlapping_selection() {
     let buffer = TextBuffer::from_text("#ffcc00\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(0, 0), LineCol::new(0, 7));
     let decoration = Decoration::new(
         range,
         DecorationKind::ColorSwatch {
@@ -787,9 +781,7 @@ fn a_tiny_viewport_keeps_the_deepest_header_and_one_content_row() {
 fn an_underline_decoration_underlines_exactly_its_range() {
     let buffer = TextBuffer::from_text("let target = 1;\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(0, 4), LineCol::new(0, 10));
     let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let area = Rect::new(0, 0, 40, 1);
     let mut target = Buffer::empty(area);
@@ -815,9 +807,7 @@ fn an_underline_decoration_underlines_exactly_its_range() {
 fn a_diagnostic_outranks_an_underline_decoration_on_the_same_cell() {
     let buffer = TextBuffer::from_text("let target = 1;\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(0, 4), LineCol::new(0, 10));
     let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let diagnostic = Diagnostic {
         range,

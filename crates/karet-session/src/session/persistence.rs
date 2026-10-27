@@ -1,5 +1,8 @@
 //! What the session keeps on disk across restarts: crash-recovery swaps (and
 //! the timer that writes them) and persisted undo history.
+//!
+//! This module decides when to write, recover, or discard; the on-disk formats
+//! and the store itself belong to [`crate::backup`].
 
 use super::*;
 
@@ -38,7 +41,7 @@ impl Session {
                 .store
                 .docs
                 .get(&doc_id)
-                .and_then(|doc| whole_document_change(doc, record.content.clone()));
+                .map(|doc| whole_document_change(doc, record.content.clone()));
             if let Some(change) = change {
                 self.apply(id, doc_id, &change, EditCause::Replace);
                 discard(&record.swap_path);

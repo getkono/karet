@@ -231,13 +231,22 @@ fn select_to_bracket_selects_the_pair_then_widens_outward() {
     let mut state = EditorState::new();
     state.place_caret(at(0, 3));
     state.select_to_bracket(&buffer, None);
-    assert_eq!(state.selection_range(), Range::new(at(0, 2), at(0, 5)).ok());
+    assert_eq!(
+        state.selection_range(),
+        Some(Range::new(at(0, 2), at(0, 5)))
+    );
     assert_eq!(state.cursor(), at(0, 5));
     state.select_to_bracket(&buffer, None);
-    assert_eq!(state.selection_range(), Range::new(at(0, 0), at(0, 7)).ok());
+    assert_eq!(
+        state.selection_range(),
+        Some(Range::new(at(0, 0), at(0, 7)))
+    );
     // Nothing encloses the outermost pair: the selection stays.
     state.select_to_bracket(&buffer, None);
-    assert_eq!(state.selection_range(), Range::new(at(0, 0), at(0, 7)).ok());
+    assert_eq!(
+        state.selection_range(),
+        Some(Range::new(at(0, 0), at(0, 7)))
+    );
 }
 
 #[test]

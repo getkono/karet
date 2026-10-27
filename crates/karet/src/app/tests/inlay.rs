@@ -25,7 +25,7 @@ fn inlay_requests(backend: &RecordingBackend) -> Vec<(RequestId, u32, u32)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::InlayHints { range, .. } => {
+                    SessionCommand::Lsp(LspCommand::InlayHints { range, .. }) => {
                         Some((*id, range.start.line, range.end.line))
                     },
                     _ => None,
@@ -47,7 +47,7 @@ fn inlay_request_docs(backend: &RecordingBackend) -> Vec<DocumentId> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::InlayHints { doc, .. } => Some(*doc),
+                    SessionCommand::Lsp(LspCommand::InlayHints { doc, .. }) => Some(*doc),
                     _ => None,
                 })
                 .collect()

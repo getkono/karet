@@ -1,11 +1,11 @@
 //! Completion UI state and pure helpers (issue #57, #371).
 //!
 //! The app talks to LSP only through the session seam: a trigger sends
-//! [`karet_session::Command::Completion`], the answering
+//! [`karet_session::LspCommand::Completion`], the answering
 //! `Event::Completions` (tagged with the request id, document, and version)
 //! fills [`CompletionUi`], and the popup renders through
 //! `karet_widgets::completion`. The selected item's deferred documentation and
-//! additional edits arrive through `Command::ResolveCompletion`. Everything
+//! additional edits arrive through `LspCommand::ResolveCompletion`. Everything
 //! stateful lives on `App`; this module holds the state types and the pure
 //! logic (trigger classification, edit-range and additional-edit math, the
 //! syntax-error gate) so they are unit-testable without an `App`.

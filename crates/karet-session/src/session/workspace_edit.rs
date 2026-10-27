@@ -1,5 +1,5 @@
 //! The one path every workspace edit is applied through: a rename's, a
-//! client's [`Command::ApplyWorkspaceEdit`], and a language server's
+//! client's [`WorkspaceCommand::ApplyEdit`], and a language server's
 //! `workspace/applyEdit`.
 //!
 //! Text edits land in the session's documents, never straight on disk: a file

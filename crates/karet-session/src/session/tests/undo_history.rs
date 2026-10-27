@@ -24,7 +24,7 @@
     fn open_in(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },
@@ -47,7 +47,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -65,12 +65,12 @@
     fn save_and_close(session: &mut Session, doc: DocumentId) {
         session.handle(
             RequestId(3),
-            Command::Save {
+            DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             },
         );
-        session.handle(RequestId(4), Command::CloseDocument { doc });
+        session.handle(RequestId(4), DocumentCommand::Close { doc });
     }
 
     fn undo_files(swapdir: &Path) -> usize {
@@ -103,11 +103,11 @@
             second.document(doc).is_some_and(|d| !d.buffer().is_dirty()),
             "restoring history leaves the reopened file clean"
         );
-        second.handle(RequestId(5), Command::Undo { doc });
+        second.handle(RequestId(5), DocumentCommand::Undo { doc });
         assert_eq!(doc_text(&second, doc), "one base\n");
-        second.handle(RequestId(6), Command::Undo { doc });
+        second.handle(RequestId(6), DocumentCommand::Undo { doc });
         assert_eq!(doc_text(&second, doc), "base\n");
-        second.handle(RequestId(7), Command::Redo { doc });
+        second.handle(RequestId(7), DocumentCommand::Redo { doc });
         assert_eq!(doc_text(&second, doc), "one base\n");
         Ok(())
     }
@@ -128,7 +128,7 @@
 
         let (mut second, mut events) = undo_session(swapdir.path(), |f| f.persistent_undo = true);
         let doc = open_in(&mut second, &mut events, &path).ok_or("not reopened")?;
-        second.handle(RequestId(5), Command::Undo { doc });
+        second.handle(RequestId(5), DocumentCommand::Undo { doc });
         assert_eq!(
             doc_text(&second, doc),
             "rewritten elsewhere\n",
@@ -160,7 +160,7 @@
         // Switched back off: the next save deletes what was kept.
         let (mut off, mut events) = undo_session(swapdir.path(), |_| {});
         let doc = open_in(&mut off, &mut events, &path).ok_or("not opened")?;
-        off.handle(RequestId(5), Command::Undo { doc });
+        off.handle(RequestId(5), DocumentCommand::Undo { doc });
         assert_eq!(doc_text(&off, doc), "two one base\n", "nothing is restored when off");
         save_and_close(&mut off, doc);
         assert_eq!(undo_files(swapdir.path()), 0);
@@ -179,18 +179,18 @@
         edit_start(&mut first, doc, "one ");
         first.handle(
             RequestId(3),
-            Command::Save {
+            DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             },
         );
         // An unsaved edit, discarded by closing.
         edit_start(&mut first, doc, "lost ");
-        first.handle(RequestId(4), Command::CloseDocument { doc });
+        first.handle(RequestId(4), DocumentCommand::Close { doc });
 
         let (mut second, mut events) = undo_session(swapdir.path(), |f| f.persistent_undo = true);
         let doc = open_in(&mut second, &mut events, &path).ok_or("not reopened")?;
-        second.handle(RequestId(5), Command::Undo { doc });
+        second.handle(RequestId(5), DocumentCommand::Undo { doc });
         assert_eq!(doc_text(&second, doc), "base\n");
         Ok(())
     }
@@ -214,8 +214,8 @@
         settings.files.undo_limit = 1;
         session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
         assert_eq!(undo_len(&session), 1, "a lowered cap applies to open buffers");
-        session.handle(RequestId(5), Command::Undo { doc });
-        session.handle(RequestId(6), Command::Undo { doc });
+        session.handle(RequestId(5), DocumentCommand::Undo { doc });
+        session.handle(RequestId(6), DocumentCommand::Undo { doc });
         assert_eq!(doc_text(&session, doc), "b a base\n");
         Ok(())
     }

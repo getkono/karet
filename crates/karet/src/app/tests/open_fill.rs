@@ -142,8 +142,12 @@ fn an_edit_before_the_fill_is_refused_rather_than_sent_against_the_placeholder()
 
     assert_eq!(code_text(&app), "", "the placeholder is not edited");
     let sent_change = backend.sent.lock().is_ok_and(|sent| {
-        sent.iter()
-            .any(|(_, command)| matches!(command, SessionCommand::ApplyChange { .. }))
+        sent.iter().any(|(_, command)| {
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+            )
+        })
     });
     assert!(
         !sent_change,
@@ -259,7 +263,11 @@ fn a_failed_open_stops_the_wait_and_shows_why() {
     let tab = app.active;
     let open = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(id, command)| {
-            matches!(command, SessionCommand::OpenDocument { .. }).then_some(*id)
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::Open { .. })
+            )
+            .then_some(*id)
         })
     });
     assert!(open.is_some(), "the tab asked the session for its text");
@@ -346,13 +354,18 @@ fn a_split_carries_the_failed_open_it_was_made_from() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The ids of every `OpenDocument` sent so far.
+/// The ids of every `DocumentCommand::Open` sent so far.
 fn opens(backend: &RecordingBackend) -> Vec<RequestId> {
     backend.sent.lock().map_or_else(
         |_| Vec::new(),
         |sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::OpenDocument { .. }))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::Open { .. })
+                    )
+                })
                 .map(|(id, _)| *id)
                 .collect()
         },
@@ -404,7 +417,7 @@ fn a_split_made_before_the_open_is_answered_asks_for_its_own_document() {
     let closes = backend.sent.lock().map_or(0, |sent| {
         sent.iter()
             .filter(|(_, command)| {
-                matches!(command, SessionCommand::CloseDocument { doc } if *doc == DOC)
+                matches!(command, SessionCommand::Document(DocumentCommand::Close { doc }) if *doc == DOC)
             })
             .count()
     });

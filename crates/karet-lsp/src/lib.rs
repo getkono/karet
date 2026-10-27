@@ -28,10 +28,11 @@
 //! Three protocol choices are deliberate and documented here once:
 //!
 //! - **Positions cross this API in UTF-16.** The client offers the LSP-default
-//!   `utf-16` as its only position encoding and stays faithful to it; a server's
-//!   `positionEncoding` reply is recorded in [`Capabilities`] but not yet acted
-//!   on. Every [`LineCol`] and [`Range`] passed to or returned from this crate
-//!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
+//!   `utf-16` as its only position encoding and stays faithful to it, so a
+//!   server's `positionEncoding` reply is not read: offered nothing else, a
+//!   conforming server has no other choice. Every [`LineCol`] and [`Range`]
+//!   passed to or returned from this crate counts columns in UTF-16 code
+//!   units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
 //! - **Document sync is the consumer's choice of two.** [`LspClient::did_change`]
@@ -81,6 +82,7 @@ pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 pub use pull::PulledDiagnostics;
 pub use semantic_tokens::SemanticTokens;
+pub use semantic_tokens::SemanticTokensLegend;
 pub use watch::FileChange;
 pub use watch::FileChangeKind;
 pub use window::MessageLevel;
@@ -606,15 +608,14 @@ impl LspClient {
         // apart from the advertised set, so one that arrives between here and
         // the first request survives the seeding.
         let gate = conn.gate();
-        let parsed = capability::parse(&result);
+        let (parsed, negotiated) = capability::parse(&result);
         tracing::debug!(
             features = parsed.len(),
-            encoding = ?parsed.position_encoding,
-            sync = ?parsed.text_sync,
+            sync = ?negotiated.text_sync,
             "language server advertised its capabilities"
         );
         if let Ok(mut live) = gate.write() {
-            live.advertise(parsed);
+            live.advertise(parsed, negotiated);
         }
         conn.notify("initialized", lsp_types::InitializedParams {})?;
         if let Some(settings) = options.settings {
@@ -641,6 +642,15 @@ impl LspClient {
         self.gate
             .read()
             .map(|gate| gate.capabilities())
+            .unwrap_or_default()
+    }
+
+    /// What the handshake negotiated beyond the feature set: a snapshot, as
+    /// [`Self::capabilities`] is.
+    pub(crate) fn server_options(&self) -> capability::ServerOptions {
+        self.gate
+            .read()
+            .map(|gate| gate.options().clone())
             .unwrap_or_default()
     }
 
@@ -840,7 +850,11 @@ impl LspClient {
         version: i32,
         edits: &[TextEdit],
     ) -> Result<(), LspError> {
-        if self.capabilities().text_sync != karet_core::TextSyncKind::Incremental {
+        let incremental = self
+            .gate
+            .read()
+            .is_ok_and(|gate| gate.options().text_sync == capability::TextSyncKind::Incremental);
+        if !incremental {
             return Err(LspError::Unsupported {
                 method: "incremental textDocument/didChange",
             });

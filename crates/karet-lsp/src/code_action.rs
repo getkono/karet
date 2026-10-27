@@ -146,7 +146,11 @@ impl LspClient {
         command: &str,
         arguments: Vec<Value>,
     ) -> Result<Value, LspError> {
-        if !self.capabilities().accepts_command(command) {
+        if !self
+            .gate
+            .read()
+            .is_ok_and(|gate| gate.accepts_command(command))
+        {
             return Err(LspError::Unsupported {
                 method: "workspace/executeCommand",
             });

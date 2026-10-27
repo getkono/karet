@@ -1,3 +1,11 @@
+//! The open-document lifecycle on the actor: open, edit, undo/redo, save,
+//! retarget, close, and conversion of read-only formats to text.
+//!
+//! This module owns the document store and the save pipeline, including
+//! format-on-save and its deadline. Reading and writing the file itself is
+//! delegated to `docfile`, server sync to the LSP manager, and swap removal to
+//! the backup store.
+
 use super::*;
 
 /// Answer to a save abandoned because its document was closed first.
@@ -440,7 +448,7 @@ impl Session {
                 && let Some(formatted) =
                     crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
             {
-                return whole_document_change(doc, formatted).map(|change| change.edits);
+                return Some(whole_document_change(doc, formatted).edits);
             }
         }
         #[cfg(not(feature = "toml-format"))]
@@ -742,9 +750,7 @@ impl Session {
         if normalized == current {
             return false;
         }
-        let Some(change) = whole_document_change(doc, normalized) else {
-            return false;
-        };
+        let change = whole_document_change(doc, normalized);
         let ctx = save_edit_context(tick, doc, &change);
         let applied = if join {
             doc.buffer.apply_joined(&change, ctx)

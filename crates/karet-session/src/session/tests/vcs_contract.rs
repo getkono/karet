@@ -87,7 +87,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Unstage {
+            VcsCommand::Unstage {
                 paths: vec![PathBuf::from("a.txt")],
             },
         );
@@ -108,7 +108,7 @@
 
         session.handle(
             RequestId(2),
-            Command::Discard {
+            VcsCommand::Discard {
                 paths: vec![PathBuf::from("a.txt")],
             },
         );
@@ -136,7 +136,7 @@
         std::fs::write(root.join("b.txt"), "new\n")?;
         let (mut session, mut events) = repo_session(&root);
 
-        session.handle(RequestId(1), Command::StageAll);
+        session.handle(RequestId(1), VcsCommand::StageAll);
         let staged = answered_status(&mut events, RequestId(1));
         assert_eq!(
             staged.map(|(staged, working)| (listed(&staged), working.len())),
@@ -149,7 +149,7 @@
             ))
         );
 
-        session.handle(RequestId(2), Command::UnstageAll);
+        session.handle(RequestId(2), VcsCommand::UnstageAll);
         let unstaged = answered_status(&mut events, RequestId(2));
         assert_eq!(
             unstaged.map(|(staged, working)| (staged.len(), listed(&working))),
@@ -179,9 +179,9 @@
         };
         let (mut session, mut events) = repo_session(&root);
 
-        session.handle(RequestId(1), Command::RefreshVcs);
+        session.handle(RequestId(1), VcsCommand::Refresh);
         assert!(answered_status(&mut events, RequestId(1)).is_some());
-        session.handle(RequestId(2), Command::RefreshVcs);
+        session.handle(RequestId(2), VcsCommand::Refresh);
         assert_eq!(
             answered_status(&mut events, RequestId(2)).map(|(s, w)| (s.len(), w.len())),
             Some((0, 0)),
@@ -201,7 +201,7 @@
 
         session.handle(
             RequestId(1),
-            Command::ApplyIndexPatch {
+            VcsCommand::ApplyIndexPatch {
                 patch: "not a patch\n".to_owned(),
                 reverse: false,
             },
@@ -239,7 +239,7 @@
                 _ => None,
             })
         };
-        session.handle(RequestId(1), Command::VcsLog { skip: 0, limit: 2 });
+        session.handle(RequestId(1), VcsCommand::Log { skip: 0, limit: 2 });
         let (skip, commits, has_more, labels) =
             page(&mut events, RequestId(1)).ok_or("the first page never arrived")?;
         assert_eq!(skip, 0);
@@ -248,7 +248,7 @@
         assert!(has_more, "c0 is still beyond this page");
         assert!(labels.contains_key(&head), "the tip carries its ref labels");
 
-        session.handle(RequestId(2), Command::VcsLog { skip: 2, limit: 2 });
+        session.handle(RequestId(2), VcsCommand::Log { skip: 2, limit: 2 });
         let (skip, commits, has_more, _) =
             page(&mut events, RequestId(2)).ok_or("the second page never arrived")?;
         assert_eq!(skip, 2);
@@ -267,7 +267,7 @@
         let branch = git_output(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         let (mut session, mut events) = repo_session(&root);
 
-        session.handle(RequestId(1), Command::RepositorySnapshot);
+        session.handle(RequestId(1), VcsCommand::RepositorySnapshot);
         let snapshot = wait_answer(&mut events, RequestId(1), |event| match event {
             Event::RepositorySnapshot { snapshot } => Some(snapshot),
             _ => None,
@@ -308,7 +308,7 @@
 
         session.handle(
             RequestId(1),
-            Command::PrepareDiff {
+            VcsCommand::PrepareDiff {
                 path: PathBuf::from("notes.txt"),
                 old: "one\n".to_owned(),
                 new: "one\ntwo\n".to_owned(),
@@ -331,7 +331,7 @@
 
         session.handle(
             RequestId(1),
-            Command::DiffWithRev {
+            VcsCommand::DiffWithRev {
                 path: root.join("a.txt"),
                 rev: "HEAD".to_owned(),
                 live: Some("hello\nunsaved\n".to_owned()),
@@ -349,7 +349,7 @@
         std::fs::write(root.join("fresh.txt"), "x\n")?;
         session.handle(
             RequestId(2),
-            Command::DiffWithRev {
+            VcsCommand::DiffWithRev {
                 path: root.join("fresh.txt"),
                 rev: "HEAD".to_owned(),
                 live: None,

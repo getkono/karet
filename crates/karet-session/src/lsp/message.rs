@@ -1,6 +1,7 @@
 //! The vocabulary spoken between the session actor and its server tasks.
 //!
-//! [`ServerCmd`] travels down to one per-language task; [`LspUpdate`] travels
+//! [`ServerCmd`] travels down to the task serving one slot (a provider at a
+//! repository root, see [`SlotKey`]); [`LspUpdate`] travels
 //! back. Both are plain data on purpose: the task owns the `LspClient` and the
 //! protocol, while position conversion (LSP UTF-16 ↔ buffer UTF-32) and event
 //! emission happen on the actor, where the buffer lives.
@@ -48,7 +49,7 @@ use crate::api::LanguageServerRuntimeState;
 use crate::api::LocationKind;
 use crate::api::RequestId;
 
-/// A command for one per-language server task.
+/// A command for the server task serving one slot.
 pub(crate) enum ServerCmd {
     /// Forward `textDocument/didOpen`.
     DidOpen {
@@ -159,7 +160,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request signature help; `manual` as on
-    /// [`crate::api::Command::SignatureHelp`].
+    /// [`crate::api::LspCommand::SignatureHelp`].
     SignatureHelp {
         request: RequestId,
         doc: DocumentId,
@@ -168,7 +169,7 @@ pub(crate) enum ServerCmd {
         manual: bool,
     },
     /// Request the selection ranges around each of `positions`, for a
-    /// [`crate::api::Command::SelectionRanges`].
+    /// [`crate::api::LspCommand::SelectionRanges`].
     SelectionRanges {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -180,7 +181,7 @@ pub(crate) enum ServerCmd {
         positions: Vec<LineCol>,
     },
     /// Request the occurrences of the symbol at `position`, for a
-    /// [`crate::api::Command::DocumentHighlights`].
+    /// [`crate::api::LspCommand::DocumentHighlights`].
     DocumentHighlights {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -192,7 +193,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request definition locations, or with a `kind` the locations a
-    /// [`crate::api::Command::FindLocations`] asks for.
+    /// [`crate::api::LspCommand::FindLocations`] asks for.
     Definition {
         request: RequestId,
         doc: DocumentId,
@@ -779,7 +780,9 @@ pub(crate) enum LspUpdate {
         /// The regions, normalized.
         folds: karet_core::FoldRegions,
     },
-    /// The server binary could not be started (reported once per language).
+    /// The server binary could not be started (reported once per outage of the
+    /// slot: the first failed launch reports it, and only a later successful
+    /// connection re-arms the report).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.
         token: SlotToken,
@@ -805,7 +808,8 @@ pub(crate) enum LspUpdate {
         /// The human-readable diagnosis (what is missing and how to fix it).
         message: String,
     },
-    /// A running server's connection closed (reported once per language).
+    /// A running server's connection closed (reported once per connection of
+    /// the slot: the task drops the dead client after reporting it).
     ServerDied {
         /// The incarnation of the slot that died.
         token: SlotToken,

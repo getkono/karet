@@ -25,12 +25,12 @@ fn listings(backend: &RecordingBackend) -> Vec<(RequestId, Range, Vec<String>, C
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::CodeActions {
+                    SessionCommand::Lsp(LspCommand::CodeActions {
                         range,
                         kinds,
                         trigger,
                         ..
-                    } => Some((*id, *range, kinds.clone(), *trigger)),
+                    }) => Some((*id, *range, kinds.clone(), *trigger)),
                     _ => None,
                 })
                 .collect()
@@ -46,9 +46,9 @@ fn runs(backend: &RecordingBackend) -> Vec<(RequestId, u64, String)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::ApplyCodeAction {
+                    SessionCommand::Lsp(LspCommand::ApplyCodeAction {
                         version, action, ..
-                    } => Some((*id, *version, action.title.clone())),
+                    }) => Some((*id, *version, action.title.clone())),
                     _ => None,
                 })
                 .collect()

@@ -8,8 +8,6 @@
 //! Conversions between the two require the text buffer and therefore live on
 //! `karet_text::TextBuffer`, not here.
 
-use crate::error::CoreError;
-
 /// An absolute byte offset into a UTF-8 text buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -43,6 +41,25 @@ impl LineCol {
     }
 }
 
+/// A `(row, byte-column)` grid point, as tree-sitter counts them: the column is a
+/// **byte** offset from the line start, not a `char` column like [`LineCol`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BytePoint {
+    /// Zero-based row (line) index.
+    pub row: usize,
+    /// Byte offset from the start of the row.
+    pub col: usize,
+}
+
+impl BytePoint {
+    /// Create a point at `row` / byte-`col`.
+    #[must_use]
+    pub const fn new(row: usize, col: usize) -> Self {
+        Self { row, col }
+    }
+}
+
 /// A half-open byte span `[start, end)` within a single buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -54,15 +71,16 @@ pub struct Span {
 }
 
 impl Span {
-    /// Create a span, returning [`CoreError::InvalidSpan`] when `start > end`.
+    /// The span between byte offsets `a` and `b`, whichever order they come in:
+    /// the earlier one starts it.
     ///
-    /// # Errors
-    /// Returns [`CoreError::InvalidSpan`] if `start` is after `end`.
-    pub fn new(start: BytePos, end: BytePos) -> Result<Self, CoreError> {
-        if start.0 <= end.0 {
-            Ok(Self { start, end })
-        } else {
-            Err(CoreError::InvalidSpan)
+    /// The fields stay public, so a literal can still be built backwards; this
+    /// is the constructor that cannot be.
+    #[must_use]
+    pub fn new(a: BytePos, b: BytePos) -> Self {
+        Self {
+            start: a.min(b),
+            end: a.max(b),
         }
     }
 
@@ -99,15 +117,16 @@ pub struct Range {
 }
 
 impl Range {
-    /// Create a range, returning [`CoreError::InvalidRange`] when `start > end`.
+    /// The range between positions `a` and `b`, whichever order they come in:
+    /// the earlier one starts it.
     ///
-    /// # Errors
-    /// Returns [`CoreError::InvalidRange`] if `start` is ordered after `end`.
-    pub fn new(start: LineCol, end: LineCol) -> Result<Self, CoreError> {
-        if start <= end {
-            Ok(Self { start, end })
-        } else {
-            Err(CoreError::InvalidRange)
+    /// The fields stay public, so a literal can still be built backwards; this
+    /// is the constructor that cannot be.
+    #[must_use]
+    pub fn new(a: LineCol, b: LineCol) -> Self {
+        Self {
+            start: a.min(b),
+            end: a.max(b),
         }
     }
 
@@ -161,8 +180,7 @@ impl LineIndex {
     /// The 0-based row containing byte offset `pos` (clamped to the last row).
     #[must_use]
     pub fn row_at(&self, pos: BytePos) -> u32 {
-        let row = self.starts.partition_point(|&s| s <= pos.0) - 1;
-        u32::try_from(row).unwrap_or(u32::MAX)
+        u32::try_from(self.row_index(pos)).unwrap_or(u32::MAX)
     }
 
     /// The byte offset of the start of `row`, or `None` past the last row.
@@ -171,12 +189,22 @@ impl LineIndex {
         self.starts.get(row as usize).map(|&s| BytePos(s))
     }
 
-    /// The `(row, byte-column)` grid point of byte offset `pos`.
+    /// The `(row, byte-column)` grid point of byte offset `pos`, its row the
+    /// one [`row_at`](Self::row_at) reports.
     #[must_use]
-    pub fn point_at(&self, pos: BytePos) -> (u32, usize) {
-        let row = self.row_at(pos);
-        let start = self.starts.get(row as usize).copied().unwrap_or(0);
-        (row, pos.0.saturating_sub(start))
+    pub fn point_at(&self, pos: BytePos) -> BytePoint {
+        let row = self.row_index(pos);
+        let start = self.starts.get(row).copied().unwrap_or(0);
+        BytePoint::new(row, pos.0.saturating_sub(start))
+    }
+
+    /// The index into `starts` of the row holding `pos` (clamped to the last).
+    fn row_index(&self, pos: BytePos) -> usize {
+        // `starts[0] == 0`, so at least one start is `<= pos` and the
+        // subtraction cannot underflow.
+        self.starts
+            .partition_point(|&s| s <= pos.0)
+            .saturating_sub(1)
     }
 
     /// The [`LineCol`] (char-counted column) of byte offset `pos` within `text`.
@@ -189,11 +217,14 @@ impl LineIndex {
     /// is the one [`row_at`](Self::row_at) reports.
     #[must_use]
     pub fn line_col(&self, text: &str, pos: BytePos) -> LineCol {
-        let (row, byte_col) = self.point_at(pos);
-        let start = self.starts.get(row as usize).copied().unwrap_or(0);
-        let end = text.floor_char_boundary(start.saturating_add(byte_col));
+        let point = self.point_at(pos);
+        let start = self.starts.get(point.row).copied().unwrap_or(0);
+        let end = text.floor_char_boundary(start.saturating_add(point.col));
         let col = text.get(start..end).map_or(0, |s| s.chars().count());
-        LineCol::new(row, u32::try_from(col).unwrap_or(u32::MAX))
+        LineCol::new(
+            u32::try_from(point.row).unwrap_or(u32::MAX),
+            u32::try_from(col).unwrap_or(u32::MAX),
+        )
     }
 
     /// The [`Range`] covering byte span `span` within `text`: both ends converted
@@ -232,11 +263,11 @@ mod tests {
             }
             .is_empty()
         );
-        assert_eq!(Span::new(BytePos(2), BytePos(5)), Ok(s));
-        assert_eq!(
-            Span::new(BytePos(5), BytePos(2)),
-            Err(CoreError::InvalidSpan)
-        );
+        assert_eq!(Span::new(BytePos(2), BytePos(5)), s);
+        // Backwards ends are put in order rather than refused: the earlier
+        // offset always starts the span.
+        assert_eq!(Span::new(BytePos(5), BytePos(2)), s);
+        assert!(Span::new(BytePos(4), BytePos(4)).is_empty());
     }
 
     #[test]
@@ -257,11 +288,19 @@ mod tests {
             }
             .is_empty()
         );
-        assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), Ok(r));
+        assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), r);
+        // Backwards ends are put in order rather than refused, comparing the
+        // line before the column: (3, 4) ends the range even though (1, 0)
+        // has the smaller column too, and (1, 9) starts one before (2, 0).
+        assert_eq!(Range::new(LineCol::new(3, 4), LineCol::new(1, 0)), r);
         assert_eq!(
-            Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),
-            Err(CoreError::InvalidRange)
+            Range::new(LineCol::new(2, 0), LineCol::new(1, 9)),
+            Range {
+                start: LineCol::new(1, 9),
+                end: LineCol::new(2, 0),
+            }
         );
+        assert!(Range::new(caret, caret).is_empty());
     }
 
     #[test]
@@ -277,7 +316,7 @@ mod tests {
         assert_eq!(idx.start_of(9), None);
         // 'é' is 2 bytes: its start (byte 5) is byte-column 2 = char-column 2 on
         // row 1; the position after it (byte 7) is char column 3.
-        assert_eq!(idx.point_at(BytePos(5)), (1, 2));
+        assert_eq!(idx.point_at(BytePos(5)), BytePoint::new(1, 2));
         assert_eq!(idx.line_col(text, BytePos(7)), LineCol::new(1, 3));
         // An empty text still has one row.
         assert_eq!(LineIndex::new("").row_at(BytePos(0)), 0);
@@ -294,7 +333,10 @@ mod tests {
         // An offset inside 'é' (bytes 5..7) is not a position in `text`; it keeps
         // its row and clamps back to the column of 'é' itself (2), not 0 and not
         // the column after it (3).
-        assert_eq!(idx.point_at(BytePos(6)), (1, 3));
+        assert_eq!(idx.point_at(BytePos(6)), BytePoint::new(1, 3));
+        // Past the end: the last row, its column the distance past that row's
+        // start, the same row `row_at` clamps to.
+        assert_eq!(idx.point_at(BytePos(20)), BytePoint::new(3, 11));
         assert_eq!(idx.line_col(text, BytePos(6)), LineCol::new(1, 2));
         // Past the end clamps to the end of the last row, the same point as the
         // end of the text itself.

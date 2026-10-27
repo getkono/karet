@@ -2,9 +2,9 @@
 //!
 //! Both passes ask these questions — the per-document worker in [`super`] as it
 //! classifies each word, and the workspace scan in [`crate::spell_scan`] as it
-//! decides whether a file is worth parsing at all. They lived as two independent
-//! copies of the same language list; keeping one copy is what stops the panel and
-//! the editor from quietly disagreeing about what counts as prose.
+//! decides whether a file is worth parsing at all. Keeping the one language list
+//! here is what stops the panel and the editor from quietly disagreeing about
+//! what counts as prose.
 
 use crate::config::schema::Spellcheck;
 

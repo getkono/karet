@@ -294,7 +294,13 @@ pub enum Overlay {
     /// Interactive-rebase plan editor.
     RebaseTodo(RebaseTodoForm),
     /// A fuzzy list picker whose rows carry their accept outcomes directly.
-    Picker(Picker<OverlayEvent>),
+    Picker {
+        /// Which picker this is — how the app tells pickers apart, whatever
+        /// title they show.
+        kind: PickerKind,
+        /// The list itself.
+        picker: Picker<OverlayEvent>,
+    },
     /// Full create-branch form.
     CreateBranch(BranchForm),
     /// Stash creation form.
@@ -347,14 +353,64 @@ impl RebaseTodoForm {
     }
 }
 
-/// The quick-open picker's title, which is also how it is told apart.
-const QUICK_OPEN_TITLE: &str = "Go to File";
-
-/// The Seam start-point picker's title, which is also how its rows are recognised when
-/// discovery fills them in.
-const SEAM_ROOTS_TITLE: &str = "Open Seam View at";
+/// Which picker an [`Overlay::Picker`] is. Pickers are told apart by this,
+/// never by their user-visible title, so retitling one changes nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerKind {
+    /// Quick-open's file list (Go to File).
+    QuickOpen,
+    /// Quick-open's file list while the query names a line (`main.rs:42`).
+    FileAtLine,
+    /// Quick-open's Go to Line (`:42`).
+    GoToLine,
+    /// Quick-open's Go to Symbol in Editor (`@`).
+    DocumentSymbols,
+    /// The breadcrumb's sibling-symbol picker.
+    SiblingSymbols,
+    /// Quick-open's Go to Symbol in Workspace (`#`).
+    WorkspaceSymbols,
+    /// Select Color Theme.
+    ColorTheme,
+    /// The Seam view's start points.
+    SeamRoots,
+    /// Open Recent Workspace.
+    RecentWorkspaces,
+    /// Navigation results (definitions, references, …).
+    Locations,
+    /// The command palette, or a command subset.
+    Commands,
+    /// A diff target (revision or branch).
+    DiffTarget,
+    /// Switch branch.
+    Branches,
+    /// Open pull requests.
+    PullRequests,
+    /// The stash manager.
+    Stashes,
+    /// Delete local branch.
+    DeleteLocalBranch,
+    /// Delete remote branch.
+    DeleteRemoteBranch,
+    /// Tasks: Run Task.
+    Tasks,
+}
 
 impl Overlay {
+    /// Wrap `picker` as an overlay of `kind`.
+    #[must_use]
+    pub(crate) fn picker(kind: PickerKind, picker: Picker<OverlayEvent>) -> Self {
+        Self::Picker { kind, picker }
+    }
+
+    /// Which picker this overlay is, or `None` for any other overlay.
+    #[must_use]
+    pub fn picker_kind(&self) -> Option<PickerKind> {
+        match self {
+            Self::Picker { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
     /// Build a quick-open overlay over `(display, path)` pairs, in rank order.
     #[must_use]
     pub fn quick_open(files: Vec<(String, PathBuf)>) -> Self {
@@ -362,7 +418,7 @@ impl Overlay {
             .into_iter()
             .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
             .collect();
-        Self::Picker(Picker::new(QUICK_OPEN_TITLE, items))
+        Self::picker(PickerKind::QuickOpen, Picker::new("Go to File", items))
     }
 
     /// Whether this is the quick-open (go to file) picker. Only tests ask: the
@@ -370,21 +426,21 @@ impl Overlay {
     #[cfg(test)]
     #[must_use]
     pub fn is_quick_open(&self) -> bool {
-        matches!(self, Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE)
+        self.picker_kind() == Some(PickerKind::QuickOpen)
     }
 
     /// The file the highlighted quick-open row opens, if one is highlighted.
     #[must_use]
     pub fn selected_file(&self) -> Option<&Path> {
         match self {
-            Self::Picker(picker) => picker.accepted().and_then(goto_line::opened_file),
+            Self::Picker { picker, .. } => picker.accepted().and_then(goto_line::opened_file),
             _ => None,
         }
     }
 
     /// Highlight the row that opens `path`, when it is listed.
     pub fn select_file(&mut self, path: &Path) {
-        let Self::Picker(picker) = self else {
+        let Self::Picker { picker, .. } = self else {
             return;
         };
         let row = picker
@@ -403,7 +459,10 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptWorkspace(root)))
             .collect();
-        Self::Picker(Picker::new("Open Recent Workspace", items))
+        Self::picker(
+            PickerKind::RecentWorkspaces,
+            Picker::new("Open Recent Workspace", items),
+        )
     }
 
     /// Build the picker over the start points the Seam view can be opened on.
@@ -413,19 +472,23 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
             .collect();
-        Self::Picker(Picker::new(SEAM_ROOTS_TITLE, items))
+        Self::picker(
+            PickerKind::SeamRoots,
+            Picker::new("Open Seam View at", items),
+        )
     }
 
     /// Replace a Seam start-point picker's rows with ones that arrived after it opened,
     /// keeping the query and the highlighted start point where it is still offered. Any
     /// other overlay is left alone.
     pub fn set_seam_roots(&mut self, items: Vec<(String, PathBuf)>) {
-        let Self::Picker(picker) = self else {
+        let Self::Picker {
+            kind: PickerKind::SeamRoots,
+            picker,
+        } = self
+        else {
             return;
         };
-        if picker.title() != SEAM_ROOTS_TITLE {
-            return;
-        }
         let highlighted = match picker.accepted() {
             Some(OverlayEvent::AcceptSeamRoot(root)) => Some(root.clone()),
             _ => None,
@@ -479,7 +542,7 @@ impl Overlay {
             };
             items.push((label, accept));
         }
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::Locations, Picker::new(title, items))
     }
 
     /// Build the command palette.
@@ -500,7 +563,7 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::Commands, Picker::new(title, items))
     }
 
     /// Build a diff-target picker titled `title` over `(display, target)` pairs.
@@ -518,7 +581,7 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::DiffTarget, Picker::new(title, items))
     }
 
     /// Build a branch picker.
@@ -528,7 +591,7 @@ impl Overlay {
             .into_iter()
             .map(|(label, target)| (label, OverlayEvent::AcceptBranch(target)))
             .collect();
-        Self::Picker(Picker::new("Switch branch", items))
+        Self::picker(PickerKind::Branches, Picker::new("Switch branch", items))
     }
 
     /// Build the complete branch-creation form.
@@ -554,7 +617,10 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new("Open pull requests", rows))
+        Self::picker(
+            PickerKind::PullRequests,
+            Picker::new("Open pull requests", rows),
+        )
     }
 
     /// Build the stash creation form.
@@ -592,7 +658,7 @@ impl Overlay {
                 action(StashAction::Drop(reference)),
             ));
         }
-        Self::Picker(Picker::new("Manage stashes", items))
+        Self::picker(PickerKind::Stashes, Picker::new("Manage stashes", items))
     }
 
     /// Build a free-text follow-up prompt.
@@ -629,7 +695,10 @@ impl Overlay {
             .into_iter()
             .map(|name| (name.clone(), OverlayEvent::AcceptDeleteLocalBranch(name)))
             .collect();
-        Self::Picker(Picker::new("Delete local branch", rows))
+        Self::picker(
+            PickerKind::DeleteLocalBranch,
+            Picker::new("Delete local branch", rows),
+        )
     }
 
     /// Build a remote-branch deletion picker.
@@ -644,14 +713,17 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new("Delete remote branch", rows))
+        Self::picker(
+            PickerKind::DeleteRemoteBranch,
+            Picker::new("Delete remote branch", rows),
+        )
     }
 
     /// The overlay title.
     #[must_use]
     pub fn title(&self) -> &str {
         match self {
-            Self::Picker(p) => p.title(),
+            Self::Picker { picker: p, .. } => p.title(),
             Self::RebaseTodo(_) => {
                 "Interactive rebase · p/r/e/s/f/d set action · K/J reorder · Enter runs"
             },
@@ -666,7 +738,7 @@ impl Overlay {
     #[must_use]
     pub fn query(&self) -> &str {
         match self {
-            Self::Picker(p) => p.query(),
+            Self::Picker { picker: p, .. } => p.query(),
             Self::RebaseTodo(_) => "oldest first, as git applies them",
             Self::CreateBranch(_) | Self::StashForm(_) | Self::AiCommit(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
@@ -677,7 +749,7 @@ impl Overlay {
     #[must_use]
     pub fn rows(&self) -> Vec<&str> {
         match self {
-            Self::Picker(p) => p.rows(),
+            Self::Picker { picker: p, .. } => p.rows(),
             Self::RebaseTodo(form) => form.rows.iter().map(String::as_str).collect(),
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
@@ -692,7 +764,7 @@ impl Overlay {
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
             Self::RebaseTodo(form) => vec![None; form.rows.len()],
-            Self::Picker(p) => p
+            Self::Picker { picker: p, .. } => p
                 .values()
                 .into_iter()
                 .map(|event| match event {
@@ -716,7 +788,7 @@ impl Overlay {
     #[must_use]
     pub fn selected(&self) -> usize {
         match self {
-            Self::Picker(p) => p.selected(),
+            Self::Picker { picker: p, .. } => p.selected(),
             Self::RebaseTodo(form) => form.selected,
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
@@ -728,7 +800,7 @@ impl Overlay {
     /// Move the selection up.
     pub fn select_up(&mut self) {
         match self {
-            Self::Picker(p) => p.select_up(),
+            Self::Picker { picker: p, .. } => p.select_up(),
             Self::RebaseTodo(form) => {
                 form.selected = form
                     .selected
@@ -745,7 +817,7 @@ impl Overlay {
     /// Move the selection down.
     pub fn select_down(&mut self) {
         match self {
-            Self::Picker(p) => p.select_down(),
+            Self::Picker { picker: p, .. } => p.select_down(),
             Self::RebaseTodo(form) => {
                 form.selected = form
                     .selected
@@ -764,7 +836,7 @@ impl Overlay {
     /// Append a character to the query.
     pub fn push_char(&mut self, c: char) {
         match self {
-            Self::Picker(p) => p.push_char(c),
+            Self::Picker { picker: p, .. } => p.push_char(c),
             Self::RebaseTodo(form) => {
                 use karet_vcs::RebaseAction as A;
                 match c {
@@ -789,7 +861,7 @@ impl Overlay {
     /// Remove the last query character.
     pub fn pop_char(&mut self) {
         match self {
-            Self::Picker(p) => p.pop_char(),
+            Self::Picker { picker: p, .. } => p.pop_char(),
             Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => form.pop_char(),
             Self::StashForm(form) => {
@@ -808,7 +880,7 @@ impl Overlay {
     /// Append pasted text to the query.
     pub fn push_str(&mut self, text: &str) {
         match self {
-            Self::Picker(p) => p.push_str(text),
+            Self::Picker { picker: p, .. } => p.push_str(text),
             Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => {
                 for character in text.chars() {
@@ -836,7 +908,7 @@ impl Overlay {
     #[must_use]
     pub fn accept(&self) -> OverlayEvent {
         match self {
-            Self::Picker(p) => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
+            Self::Picker { picker: p, .. } => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
             Self::RebaseTodo(form) => OverlayEvent::AcceptRebaseTodo {
                 onto: form.onto.clone(),
                 steps: form

@@ -62,7 +62,7 @@ impl App {
     pub(super) fn request_change_diff(&mut self, path: PathBuf, section: Section) {
         let staged = section == Section::Staged;
         if self
-            .send(SessionCommand::PrepareChange { path, staged })
+            .send(VcsCommand::PrepareChange { path, staged })
             .is_none()
         {
             self.notify(
@@ -126,7 +126,7 @@ impl App {
         let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
         let (path, section) = (path.clone(), *section);
         if self
-            .send(SessionCommand::ApplyIndexPatch { patch, reverse })
+            .send(VcsCommand::ApplyIndexPatch { patch, reverse })
             .is_none()
         {
             self.notify(

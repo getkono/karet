@@ -421,7 +421,11 @@ fn closing_a_converting_docx_preview_cancels_the_conversion() {
     app.open_path(&file);
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::Convert { .. })
+            )
+            .then_some(*request)
         })
     });
     assert!(request.is_some(), "the conversion request was sent");
@@ -470,7 +474,11 @@ fn reopening_the_same_docx_focuses_the_existing_tab() {
     // fills and its outline reflects the converted markdown.
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::Convert { .. })
+            )
+            .then_some(*request)
         })
     });
     assert!(request.is_some(), "the conversion request was sent");

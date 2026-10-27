@@ -176,7 +176,7 @@ impl App {
     /// without recording it here would have its answer dropped on the floor. One
     /// helper rather than three call sites each remembering to do it.
     fn request_language_server_inventory(&mut self) -> Option<RequestId> {
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        let request = self.send(LanguageServerCommand::Status);
         self.lsp_runtime.inventory_request = request;
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
@@ -384,7 +384,7 @@ impl App {
             );
             return;
         }
-        let request = self.send(SessionCommand::CheckLanguageServerUpdates {
+        let request = self.send(LanguageServerCommand::CheckUpdates {
             server: Some(status.server.clone()),
         });
         self.set_language_server_pending(
@@ -395,7 +395,7 @@ impl App {
     }
 
     pub(super) fn check_all_language_servers(&mut self) {
-        let request = self.send(SessionCommand::CheckLanguageServerUpdates { server: None });
+        let request = self.send(LanguageServerCommand::CheckUpdates { server: None });
         self.set_language_server_pending(request, None, LanguageServerPendingKind::CheckAll);
         // Deliberately silent: the check answers with "up to date" or "N updates
         // available" a moment later, and that outcome is the announcement. A card
@@ -463,7 +463,7 @@ impl App {
             );
             return;
         }
-        self.send_command(SessionCommand::RestartLanguageServer {
+        self.send_command(LanguageServerCommand::Restart {
             server: status.server.clone(),
         });
         // `Activity`, not a tracked progress card: a restart registers no pending
@@ -603,7 +603,7 @@ impl App {
     }
 
     pub(super) fn begin_language_server_install(&mut self, server: LanguageServerId) {
-        let request = self.send(SessionCommand::InstallLanguageServer {
+        let request = self.send(LanguageServerCommand::Install {
             server: server.clone(),
         });
         self.set_language_server_pending(request, Some(server), LanguageServerPendingKind::Install);
@@ -616,7 +616,7 @@ impl App {
         install: bool,
     ) {
         let target = (servers.len() == 1).then(|| servers[0].clone());
-        let request = self.send(SessionCommand::ApplyLanguageServerPlan { plan, servers });
+        let request = self.send(LanguageServerCommand::ApplyPlan { plan, servers });
         self.set_language_server_pending(
             request,
             target,
@@ -629,7 +629,7 @@ impl App {
     }
 
     pub(super) fn begin_language_server_uninstall(&mut self, server: LanguageServerId) {
-        let request = self.send(SessionCommand::UninstallLanguageServer {
+        let request = self.send(LanguageServerCommand::Uninstall {
             server: server.clone(),
         });
         self.set_language_server_pending(

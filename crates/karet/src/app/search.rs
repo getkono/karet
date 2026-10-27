@@ -609,7 +609,7 @@ impl App {
         }
         let query = self.build_search_query();
         let replacement = self.search.replace.clone();
-        self.send_command(SessionCommand::SearchReplaceAll { query, replacement });
+        self.send_command(WorkspaceCommand::ReplaceAll { query, replacement });
         self.search.input = false;
     }
 
@@ -667,7 +667,7 @@ impl App {
         }
         let query = self.build_search_query();
         self.search.started = Some(Pending::start());
-        self.search.searching = self.send(SessionCommand::Search {
+        self.search.searching = self.send(WorkspaceCommand::Search {
             query,
             file_limit: SEARCH_RESULT_CAP,
             match_limit: SEARCH_MATCH_CAP,

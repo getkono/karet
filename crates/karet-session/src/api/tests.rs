@@ -14,13 +14,13 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
         serde_json::to_string(&back)
     }
 
-    let open = Command::OpenDocument {
+    let open = Command::from(DocumentCommand::Open {
         path: PathBuf::from("src/main.rs"),
         language: None,
-    };
+    });
     assert_eq!(rt(&open)?, serde_json::to_string(&open)?);
 
-    let apply = Command::ApplyChange {
+    let apply = Command::from(DocumentCommand::ApplyChange {
         doc: DocumentId(3),
         change: Change::new(
             7,
@@ -30,12 +30,12 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
             }],
         ),
         cause: EditCause::Type,
-    };
+    });
     assert_eq!(rt(&apply)?, serde_json::to_string(&apply)?);
 
-    let vcs = Command::VcsAction {
+    let vcs = Command::from(VcsCommand::Action {
         action: VcsAction::SwitchBranch(BranchTarget::Local("main".into())),
-    };
+    });
     assert_eq!(rt(&vcs)?, serde_json::to_string(&vcs)?);
 
     let diag = Event::DiagnosticsPublished {
@@ -53,11 +53,11 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
     };
     assert_eq!(rt(&diag)?, serde_json::to_string(&diag)?);
 
-    let ask = Command::SignatureHelp {
+    let ask = Command::from(LspCommand::SignatureHelp {
         doc: DocumentId(3),
         position: LineCol::new(0, 4),
         manual: true,
-    };
+    });
     assert_eq!(rt(&ask)?, serde_json::to_string(&ask)?);
 
     let signature = Event::SignatureHelp {
@@ -81,16 +81,16 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
     };
     assert_eq!(rt(&signature)?, serde_json::to_string(&signature)?);
 
-    let hunk = Command::ApplyIndexPatch {
+    let hunk = Command::from(VcsCommand::ApplyIndexPatch {
         patch: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n".into(),
         reverse: true,
-    };
+    });
     assert_eq!(rt(&hunk)?, serde_json::to_string(&hunk)?);
 
-    let prepare = Command::PrepareChange {
+    let prepare = Command::from(VcsCommand::PrepareChange {
         path: PathBuf::from("src/main.rs"),
         staged: true,
-    };
+    });
     assert_eq!(rt(&prepare)?, serde_json::to_string(&prepare)?);
 
     let status = Event::VcsStatus {
@@ -129,9 +129,9 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
 /// never move a GitHub token, by construction.
 #[test]
 fn github_token_refuses_to_serialize() {
-    let command = Command::GithubLogin {
+    let command = Command::from(GithubCommand::Login {
         token: GithubToken::new("github_pat_secret".into()),
-    };
+    });
     let result = serde_json::to_string(&command);
     assert!(result.is_err(), "a credential must not cross the seam");
 }
@@ -237,5 +237,57 @@ fn pull_request_conversation_models_remain_serde_ready() -> Result<(), serde_jso
         serde_json::from_str::<GithubPullRequestActivity>(&activity_json)?,
         activity
     );
+    Ok(())
+}
+
+/// Every family converts into its own [`Command`] arm, never a neighbour's,
+/// and travels as `{"Family": {"Variant": ...}}`. A `From` impl wired to the
+/// wrong arm would route a command to a handler that cannot serve it.
+#[test]
+fn each_family_converts_into_its_own_command_arm() -> Result<(), serde_json::Error> {
+    let cases: [(Command, &str); 9] = [
+        (
+            DocumentCommand::RecoverSwaps.into(),
+            r#"{"Document":"RecoverSwaps"}"#,
+        ),
+        (
+            LspCommand::DocumentSymbols { doc: DocumentId(3) }.into(),
+            r#"{"Lsp":{"DocumentSymbols":{"doc":3}}}"#,
+        ),
+        (
+            LanguageServerCommand::Status.into(),
+            r#"{"LanguageServer":"Status"}"#,
+        ),
+        (VcsCommand::Refresh.into(), r#"{"Vcs":"Refresh"}"#),
+        (
+            GithubCommand::IssueMetadata.into(),
+            r#"{"Github":"IssueMetadata"}"#,
+        ),
+        (DebugCommand::StepOver.into(), r#"{"Debug":"StepOver"}"#),
+        (
+            NotebookCommand::Interrupt.into(),
+            r#"{"Notebook":"Interrupt"}"#,
+        ),
+        (
+            SeamCommand::Query { text: "q".into() }.into(),
+            r#"{"Seam":{"Query":{"text":"q"}}}"#,
+        ),
+        (
+            WorkspaceCommand::DependencyGraph.into(),
+            r#"{"Workspace":"DependencyGraph"}"#,
+        ),
+    ];
+    for (command, expected) in &cases {
+        assert_eq!(serde_json::to_string(command)?, *expected);
+    }
+    assert!(matches!(cases[0].0, Command::Document(_)));
+    assert!(matches!(cases[1].0, Command::Lsp(_)));
+    assert!(matches!(cases[2].0, Command::LanguageServer(_)));
+    assert!(matches!(cases[3].0, Command::Vcs(_)));
+    assert!(matches!(cases[4].0, Command::Github(_)));
+    assert!(matches!(cases[5].0, Command::Debug(_)));
+    assert!(matches!(cases[6].0, Command::Notebook(_)));
+    assert!(matches!(cases[7].0, Command::Seam(_)));
+    assert!(matches!(cases[8].0, Command::Workspace(_)));
     Ok(())
 }

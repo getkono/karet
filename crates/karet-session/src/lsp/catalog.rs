@@ -2,10 +2,7 @@
 //!
 //! This is the single source of truth for a provider's argv. It is consulted
 //! both when the executable comes from the project or `PATH` and when it comes
-//! from a karet-managed installation, so the two can no longer disagree. They
-//! previously held independent copies of every provider's argv, and agreeing
-//! was never proof of being right: both copies said `neocmakelsp` took no
-//! arguments, and both were wrong.
+//! from a karet-managed installation, so the two cannot disagree.
 //!
 //! There is deliberately **no catch-all**. Every row states its `args`, so a
 //! provider that genuinely takes none records that as a decision (`args: &[]`)

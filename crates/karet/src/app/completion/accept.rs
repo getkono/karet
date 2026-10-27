@@ -168,11 +168,11 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::ResolveCompletion {
+        let command = LspCommand::ResolveCompletion {
             doc,
             item: item.clone(),
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             self.completion.follow_up = Some(AcceptFollowUp {
                 id,
                 doc,
@@ -217,11 +217,11 @@ impl App {
             return;
         }
         let id = backend.next_id();
-        let command = SessionCommand::ResolveCompletion {
+        let command = LspCommand::ResolveCompletion {
             doc: ui.doc,
             item: item.clone(),
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             ui.resolving.push((id, index));
         }
     }

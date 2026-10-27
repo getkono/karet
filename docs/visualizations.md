@@ -20,9 +20,9 @@ function usage, plus an orthogonal history lens:
 
 `GraphView` already carries the vocabulary for all four — `GraphNodeKind::{Package,
 Module, Symbol, External, Commit}` and `GraphEdgeKind::{Dependency, Call, Contains,
-Parent}` — and the session seam exposes a `GraphKind::{Dependency, Usage}`, so the
-designed lenses are additive: a new producer that emits a `GraphView`, not a new
-renderer.
+Parent}` — and the session seam's `GraphKind` names `Dependency` (produced today) and
+`Usage` (reserved; no producer yet), so the designed lenses are additive: a new
+producer that emits a `GraphView`, not a new renderer.
 
 ## Commit-history DAG (shipped)
 

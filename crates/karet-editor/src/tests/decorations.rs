@@ -1,7 +1,7 @@
 //! Decoration styling and overlap: a decoration's foreground and modifiers,
 //! and which of several overlapping decorations a cell shows.
 
-use karet_core::TextModifiers;
+use karet_core::Emphasis;
 use ratatui::style::Color;
 
 use super::*;
@@ -116,9 +116,9 @@ fn the_highest_priority_foreground_wins_an_overlap() {
 fn overlapping_modifiers_blend_across_priorities() {
     let buffer = TextBuffer::from_text("abcdef");
     let decorations = [
-        style(0, 4).with_modifiers(TextModifiers::BOLD),
+        style(0, 4).with_modifiers(Emphasis::BOLD),
         background(2, 6, ThemeRole::SearchMatch)
-            .with_modifiers(TextModifiers::ITALIC | TextModifiers::STRIKETHROUGH)
+            .with_modifiers(Emphasis::ITALIC | Emphasis::STRIKETHROUGH)
             .with_priority(9),
     ];
     let target = render(&buffer, &decorations, &mut EditorState::new());
@@ -188,7 +188,7 @@ fn a_line_background_styles_the_whole_line() {
         Some(ThemeRole::DebugStoppedLine),
     )
     .with_fg(ThemeRole::Muted)
-    .with_modifiers(TextModifiers::DIM);
+    .with_modifiers(Emphasis::DIM);
     let target = render(&buffer, &[line], &mut EditorState::new());
     let last = cell(&target, 5);
     assert_eq!(last.bg, color(ThemeRole::DebugStoppedLine));
@@ -207,7 +207,7 @@ fn a_gutter_markers_style_leaves_the_text_alone() {
         Some(ThemeRole::Breakpoint),
     )
     .with_fg(ThemeRole::DiffRemoved)
-    .with_modifiers(TextModifiers::BOLD);
+    .with_modifiers(Emphasis::BOLD);
     let plain = render(&buffer, &[], &mut EditorState::new());
     let target = render(&buffer, &[marker], &mut EditorState::new());
     assert_eq!(target[(0, 0)].symbol(), "●");

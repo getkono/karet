@@ -264,7 +264,7 @@ impl App {
         }
         search.due = None;
         let query = search.query.clone().unwrap_or_default();
-        let sent = self.send(SessionCommand::WorkspaceSymbols { query });
+        let sent = self.send(LspCommand::WorkspaceSymbols { query });
         let search = &mut self.workspace_symbols;
         search.sent = sent;
         if sent.is_none() {

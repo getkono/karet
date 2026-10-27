@@ -7,9 +7,10 @@
         use karet_core::Location;
         use karet_core::Range;
 
-        use crate::api::Command;
+        use crate::api::DocumentCommand;
         use crate::api::Event;
         use crate::api::LocationKind;
+        use crate::api::LspCommand;
         use crate::lsp::LspUpdate;
         use crate::session::Session;
         use crate::session::SessionConfig;
@@ -34,7 +35,7 @@
             let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
             session.handle(
                 crate::api::RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.to_path_buf(),
                     language: None,
                 },
@@ -80,7 +81,7 @@
             let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(9),
-                Command::FindLocations {
+                LspCommand::FindLocations {
                     doc,
                     position: LineCol::new(0, 0),
                     kind: LocationKind::Implementation,
@@ -109,7 +110,7 @@
             let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(9),
-                Command::SignatureHelp {
+                LspCommand::SignatureHelp {
                     doc,
                     position: LineCol::new(0, 6),
                     manual: true,
@@ -209,7 +210,7 @@
             let (mut session, doc, mut events) = session_with(&here).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(3),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: there.clone(),
                     language: None,
                 },
@@ -364,7 +365,7 @@
             let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
             session.handle(
                 crate::api::RequestId(7),
-                Command::WorkspaceSymbols {
+                LspCommand::WorkspaceSymbols {
                     query: "run".to_string(),
                 },
             );

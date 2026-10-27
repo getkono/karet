@@ -25,7 +25,7 @@
             session_with_a_left_swap(swapdir.path(), &path, "recovered!\n")?;
         while events.try_recv().is_some() {} // the SwapsFound announcement
 
-        session.handle(RequestId(4), Command::RecoverSwaps);
+        session.handle(RequestId(4), DocumentCommand::RecoverSwaps);
 
         let mut opened = None;
         while let Some((id, event)) = events.try_recv() {
@@ -53,7 +53,7 @@
         assert!(scan(swapdir.path()).is_empty(), "the swap is consumed");
 
         // Recovery is one-shot: a second request finds nothing left to restore.
-        session.handle(RequestId(5), Command::RecoverSwaps);
+        session.handle(RequestId(5), DocumentCommand::RecoverSwaps);
         assert!(opened_nothing(&mut events));
         Ok(())
     }
@@ -73,8 +73,8 @@
         assert_eq!(scan(swapdir.path()).len(), 1);
         while events.try_recv().is_some() {}
 
-        session.handle(RequestId(1), Command::DiscardSwaps);
-        session.handle(RequestId(2), Command::RecoverSwaps);
+        session.handle(RequestId(1), DocumentCommand::DiscardSwaps);
+        session.handle(RequestId(2), DocumentCommand::RecoverSwaps);
 
         assert!(scan(swapdir.path()).is_empty(), "the declined swap is gone");
         assert!(
@@ -91,7 +91,7 @@
     fn close_answers_closed_only_when_the_last_view_lets_go() -> TestResult {
         let (_dir, path) = write_temp("c.rs", "fn c() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        let open = || Command::OpenDocument {
+        let open = || DocumentCommand::Open {
             path: path.clone(),
             language: None,
         };
@@ -107,16 +107,16 @@
                 })
                 .collect::<Vec<_>>()
         };
-        session.handle(RequestId(3), Command::CloseDocument { doc });
+        session.handle(RequestId(3), DocumentCommand::Close { doc });
         assert!(closed(&mut events).is_empty(), "one view still holds it");
         assert!(session.document(doc).is_some());
 
-        session.handle(RequestId(4), Command::CloseDocument { doc });
+        session.handle(RequestId(4), DocumentCommand::Close { doc });
         assert_eq!(closed(&mut events), vec![(Some(RequestId(4)), doc)]);
         assert!(session.document(doc).is_none(), "the document left the store");
 
         // Closing what is already gone is a no-op, not a second `Closed`.
-        session.handle(RequestId(5), Command::CloseDocument { doc });
+        session.handle(RequestId(5), DocumentCommand::Close { doc });
         assert!(closed(&mut events).is_empty());
         Ok(())
     }
@@ -134,7 +134,7 @@
         let open = |session: &mut Session, events: &mut EventRx, path: &Path| {
             session.handle(
                 RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.to_path_buf(),
                     language: None,
                 },
@@ -149,17 +149,17 @@
             ..SessionConfig::default()
         });
         let doc = open(&mut disabled, &mut events, &manifest).ok_or("Cargo.toml never opened")?;
-        disabled.handle(RequestId(2), Command::RefreshManifestHints { doc });
+        disabled.handle(RequestId(2), DocumentCommand::RefreshManifestHints { doc });
         assert!(disabled.manifest_hints_worker.is_none(), "deps.enabled is off");
 
         let (mut enabled, mut events, _snaps) = Session::new(SessionConfig::default());
         let doc = open(&mut enabled, &mut events, &other).ok_or("notes.toml never opened")?;
-        enabled.handle(RequestId(2), Command::RefreshManifestHints { doc });
+        enabled.handle(RequestId(2), DocumentCommand::RefreshManifestHints { doc });
         assert!(enabled.manifest_hints_worker.is_none(), "not a Cargo.toml");
 
         enabled.handle(
             RequestId(3),
-            Command::RefreshManifestHints {
+            DocumentCommand::RefreshManifestHints {
                 doc: DocumentId(u64::MAX),
             },
         );
@@ -183,7 +183,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        let add = |create_project| Command::AddDictionaryWord {
+        let add = |create_project| WorkspaceCommand::AddDictionaryWord {
             word: "karetish".to_owned(),
             scope: crate::api::DictionaryScope::Project,
             create_project,

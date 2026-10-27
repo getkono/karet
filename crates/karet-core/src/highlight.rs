@@ -600,7 +600,7 @@ mod tests {
 
     /// An edit replacing rows `start..=old_end` with rows `start..=new_end`.
     fn rows(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
-        let point = |row| crate::edit::BytePoint { row, col: 0 };
+        let point = |row| crate::coord::BytePoint { row, col: 0 };
         AppliedEdit {
             start_byte: 0,
             old_end_byte: 0,

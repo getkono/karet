@@ -214,7 +214,7 @@ impl App {
             );
             return;
         }
-        self.send_command(SessionCommand::CancelLanguageServerWork {
+        self.send_command(LanguageServerCommand::CancelWork {
             server: work.server,
             root: work.root,
             token: work.token,
@@ -319,7 +319,7 @@ impl App {
             },
             None => self.push_tab(Tab::server_log(server.clone())),
         }
-        self.send_command(SessionCommand::LanguageServerLog { server });
+        self.send_command(LanguageServerCommand::Log { server });
     }
 
     /// Fill every open log of `server` with the session's answer.

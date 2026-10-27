@@ -10,6 +10,7 @@ use karet_session::config::schema::Task;
 use super::*;
 use crate::app::tests::support::*;
 use crate::terminal::Emulator;
+use crate::terminal::TerminalEvent;
 use crate::terminal::TerminalEventKind;
 use crate::terminal::TerminalEvents;
 
@@ -88,7 +89,7 @@ fn pump_shown(
 ) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        app.fire_task_scans(Instant::now());
+        let _ = app.fire_task_scans(Instant::now());
         while let Ok(event) = events.try_recv() {
             let id = event.id;
             let output = event.kind == TerminalEventKind::Output;
@@ -148,6 +149,7 @@ fn the_picker_lists_tasks_by_label_with_their_commands_beside() -> TestResult {
         task_app(&[("test", task("make test")), ("build", task("make"))])?;
     app.dispatch(Command::RunTask);
     let overlay = app.overlay.as_ref().ok_or("no picker")?;
+    assert_eq!(overlay.picker_kind(), Some(PickerKind::Tasks));
     assert_eq!(overlay.title(), RUN_TASK_TITLE);
     assert_eq!(overlay.rows(), ["build", "test"]);
     assert_eq!(
@@ -322,26 +324,124 @@ fn a_running_task_in_a_background_tab_is_scanned_to_its_last_output() -> TestRes
 
 #[cfg(unix)]
 #[test]
+fn output_that_changes_a_hidden_tasks_problems_asks_for_a_repaint() -> TestResult {
+    let (_dir, mut app, _events) = task_app(&[(
+        "build",
+        task("touch m.c; echo 'm.c:1:1: error: one'; sleep 30"),
+    )])?;
+    app.run_task("build");
+    app.select_tab(0);
+    assert!(app.active_terminal().is_none(), "the task's tab is hidden");
+    let id = *app.tasks.runs.keys().next().ok_or("no run")?;
+    // Wait for the emulator to parse the error line, so the scan finds it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let parsed = |app: &App| {
+        app.all_tabs().any(|tab| {
+            matches!(&tab.kind, TabKind::Terminal(pane)
+                if pane.id() == id
+                    && transcript(&pane.term()).iter().any(|line| line.contains("error: one")))
+        })
+    };
+    while !parsed(&app) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(parsed(&app), "the task printed its error");
+    let output = TerminalEvent {
+        id,
+        kind: TerminalEventKind::Output,
+    };
+    let start = Instant::now();
+    assert!(
+        app.on_terminal_event(output.clone(), start),
+        "the scan found a problem: the panel and status bar repaint"
+    );
+    assert_eq!(task_messages(&app), ["one"]);
+    assert!(
+        !app.on_terminal_event(output, start + running::LIVE_SCAN_INTERVAL),
+        "a rescan that finds the same problems paints nothing"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deadline_scan_that_changes_problems_asks_for_a_repaint() -> TestResult {
+    let (_dir, mut app, _events) = task_app(&[(
+        "build",
+        task("touch m.c; echo 'm.c:1:1: error: one'; sleep 30"),
+    )])?;
+    app.run_task("build");
+    app.select_tab(0);
+    let id = *app.tasks.runs.keys().next().ok_or("no run")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let parsed = |app: &App| {
+        app.all_tabs().any(|tab| {
+            matches!(&tab.kind, TabKind::Terminal(pane)
+                if pane.id() == id
+                    && transcript(&pane.term()).iter().any(|line| line.contains("error: one")))
+        })
+    };
+    while !parsed(&app) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(parsed(&app), "the task printed its error");
+    let start = Instant::now();
+    assert!(
+        app.task_output(id, start),
+        "the first scan finds the problem"
+    );
+    // Forget the problem, so the deadline scan finds a change to report.
+    app.set_task_problems("build", Vec::new());
+    assert!(
+        !app.task_output(id, start + Duration::from_millis(100)),
+        "a throttled batch only schedules its scan"
+    );
+    assert!(
+        !app.fire_task_scans(start + Duration::from_millis(400)),
+        "nothing is due yet"
+    );
+    assert!(
+        app.fire_task_scans(start + running::LIVE_SCAN_INTERVAL),
+        "the deadline scan changed the problems: the panel and status bar repaint"
+    );
+    assert_eq!(task_messages(&app), ["one"]);
+    let later = start + running::LIVE_SCAN_INTERVAL;
+    assert!(!app.task_output(id, later + Duration::from_millis(100)));
+    assert!(
+        !app.fire_task_scans(later + running::LIVE_SCAN_INTERVAL),
+        "a deadline scan that finds the same problems paints nothing"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn throttled_output_schedules_a_scan_for_when_the_interval_is_up() -> TestResult {
     let (_dir, mut app, _events) = task_app(&[("watch", task("sleep 30"))])?;
     app.run_task("watch");
     let id = *app.tasks.runs.keys().next().ok_or("no run")?;
     let start = Instant::now();
-    app.task_output(id, start);
+    assert!(!app.task_output(id, start), "no output, no problems");
     assert_eq!(
         app.task_next_wake(start),
         None,
         "the first batch scans at once"
     );
-    app.task_output(id, start + Duration::from_millis(100));
+    assert!(
+        !app.task_output(id, start + Duration::from_millis(100)),
+        "a throttled batch scans nothing yet"
+    );
     assert_eq!(
         app.task_next_wake(start),
         Some(running::LIVE_SCAN_INTERVAL),
         "a batch too soon after waits for the interval, not for more output"
     );
-    app.fire_task_scans(start + Duration::from_millis(400));
+    assert!(!app.fire_task_scans(start + Duration::from_millis(400)));
     assert!(app.task_next_wake(start).is_some(), "not due yet");
-    app.fire_task_scans(start + running::LIVE_SCAN_INTERVAL);
+    assert!(
+        !app.fire_task_scans(start + running::LIVE_SCAN_INTERVAL),
+        "no output, no problems to change"
+    );
     assert_eq!(app.task_next_wake(start), None);
     Ok(())
 }

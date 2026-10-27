@@ -35,7 +35,7 @@
             ..SessionConfig::default()
         });
 
-        session.handle(RequestId(1), Command::ScanWorkspaceSpelling { limit: 100 });
+        session.handle(RequestId(1), WorkspaceCommand::ScanSpelling { limit: 100 });
 
         let finished = events.try_recv();
         assert!(
@@ -66,7 +66,7 @@
             ..SessionConfig::default()
         });
 
-        session.handle(RequestId(1), Command::ScanWorkspaceSpelling { limit: 100 });
+        session.handle(RequestId(1), WorkspaceCommand::ScanSpelling { limit: 100 });
 
         assert!(matches!(
             events.try_recv().map(|(_, event)| event),
@@ -90,7 +90,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -110,7 +110,7 @@
         });
         while events.try_recv().is_some() {}
 
-        session.handle(RequestId(9), Command::ScanWorkspaceSpelling { limit: 100 });
+        session.handle(RequestId(9), WorkspaceCommand::ScanSpelling { limit: 100 });
 
         // The seed batch is emitted synchronously, before the worker even starts.
         let seeded = events.try_recv();
@@ -139,7 +139,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -201,7 +201,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -222,7 +222,7 @@
         });
         while events.try_recv().is_some() {}
 
-        session.handle(RequestId(9), Command::ScanWorkspaceSpelling { limit: 2 });
+        session.handle(RequestId(9), WorkspaceCommand::ScanSpelling { limit: 2 });
 
         let mut seeded = 0;
         let mut finished = None;
@@ -261,7 +261,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -281,7 +281,7 @@
 
         session.handle(
             RequestId(2),
-            Command::AddDictionaryWord {
+            WorkspaceCommand::AddDictionaryWord {
                 word: "wrod".to_owned(),
                 scope: crate::api::DictionaryScope::Project,
                 create_project: false,

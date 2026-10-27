@@ -1,7 +1,6 @@
 //! Hover request/response handling on the [`App`] (model in [`crate::hover`]).
 
 use karet_core::Hover;
-use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
 
 use super::*;
@@ -28,7 +27,7 @@ impl App {
         };
         let id = backend.next_id();
         if backend
-            .send(id, SessionCommand::Hover { doc, position: at })
+            .send(id, LspCommand::Hover { doc, position: at }.into())
             .is_ok()
         {
             self.pending_hover = Some(PendingHover {

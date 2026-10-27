@@ -204,7 +204,7 @@ impl App {
             self.notify(Report::Refusal, NotificationKind::Lsp, message);
             return;
         };
-        let id = self.send(SessionCommand::CodeActions {
+        let id = self.send(LspCommand::CodeActions {
             doc: key.doc,
             range: key.range,
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
@@ -290,7 +290,7 @@ impl App {
     /// Run one listed action.
     pub(crate) fn run_code_action(&mut self, doc: DocumentId, version: u64, action: CodeAction) {
         let title = action.title.clone();
-        let id = self.send(SessionCommand::ApplyCodeAction {
+        let id = self.send(LspCommand::ApplyCodeAction {
             doc,
             version,
             action,
@@ -369,7 +369,7 @@ impl App {
                 return;
             },
         }
-        let sent = self.send(SessionCommand::CodeActions {
+        let sent = self.send(LspCommand::CodeActions {
             doc: key.doc,
             range: key.range,
             kinds: Vec::new(),

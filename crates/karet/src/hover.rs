@@ -1,6 +1,6 @@
 //! Hover UI state and pure helpers.
 //!
-//! The app talks to LSP only through the session seam: `Command::Hover` goes
+//! The app talks to LSP only through the session seam: `LspCommand::Hover` goes
 //! out, the answering `Event::HoverResult` (correlated by request id) fills
 //! [`HoverUi`], and the popup renders through `karet_widgets::hover`. The
 //! popup also carries the diagnostics under the caret, so one keystroke

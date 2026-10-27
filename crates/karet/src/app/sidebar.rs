@@ -122,7 +122,7 @@ impl App {
         {
             return;
         }
-        if self.send(SessionCommand::DocumentSymbols { doc }).is_some() {
+        if self.send(LspCommand::DocumentSymbols { doc }).is_some() {
             self.docs
                 .outline_loading
                 .insert(doc, (version, Pending::start()));
