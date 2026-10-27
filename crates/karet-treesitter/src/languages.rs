@@ -182,3 +182,111 @@ grammars! {
     /// Yarn lockfiles.
     LOCKFILE = 64, "lang-lockfile";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language_id_from_injection_name;
+
+    /// A grammar whose feature is off has no id at all: its constant is `None`,
+    /// never a placeholder that some query would have to reject.
+    #[cfg(not(feature = "lang-rust"))]
+    #[test]
+    fn an_uncompiled_grammar_has_no_id() {
+        assert_eq!(RUST, None);
+        assert_eq!(language_id_from_injection_name("rust"), None);
+    }
+
+    /// Every typed constant is the id its grammar registered under, and each one
+    /// resolves back from that grammar's own primary injection name, so a
+    /// constant cannot drift from the table it names.
+    #[cfg(feature = "all-languages")]
+    #[test]
+    fn typed_constants_name_their_registered_grammars() {
+        use crate::registry;
+        let expected = [
+            (RUST, "Rust"),
+            (PYTHON, "Python"),
+            (JAVASCRIPT, "JavaScript"),
+            (TYPESCRIPT, "TypeScript"),
+            (TSX, "TSX"),
+            (JSON, "JSON"),
+            (GO, "Go"),
+            (C, "C"),
+            (CPP, "C++"),
+            (CSHARP, "C#"),
+            (JAVA, "Java"),
+            (RUBY, "Ruby"),
+            (PHP, "PHP"),
+            (BASH, "Bash"),
+            (TOML, "TOML"),
+            (HTML, "HTML"),
+            (CSS, "CSS"),
+            (YAML, "YAML"),
+            (MARKDOWN, "Markdown"),
+            (MARKDOWN_INLINE, "Markdown (inline)"),
+            (LATEX, "TeX"),
+            (ZIG, "Zig"),
+            (XML, "XML"),
+            (SVELTE, "Svelte"),
+            (ASTRO, "Astro"),
+            (VUE, "Vue"),
+            (SQL, "SQL"),
+            (GRAPHQL, "GraphQL"),
+            (PROTOBUF, "Protobuf"),
+            (CONTAINERFILE, "Dockerfile"),
+            (MAKE, "Makefile"),
+            (CMAKE, "CMake"),
+            (RST, "reStructuredText"),
+            (ASCIIDOC, "AsciiDoc"),
+            (ZSH, "Zsh"),
+            (FISH, "Fish"),
+            (POWERSHELL, "PowerShell"),
+            (BATCH, "Batch"),
+            (KOTLIN, "Kotlin"),
+            (SWIFT, "Swift"),
+            (SCALA, "Scala"),
+            (LUA, "Lua"),
+            (HASKELL, "Haskell"),
+            (OCAML, "OCaml"),
+            // Both OCaml grammars share a display name; the primary-name round
+            // trip below is what tells them apart.
+            (OCAML_INTERFACE, "OCaml"),
+            (ELIXIR, "Elixir"),
+            (ERLANG, "Erlang"),
+            (DART, "Dart"),
+            (R, "R"),
+            (PERL, "Perl"),
+            (CLOJURE, "Clojure"),
+            (ELISP, "Emacs Lisp"),
+            (VIM, "Vim script"),
+            (SCSS, "SCSS"),
+            (SASS, "Sass"),
+            (LESS, "Less"),
+            (ERB, "ERB"),
+            (MDX, "MDX"),
+            (JSON5, "JSON5"),
+            (INI, "INI"),
+            (PROPERTIES, "Properties"),
+            (EDN, "EDN"),
+            (CBOR, "CBOR diagnostic notation"),
+            (LOCKFILE, "Yarn lockfile"),
+        ];
+        assert_eq!(
+            expected.len(),
+            registry::all().len(),
+            "one constant per grammar"
+        );
+        for (id, name) in expected {
+            assert!(id.is_some(), "{name}: compiled in, so its constant is set");
+            let grammar = id.and_then(registry::grammar);
+            assert_eq!(grammar.map(|g| g.name), Some(name), "{name}");
+            let primary = grammar.and_then(|g| g.names.first().copied());
+            assert_eq!(
+                primary.and_then(language_id_from_injection_name),
+                id,
+                "{name}"
+            );
+        }
+    }
+}
