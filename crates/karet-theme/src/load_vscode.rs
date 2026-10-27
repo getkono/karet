@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
+use karet_core::Emphasis;
 use karet_core::StandardToken;
 use karet_core::ThemeRole;
 use serde::Deserialize;
 
-use crate::Emphasis;
 use crate::Rgba;
 use crate::Theme;
 use crate::ThemeError;
@@ -286,6 +286,8 @@ fn parse_font_style(s: &str) -> Emphasis {
         italic: s.split_whitespace().any(|w| w == "italic"),
         underline: s.split_whitespace().any(|w| w == "underline"),
         strikethrough: s.split_whitespace().any(|w| w == "strikethrough"),
+        // VS Code's `fontStyle` has no faint style.
+        dim: false,
     }
 }
 

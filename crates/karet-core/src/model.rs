@@ -28,7 +28,6 @@ pub use completion::Tabstop;
 pub use decoration::Decoration;
 pub use decoration::DecorationColor;
 pub use decoration::DecorationKind;
-pub use decoration::TextModifiers;
 pub use hierarchy::HierarchyDirection;
 pub use hierarchy::HierarchyItem;
 pub use inlay::InlayHint;
@@ -389,6 +388,8 @@ impl CodeAction {
 mod tests {
     use super::*;
     #[cfg(feature = "serde")]
+    use crate::token::Emphasis;
+    #[cfg(feature = "serde")]
     use crate::token::ThemeRole;
     #[cfg(feature = "serde")]
     use crate::token::TokenId;
@@ -452,7 +453,7 @@ mod tests {
         rt(
             &Decoration::new(Range::default(), DecorationKind::TextStyle, None)
                 .with_fg(TokenId::KEYWORD)
-                .with_modifiers(TextModifiers::BOLD | TextModifiers::DIM)
+                .with_modifiers(Emphasis::BOLD | Emphasis::DIM)
                 .with_priority(5),
         )?;
         // A payload from before the style fields existed still decodes, as

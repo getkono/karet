@@ -9,6 +9,7 @@
 //! [`TokenId::semantic`]) resolves through the theme's `semanticTokenColors`
 //! rules, falling back to the standard class closest to its type.
 
+use karet_core::Emphasis;
 use karet_core::ThemeRole;
 use karet_core::TokenId;
 
@@ -99,10 +100,12 @@ impl Rgba {
     }
 }
 
-pub use karet_core::Emphasis;
-
 /// Ratatui conversion for the neutral [`Emphasis`] flags (which live in
 /// `karet-core`; this view-only extension keeps ratatui out of the vocabulary).
+///
+/// The one ratatui mapping of [`Emphasis`]: a theme's token emphasis and a
+/// decoration's [`modifiers`](karet_core::Decoration::modifiers) both paint
+/// through it.
 #[cfg(feature = "view")]
 pub trait EmphasisExt {
     /// Convert to a ratatui modifier set (empty when no flag is set).
@@ -124,6 +127,9 @@ impl EmphasisExt for Emphasis {
         }
         if self.strikethrough {
             m |= ratatui::style::Modifier::CROSSED_OUT;
+        }
+        if self.dim {
+            m |= ratatui::style::Modifier::DIM;
         }
         m
     }
@@ -205,6 +211,9 @@ impl Theme {
                 italic: style.italic.unwrap_or(base.italic),
                 underline: style.underline.unwrap_or(base.underline),
                 strikethrough: style.strikethrough.unwrap_or(base.strikethrough),
+                // `semanticTokenColors` has no faint style, so dimming is
+                // always the fallback class's.
+                dim: base.dim,
             };
         }
         self.emphasis
@@ -662,6 +671,36 @@ mod tests {
         assert_eq!(
             token_style.add_modifier,
             EmphasisExt::to_ratatui(theme.emphasis(token))
+        );
+    }
+
+    #[cfg(feature = "view")]
+    #[test]
+    fn every_emphasis_flag_maps_to_its_ratatui_modifier() {
+        use ratatui::style::Modifier;
+        assert_eq!(EmphasisExt::to_ratatui(Emphasis::NONE), Modifier::empty());
+        for (flag, modifier) in [
+            (Emphasis::BOLD, Modifier::BOLD),
+            (Emphasis::ITALIC, Modifier::ITALIC),
+            (Emphasis::UNDERLINE, Modifier::UNDERLINED),
+            (Emphasis::STRIKETHROUGH, Modifier::CROSSED_OUT),
+            (Emphasis::DIM, Modifier::DIM),
+        ] {
+            assert_eq!(EmphasisExt::to_ratatui(flag), modifier, "{flag:?}");
+        }
+        assert_eq!(
+            EmphasisExt::to_ratatui(
+                Emphasis::BOLD
+                    | Emphasis::ITALIC
+                    | Emphasis::UNDERLINE
+                    | Emphasis::STRIKETHROUGH
+                    | Emphasis::DIM
+            ),
+            Modifier::BOLD
+                | Modifier::ITALIC
+                | Modifier::UNDERLINED
+                | Modifier::CROSSED_OUT
+                | Modifier::DIM
         );
     }
 }
