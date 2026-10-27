@@ -3,6 +3,12 @@
 
 use std::sync::Arc;
 
+use karet_core::DebugOutputCategory;
+use karet_core::DebugScope;
+use karet_core::DebugVariable;
+use karet_core::FrameId;
+use karet_core::StackFrame;
+use karet_core::VariablesRef;
 use karet_session::DebugBreakpoint;
 use karet_session::DebugSessionState;
 
@@ -148,21 +154,21 @@ fn the_status_segment_tracks_the_lifecycle() {
 #[test]
 fn debug_output_buffers_and_caps() {
     let mut app = app();
-    app.on_debug_output("stdout".to_owned(), "one\ntwo\n".to_owned());
+    app.on_debug_output(DebugOutputCategory::Stdout, "one\ntwo\n".to_owned());
     assert_eq!(app.debugger.output.len(), 2);
     for _ in 0..600 {
-        app.on_debug_output("stdout".to_owned(), "spam\n".to_owned());
+        app.on_debug_output(DebugOutputCategory::Stdout, "spam\n".to_owned());
     }
     assert_eq!(app.debugger.output.len(), 500);
 }
 
-fn frame(id: i64, name: &str, line: u32) -> karet_session::DebugFrame {
-    karet_session::DebugFrame {
-        id,
+fn frame(id: i64, name: &str, line: u32) -> StackFrame {
+    StackFrame {
+        id: FrameId(id),
         name: name.to_owned(),
         line,
         column: 0,
-        path: Some(PathBuf::from("/w/main.rs")),
+        source_path: Some(PathBuf::from("/w/main.rs")),
     }
 }
 
@@ -193,7 +199,7 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         Some(stack_id),
         vec![frame(41, "main", 3), frame(42, "callee", 9)],
     );
-    assert_eq!(app.debugger.panel.selected_frame, Some(41));
+    assert_eq!(app.debugger.panel.selected_frame, Some(FrameId(41)));
     let scopes_id = backend
         .sent
         .lock()
@@ -201,7 +207,10 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .and_then(|sent| {
             sent.iter()
                 .find(|(_, c)| {
-                    matches!(c, SessionCommand::Debug(DebugCommand::Scopes { frame: 41 }))
+                    matches!(
+                        c,
+                        SessionCommand::Debug(DebugCommand::Scopes { frame: FrameId(41) })
+                    )
                 })
                 .map(|(id, _)| *id)
         })
@@ -209,23 +218,23 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
     // Scopes auto-expand the first cheap scope and fetch its variables.
     app.on_debug_scopes(
         Some(scopes_id),
-        41,
+        FrameId(41),
         vec![
-            karet_session::DebugScope {
+            DebugScope {
                 name: "Registers".to_owned(),
-                reference: 7,
+                variables_reference: VariablesRef(7),
                 expensive: true,
             },
-            karet_session::DebugScope {
+            DebugScope {
                 name: "Locals".to_owned(),
-                reference: 11,
+                variables_reference: VariablesRef(11),
                 expensive: false,
             },
         ],
     );
-    assert!(app.debugger.panel.expanded.contains(&11));
+    assert!(app.debugger.panel.expanded.contains(&VariablesRef(11)));
     assert!(
-        !app.debugger.panel.expanded.contains(&7),
+        !app.debugger.panel.expanded.contains(&VariablesRef(7)),
         "expensive stays lazy"
     );
     let vars_id = backend
@@ -237,7 +246,9 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
                 .find(|(_, c)| {
                     matches!(
                         c,
-                        SessionCommand::Debug(DebugCommand::Variables { reference: 11 })
+                        SessionCommand::Debug(DebugCommand::Variables {
+                            reference: VariablesRef(11)
+                        })
                     )
                 })
                 .map(|(id, _)| *id)
@@ -246,30 +257,30 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
     // A stale answer (not in pending) is dropped whole.
     app.on_debug_variables(
         Some(RequestId(9999)),
-        11,
-        vec![karet_session::DebugVariable {
+        VariablesRef(11),
+        vec![DebugVariable {
             name: "stale".to_owned(),
             value: "x".to_owned(),
             ty: None,
-            reference: 0,
+            variables_reference: VariablesRef::NONE,
         }],
     );
     assert!(app.debugger.panel.variables.is_empty());
     app.on_debug_variables(
         Some(vars_id),
-        11,
-        vec![karet_session::DebugVariable {
+        VariablesRef(11),
+        vec![DebugVariable {
             name: "answer".to_owned(),
             value: "42".to_owned(),
             ty: None,
-            reference: 0,
+            variables_reference: VariablesRef::NONE,
         }],
     );
     // The tree flattens: Locals expanded shows its child row.
     assert!(app.debugger.panel.rows.iter().any(|row| matches!(
         row,
         crate::app::DebugRow::Variable {
-            parent: 11,
+            parent: VariablesRef(11),
             index: 0,
             depth: 1
         }
@@ -367,11 +378,11 @@ fn the_debugger_rebuilds_its_panel_over_its_own_console() {
     assert!(outputs(&debugger).is_empty());
     debugger
         .output
-        .extend((0..3).map(|i| ("stdout".to_owned(), format!("line {i}"))));
-    debugger.panel.stack.push(karet_session::DebugFrame {
-        id: 1,
+        .extend((0..3).map(|i| (DebugOutputCategory::Stdout, format!("line {i}"))));
+    debugger.panel.stack.push(StackFrame {
+        id: FrameId(1),
         name: "main".to_owned(),
-        path: None,
+        source_path: None,
         line: 1,
         column: 1,
     });

@@ -33,6 +33,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use karet_core::DebugScope;
+use karet_core::DebugVariable;
+use karet_core::FrameId;
+use karet_core::StackFrame;
+use karet_core::VariablesRef;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -42,10 +47,7 @@ pub use crate::types::Capabilities;
 pub use crate::types::DebugEvent;
 pub use crate::types::Evaluation;
 pub use crate::types::ExceptionFilter;
-pub use crate::types::Scope;
-pub use crate::types::StackFrame;
 pub use crate::types::Thread;
-pub use crate::types::Variable;
 
 /// How long [`DapClient::start`] waits for the `initialized` event before
 /// concluding the adapter is stuck.
@@ -460,7 +462,7 @@ impl DapClient {
                 list.iter()
                     .filter_map(|f| {
                         Some(StackFrame {
-                            id: f.get("id").and_then(Value::as_i64)?,
+                            id: FrameId(f.get("id").and_then(Value::as_i64)?),
                             name: f
                                 .get("name")
                                 .and_then(Value::as_str)
@@ -484,26 +486,23 @@ impl DapClient {
     ///
     /// # Errors
     /// Returns [`DapError::Adapter`] on failure.
-    pub async fn scopes(&self, frame_id: i64) -> Result<Vec<Scope>, DapError> {
+    pub async fn scopes(&self, frame_id: FrameId) -> Result<Vec<DebugScope>, DapError> {
         let body = self
             .conn
-            .request("scopes", json!({ "frameId": frame_id }))
+            .request("scopes", json!({ "frameId": frame_id.0 }))
             .await?;
         Ok(body
             .get("scopes")
             .and_then(Value::as_array)
             .map(|list| {
                 list.iter()
-                    .map(|s| Scope {
+                    .map(|s| DebugScope {
                         name: s
                             .get("name")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_owned(),
-                        variables_reference: s
-                            .get("variablesReference")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0),
+                        variables_reference: reference_of(s),
                         expensive: s.get("expensive").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .collect()
@@ -516,12 +515,15 @@ impl DapClient {
     ///
     /// # Errors
     /// Returns [`DapError::Adapter`] on failure.
-    pub async fn variables(&self, variables_reference: i64) -> Result<Vec<Variable>, DapError> {
+    pub async fn variables(
+        &self,
+        variables_reference: VariablesRef,
+    ) -> Result<Vec<DebugVariable>, DapError> {
         let body = self
             .conn
             .request(
                 "variables",
-                json!({ "variablesReference": variables_reference }),
+                json!({ "variablesReference": variables_reference.0 }),
             )
             .await?;
         Ok(body
@@ -529,7 +531,7 @@ impl DapClient {
             .and_then(Value::as_array)
             .map(|list| {
                 list.iter()
-                    .map(|v| Variable {
+                    .map(|v| DebugVariable {
                         name: v
                             .get("name")
                             .and_then(Value::as_str)
@@ -541,10 +543,7 @@ impl DapClient {
                             .unwrap_or_default()
                             .to_owned(),
                         ty: v.get("type").and_then(Value::as_str).map(str::to_owned),
-                        variables_reference: v
-                            .get("variablesReference")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0),
+                        variables_reference: reference_of(v),
                     })
                     .collect()
             })
@@ -558,11 +557,11 @@ impl DapClient {
     pub async fn evaluate(
         &self,
         expression: &str,
-        frame_id: Option<i64>,
+        frame_id: Option<FrameId>,
     ) -> Result<Evaluation, DapError> {
         let mut arguments = json!({ "expression": expression, "context": "repl" });
         if let (Some(frame_id), Some(object)) = (frame_id, arguments.as_object_mut()) {
-            object.insert("frameId".to_owned(), json!(frame_id));
+            object.insert("frameId".to_owned(), json!(frame_id.0));
         }
         let body = self.conn.request("evaluate", arguments).await?;
         Ok(Evaluation {
@@ -571,10 +570,7 @@ impl DapClient {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            variables_reference: body
-                .get("variablesReference")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
+            variables_reference: reference_of(&body),
         })
     }
 
@@ -612,6 +608,14 @@ fn zero_based(value: Option<&Value>) -> u32 {
         .and_then(Value::as_u64)
         .map(|n| u32::try_from(n.saturating_sub(1)).unwrap_or(u32::MAX))
         .unwrap_or(0)
+}
+
+/// An object's `variablesReference`; absent means no children.
+fn reference_of(object: &Value) -> VariablesRef {
+    object
+        .get("variablesReference")
+        .and_then(Value::as_i64)
+        .map_or(VariablesRef::NONE, VariablesRef)
 }
 
 /// Replace every `${port}` occurrence in `args` (see [`DapTransport::Tcp`]).

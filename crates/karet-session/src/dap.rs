@@ -16,8 +16,11 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+use karet_core::DebugOutputCategory;
+use karet_core::FrameId;
 use karet_core::NotificationKind;
 use karet_core::Severity;
+use karet_core::VariablesRef;
 use karet_dap::DapClient;
 use karet_dap::DapError;
 use karet_dap::DapSpec;
@@ -315,25 +318,13 @@ impl DebugManager {
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let frames = client
-                .stack_trace(thread)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|frame| crate::api::DebugFrame {
-                    id: frame.id,
-                    name: frame.name,
-                    line: frame.line,
-                    column: frame.column,
-                    path: frame.source_path,
-                })
-                .collect();
+            let frames = client.stack_trace(thread).await.unwrap_or_default();
             events.emit(Some(id), Event::DebugStack { frames });
         });
     }
 
     /// One frame's scopes, answered on `id`.
-    pub(crate) fn scopes(&self, id: RequestId, frame: i64) {
+    pub(crate) fn scopes(&self, id: RequestId, frame: FrameId) {
         let Some(client) = self.shared.client() else {
             self.events.emit(
                 Some(id),
@@ -346,23 +337,13 @@ impl DebugManager {
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let scopes = client
-                .scopes(frame)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|scope| crate::api::DebugScope {
-                    name: scope.name,
-                    reference: scope.variables_reference,
-                    expensive: scope.expensive,
-                })
-                .collect();
+            let scopes = client.scopes(frame).await.unwrap_or_default();
             events.emit(Some(id), Event::DebugScopes { frame, scopes });
         });
     }
 
     /// One reference's children, answered on `id`.
-    pub(crate) fn variables(&self, id: RequestId, reference: i64) {
+    pub(crate) fn variables(&self, id: RequestId, reference: VariablesRef) {
         let Some(client) = self.shared.client() else {
             self.events.emit(
                 Some(id),
@@ -375,18 +356,7 @@ impl DebugManager {
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let variables = client
-                .variables(reference)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|variable| crate::api::DebugVariable {
-                    name: variable.name,
-                    value: variable.value,
-                    ty: variable.ty,
-                    reference: variable.variables_reference,
-                })
-                .collect();
+            let variables = client.variables(reference).await.unwrap_or_default();
             events.emit(
                 Some(id),
                 Event::DebugVariables {
@@ -399,13 +369,13 @@ impl DebugManager {
 
     /// Evaluate `expression`, answered on `id`; a rejected expression answers
     /// with the adapter's error text (the REPL shows it inline).
-    pub(crate) fn evaluate(&self, id: RequestId, expression: String, frame: Option<i64>) {
+    pub(crate) fn evaluate(&self, id: RequestId, expression: String, frame: Option<FrameId>) {
         let Some(client) = self.shared.client() else {
             self.events.emit(
                 Some(id),
                 Event::DebugEvaluated {
                     result: "no debug session".to_owned(),
-                    reference: 0,
+                    reference: VariablesRef::NONE,
                 },
             );
             return;
@@ -414,7 +384,7 @@ impl DebugManager {
         tokio::spawn(async move {
             let (result, reference) = match client.evaluate(&expression, frame).await {
                 Ok(evaluation) => (evaluation.result, evaluation.variables_reference),
-                Err(error) => (error.to_string(), 0),
+                Err(error) => (error.to_string(), VariablesRef::NONE),
             };
             events.emit(Some(id), Event::DebugEvaluated { result, reference });
         });
@@ -583,7 +553,7 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                 events.emit(
                     None,
                     Event::DebugOutput {
-                        category: "console".to_owned(),
+                        category: DebugOutputCategory::Console,
                         text: format!("debuggee exited with code {exit_code}\n"),
                     },
                 );

@@ -1,5 +1,6 @@
-//! The Debug Adapter Protocol vocabulary: capabilities, inspection models,
-//! and the adapter-pushed [`DebugEvent`] stream.
+//! The Debug Adapter Protocol vocabulary: capabilities, breakpoints, threads,
+//! evaluation results, and the adapter-pushed [`DebugEvent`] stream. Stack
+//! frames, scopes and variables are `karet-core`'s neutral debugger model.
 //!
 //! Hand-rolled over serde on the subset karet drives (the `dap` crate is
 //! alpha and server-oriented). Wire messages are camelCase and 1-based; the
@@ -8,6 +9,8 @@
 
 use std::path::PathBuf;
 
+use karet_core::DebugOutputCategory;
+use karet_core::VariablesRef;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -65,52 +68,14 @@ pub struct Thread {
     pub name: String,
 }
 
-/// One frame of a stopped thread's call stack.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StackFrame {
-    /// The frame id `scopes`/`evaluate` take.
-    pub id: i64,
-    /// The frame name (usually a function).
-    pub name: String,
-    /// The 0-based line the frame is stopped at.
-    pub line: u32,
-    /// The 0-based column.
-    pub column: u32,
-    /// The source file, when the adapter reports a path.
-    pub source_path: Option<PathBuf>,
-}
-
-/// A variables scope of one frame (Locals, Registers, …).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Scope {
-    /// The scope name.
-    pub name: String,
-    /// The handle `variables` takes.
-    pub variables_reference: i64,
-    /// Whether fetching the scope is expensive (fetch lazily).
-    pub expensive: bool,
-}
-
-/// A variable within a scope or structured parent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Variable {
-    /// The variable name.
-    pub name: String,
-    /// Its rendered value.
-    pub value: String,
-    /// The type, when the adapter reports one.
-    pub ty: Option<String>,
-    /// Non-zero when the variable has children fetchable via `variables`.
-    pub variables_reference: i64,
-}
-
 /// The result of an `evaluate` request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Evaluation {
     /// The rendered result.
     pub result: String,
-    /// Non-zero when the result has children fetchable via `variables`.
-    pub variables_reference: i64,
+    /// The handle that fetches the result's children via `variables`;
+    /// [`VariablesRef::NONE`] for a scalar.
+    pub variables_reference: VariablesRef,
 }
 
 /// An event pushed by the debug adapter.
@@ -135,8 +100,8 @@ pub enum DebugEvent {
     },
     /// The adapter or debuggee produced output.
     Output {
-        /// The stream (`"console"`, `"stdout"`, `"stderr"`, …).
-        category: String,
+        /// The stream it arrived on (`console` when the adapter names none).
+        category: DebugOutputCategory,
         /// The text, ANSI escapes and all.
         output: String,
     },
@@ -179,8 +144,7 @@ pub(crate) fn event_from(name: &str, body: &Value) -> Option<DebugEvent> {
             category: body
                 .get("category")
                 .and_then(Value::as_str)
-                .unwrap_or("console")
-                .to_owned(),
+                .map_or(DebugOutputCategory::Console, DebugOutputCategory::from_wire),
             output: str_field(body, "output"),
         },
         "breakpoint" => DebugEvent::BreakpointChanged(breakpoint_from(body.get("breakpoint")?)),
@@ -307,8 +271,20 @@ mod tests {
         assert_eq!(
             got,
             Some(DebugEvent::Output {
-                category: "console".to_owned(),
+                category: DebugOutputCategory::Console,
                 output: "hi\n".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn output_classifies_the_named_category() {
+        let got = event_from("output", &json!({"category": "stderr", "output": "boom\n"}));
+        assert_eq!(
+            got,
+            Some(DebugEvent::Output {
+                category: DebugOutputCategory::Stderr,
+                output: "boom\n".to_owned(),
             })
         );
     }

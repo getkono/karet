@@ -3638,6 +3638,7 @@ dependencies = [
 name = "karet-dap"
 version = "0.7.1"
 dependencies = [
+ "karet-core",
  "karet-jsonrpc",
  "serde",
  "serde_json",

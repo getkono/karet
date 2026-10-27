@@ -4,9 +4,14 @@
 
 use std::collections::VecDeque;
 
+use karet_core::DebugOutputCategory;
+use karet_core::DebugScope;
+use karet_core::DebugVariable;
+use karet_core::FrameId;
+use karet_core::StackFrame;
+use karet_core::VariablesRef;
 use karet_session::Command as SessionCommand;
 use karet_session::DebugBreakpoint;
-use karet_session::DebugFrame;
 use karet_session::DebugSessionState;
 
 use super::*;
@@ -25,7 +30,7 @@ pub(crate) struct Debugger {
     /// The status-line detail for the current state.
     pub(crate) detail: String,
     /// Buffered console output (ANSI kept; rendered by the Debug panel).
-    pub(crate) output: VecDeque<(String, String)>,
+    pub(crate) output: VecDeque<(DebugOutputCategory, String)>,
     /// The Debug sidebar panel (stack, variables tree, evaluate log).
     pub(crate) panel: DebugPanel,
     /// The Debug panel's last-frame hit-test data.
@@ -212,7 +217,7 @@ impl App {
     }
 
     /// `Event::DebugOutput`: buffer for the Debug panel, capped.
-    pub(super) fn on_debug_output(&mut self, category: String, text: String) {
+    pub(super) fn on_debug_output(&mut self, category: DebugOutputCategory, text: String) {
         for line in text.lines() {
             self.debugger
                 .output
@@ -274,7 +279,7 @@ impl App {
                 let Some(frame) = self.debugger.panel.stack.get(index) else {
                     return;
                 };
-                let (id, line, path) = (frame.id, frame.line, frame.path.clone());
+                let (id, line, path) = (frame.id, frame.line, frame.source_path.clone());
                 self.debugger.panel.selected_frame = Some(id);
                 self.debugger.panel.scopes.clear();
                 self.debugger.panel.variables.clear();
@@ -291,7 +296,7 @@ impl App {
                     .panel
                     .scopes
                     .get(index)
-                    .map(|scope| scope.reference)
+                    .map(|scope| scope.variables_reference)
                 else {
                     return;
                 };
@@ -304,8 +309,8 @@ impl App {
                     .variables
                     .get(&parent)
                     .and_then(|children| children.get(index))
-                    .map_or(0, |child| child.reference);
-                if reference > 0 {
+                    .map_or(VariablesRef::NONE, |child| child.variables_reference);
+                if reference.has_children() {
                     self.debug_toggle_expand(reference);
                 }
             },
@@ -314,7 +319,7 @@ impl App {
     }
 
     /// Toggle one reference's expansion, fetching its children on first use.
-    fn debug_toggle_expand(&mut self, reference: i64) {
+    fn debug_toggle_expand(&mut self, reference: VariablesRef) {
         if self.debugger.panel.expanded.remove(&reference) {
             self.debugger.rebuild_rows();
             return;
@@ -370,7 +375,7 @@ impl App {
 
     /// `Event::DebugStack`: adopt the frames, auto-select the top frame, and
     /// fetch its scopes (VS Code's behavior on stop).
-    pub(super) fn on_debug_stack(&mut self, id: Option<RequestId>, frames: Vec<DebugFrame>) {
+    pub(super) fn on_debug_stack(&mut self, id: Option<RequestId>, frames: Vec<StackFrame>) {
         if !id.is_some_and(|id| self.debugger.panel.pending.remove(&id)) {
             return;
         }
@@ -387,8 +392,8 @@ impl App {
     pub(super) fn on_debug_scopes(
         &mut self,
         id: Option<RequestId>,
-        frame: i64,
-        scopes: Vec<karet_session::DebugScope>,
+        frame: FrameId,
+        scopes: Vec<DebugScope>,
     ) {
         if !id.is_some_and(|id| self.debugger.panel.pending.remove(&id))
             || self.debugger.panel.selected_frame != Some(frame)
@@ -402,7 +407,7 @@ impl App {
             .scopes
             .iter()
             .find(|scope| !scope.expensive)
-            .map(|scope| scope.reference)
+            .map(|scope| scope.variables_reference)
         {
             self.debugger.panel.expanded.insert(first);
             self.debug_request(DebugCommand::Variables { reference: first });
@@ -414,8 +419,8 @@ impl App {
     pub(super) fn on_debug_variables(
         &mut self,
         id: Option<RequestId>,
-        reference: i64,
-        variables: Vec<karet_session::DebugVariable>,
+        reference: VariablesRef,
+        variables: Vec<DebugVariable>,
     ) {
         if !id.is_some_and(|id| self.debugger.panel.pending.remove(&id)) {
             return;
@@ -478,7 +483,7 @@ pub(crate) enum DebugRow {
     /// One variable of a fetched reference.
     Variable {
         /// The parent `variablesReference` whose children hold it.
-        parent: i64,
+        parent: VariablesRef,
         /// The index within that parent's children.
         index: usize,
         /// The tree depth (scopes' children are depth 1).
@@ -503,15 +508,15 @@ const DEBUG_TREE_DEPTH_CAP: u16 = 8;
 #[derive(Default)]
 pub(crate) struct DebugPanel {
     /// The stopped thread's frames, top first.
-    pub(crate) stack: Vec<karet_session::DebugFrame>,
+    pub(crate) stack: Vec<StackFrame>,
     /// The frame inspection targets (scopes/evaluate context).
-    pub(crate) selected_frame: Option<i64>,
+    pub(crate) selected_frame: Option<FrameId>,
     /// The selected frame's scopes.
-    pub(crate) scopes: Vec<karet_session::DebugScope>,
+    pub(crate) scopes: Vec<DebugScope>,
     /// Fetched children per `variablesReference`.
-    pub(crate) variables: HashMap<i64, Vec<karet_session::DebugVariable>>,
+    pub(crate) variables: HashMap<VariablesRef, Vec<DebugVariable>>,
     /// Expanded references (scopes and structured variables).
-    pub(crate) expanded: HashSet<i64>,
+    pub(crate) expanded: HashSet<VariablesRef>,
     /// In-flight inspection requests; answers not in here are stale and dropped.
     pub(crate) pending: HashSet<RequestId>,
     /// The evaluate log (`expr = result` lines, oldest first).
@@ -547,7 +552,11 @@ impl DebugPanel {
         if self.scopes.is_empty() {
             self.rows.push(DebugRow::Note("no frame selected"));
         }
-        let scope_refs: Vec<i64> = self.scopes.iter().map(|scope| scope.reference).collect();
+        let scope_refs: Vec<VariablesRef> = self
+            .scopes
+            .iter()
+            .map(|scope| scope.variables_reference)
+            .collect();
         for (index, reference) in scope_refs.into_iter().enumerate() {
             self.rows.push(DebugRow::Scope(index));
             if self.expanded.contains(&reference) {
@@ -571,7 +580,7 @@ impl DebugPanel {
         self.selection.move_to(cursor);
     }
 
-    fn push_children(&mut self, parent: i64, depth: u16) {
+    fn push_children(&mut self, parent: VariablesRef, depth: u16) {
         if depth > DEBUG_TREE_DEPTH_CAP {
             return;
         }
@@ -582,8 +591,9 @@ impl DebugPanel {
                 index,
                 depth,
             });
-            if child.reference > 0 && self.expanded.contains(&child.reference) {
-                self.push_children(child.reference, depth + 1);
+            let reference = child.variables_reference;
+            if reference.has_children() && self.expanded.contains(&reference) {
+                self.push_children(reference, depth + 1);
             }
         }
     }

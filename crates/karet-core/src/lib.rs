@@ -34,10 +34,13 @@
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
 //! - Notifications: [`Notification`], [`NotificationKind`], [`severity_role`].
+//! - Debugger inspection: [`StackFrame`], [`DebugScope`], [`DebugVariable`] with
+//!   their [`FrameId`]/[`VariablesRef`] handles, and [`DebugOutputCategory`].
 
 mod blame;
 mod capability;
 mod coord;
+mod debug;
 mod edit;
 mod graph;
 mod highlight;
@@ -59,6 +62,12 @@ pub use coord::LineCol;
 pub use coord::LineIndex;
 pub use coord::Range;
 pub use coord::Span;
+pub use debug::DebugOutputCategory;
+pub use debug::DebugScope;
+pub use debug::DebugVariable;
+pub use debug::FrameId;
+pub use debug::StackFrame;
+pub use debug::VariablesRef;
 pub use edit::AppliedEdit;
 pub use edit::ApplyWorkspaceEditResult;
 pub use edit::Change;
