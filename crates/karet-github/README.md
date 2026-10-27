@@ -10,7 +10,7 @@ representable; strictly typed adapters cover explicitly tracked generator blocke
 Generation runs in `build.rs` and writes only to Cargo's `OUT_DIR`; generated Rust is
 never checked into or loaded from the source tree.
 
-The client also retains the compact, blocking open-pull-request query used by Source
+The same asynchronous client lists a repository's open pull requests for Source
 Control's branch picker. Remote parsing accepts common SSH and HTTPS GitHub forms, and
 authentication uses the user's available GitHub token without leaking `reqwest` or
 GitHub URL shapes into the rest of the workspace.
