@@ -16,14 +16,14 @@ use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 use karet_session::api::SeamSync;
 
-use super::Reroot;
-use super::SeamFocus;
-use super::SeamViewState;
 use crate::app::App;
 use crate::app::Report;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
+use crate::tab::seam::Reroot;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::SeamViewState;
 
 impl Tab {
     /// The title a Seam view on `root` carries.
@@ -245,13 +245,20 @@ impl App {
             return;
         };
         state.lens_filter = match settings.lens_filter {
-            karet_session::config::schema::SeamLensFilter::Demote => super::LensFilter::Demote,
-            karet_session::config::schema::SeamLensFilter::Hide => super::LensFilter::Hide,
+            karet_session::config::schema::SeamLensFilter::Demote => {
+                crate::tab::seam::LensFilter::Demote
+            },
+            karet_session::config::schema::SeamLensFilter::Hide => {
+                crate::tab::seam::LensFilter::Hide
+            },
         };
         state.hide_inactive = settings.hide_inactive;
         state.spine = settings.spine;
         for lens in &settings.default_lenses {
-            if let Some(known) = super::LENS_NAMES.iter().find(|name| *name == lens) {
+            if let Some(known) = crate::tab::seam::LENS_NAMES
+                .iter()
+                .find(|name| *name == lens)
+            {
                 state.lenses.insert(known);
             }
         }
@@ -658,7 +665,7 @@ impl App {
 
     /// Toggle one lens by its position in the legend.
     pub(crate) fn seam_toggle_lens(&mut self, index: usize) {
-        let Some(lens) = super::LENS_NAMES.get(index).copied() else {
+        let Some(lens) = crate::tab::seam::LENS_NAMES.get(index).copied() else {
             return;
         };
         if let Some(state) = self.active_seam() {

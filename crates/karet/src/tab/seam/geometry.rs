@@ -11,8 +11,6 @@
 
 use ratatui::layout::Rect;
 
-use crate::app::util::rect_contains;
-
 /// Where the last frame painted everything clickable.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SeamHits {
@@ -99,58 +97,58 @@ impl SeamHits {
     #[must_use]
     pub(crate) fn at(&self, x: u16, y: u16) -> Option<SeamTarget> {
         let point = (x, y);
-        if !rect_contains(self.area, point) {
+        if !self.area.contains(point.into()) {
             return None;
         }
-        if rect_contains(self.widen, point) {
+        if self.widen.contains(point.into()) {
             return Some(SeamTarget::Widen);
         }
         // Before the crumbs: the package name widens all the way back out, and it is the
         // run that grows to fill the row, so an untested button would sit under it.
-        if rect_contains(self.force_sync, point) {
+        if self.force_sync.contains(point.into()) {
             return Some(SeamTarget::ForceSync);
         }
-        if rect_contains(self.sync, point) {
+        if self.sync.contains(point.into()) {
             return Some(SeamTarget::Sync);
         }
         if let Some((_, depth)) = self
             .crumbs
             .iter()
-            .find(|(rect, _)| rect_contains(*rect, point))
+            .find(|(rect, _)| rect.contains(point.into()))
         {
             return Some(SeamTarget::Crumb(*depth));
         }
         if let Some((_, lens)) = self
             .lenses
             .iter()
-            .find(|(rect, _)| rect_contains(*rect, point))
+            .find(|(rect, _)| rect.contains(point.into()))
         {
             return Some(SeamTarget::Lens(*lens));
         }
-        if rect_contains(self.config, point) {
+        if self.config.contains(point.into()) {
             return Some(SeamTarget::Configuration);
         }
         if let Some((_, id)) = self
             .rows
             .iter()
-            .find(|(rect, _)| rect_contains(*rect, point))
+            .find(|(rect, _)| rect.contains(point.into()))
         {
             return Some(SeamTarget::Row(id.clone()));
         }
-        if rect_contains(self.spine, point) {
+        if self.spine.contains(point.into()) {
             return Some(SeamTarget::Spine);
         }
         if let Some((_, edge)) = self
             .edges
             .iter()
-            .find(|(rect, _)| rect_contains(*rect, point))
+            .find(|(rect, _)| rect.contains(point.into()))
         {
             return Some(SeamTarget::Edge(*edge));
         }
-        if rect_contains(self.facets, point) {
+        if self.facets.contains(point.into()) {
             return Some(SeamTarget::Facets);
         }
-        if rect_contains(self.query, point) {
+        if self.query.contains(point.into()) {
             return Some(SeamTarget::Query);
         }
         None

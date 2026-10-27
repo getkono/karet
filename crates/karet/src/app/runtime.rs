@@ -31,8 +31,6 @@ use crate::app::App;
 use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::notifications::Report;
 use crate::app::state::TerminalCaps;
-use crate::app::util::KeyboardEnhancementGuard;
-use crate::app::util::tab_language;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::ui;
@@ -231,7 +229,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .graphical_cursor()
                 == Some(true)
         });
@@ -579,6 +577,16 @@ pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
     // Per event, not per frame: a far click followed by typing in the same burst
     // would otherwise read as one edit and lose the step back.
     app.observe_navigation();
+}
+
+/// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
+/// the event loop panics (ratatui's panic hook restores the rest of the terminal).
+struct KeyboardEnhancementGuard;
+
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use super::support::*;
-use crate::app::util::canonical;
-use crate::app::util::parse_rev_range;
+use crate::app::scm::parse_rev_range;
 use crate::app::*;
+use crate::paths::canonical_nearest as canonical;
 
 #[test]
 fn toggle_sidebar_and_focus() {
@@ -504,7 +504,7 @@ fn find_highlights_matches_in_a_code_tab() {
         "t.rs",
         TabKind::Code {
             path: PathBuf::from("t.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("foo bar foo").into(),
@@ -729,7 +729,10 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -775,7 +778,10 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     let area = Rect {
         x: 0,

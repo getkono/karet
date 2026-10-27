@@ -198,7 +198,7 @@ fn the_reveal_delay_runs_from_the_first_paint_not_from_layout() {
     );
     assert_eq!(
         pending.wake(pending.since()),
-        Some(crate::app::LOADING_REVEAL_DELAY),
+        Some(crate::pending::LOADING_REVEAL_DELAY),
         "no placeholder the moment it is queued: a full delay remains"
     );
 }
@@ -349,7 +349,7 @@ fn a_pending_load_is_offered_for_the_reveal_wake() {
     // racing the real clock.
     let pending = pendings[0];
     let since = pending.since();
-    let delay = crate::app::LOADING_REVEAL_DELAY;
+    let delay = crate::pending::LOADING_REVEAL_DELAY;
     let step = std::time::Duration::from_millis(50);
     assert_eq!(pending.wake(since), Some(delay));
     assert_eq!(pending.wake(since + step), Some(delay - step));

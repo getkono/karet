@@ -5,12 +5,11 @@ use karet_session::ChangeSummary;
 use karet_session::VcsCommand;
 
 use crate::app::App;
-use crate::app::util::canonical;
-use crate::render::Section;
+use crate::paths::canonical_nearest as canonical;
 use crate::tab::MergeConflictState;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
-use crate::workspace;
 
 impl App {
     /// Open the Source-Control cursor's change as a materialized view and focus it.
@@ -124,7 +123,7 @@ impl App {
             } else {
                 self.root.join(path)
             };
-            let mut tab = workspace::open_file(&absolute);
+            let mut tab = Tab::open(&absolute);
             if matches!(tab.kind, TabKind::Code { .. }) {
                 tab.title = format!("⚠ {}", tab.title);
                 tab.merge_conflict = Some(MergeConflictState::loading());

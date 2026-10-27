@@ -19,8 +19,8 @@ use karet_markdown::ImageSizer;
 use tokio::sync::mpsc;
 
 use super::PROBE_BYTES;
-use crate::app::Pending;
 use crate::links::LinkTarget;
+use crate::pending::Pending;
 
 /// The largest image file the preview loads — the same guard that keeps any file
 /// from opening as an image tab.

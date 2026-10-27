@@ -14,7 +14,7 @@ use karet_session::WorkspaceCommand;
 use karet_widgets::ListSelection;
 
 use crate::app::App;
-use crate::app::util::rect_contains;
+use crate::app::hit::rect_contains;
 use crate::keymap::SidebarPanel;
 
 /// Keep at most this many misspellings. A workspace can hold far more than a list

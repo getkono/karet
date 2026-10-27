@@ -17,7 +17,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
 use super::*;
-use crate::app::seam::SeamViewState;
+use crate::tab::seam::SeamViewState;
 
 /// A node with the given facets and rollups.
 fn node(id: &str, parent: Option<&str>, children: &[&str], rollups: [u32; 5]) -> SeamNodeView {
@@ -281,7 +281,7 @@ fn each_empty_state_says_which_one_it_is() {
     // Filtered to nothing, which is a different fact again.
     let mut filtered = view();
     filtered.query_matches = Some(std::collections::HashSet::new());
-    filtered.lens_filter = crate::app::seam::LensFilter::Hide;
+    filtered.lens_filter = crate::tab::seam::LensFilter::Hide;
     let rendered = text(&render(&mut filtered, 100, 12));
     assert!(
         rendered.contains("matches the current filters"),
@@ -312,7 +312,7 @@ fn the_reversal_path_is_visible_once_narrowed() {
     // how one narrows — and the fixture's sole root is no longer rerootable onto itself.
     state
         .narrow
-        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+        .push(crate::tab::seam::Narrow::Scope("demo".to_owned()));
     state.move_row(0);
     let rendered = text(&render(&mut state, 120, 20));
     // Reversible is not enough — the way back has to be on screen.
@@ -446,7 +446,7 @@ fn a_preview_that_could_not_be_read_says_why_instead_of_rendering_blank() {
 
 #[test]
 fn a_pending_preview_says_nothing_until_the_reveal_delay_and_then_says_so() {
-    let paint = |pending: Option<crate::ui::Pending>| {
+    let paint = |pending: Option<crate::pending::Pending>| {
         let mut state = view();
         state.select_path("demo::danger");
         state.detail_since = pending;
@@ -454,9 +454,12 @@ fn a_pending_preview_says_nothing_until_the_reveal_delay_and_then_says_so() {
     };
     // A fast answer must never flash a placeholder on its way past, so a request that
     // has only just gone out looks exactly like no request at all.
-    assert_eq!(paint(Some(crate::ui::Pending::start())), paint(None));
+    assert_eq!(paint(Some(crate::pending::Pending::start())), paint(None));
     // Past the shared delay it has to say something, or the pane reads as broken.
-    assert_ne!(paint(Some(crate::ui::Pending::revealed())), paint(None));
+    assert_ne!(
+        paint(Some(crate::pending::Pending::revealed())),
+        paint(None)
+    );
 }
 
 #[test]
@@ -600,7 +603,7 @@ fn every_painted_spine_row_is_clickable() {
         );
         assert_eq!(
             state.hits.at(rect.x, rect.y),
-            Some(crate::app::seam::geometry::SeamTarget::Row(id.clone()))
+            Some(crate::tab::seam::geometry::SeamTarget::Row(id.clone()))
         );
     }
 }
@@ -627,7 +630,7 @@ fn the_breadcrumb_records_one_crumb_per_narrow_plus_the_root() {
     let mut state = view();
     state
         .narrow
-        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+        .push(crate::tab::seam::Narrow::Scope("demo".to_owned()));
     state.move_row(0);
     let _ = render(&mut state, 120, 20);
     assert_eq!(state.hits.crumbs.len(), state.narrow.len() + 1);
@@ -674,7 +677,7 @@ fn the_widen_affordance_is_recorded_only_once_narrowed() {
 
     state
         .narrow
-        .push(crate::app::seam::Narrow::Scope("demo".to_owned()));
+        .push(crate::tab::seam::Narrow::Scope("demo".to_owned()));
     state.move_row(0);
     let _ = render(&mut state, 120, 20);
     assert!(state.hits.widen.width > 0);
@@ -755,11 +758,11 @@ fn the_header_offers_sync_and_force_sync_at_its_right_edge() {
     assert!(state.hits.force_sync.width > 0);
     assert_eq!(
         state.hits.at(state.hits.sync.x, 0),
-        Some(crate::app::seam::geometry::SeamTarget::Sync)
+        Some(crate::tab::seam::geometry::SeamTarget::Sync)
     );
     assert_eq!(
         state.hits.at(state.hits.force_sync.x, 0),
-        Some(crate::app::seam::geometry::SeamTarget::ForceSync)
+        Some(crate::tab::seam::geometry::SeamTarget::ForceSync)
     );
 }
 
@@ -786,8 +789,8 @@ fn a_header_with_no_room_drops_the_affordances_rather_than_the_name() {
     assert!(!matches!(
         state.hits.at(23, 0),
         Some(
-            crate::app::seam::geometry::SeamTarget::Sync
-                | crate::app::seam::geometry::SeamTarget::ForceSync
+            crate::tab::seam::geometry::SeamTarget::Sync
+                | crate::tab::seam::geometry::SeamTarget::ForceSync
         )
     ));
 }

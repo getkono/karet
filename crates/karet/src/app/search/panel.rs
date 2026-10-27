@@ -11,7 +11,7 @@ use karet_session::SearchHit;
 use karet_widgets::ListSelection;
 use karet_widgets::textfield::TextFieldState;
 
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 
 /// The workspace-search panel state.
 pub(crate) struct SearchPanel {

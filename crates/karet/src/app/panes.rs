@@ -5,7 +5,6 @@ use karet_core::CursorState;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Selection;
-use karet_filetype::FileKind;
 use karet_session::layout;
 use karet_session::layout::LayoutAxis;
 use karet_session::layout::LayoutNode;
@@ -22,10 +21,10 @@ use karet_widgets::pane::tree::PaneTree;
 use ratatui::layout::Rect;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::hit::tab_at;
 use crate::app::notifications::Report;
 use crate::app::state::StoredPane;
-use crate::app::util::rect_contains;
-use crate::app::util::tab_at;
 use crate::tab::FillView;
 use crate::tab::MarkdownPreviewState;
 use crate::tab::Tab;
@@ -168,15 +167,7 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let is_markdown = match &tab.kind {
-            TabKind::Code { path, text, .. } => {
-                let head = text.as_bytes();
-                let head = head.get(..crate::workspace::HEAD_BYTES).unwrap_or(head);
-                karet_filetype::classify_ignoring_size(path, head) == FileKind::Markdown
-            },
-            _ => false,
-        };
-        if !is_markdown {
+        if !tab.is_markdown() {
             self.notify(
                 Report::Refusal,
                 NotificationKind::System,
@@ -225,7 +216,7 @@ impl App {
             Some(t) => match &t.kind {
                 TabKind::Code {
                     path,
-                    language,
+                    file_type,
                     doc,
                     next_version,
                     buffer,
@@ -253,7 +244,7 @@ impl App {
                         t.title.clone(),
                         TabKind::Code {
                             path: path.clone(),
-                            language,
+                            file_type: *file_type,
                             doc: *doc,
                             next_version: *next_version,
                             // The same buffer, not a copy of it.
@@ -611,7 +602,7 @@ impl App {
             if !path.is_file() {
                 continue;
             }
-            let mut tab = workspace::open_file(&path);
+            let mut tab = Tab::open(&path);
             tab.view = self.alloc_view();
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;

@@ -37,10 +37,10 @@ use super::inlay::HintRange;
 use super::inlay::PendingInlay;
 use crate::app::DEFAULT_SCM_COMMITS_H;
 use crate::app::OUTLINE_WIDTH;
-use crate::app::pending::Pending;
 use crate::command::Command;
+use crate::pending::Pending;
 use crate::remote;
-use crate::render::Section;
+use crate::tab::Section;
 use crate::tab::Tab;
 
 /// What the terminal was confirmed to support at startup. Capabilities are
@@ -343,7 +343,7 @@ impl LiveBlame {
             BlameAttribution::Commit(commit) => Some(format!(
                 "  {} {}",
                 commit.author,
-                crate::app::relative_time(commit.author_time)
+                crate::ui::relative_time(commit.author_time)
             )),
             BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
             _ => None,

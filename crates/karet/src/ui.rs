@@ -4,6 +4,8 @@
 
 pub(crate) mod commit;
 mod commit_console;
+#[cfg(test)]
+pub(crate) use commit_console::console_lines;
 mod confirm;
 mod content;
 mod display;
@@ -104,18 +106,19 @@ use crate::app::App;
 use crate::app::LanguageServerBadgeSummary;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
-use crate::app::Pending;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::app::clamp_sidebar_width;
-use crate::app::is_markdown;
-pub(crate) use crate::app::relative_time;
+mod time;
+pub(crate) use time::relative_time;
+
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+use crate::pending::Pending;
 use crate::tab::CommitFiles;
 use crate::view::View;
 
@@ -138,6 +141,7 @@ pub(super) fn text_field_text(
 }
 
 pub(crate) use commit::responsive::document_row as commit_document_row;
+use content::diff as diff_paint;
 pub(crate) use karet_widgets::scroll::ScrollAxes;
 pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;
@@ -156,7 +160,6 @@ pub(crate) use crate::app::ScrollSurface;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
-use crate::render::{self};
 use crate::tab::FindState;
 use crate::tab::MergeConflictState;
 use crate::tab::Tab;
@@ -695,7 +698,7 @@ fn draw_pane_tabs(
 
 fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
     match &tab.kind {
-        TabKind::Code { path, .. } if is_markdown(path) => {
+        TabKind::Code { .. } if tab.is_markdown() => {
             vec![
                 (
                     UiIcon::Preview,

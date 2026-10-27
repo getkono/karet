@@ -19,7 +19,6 @@ use karet_text::TextBuffer;
 
 use super::indent::SyntaxIndent;
 use crate::app::App;
-use crate::app::util::tab_language;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -62,7 +61,7 @@ impl App {
         else {
             return None;
         };
-        let settings = self.settings.editor.for_language(tab_language(tab));
+        let settings = self.settings.editor.for_language(tab.language_id());
         let rules = AutoPairs {
             pairs: file_type_for_path(path).auto_pairs(),
             brackets: auto_close(settings.auto_closing_brackets()),

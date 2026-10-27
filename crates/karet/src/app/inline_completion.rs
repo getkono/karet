@@ -41,7 +41,6 @@ use karet_session::api::AccountOutcome;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::tab_language;
 use crate::keymap::Editing;
 use crate::tab::TabKind;
 
@@ -119,7 +118,7 @@ impl App {
         let enabled = self
             .settings
             .editor
-            .for_language(tab_language(tab))
+            .for_language(tab.language_id())
             .inline_completion();
         let cursors = tab.editor.cursors();
         let [selection] = cursors.selections.as_slice() else {

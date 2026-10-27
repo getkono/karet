@@ -229,7 +229,7 @@ pub(crate) fn draw_search_panel(
     } else if search.searching.is_some() {
         search
             .started
-            .is_some_and(crate::app::Pending::visible)
+            .is_some_and(crate::pending::Pending::visible)
             .then(|| {
                 (
                     format!(

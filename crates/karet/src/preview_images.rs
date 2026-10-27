@@ -52,7 +52,7 @@ impl PreviewImages {
     }
 
     /// Nothing is ever loading.
-    pub(crate) fn pendings(&self) -> Vec<crate::app::Pending> {
+    pub(crate) fn pendings(&self) -> Vec<crate::pending::Pending> {
         Vec::new()
     }
 

@@ -713,7 +713,7 @@ fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
         RequestId(7),
         (
             nested.clone(),
-            Pending::at(now - crate::app::LOADING_REVEAL_DELAY + Duration::from_millis(1)),
+            Pending::at(now - crate::pending::LOADING_REVEAL_DELAY + Duration::from_millis(1)),
         ),
     );
 
@@ -727,7 +727,7 @@ fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
         RequestId(7),
         (
             nested.clone(),
-            Pending::at(now - crate::app::LOADING_REVEAL_DELAY - Duration::from_millis(50)),
+            Pending::at(now - crate::pending::LOADING_REVEAL_DELAY - Duration::from_millis(50)),
         ),
     );
     assert_eq!(app.nested_repository_badges(now).len(), 1);

@@ -26,7 +26,6 @@ use karet_session::RequestId;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
 use crate::app::state::CloseRequest;
 use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
 use crate::overlay::GO_TO_LINE_PREFIX;
@@ -34,6 +33,7 @@ use crate::overlay::LineTarget;
 use crate::overlay::Overlay;
 use crate::overlay::QuickOpenMode;
 use crate::overlay::WORKSPACE_SYMBOL_PREFIX;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::workspace;

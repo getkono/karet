@@ -63,7 +63,6 @@ use crate::app::state::TodosChrome;
 use crate::app::syntax_select;
 use crate::app::theme_picker;
 use crate::app::todos::TodosPanel;
-use crate::app::util::tab_language;
 use crate::app::vi;
 use crate::clipboard::Clipboard;
 use crate::command::Command;
@@ -72,8 +71,8 @@ use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
 use crate::keymap::SidebarPanel;
 use crate::notify::NotificationCenter;
-use crate::render::FileView;
-use crate::render::Section;
+use crate::tab::ChangedFile;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -400,7 +399,7 @@ impl App {
             self.open_path(path);
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);
@@ -462,7 +461,7 @@ impl App {
                     .push((view, new.to_path_buf(), old_text, new_text));
                 return;
             },
-            _ => Box::new(FileView::new(diffs::binary_prepared_change(new))),
+            _ => Box::new(ChangedFile::new(diffs::binary_prepared_change(new))),
         };
         self.push_tab(Tab::diff(
             title,
@@ -610,7 +609,7 @@ impl App {
                 .map_or(self.settings.editor.graphical_cursor, |tab| {
                     self.settings
                         .editor
-                        .for_language(tab_language(tab))
+                        .for_language(tab.language_id())
                         .graphical_cursor()
                 });
         match configured {

@@ -78,12 +78,15 @@ pub(crate) use crate::keymap::Focus;
 pub(crate) use crate::keymap::FocusTarget;
 pub(crate) use crate::keymap::Modal;
 pub(crate) use crate::overlay::Overlay;
-pub(crate) use crate::render::FileView;
-pub(crate) use crate::render::Section;
+pub(crate) use crate::pending::LOADING_REVEAL_DELAY;
+pub(crate) use crate::pending::Pending;
+pub(crate) use crate::tab::ChangedFile;
 pub(crate) use crate::tab::CommitFiles;
 pub(crate) use crate::tab::CommitViewState;
 pub(crate) use crate::tab::PagerState;
 pub(crate) use crate::tab::SearchField;
+pub(crate) use crate::tab::Section;
+pub(crate) use crate::tab::TabKind;
 
 pub(crate) fn change(path: &str, status: StatusKind) -> ChangeSummary {
     ChangeSummary {
@@ -294,6 +297,14 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
     }
 }
 
+/// The registry file type named `language` (a protocol id, config selector or
+/// display name), or the unrecognized fallback when there is none.
+pub(crate) fn language_type(language: &str) -> karet_filetype::FileType {
+    karet_filetype::file_type_for_language(language)
+        .unwrap_or_else(|| karet_filetype::file_type_for_path(Path::new("")))
+}
+
+/// A code tab over `name` holding `text`, typed by its path.
 pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
     use karet_core::Highlights;
     use karet_text::TextBuffer;
@@ -301,7 +312,7 @@ pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
         name,
         TabKind::Code {
             path: PathBuf::from(name),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(name)),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text).into(),
@@ -324,7 +335,7 @@ pub(crate) fn code_tab(name: &str) -> Tab {
         name,
         TabKind::Code {
             path: PathBuf::from(name),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(name)),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("x\n").into(),
@@ -542,7 +553,7 @@ pub(crate) fn responsive_commit_files() -> CommitFiles {
     CommitFiles::ready(
         ["src/first.rs", "src/second.rs", "src/third.rs"]
             .into_iter()
-            .map(|path| FileView::new(prepared_change(path, StatusKind::Modified)))
+            .map(|path| ChangedFile::new(prepared_change(path, StatusKind::Modified)))
             .collect(),
     )
 }

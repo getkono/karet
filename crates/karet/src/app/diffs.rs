@@ -10,10 +10,10 @@ use karet_vcs::StatusKind;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
-use crate::render::FileView;
-use crate::render::Section;
+use crate::pending::Pending;
+use crate::tab::ChangedFile;
 use crate::tab::PagerState;
+use crate::tab::Section;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
 
@@ -206,7 +206,7 @@ impl App {
             }
             match result {
                 Ok(prepared) => {
-                    *file = Some(Box::new(FileView::new(*prepared)));
+                    *file = Some(Box::new(ChangedFile::new(*prepared)));
                     *loading_since = None;
                     *error = None;
                 },
@@ -254,7 +254,7 @@ impl App {
                         {
                             pager.scroll = u16::try_from(row).unwrap_or(u16::MAX);
                         }
-                        *file = Some(Box::new(FileView::new(*prepared)));
+                        *file = Some(Box::new(ChangedFile::new(*prepared)));
                         *loading_since = None;
                         *error = None;
                     }

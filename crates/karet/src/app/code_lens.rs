@@ -41,8 +41,8 @@ use super::inlay::PendingInlay;
 use super::inlay::inlay_retry_delay;
 use super::inlay::shift_position;
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
-use crate::app::util::rect_contains;
 use crate::tab::TabKind;
 
 /// The lenses held for each document, and the requests for them.

@@ -26,15 +26,14 @@ use crate::app::SCM_LOG_PAGE;
 use crate::app::confirm::ConfirmAction;
 use crate::app::confirm::describe_paths;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
 use crate::app::state::CommitInput;
 use crate::app::state::LiveBlame;
-use crate::app::util::canonical;
-use crate::app::util::parse_rev_range;
 use crate::command::Command;
 use crate::keymap::SidebarPanel;
 use crate::overlay::Overlay;
-use crate::render::Section;
+use crate::paths::canonical_nearest as canonical;
+use crate::pending::Pending;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -719,7 +718,7 @@ impl App {
             merged.append(commits);
             *commits = merged;
             // The lane layout is sequential from the tip, so a new tip invalidates it.
-            *rails = crate::app::commit_rails(commits);
+            *rails = crate::tab::commit_rails(commits);
             // Keep the viewport and the selection on the same commits they were on.
             if *list_offset > 0 {
                 *list_offset = list_offset.saturating_add(u16::try_from(inserted).unwrap_or(0));
@@ -791,4 +790,26 @@ impl CommitInput {
         self.edit
             .place_cursor(&self.text, column, row, width, extend);
     }
+}
+
+/// Parse a revision-range spec typed into the go-to-commit input into
+/// `(base, head, merge_base)`, or `None` when it is a single revision.
+///
+/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
+/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
+pub(super) fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
+    // Three-dot first: "..." also contains "..".
+    let (sep, merge_base) = if input.contains("...") {
+        ("...", true)
+    } else if input.contains("..") {
+        ("..", false)
+    } else {
+        return None;
+    };
+    let (base, head) = input.split_once(sep)?;
+    let side = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() { "HEAD" } else { s }.to_string()
+    };
+    Some((side(base), side(head), merge_base))
 }

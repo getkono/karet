@@ -1,6 +1,6 @@
 //! Opening the Seam view, and the guards that keep one index behind one view.
 //!
-//! The pure navigation model is covered in `app::seam::tests`; these cover what the app
+//! The pure navigation model is covered in `tab::seam::tests`; these cover what the app
 //! does around it — which root is asked for, which tab an answer lands on, and which
 //! answers are refused.
 
@@ -548,7 +548,7 @@ fn clicking_the_query_line_focuses_it() {
     press(&mut app, 4, 23);
     assert!(
         app.active_seam()
-            .is_some_and(|state| state.focus == crate::app::seam::SeamFocus::Query)
+            .is_some_and(|state| state.focus == crate::tab::seam::SeamFocus::Query)
     );
 }
 

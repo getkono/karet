@@ -108,6 +108,26 @@ pub(crate) fn canonical_nearest(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Whether two paths resolve to the same filesystem location.
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+    canonical_nearest(a) == canonical_nearest(b)
+}
+
+/// Whether `path` resolves to `root` or a path below it.
+pub(crate) fn path_under(root: &Path, path: &Path) -> bool {
+    canonical_nearest(path).starts_with(canonical_nearest(root))
+}
+
+/// `path` moved from under `from` to the same place under `to`, or `None` when
+/// it does not lie under `from`.
+pub(crate) fn rebase_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if !path_under(from, path) {
+        return None;
+    }
+    let suffix = path.strip_prefix(from).ok()?;
+    Some(to.join(suffix))
+}
+
 /// Resolve `.` and `..` components without touching the filesystem.
 pub(crate) fn lexically_normalize(path: &Path) -> PathBuf {
     use std::path::Component;

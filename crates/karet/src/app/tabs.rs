@@ -15,14 +15,12 @@ use crate::app::App;
 use crate::app::notifications::Report;
 use crate::app::state::CloseRequest;
 use crate::app::state::StoredPane;
-use crate::app::util::canonical;
-use crate::app::util::path_under;
-use crate::app::util::rebase_path;
-use crate::app::util::retarget_tab_path;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::path_under;
+use crate::paths::rebase_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::view::View;
-use crate::workspace;
 
 /// The activation history's hard ceiling. It only bounds memory in a very long
 /// session: entries this old are far past any "put me back where I was" reach, and
@@ -47,7 +45,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = workspace::open_file(path);
+        let tab = Tab::open(path);
         self.push_tab(tab);
     }
 
@@ -82,7 +80,7 @@ impl App {
             }
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -192,7 +190,7 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = workspace::open_file_ignoring_size(&path);
+        let mut tab = Tab::open_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
         self.keyboard.focus_editor();
@@ -371,7 +369,7 @@ impl App {
                 continue;
             };
             let doc = Self::tab_doc(tab);
-            retarget_tab_path(tab, &next);
+            tab.retarget(&next);
             if let Some(doc) = doc {
                 docs.push((doc, next));
             }
@@ -688,6 +686,26 @@ impl App {
         }
     }
 
+    /// Set the active document tab's current page (clamped to the page range). A
+    /// no-op without the `pdf` feature, where no document tab exists.
+    pub(super) fn set_document_page(&mut self, page: usize) {
+        #[cfg(feature = "pdf")]
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
+        #[cfg(not(feature = "pdf"))]
+        let _ = page;
+    }
+
     /// Fill the reserved DOCX preview owned by the answering conversion request
     /// with its markdown, or degrade it to a placeholder on failure. A closed
     /// tab drops the answer.
@@ -739,17 +757,11 @@ impl App {
                 },
                 Err(message) => {
                     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                    let kind = if path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-                    {
-                        FileKind::Notebook
-                    } else {
-                        FileKind::Docx
-                    };
+                    // The registry routes DOCX and notebooks by extension
+                    // alone, so no bytes are needed to name what failed.
                     tab.kind = TabKind::Placeholder {
                         path: path.to_path_buf(),
-                        kind,
+                        kind: karet_filetype::classify_ignoring_size(path, &[]),
                         dims: None,
                         len,
                     };

@@ -8,7 +8,7 @@ use crossterm::event::MouseEventKind;
 
 use crate::app::App;
 use crate::app::hit::TextFieldTarget;
-use crate::app::util::rect_contains;
+use crate::app::hit::rect_contains;
 use crate::tab::SearchField;
 
 impl App {

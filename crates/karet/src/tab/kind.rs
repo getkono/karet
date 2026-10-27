@@ -3,7 +3,7 @@
 
 use super::PagerState;
 use super::TabKind;
-use crate::app::Pending;
+use crate::pending::Pending;
 
 impl TabKind {
     /// The two-axis scroll state of a read-only pager tab, or `None` for a kind

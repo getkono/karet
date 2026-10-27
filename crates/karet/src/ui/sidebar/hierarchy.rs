@@ -23,7 +23,7 @@ pub(super) fn draw_hierarchy_panel(
     };
     // The note waits out the shared reveal delay, so a fast server never
     // flashes it; the status line keeps its place either way.
-    let loading = tree.loading().is_some_and(crate::app::Pending::visible);
+    let loading = tree.loading().is_some_and(crate::pending::Pending::visible);
     let status = if loading {
         format!(" {} · loading…", tree.title())
     } else {

@@ -5,16 +5,16 @@ use karet_session::LspCommand;
 
 use crate::app::App;
 use crate::app::COMMIT_AUTOLOAD_THRESHOLD;
+use crate::app::hit::row_in_rect;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
-use crate::app::util::canonical;
-use crate::app::util::path_under;
-use crate::app::util::row_in_rect;
-use crate::app::util::same_path;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::outline::OutlineRow;
 use crate::outline::OutlineTarget;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::path_under;
+use crate::paths::same_path;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -36,12 +36,7 @@ impl App {
             return Vec::new();
         };
         match &tab.kind {
-            TabKind::Code {
-                language,
-                buffer,
-                text,
-                ..
-            } if language.eq_ignore_ascii_case("markdown") => {
+            TabKind::Code { buffer, text, .. } if tab.is_markdown() => {
                 self.outline.markdown.rows(tab.view, buffer.version(), || {
                     std::iter::once(text.as_str())
                 })
@@ -106,11 +101,10 @@ impl App {
     pub(crate) fn request_active_symbols(&mut self) {
         let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code {
-                language,
                 doc: Some(doc),
                 buffer,
                 ..
-            } if !language.eq_ignore_ascii_case("markdown") => Some((*doc, buffer.version())),
+            } if !tab.is_markdown() => Some((*doc, buffer.version())),
             _ => None,
         }) else {
             return;
@@ -209,26 +203,6 @@ impl App {
         }
         self.outline.sel.move_to(idx);
         self.outline_activate();
-    }
-
-    /// Set the active document tab's current page (clamped to the page range). A
-    /// no-op without the `pdf` feature, where no document tab exists.
-    pub(super) fn set_document_page(&mut self, page: usize) {
-        #[cfg(feature = "pdf")]
-        if let Some(Tab {
-            kind:
-                TabKind::Document {
-                    page: current,
-                    page_count,
-                    ..
-                },
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            *current = page.min(page_count.saturating_sub(1));
-        }
-        #[cfg(not(feature = "pdf"))]
-        let _ = page;
     }
 
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls

@@ -1,6 +1,6 @@
 //! The changed-file tree the commit-family views index their diffs with.
 //!
-//! A commit's changed files arrive as a flat `Vec<FileView>` of repo-relative
+//! A commit's changed files arrive as a flat `Vec<ChangedFile>` of repo-relative
 //! paths. Painted one row per path, a commit touching forty files under one crate
 //! reads as forty near-identical strings whose distinguishing tail is truncated
 //! away. [`changed_file_rows`] regroups them into a depth-annotated, foldable row
@@ -128,7 +128,7 @@ impl Arena {
 /// rather than by row index: a re-fetched file list must not let one directory
 /// inherit another's fold state.
 pub(crate) fn changed_file_rows(
-    files: &[FileView],
+    files: &[ChangedFile],
     collapsed: &BTreeSet<PathBuf>,
 ) -> Vec<ChangedFileRow> {
     let mut arena = Arena::new();
@@ -157,7 +157,7 @@ pub(crate) fn changed_file_rows(
 /// Append `node`'s children at `depth`, recursing into expanded directories.
 fn push_rows(
     arena: &Arena,
-    files: &[FileView],
+    files: &[ChangedFile],
     collapsed: &BTreeSet<PathBuf>,
     node: usize,
     depth: u16,
@@ -226,11 +226,11 @@ fn name_of(arena: &Arena, node: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::test_file_view;
+    use crate::tab::test_changed_file;
 
     /// One added and one removed line per file, so subtree aggregates are checkable.
-    fn file(path: &str) -> FileView {
-        test_file_view(path, "a\nb\n", "a\nc\n")
+    fn file(path: &str) -> ChangedFile {
+        test_changed_file(path, "a\nb\n", "a\nc\n")
     }
 
     /// Render the shape a caller sees: `D`/`F`, indented by depth.
@@ -334,7 +334,7 @@ mod tests {
         let rows = changed_file_rows(&files, &BTreeSet::new());
         let (added, removed) = files
             .iter()
-            .map(FileView::line_stats)
+            .map(ChangedFile::line_stats)
             .fold((0, 0), |(a, r), (na, nr)| (a + na, r + nr));
         assert!(added > 0 && removed > 0, "the fixture must change lines");
         assert!(matches!(

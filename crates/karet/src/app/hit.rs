@@ -29,6 +29,23 @@ pub(crate) struct TabHit {
     pub(crate) close: u16,
 }
 
+/// Whether the screen point `(x, y)` lies inside `r`.
+pub(crate) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
+    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// Whether screen row `y` lies within `r`'s vertical span (column ignored).
+pub(crate) fn row_in_rect(r: Rect, y: u16) -> bool {
+    r.height > 0 && y >= r.y && y < r.bottom()
+}
+
+/// The tab at column `x` among `hits`, and whether `x` is on its close glyph.
+pub(crate) fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
+    hits.iter()
+        .enumerate()
+        .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
+}
+
 pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
 
 /// A clickable changed-file row from a commit or compare view's last frame.

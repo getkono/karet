@@ -1,7 +1,6 @@
 pub(super) mod column;
 mod folding;
 mod gutter;
-mod render;
 
 use std::time::Instant;
 
@@ -30,12 +29,10 @@ use crate::app::App;
 use crate::app::MULTI_CLICK_INTERVAL;
 use crate::app::drag::DragGranularity;
 use crate::app::drag::EditorDrag;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
 use crate::app::scroll::adjust;
 use crate::app::state::PendingOpen;
-use crate::app::util::effective_word_wrap;
-use crate::app::util::rect_contains;
-use crate::app::util::tab_language;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -59,7 +56,7 @@ impl App {
         let fallback = u16::from(
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .tab_size(),
         );
         App::tab_doc(tab)
@@ -72,7 +69,7 @@ impl App {
     /// combine hard tabs and spaces when an indent is not divisible by tab width.
     pub(super) fn active_indentation(&self) -> String {
         let tab = self.tabs.get(self.active);
-        let resolved = tab.map(|tab| self.settings.editor.for_language(tab_language(tab)));
+        let resolved = tab.map(|tab| self.settings.editor.for_language(tab.language_id()));
         let fallback_size = resolved.map_or(4, |settings| u16::from(settings.tab_size()));
         let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
         let document = tab
@@ -103,11 +100,10 @@ impl App {
             return;
         }
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
-            effective_word_wrap(
-                tab,
+            tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab_language(tab))
+                    .for_language(tab.language_id())
                     .word_wrap(),
             )
         });

@@ -1,6 +1,6 @@
 use super::harness::*;
 use super::support::*;
-use crate::app::util::tab_at;
+use crate::app::hit::tab_at;
 use crate::app::*;
 
 #[test]
@@ -789,7 +789,7 @@ fn closing_remembers_path_and_reopen_restores_it() {
     let _ = std::fs::write(&file, "fn main() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.push_tab(workspace::open_file(&file));
+    app.push_tab(Tab::open(&file));
     app.push_tab(code_tab("scratch"));
     app.active = 0;
     app.close_tab_at(0);

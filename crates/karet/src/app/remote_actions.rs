@@ -8,110 +8,15 @@ use crate::app::App;
 use crate::app::notifications::Report;
 use crate::app::state::PendingRemoteAction;
 use crate::app::state::RemoteFacts;
-use crate::keymap::FocusTarget;
-use crate::keymap::Modal;
 use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::remote;
-use crate::render::Section;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::ui;
 
 impl App {
-    /// Copy `text` to the clipboard, reporting the outcome either way.
-    pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
-        let result = self.clipboard.set(&text);
-        self.report_copy(result, what);
-    }
-
-    /// Report a clipboard write of `what`.
-    pub(super) fn report_copy(
-        &mut self,
-        result: Result<(), crate::clipboard::ClipboardError>,
-        what: &str,
-    ) {
-        // Tagged: copying is a reflex, and a second Ctrl+C should update the one
-        // card rather than stack another beneath it.
-        match result {
-            Ok(()) => self.notify_tagged(
-                Report::Outcome,
-                NotificationKind::System,
-                format!("copied {what}"),
-                Some(Self::CLIPBOARD_TAG.to_string()),
-            ),
-            Err(e) => self.notify_tagged(
-                Report::Failure,
-                NotificationKind::System,
-                format!("copy failed: {e}"),
-                Some(Self::CLIPBOARD_TAG.to_string()),
-            ),
-        }
-    }
-
-    /// Copy the active code tab's selections, or every caret's line when nothing
-    /// is selected (VS Code behavior).
-    pub(super) fn copy_selection(&mut self) {
-        if matches!(
-            self.input_context().modal,
-            Some(
-                Modal::SearchInput
-                    | Modal::CommitInput
-                    | Modal::Find
-                    | Modal::ExplorerEdit
-                    | Modal::Rename
-            )
-        ) {
-            if let Some(text) = self.modal_selection_text() {
-                self.copy_to_clipboard(text, "selection");
-            } else {
-                self.notify(
-                    Report::Refusal,
-                    NotificationKind::System,
-                    "copy: no text selected",
-                );
-            }
-            return;
-        }
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_copy_files();
-            return;
-        }
-        // A live selection on a read-only surface (a diff, a viewer) wins: those
-        // tabs are not `Code`, so they would otherwise fall through to the
-        // "open a text file" message below.
-        if let Some(text) = self.surface_selection_text() {
-            self.copy_to_clipboard(text, "selection");
-            return;
-        }
-        if !self.copy_code_selection() {
-            self.notify(
-                Report::Refusal,
-                NotificationKind::System,
-                "copy: open a text file",
-            );
-        }
-    }
-
-    /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
-    pub(super) fn copy_path(&mut self, relative: bool) {
-        let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
-            self.notify(
-                Report::Refusal,
-                NotificationKind::System,
-                "copy path: no file",
-            );
-            return;
-        };
-        let path = if relative {
-            path.strip_prefix(&self.root).unwrap_or(path)
-        } else {
-            path
-        };
-        let text = path.to_string_lossy().into_owned();
-        self.copy_to_clipboard(text, "path");
-    }
-
     /// Reveal the active tab's file in the explorer.
     pub(super) fn reveal_active_in_explorer(&mut self) {
         let Some(path) = self

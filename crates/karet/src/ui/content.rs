@@ -2,7 +2,7 @@ use super::*;
 
 mod color;
 mod conflict_side;
-mod diff;
+pub(in crate::ui) mod diff;
 mod overview;
 mod scans;
 pub(in crate::ui) mod select;
@@ -23,7 +23,8 @@ pub(super) fn draw_pane_content(
     let Some(tab) = tabs.get_mut(active) else {
         return PaneContent::default();
     };
-    let word_wrap = crate::app::effective_word_wrap(tab, ctx.word_wrap);
+    let word_wrap = tab.word_wrap(ctx.word_wrap);
+    let markdown = tab.is_markdown();
     // Written by the image/PDF render arms; stays `None` (and non-`mut`) when neither
     // media feature is compiled in.
     #[cfg(any(feature = "images", feature = "pdf"))]
@@ -224,6 +225,7 @@ pub(super) fn draw_pane_content(
                     let source = swatches::LinkSource {
                         buffer,
                         path,
+                        markdown,
                         root: ctx.root,
                     };
                     swatches::source_link_osc8(

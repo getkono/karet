@@ -28,12 +28,7 @@
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use karet_core::ThemeRole;
 use karet_vcs::CommitOutputLine;
-use karet_vcs::OutputStream;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
 
 use super::App;
 
@@ -41,7 +36,7 @@ use super::App;
 ///
 /// A runaway hook can print without bound; the tail is what a reader wants, and
 /// the head is replaced by a marker so a truncated log never pretends to be whole.
-const MAX_LINES: usize = 5_000;
+pub(crate) const MAX_LINES: usize = 5_000;
 
 /// How a commit that produced output ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,41 +83,6 @@ impl CommitConsole {
     /// Whether there is a log worth reopening.
     pub(crate) fn has_log(&self) -> bool {
         !self.lines.is_empty()
-    }
-
-    /// Style each line for `theme`.
-    ///
-    /// The stream is not a severity — git routes a hook's own stdout to its
-    /// stderr, so colouring by stream would paint every successful hook red. Only
-    /// git's own summary, which arrives on stdout, is distinguished.
-    pub(crate) fn styled(&self, theme: &karet_theme::Theme) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        if self.truncated {
-            lines.push(Line::styled(
-                format!("… earlier output dropped (over {MAX_LINES} lines)"),
-                theme.style(ThemeRole::Muted),
-            ));
-        }
-        lines.extend(self.lines.iter().map(|line| {
-            let style = match line.stream {
-                OutputStream::Stdout => theme.style(ThemeRole::Muted),
-                OutputStream::Stderr => theme.style(ThemeRole::Foreground),
-            };
-            // Hooks colour their output; honour it, and fall back to the stream's
-            // own style for the plain runs.
-            let spans: Vec<Span<'static>> = karet_widgets::ansi::ansi_spans(&line.text)
-                .into_iter()
-                .map(|span| {
-                    if span.style == Style::default() {
-                        span.style(style)
-                    } else {
-                        span
-                    }
-                })
-                .collect();
-            Line::from(spans)
-        }));
-        lines
     }
 }
 
@@ -255,6 +215,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::ThemeRole;
+    use karet_vcs::OutputStream;
+
     use super::*;
 
     fn line(stream: OutputStream, text: &str) -> CommitOutputLine {
@@ -347,7 +310,7 @@ mod tests {
             Some("line 10".to_string()),
             "the head is dropped, not the tail"
         );
-        let styled = app.commit_console.styled(&app.theme);
+        let styled = crate::ui::console_lines(&app.commit_console, &app.theme);
         assert!(
             styled
                 .first()
@@ -376,7 +339,7 @@ mod tests {
             line(OutputStream::Stderr, "\u{1b}[31mred\u{1b}[0m plain"),
             line(OutputStream::Stdout, "summary"),
         ]);
-        let styled = app.commit_console.styled(&app.theme);
+        let styled = crate::ui::console_lines(&app.commit_console, &app.theme);
         assert_eq!(styled.len(), 2);
         assert_eq!(styled[0].to_string(), "red plain", "the escapes are parsed");
         // Everything a hook prints arrives on stderr, so that stream carries the

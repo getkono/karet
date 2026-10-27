@@ -31,12 +31,10 @@ use karet_widgets::textfield::TextFieldState;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::canonical;
-use crate::app::util::rebase_path;
-use crate::app::util::retarget_tab_path;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::rebase_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
-use crate::workspace;
 
 /// The open rename prompt.
 #[derive(Clone, Debug)]
@@ -335,7 +333,7 @@ impl App {
             for tab in self.all_tabs_mut() {
                 let moved = tab.path().and_then(|path| rebase_path(path, from, to));
                 if let Some(path) = moved {
-                    retarget_tab_path(tab, &path);
+                    tab.retarget(&path);
                 }
             }
         }
@@ -346,9 +344,9 @@ impl App {
                     && tab.path().is_some_and(|p| canonical(p) == target)
             });
             if !shown {
-                let mut tab = workspace::open_file(path);
+                let mut tab = Tab::open(path);
                 if !matches!(tab.kind, TabKind::Code { .. }) {
-                    tab = workspace::open_as_text(path);
+                    tab = Tab::open_as_text(path);
                 }
                 tab.view = self.alloc_view();
                 self.tabs.push(tab);

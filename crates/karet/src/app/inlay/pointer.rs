@@ -17,7 +17,7 @@ use super::super::KeyModifiers;
 use super::super::MouseEvent;
 use super::super::MouseEventKind;
 use super::super::Rect;
-use super::super::util::rect_contains;
+use crate::app::hit::rect_contains;
 
 /// Where the last frame painted one label part of one of the focused pane's
 /// hints: the part `part` of hint `hint` in `doc`'s held set.

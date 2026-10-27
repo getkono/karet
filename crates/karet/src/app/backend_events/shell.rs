@@ -13,7 +13,6 @@ use karet_session::RequestId;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::tab_language;
 use crate::tab::TabKind;
 
 impl App {
@@ -74,7 +73,7 @@ impl App {
         let graphical_cursor_requested = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .graphical_cursor()
                 == Some(true)
         });
@@ -88,7 +87,7 @@ impl App {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .completion()
                 .enabled()
         });
@@ -186,6 +185,7 @@ mod tests {
     use crate::app::tests::support::text_tab;
     use crate::app::*;
     use crate::completion::PendingCompletion;
+    use crate::tab::TabKind;
 
     const INCOMPATIBLE: &str = "graphical cursor is not compatible with this terminal";
 

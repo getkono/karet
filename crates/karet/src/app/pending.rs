@@ -1,83 +1,105 @@
-//! The one delayed-loading model.
-//!
-//! Every "reserve the surface now, fill it when the backend answers" state in
-//! the app anchors on a [`Pending`]: the moment the work began. The shared
-//! policy (see `CLAUDE.md` "UI loading states") renders nothing for fast paths
-//! and reveals a stable, muted placeholder only once the work has been pending
-//! longer than [`LOADING_REVEAL_DELAY`](super::LOADING_REVEAL_DELAY) — and the
-//! event loop schedules a repaint at exactly that threshold so the placeholder
-//! appears even if no input arrives.
+//! What the event loop waits on: every delayed-loading anchor the app holds
+//! ([`App::pendings`]), and the earliest moment something on screen must change
+//! without input arriving ([`App::next_wake`]).
 
 use std::time::Duration;
 use std::time::Instant;
 
+use karet_widgets::Spinner;
+
 use super::App;
-use super::LOADING_REVEAL_DELAY;
+use super::COMMIT_REVEAL;
 use super::SidebarPanel;
-use super::TabKind;
-
-/// The start of an in-flight load, carrying the shared reveal policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Pending {
-    since: Instant,
-}
-
-impl Pending {
-    /// Anchor a load starting now.
-    #[must_use]
-    pub(crate) fn start() -> Self {
-        Self {
-            since: Instant::now(),
-        }
-    }
-
-    /// Whether the loading placeholder should be visible: the work has been
-    /// pending beyond the shared reveal delay.
-    #[must_use]
-    pub(crate) fn visible(self) -> bool {
-        self.since.elapsed() >= LOADING_REVEAL_DELAY
-    }
-
-    /// Time from `now` until this load's placeholder must be revealed, or
-    /// `None` when it is already visible (no wake needed — it is painted).
-    #[must_use]
-    pub(crate) fn wake(self, now: Instant) -> Option<Duration> {
-        LOADING_REVEAL_DELAY.checked_sub(now.saturating_duration_since(self.since))
-    }
-
-    /// How long this load has been pending as of `now` (drives spinner phases).
-    #[must_use]
-    pub(crate) fn elapsed_since(self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.since)
-    }
-
-    /// A pending state backdated past the reveal delay, so tests can assert on
-    /// the visible placeholder without sleeping.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn revealed() -> Self {
-        Self {
-            since: Instant::now() - LOADING_REVEAL_DELAY,
-        }
-    }
-
-    /// A pending state anchored at an exact instant, for timing-precise tests.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn at(since: Instant) -> Self {
-        Self { since }
-    }
-
-    /// The instant this load is anchored at, so a test can ask [`Self::wake`]
-    /// about fixed offsets from it instead of racing the real clock.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn since(self) -> Instant {
-        self.since
-    }
-}
+use crate::pending::Pending;
+use crate::tab::TabKind;
 
 impl App {
+    /// The soonest the event loop should wake for time-based UI: notification expiry,
+    /// save-spinner animation, graphical-caret blink, delayed loading states, or an
+    /// expiring hover reveal.
+    /// `None` when the loop can park on its event sources alone.
+    pub(super) fn next_wake(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let notif = self.notifications.next_deadline(now);
+        let spinner = (!self.pending_saves.is_empty()).then_some(Spinner::FRAME_INTERVAL);
+        let auto_save = self
+            .auto_save_pending
+            .iter()
+            .filter(|(doc, _)| !self.pending_saves.values().any(|save| save.doc == **doc))
+            .filter_map(|(_, pending)| pending.deadline)
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .min();
+        let caret = self.graphics_caret_next_wake(now);
+        let loading = self
+            .pendings()
+            .into_iter()
+            .filter_map(|pending| pending.wake(now))
+            .min();
+        let nested_repositories = self.nested_repository_next_wake(now);
+        // An edited document's hint request goes out once typing pauses, and
+        // has to without another keystroke to wake the loop.
+        let inlay = self.inlay_next_wake(now);
+        let code_lens = self.code_lens_next_wake(now);
+        let links_colors = self.link_color_next_wake(now);
+        // Likewise the lightbulb probe, once the caret has settled.
+        let code_actions = self.code_action_next_wake(now);
+        // And the ghost-text ask, once typing has paused.
+        let inline_completion = self.inline_completion_next_wake(now);
+        // And the occurrence highlight, once the caret has rested on a word.
+        let occurrences = self.occurrence_next_wake(now);
+        // Likewise a workspace-symbol query, once typing pauses.
+        let workspace_symbols = self.workspace_symbol_next_wake(now);
+        // Generation runs for seconds with no output to stream, so its spinner is
+        // the only progress there is — it has to keep animating without input.
+        let ai_commit = self.ai_commit_next_wake(now);
+        let operation = self
+            .operation_blocker
+            .as_ref()
+            .map(|blocker| blocker.deadline.saturating_duration_since(now));
+        // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
+        let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Commit {
+                explain_since: Some(since),
+                ..
+            }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
+            _ => None,
+        };
+        // Terminal output held back by the frame cap.
+        #[cfg(feature = "terminal")]
+        let terminal = self.terminal_frame.next_wake(now);
+        #[cfg(not(feature = "terminal"))]
+        let terminal = None;
+        // A task's output the live-scan throttle held back.
+        #[cfg(feature = "terminal")]
+        let task_scan = self.task_next_wake(now);
+        #[cfg(not(feature = "terminal"))]
+        let task_scan = None;
+        [
+            notif,
+            terminal,
+            task_scan,
+            spinner,
+            auto_save,
+            caret,
+            loading,
+            nested_repositories,
+            inlay,
+            code_lens,
+            links_colors,
+            code_actions,
+            inline_completion,
+            occurrences,
+            workspace_symbols,
+            ai_commit,
+            operation,
+            reveal,
+            self.drag_autoscroll_wake(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     /// Every currently in-flight delayed-loading anchor the UI serves: the
     /// Source-Control sidebar's log/snapshot loads, the Search sidebar's running
     /// search, and each open tab's pending loads. This is the one enumeration
@@ -127,49 +149,5 @@ impl App {
         // A preview's images decode off-thread; their placeholders reveal on schedule too.
         pendings.extend(self.preview_images.pendings());
         pendings
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_pending_is_hidden() {
-        assert!(!Pending::start().visible());
-    }
-
-    #[test]
-    fn the_wake_counts_down_exactly_to_the_reveal_delay() {
-        let t0 = Instant::now();
-        let pending = Pending::at(t0);
-        let step = Duration::from_millis(50);
-        assert_eq!(
-            pending.wake(t0),
-            Some(LOADING_REVEAL_DELAY),
-            "a full delay at the anchor"
-        );
-        assert_eq!(pending.wake(t0 + step), Some(LOADING_REVEAL_DELAY - step));
-        assert_eq!(
-            pending.wake(t0 + LOADING_REVEAL_DELAY + Duration::from_millis(1)),
-            None,
-            "past the delay the placeholder is painted, so nothing wakes"
-        );
-        assert_eq!(pending.elapsed_since(t0 + step), step);
-    }
-
-    #[test]
-    fn an_instant_before_the_anchor_saturates_to_a_full_delay() {
-        let t0 = Instant::now();
-        let pending = Pending::at(t0 + Duration::from_secs(1));
-        assert_eq!(pending.wake(t0), Some(LOADING_REVEAL_DELAY));
-        assert_eq!(pending.elapsed_since(t0), Duration::ZERO);
-    }
-
-    #[test]
-    fn a_revealed_pending_is_visible_and_needs_no_wake() {
-        let pending = Pending::revealed();
-        assert!(pending.visible());
-        assert_eq!(pending.wake(Instant::now()), None);
     }
 }

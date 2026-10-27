@@ -14,6 +14,7 @@ mod comment;
 pub(crate) mod commit_console;
 mod completion;
 pub(crate) mod confirm;
+mod context_menu;
 mod debugging;
 mod definition;
 mod deps;
@@ -34,6 +35,7 @@ mod inline_completion;
 mod inline_macros;
 mod input;
 mod language_servers;
+mod latex;
 mod lifecycle;
 mod link_color;
 mod linked_editing;
@@ -71,7 +73,6 @@ mod terminal;
 pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
-mod util;
 pub(crate) mod vi;
 
 #[cfg(test)]
@@ -138,7 +139,6 @@ pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use link_color::HeldColors;
 pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
-pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
 pub(crate) use problems::ProblemsChrome;
 pub(crate) use problems::ProblemsPanel;
@@ -146,12 +146,12 @@ pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
 pub(crate) use runtime::clamp_sidebar_width;
 pub(crate) use runtime::run;
+pub(crate) use scroll::keep_visible;
 pub(crate) use search::SearchPanel;
 pub(crate) use search::SearchPanelField;
 pub(crate) use search::SearchRow;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
-pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
 pub(crate) use spelling::SpellingPanel;
 pub(crate) use spelling::SpellingRow;
@@ -179,12 +179,6 @@ pub(crate) use state::TerminalCaps;
 use state::TodosChrome;
 pub(crate) use todos::TodoRow;
 pub(crate) use todos::TodosPanel;
-pub(crate) use util::commit_rails;
-pub(crate) use util::effective_word_wrap;
-pub(crate) use util::is_markdown;
-pub(crate) use util::keep_visible;
-pub(crate) use util::relative_time;
-pub(crate) use util::tab_language;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
@@ -192,8 +186,8 @@ use crate::keymap::KeyChord;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
+use crate::pending::Pending;
 use crate::tab::Tab;
-use crate::tab::TabKind;
 use crate::tab::ViewMode;
 use crate::view::View;
 use crate::workspace;
@@ -249,9 +243,6 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
-/// Delay before rendering non-blocking loading text. Fast operations can complete
-/// without visual churn; slower ones get an explicit, stable placeholder.
-pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
 /// How soon a press must follow the last one to continue its multi-click streak,
 /// in the editor, the shell's other surfaces, and the terminal grid alike.
 pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);

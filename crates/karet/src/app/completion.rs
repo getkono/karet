@@ -11,7 +11,6 @@ use karet_session::LspCommand;
 use karet_session::RequestId;
 
 use crate::app::App;
-use crate::app::util::tab_language;
 use crate::tab::TabKind;
 
 mod accept;
@@ -58,7 +57,7 @@ impl App {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .completion()
                 .enabled()
         });
@@ -127,7 +126,7 @@ impl App {
         let completion = self.tabs.get(self.active).map(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .completion()
         });
         if !completion.is_some_and(|completion| completion.enabled() && completion.auto_trigger()) {

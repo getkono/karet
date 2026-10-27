@@ -33,10 +33,11 @@ use crate::app::confirm::ConfirmAction;
 use crate::app::confirm::ConfirmChoice;
 use crate::app::confirm::ConfirmDialog;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
-use crate::app::util::path_under;
+use crate::paths::path_under;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
+use crate::tab::code_language;
 
 /// The longest the status bar's work text runs before it is cut.
 const WORK_LABEL_CHARS: usize = 48;
@@ -203,12 +204,15 @@ impl App {
 
     /// The work the status bar shows: the newest of the active file's servers.
     pub(crate) fn active_language_server_work(&self) -> Option<&WorkEntry> {
-        let TabKind::Code { path, language, .. } = &self.tabs.get(self.active)?.kind else {
+        let TabKind::Code {
+            path, file_type, ..
+        } = &self.tabs.get(self.active)?.kind
+        else {
             return None;
         };
         self.lsp_runtime
             .window
-            .for_file(&self.lsp_runtime.servers, path, language)
+            .for_file(&self.lsp_runtime.servers, path, code_language(*file_type))
     }
 
     /// Ask the active file's server to cancel the work the status bar shows.
@@ -302,7 +306,7 @@ impl App {
             .active_language_server_work()
             .map(|work| work.server.clone())
             .or_else(|| {
-                let TabKind::Code { language, .. } = &self.tabs.get(self.active)?.kind else {
+                let TabKind::Code { file_type, .. } = &self.tabs.get(self.active)?.kind else {
                     return None;
                 };
                 self.lsp_runtime
@@ -310,10 +314,9 @@ impl App {
                     .iter()
                     .find(|status| {
                         status.enabled
-                            && status
-                                .languages
-                                .iter()
-                                .any(|candidate| candidate.eq_ignore_ascii_case(language))
+                            && status.languages.iter().any(|candidate| {
+                                candidate.eq_ignore_ascii_case(code_language(*file_type))
+                            })
                     })
                     .map(|status| status.server.clone())
             });

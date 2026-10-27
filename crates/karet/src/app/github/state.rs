@@ -18,7 +18,7 @@ use ratatui::layout::Rect;
 
 use crate::app::github::forms::GithubIssueForm;
 use crate::app::github::forms::GithubPullRequestForm;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 
 /// Dashboard subsection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -12,10 +12,10 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 
-use super::Reroot;
-use super::geometry::SeamTarget;
 use crate::app::App;
-use crate::app::seam::SeamFocus;
+use crate::tab::seam::Reroot;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::geometry::SeamTarget;
 
 impl App {
     /// Route a mouse event that landed on the Seam view, reporting whether it did.

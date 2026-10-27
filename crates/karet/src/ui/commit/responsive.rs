@@ -101,7 +101,7 @@ fn draw_responsive(
     area: Rect,
     header: Vec<Line<'static>>,
     badge: Option<BadgeHit>,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
     icons: IconStyle,
@@ -177,14 +177,18 @@ enum TocTarget {
 ///
 /// The renderers take the override set rather than the whole view state so they
 /// stay directly testable.
-fn card_collapsed(file: &render::FileView, index: usize, toggled_files: &BTreeSet<usize>) -> bool {
+fn card_collapsed(
+    file: &crate::tab::ChangedFile,
+    index: usize,
+    toggled_files: &BTreeSet<usize>,
+) -> bool {
     auto_collapse_reason(file).is_some() ^ toggled_files.contains(&index)
 }
 
 #[allow(clippy::too_many_arguments)] // the tree, the card state and the load state are independent
 fn build_files(
     theme: &Theme,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     tree: &[ChangedFileRow],
     width: u16,
     stacked: bool,
@@ -256,14 +260,14 @@ fn build_files(
         if !collapsed {
             doc.columns = doc
                 .columns
-                .max(render::unified_max_width(file, theme).saturating_add(2));
+                .max(diff_paint::unified_max_width(file, theme).saturating_add(2));
         }
         rows = rows.saturating_add(1);
         doc.anchors.push(u16::try_from(rows).unwrap_or(u16::MAX));
         let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             1
         } else {
-            render::unified_line_count(file, theme).saturating_add(2)
+            diff_paint::unified_line_count(file, theme).saturating_add(2)
         };
         rows = rows.saturating_add(card_rows);
     }
@@ -283,12 +287,12 @@ pub(crate) const CARD_RAIL_WIDTH: u16 = 2;
 /// neither selectable nor copied.
 pub(crate) fn document_row(
     theme: &Theme,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     width: u16,
     prefix_rows: usize,
     toggled_files: &BTreeSet<usize>,
     row: usize,
-) -> Option<crate::app::SurfaceRow> {
+) -> Option<crate::tab::rows::SurfaceRow> {
     if row < prefix_rows {
         return None;
     }
@@ -303,7 +307,7 @@ pub(crate) fn document_row(
         let body_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             0
         } else {
-            render::unified_line_count(file, theme)
+            diff_paint::unified_line_count(file, theme)
         };
         let card_rows = if body_rows == 0 {
             1
@@ -317,7 +321,7 @@ pub(crate) fn document_row(
                 return None;
             }
             let content = karet_diff::unified_row(&file.change.diff, local - 1)?;
-            return Some(crate::app::SurfaceRow {
+            return Some(crate::tab::rows::SurfaceRow {
                 text: content.text,
                 content_x: content.gutter_width.saturating_add(CARD_RAIL_WIDTH),
             });
@@ -329,7 +333,7 @@ pub(crate) fn document_row(
 
 fn visible_file_lines(
     theme: &Theme,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     width: u16,
     doc: &FileDocument,
     start: u16,
@@ -356,7 +360,7 @@ fn visible_file_lines(
         let body_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             0
         } else {
-            render::unified_line_count(file, theme)
+            diff_paint::unified_line_count(file, theme)
         };
         let card_rows = if width < FILE_CARD_MIN_WIDTH || collapsed {
             1
@@ -391,7 +395,7 @@ fn draw_stacked(
     area: Rect,
     header: Vec<Line<'static>>,
     badge: Option<BadgeHit>,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     tree: &[ChangedFileRow],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,

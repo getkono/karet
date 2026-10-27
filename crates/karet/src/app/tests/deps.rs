@@ -38,12 +38,12 @@ fn manifest_app(hints: Vec<ManifestHint>, caret: LineCol) -> App {
     if let TabKind::Code {
         path,
         doc,
-        language,
+        file_type,
         ..
     } = &mut tab.kind
     {
         *path = std::path::PathBuf::from("Cargo.toml");
-        *language = "TOML";
+        *file_type = language_type("TOML");
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);

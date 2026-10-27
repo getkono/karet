@@ -140,7 +140,7 @@ fn facts_app(root: PathBuf) -> (App, EventRx) {
 
 /// Reconstruct the `(old, new)` texts from a prepared diff's hunk lines
 /// (complete for these small single-hunk fixtures).
-fn diff_sides(file: &FileView) -> (String, String) {
+fn diff_sides(file: &ChangedFile) -> (String, String) {
     let mut old = String::new();
     let mut new = String::new();
     for hunk in &file.change.diff.diff().hunks {
@@ -311,7 +311,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             .to_string(),
         TabKind::Code {
             path: path.to_path_buf(),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(path),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text).into(),

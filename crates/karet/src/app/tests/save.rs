@@ -419,13 +419,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         "the placeholder is replaced, not appended"
     );
     assert!(
-        matches!(
-            app.tabs[0].kind,
-            TabKind::Code {
-                language: "CBOR",
-                ..
-            }
-        ),
+        matches!(app.tabs[0].kind, TabKind::Code { .. }) && app.tabs[0].status_label() == "CBOR",
         "open-anyway decodes the CBOR in place"
     );
 

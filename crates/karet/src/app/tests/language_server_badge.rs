@@ -9,15 +9,12 @@ use crate::app::*;
 
 /// A code tab whose language is set explicitly.
 ///
-/// `text_tab` hardcodes `"Rust"`, which is fine for most tests but hides the very
-/// thing these ones assert: that a badge is resolved per file's language.
+/// `text_tab` types a tab by its path; these tests name the language outright,
+/// because what they assert is that a badge is resolved per file's language.
 fn tab_in(name: &str, text: &str, language: &'static str) -> Tab {
     let mut tab = text_tab(name, text);
-    if let TabKind::Code {
-        language: current, ..
-    } = &mut tab.kind
-    {
-        *current = language;
+    if let TabKind::Code { file_type, .. } = &mut tab.kind {
+        *file_type = language_type(language);
     }
     tab
 }

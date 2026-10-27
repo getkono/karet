@@ -7,6 +7,11 @@
 //! exactly what its copy took. A paste inserts at every caret; a line copy goes
 //! in above the caret's line, and when the clipboard holds one piece (or one
 //! line) per caret, each caret gets its own.
+//!
+//! The clipboard commands themselves start here too: copy, cut, paste, copy
+//! path, and the routing that hands each to whatever owns the keyboard — a
+//! modal field, the explorer, a read-only surface, the terminal, or the code
+//! tab.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -15,6 +20,7 @@ use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::EditCause;
 use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Selection;
 use karet_core::TextEdit;
@@ -23,7 +29,10 @@ use karet_text::TextBuffer;
 
 use super::indent::SyntaxIndent;
 use crate::app::App;
+use crate::app::notifications::Report;
 use crate::clipboard::Copied;
+use crate::keymap::FocusTarget;
+use crate::keymap::Modal;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -426,6 +435,166 @@ fn paste_edit(
         })
         .collect();
     editing::compose(base, cursors.primary, &items)
+}
+
+/// The clipboard commands: each routes to whatever owns the keyboard (a modal
+/// field, the explorer, a read-only surface, the terminal, or the code tab).
+impl App {
+    /// Copy `text` to the clipboard, reporting the outcome either way.
+    pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
+        let result = self.clipboard.set(&text);
+        self.report_copy(result, what);
+    }
+
+    /// Report a clipboard write of `what`.
+    pub(super) fn report_copy(
+        &mut self,
+        result: Result<(), crate::clipboard::ClipboardError>,
+        what: &str,
+    ) {
+        // Tagged: copying is a reflex, and a second Ctrl+C should update the one
+        // card rather than stack another beneath it.
+        match result {
+            Ok(()) => self.notify_tagged(
+                Report::Outcome,
+                NotificationKind::System,
+                format!("copied {what}"),
+                Some(Self::CLIPBOARD_TAG.to_string()),
+            ),
+            Err(e) => self.notify_tagged(
+                Report::Failure,
+                NotificationKind::System,
+                format!("copy failed: {e}"),
+                Some(Self::CLIPBOARD_TAG.to_string()),
+            ),
+        }
+    }
+
+    /// Copy the active code tab's selections, or every caret's line when nothing
+    /// is selected (VS Code behavior).
+    pub(super) fn copy_selection(&mut self) {
+        if matches!(
+            self.input_context().modal,
+            Some(
+                Modal::SearchInput
+                    | Modal::CommitInput
+                    | Modal::Find
+                    | Modal::ExplorerEdit
+                    | Modal::Rename
+            )
+        ) {
+            if let Some(text) = self.modal_selection_text() {
+                self.copy_to_clipboard(text, "selection");
+            } else {
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "copy: no text selected",
+                );
+            }
+            return;
+        }
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_copy_files();
+            return;
+        }
+        // A live selection on a read-only surface (a diff, a viewer) wins: those
+        // tabs are not `Code`, so they would otherwise fall through to the
+        // "open a text file" message below.
+        if let Some(text) = self.surface_selection_text() {
+            self.copy_to_clipboard(text, "selection");
+            return;
+        }
+        if !self.copy_code_selection() {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy: open a text file",
+            );
+        }
+    }
+
+    /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
+    pub(super) fn copy_path(&mut self, relative: bool) {
+        let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy path: no file",
+            );
+            return;
+        };
+        let path = if relative {
+            path.strip_prefix(&self.root).unwrap_or(path)
+        } else {
+            path
+        };
+        let text = path.to_string_lossy().into_owned();
+        self.copy_to_clipboard(text, "path");
+    }
+
+    /// Cut every selection (copy then delete), or every caret's whole line when
+    /// nothing is selected.
+    pub(super) fn cut(&mut self) {
+        if matches!(
+            self.input_context().modal,
+            Some(
+                Modal::SearchInput
+                    | Modal::CommitInput
+                    | Modal::Find
+                    | Modal::ExplorerEdit
+                    | Modal::Rename
+            )
+        ) {
+            let Some(text) = self.cut_modal_selection() else {
+                return;
+            };
+            self.copy_to_clipboard(text, "selection");
+            return;
+        }
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_cut_files();
+            return;
+        }
+        self.cut_code_selection();
+    }
+
+    /// Paste the system clipboard at the caret (or the active modal's text field).
+    pub(super) fn paste_from_clipboard(&mut self) {
+        if self.focus_target() == FocusTarget::Explorer {
+            self.explorer_paste_files();
+            return;
+        }
+        match self.clipboard.get() {
+            Ok(text) => self.handle_paste(text),
+            Err(_) => self.notify(
+                Report::Failure,
+                NotificationKind::System,
+                "paste: clipboard unavailable",
+            ),
+        }
+    }
+
+    /// Route pasted text (from the paste command or bracketed paste) to whatever
+    /// actually owns text input right now: the active modal's field if one is
+    /// open, else the editor buffer. Shared by both paste sources, so pasted text
+    /// is never interpreted as keys and never lands in the wrong place.
+    pub(super) fn handle_paste(&mut self, text: String) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        if let Some(modal) = self.input_context().modal {
+            self.modal_paste(modal, &normalized);
+            return;
+        }
+        #[cfg(feature = "terminal")]
+        if self.terminal_owns_keyboard() {
+            self.terminal_paste(&normalized);
+            return;
+        }
+        self.paste_into_editor(&normalized);
+    }
 }
 
 impl App {

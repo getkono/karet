@@ -16,7 +16,7 @@ use crate::app::github::surface::github_new_pull_request;
 use crate::app::github::surface::github_pull_request;
 use crate::app::github::surface::github_workflow_run;
 use crate::app::notifications::Report;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 
 impl App {
     pub(super) fn refresh_active_github(&mut self) -> bool {
