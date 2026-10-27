@@ -325,6 +325,9 @@ pub(super) struct LinkSource<'a> {
     pub(super) buffer: &'a TextBuffer,
     /// The document's file.
     pub(super) path: &'a std::path::Path,
+    /// Whether the document is Markdown ([`crate::tab::Tab::is_markdown`]),
+    /// which adds its inline links to the bare URLs every file links.
+    pub(super) markdown: bool,
     /// The workspace root.
     pub(super) root: &'a std::path::Path,
 }
@@ -351,7 +354,7 @@ pub(super) fn source_link_osc8(
     folds: &[karet_editor::Fold],
     area: Rect,
 ) {
-    let markdown = crate::app::is_markdown(source.path);
+    let markdown = source.markdown;
     let mut line = editor.scroll_line();
     let mut shown = 0;
     while shown < area.height {

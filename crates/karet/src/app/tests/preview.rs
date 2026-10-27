@@ -34,10 +34,10 @@ fn move_active_tab_reorders_and_clamps() {
 fn wrap_mode_uses_file_defaults_and_global_overrides() {
     let markdown = text_tab("notes.md", "a long prose line");
     let rust = text_tab("main.rs", "fn main() {}");
-    assert!(effective_word_wrap(&markdown, None));
-    assert!(!effective_word_wrap(&rust, None));
-    assert!(!effective_word_wrap(&markdown, Some(false)));
-    assert!(effective_word_wrap(&rust, Some(true)));
+    assert!(markdown.word_wrap(None));
+    assert!(!rust.word_wrap(None));
+    assert!(!markdown.word_wrap(Some(false)));
+    assert!(rust.word_wrap(Some(true)));
 }
 
 #[test]
@@ -53,21 +53,18 @@ fn word_wrap_resolves_against_the_tab_language() {
         ..Settings::default()
     };
     let rust = text_tab("main.rs", "fn main() {}");
-    let resolved = settings
-        .editor
-        .for_language(tab_language(&rust))
-        .word_wrap();
-    assert!(effective_word_wrap(&rust, resolved));
+    let resolved = settings.editor.for_language(rust.language_id()).word_wrap();
+    assert!(rust.word_wrap(resolved));
 
     let mut python = text_tab("main.py", "print('hi')");
-    if let TabKind::Code { language, .. } = &mut python.kind {
-        *language = "Python";
+    if let TabKind::Code { file_type, .. } = &mut python.kind {
+        *file_type = language_type("Python");
     }
     let resolved = settings
         .editor
-        .for_language(tab_language(&python))
+        .for_language(python.language_id())
         .word_wrap();
-    assert!(!effective_word_wrap(&python, resolved));
+    assert!(!python.word_wrap(resolved));
 }
 
 #[test]
@@ -160,8 +157,8 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
 fn markdown_app(text: &str) -> App {
     let mut app = app();
     let mut tab = text_tab("notes.md", text);
-    if let TabKind::Code { language, .. } = &mut tab.kind {
-        *language = "Markdown";
+    if let TabKind::Code { file_type, .. } = &mut tab.kind {
+        *file_type = language_type("Markdown");
     }
     app.push_tab(tab);
     app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
@@ -706,8 +703,8 @@ fn markdown_outline_refreshes_when_text_changes_at_the_same_version() {
 fn markdown_outline_follows_the_active_tab() {
     let mut app = markdown_app("# First\n");
     let mut second = text_tab("other.md", "# Second\n");
-    if let TabKind::Code { language, .. } = &mut second.kind {
-        *language = "Markdown";
+    if let TabKind::Code { file_type, .. } = &mut second.kind {
+        *file_type = language_type("Markdown");
     }
     app.push_tab(second);
     assert_eq!(outline_labels(&app), ["Second"]);

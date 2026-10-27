@@ -63,7 +63,6 @@ use crate::app::state::TodosChrome;
 use crate::app::syntax_select;
 use crate::app::theme_picker;
 use crate::app::todos::TodosPanel;
-use crate::app::util::tab_language;
 use crate::app::vi;
 use crate::clipboard::Clipboard;
 use crate::command::Command;
@@ -610,7 +609,7 @@ impl App {
                 .map_or(self.settings.editor.graphical_cursor, |tab| {
                     self.settings
                         .editor
-                        .for_language(tab_language(tab))
+                        .for_language(tab.language_id())
                         .graphical_cursor()
                 });
         match configured {

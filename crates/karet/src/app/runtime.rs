@@ -32,7 +32,6 @@ use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::notifications::Report;
 use crate::app::state::TerminalCaps;
 use crate::app::util::KeyboardEnhancementGuard;
-use crate::app::util::tab_language;
 use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::ui;
@@ -231,7 +230,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .graphical_cursor()
                 == Some(true)
         });

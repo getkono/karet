@@ -16,7 +16,6 @@ use karet_session::RequestId;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::is_markdown;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::workspace;
@@ -112,11 +111,7 @@ impl App {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
-        if !matches!(
-            &tab.kind,
-            TabKind::Code { path, .. }
-                if is_markdown(path)
-        ) {
+        if !tab.is_markdown() {
             self.notify(
                 Report::Refusal,
                 NotificationKind::System,

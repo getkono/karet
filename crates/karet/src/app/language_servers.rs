@@ -32,6 +32,7 @@ use crate::tab::LanguageServerPendingKind;
 use crate::tab::LanguageServersViewState;
 use crate::tab::Tab;
 use crate::tab::TabKind;
+use crate::tab::code_language;
 
 /// Lifecycle states retained independently of whether the manager tab is open.
 #[derive(Default)]
@@ -168,10 +169,13 @@ impl App {
         &self,
         tab: &Tab,
     ) -> Option<LanguageServerBadgeSummary> {
-        let TabKind::Code { path, language, .. } = &tab.kind else {
+        let TabKind::Code {
+            path, file_type, ..
+        } = &tab.kind
+        else {
             return None;
         };
-        self.lsp_runtime.badge_for(path, language)
+        self.lsp_runtime.badge_for(path, code_language(*file_type))
     }
 
     /// The active code file's language-server badge, when covered.

@@ -34,7 +34,6 @@ use ratatui::layout::Rect;
 use crate::app::App;
 use crate::app::language_servers::LanguageServerBadge;
 use crate::app::notifications::Report;
-use crate::app::util::is_markdown;
 use crate::app::util::rect_contains;
 use crate::overlay::Overlay;
 use crate::tab::Tab;
@@ -422,7 +421,7 @@ impl App {
     /// behind opens that URL.
     pub(crate) fn source_link_at_caret(&self) -> Option<String> {
         let tab = self.tabs.get(self.active)?;
-        let TabKind::Code { buffer, path, .. } = &tab.kind else {
+        let TabKind::Code { buffer, .. } = &tab.kind else {
             return None;
         };
         let pos = tab.editor.cursor();
@@ -431,7 +430,7 @@ impl App {
             .char_indices()
             .nth(pos.col as usize)
             .map_or(line.len(), |(byte, _)| byte);
-        let links = crate::autolink::source_links(&line, is_markdown(path));
+        let links = crate::autolink::source_links(&line, tab.is_markdown());
         // A link the caret is inside wins over one it merely ends against.
         let inside = links.iter().position(|link| link.range.contains(&byte));
         let index = inside.or_else(|| links.iter().position(|link| link.range.end == byte))?;
@@ -523,12 +522,12 @@ impl App {
 /// target as written.
 fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, String)> {
     let pos = char_in(tab, area, point)?;
-    let TabKind::Code { buffer, path, .. } = &tab.kind else {
+    let TabKind::Code { buffer, .. } = &tab.kind else {
         return None;
     };
     let line = buffer.line(pos.line as usize)?;
     let (byte, _) = line.char_indices().nth(pos.col as usize)?;
-    let link = crate::autolink::source_links(&line, is_markdown(path))
+    let link = crate::autolink::source_links(&line, tab.is_markdown())
         .into_iter()
         .find(|link| link.range.contains(&byte))?;
     let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();

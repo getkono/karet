@@ -180,11 +180,8 @@ use state::TodosChrome;
 pub(crate) use todos::TodoRow;
 pub(crate) use todos::TodosPanel;
 pub(crate) use util::commit_rails;
-pub(crate) use util::effective_word_wrap;
-pub(crate) use util::is_markdown;
 pub(crate) use util::keep_visible;
 pub(crate) use util::relative_time;
-pub(crate) use util::tab_language;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;

@@ -212,7 +212,7 @@ fn test_code_tab(path: &str) -> Tab {
             .unwrap_or(path),
         TabKind::Code {
             path: PathBuf::from(path),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(path)),
             doc: None,
             next_version: 0,
             buffer: buffer.into(),
@@ -568,7 +568,7 @@ fn cursor_status_label_reports_position_and_selection_extent() {
         "a.txt",
         TabKind::Code {
             path: std::path::PathBuf::from("/x/a.txt"),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("/x/a.txt")),
             doc: None,
             next_version: 0,
             buffer: buffer.clone().into(),

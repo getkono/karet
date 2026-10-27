@@ -3,15 +3,11 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crossterm::event::PopKeyboardEnhancementFlags;
-use karet_filetype::WrapMode;
-use karet_filetype::file_type_for_path;
 use karet_theme::Theme;
 use ratatui::layout::Rect;
 
 use crate::app::hit::TabHit;
 use crate::app::state::CloseRequest;
-use crate::tab::Tab;
-use crate::tab::TabKind;
 
 /// Whether the screen point `(x, y)` lies inside `r`.
 pub(super) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {
@@ -50,28 +46,6 @@ pub(super) fn tab_at(hits: &[TabHit], x: u16) -> Option<(usize, bool)> {
     hits.iter()
         .enumerate()
         .find_map(|(i, h)| (x >= h.start && x < h.end).then_some((i, x == h.close)))
-}
-
-/// A non-empty language selector for resolving editor configuration.
-pub(crate) fn tab_language(tab: &Tab) -> Option<&str> {
-    let language = tab.language();
-    (!language.is_empty()).then_some(language)
-}
-
-/// Whether `path` names a Markdown file, by the file-type registry's name for it.
-pub(crate) fn is_markdown(path: &Path) -> bool {
-    file_type_for_path(path).name() == "Markdown"
-}
-
-/// Resolve a code tab's long-line behavior from its configured override or file type.
-pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
-    override_.unwrap_or_else(|| {
-        matches!(
-            &tab.kind,
-            TabKind::Code { path, .. }
-                if file_type_for_path(path).wrap_mode() == WrapMode::Wrap
-        )
-    })
 }
 
 /// Recursively copy a file or directory tree.
@@ -123,27 +97,6 @@ pub(super) fn rebase_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf
     }
     let suffix = path.strip_prefix(from).ok()?;
     Some(to.join(suffix))
-}
-
-pub(super) fn retarget_tab_path(tab: &mut Tab, path: &Path) {
-    let target = match &mut tab.kind {
-        TabKind::Code { path: p, .. }
-        | TabKind::Hex { path: p, .. }
-        | TabKind::Placeholder { path: p, .. } => Some(p),
-        #[cfg(feature = "images")]
-        TabKind::Image { path: p, .. } => Some(p),
-        #[cfg(feature = "pdf")]
-        TabKind::Document { path: p, .. } => Some(p),
-        _ => None,
-    };
-    if let Some(p) = target {
-        *p = path.to_path_buf();
-        tab.is_symlink =
-            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink());
-        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-            tab.title = name.to_string();
-        }
-    }
 }
 
 /// A destination path under `dir`, suffixing when the source name already exists.

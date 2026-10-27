@@ -36,12 +36,7 @@ impl App {
             return Vec::new();
         };
         match &tab.kind {
-            TabKind::Code {
-                language,
-                buffer,
-                text,
-                ..
-            } if language.eq_ignore_ascii_case("markdown") => {
+            TabKind::Code { buffer, text, .. } if tab.is_markdown() => {
                 self.outline.markdown.rows(tab.view, buffer.version(), || {
                     std::iter::once(text.as_str())
                 })
@@ -106,11 +101,10 @@ impl App {
     pub(crate) fn request_active_symbols(&mut self) {
         let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code {
-                language,
                 doc: Some(doc),
                 buffer,
                 ..
-            } if !language.eq_ignore_ascii_case("markdown") => Some((*doc, buffer.version())),
+            } if !tab.is_markdown() => Some((*doc, buffer.version())),
             _ => None,
         }) else {
             return;

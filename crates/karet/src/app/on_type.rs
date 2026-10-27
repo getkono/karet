@@ -24,7 +24,6 @@ use karet_text::EditCause;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::tab_language;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -63,7 +62,7 @@ impl App {
         let setting = self
             .settings
             .editor
-            .for_language(tab_language(tab))
+            .for_language(tab.language_id())
             .format_on_type();
         setting != self.on_type.flipped
     }

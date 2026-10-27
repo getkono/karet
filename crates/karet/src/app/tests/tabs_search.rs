@@ -504,7 +504,7 @@ fn find_highlights_matches_in_a_code_tab() {
         "t.rs",
         TabKind::Code {
             path: PathBuf::from("t.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("foo bar foo").into(),

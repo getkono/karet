@@ -520,7 +520,7 @@ fn active_spell_language_is_named_beside_the_file_language() {
     );
 
     let rendered = screen(&mut app, 100, 12).join("\n");
-    assert!(rendered.contains("Rust · English (UK)"), "{rendered}");
+    assert!(rendered.contains("Markdown · English (UK)"), "{rendered}");
 }
 
 #[test]

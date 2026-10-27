@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use karet_core::LineCol;
 use karet_filetype::FileKind;
+use karet_filetype::FileType;
 #[cfg(feature = "images")]
 use karet_fileview::image;
 use karet_syntax::FoldRegions;
@@ -69,13 +70,7 @@ pub fn open_file_ignoring_size(path: &Path) -> Tab {
 /// a too-large placeholder, a notebook preview, or a byte view.
 #[must_use]
 pub fn open_as_text(path: &Path) -> Tab {
-    let file_type = karet_filetype::file_type_for_path(path);
-    let language = if file_type.is_recognized() {
-        file_type.name()
-    } else {
-        "plaintext"
-    };
-    open_pending_code(path, language)
+    open_pending_code(path, karet_filetype::file_type_for_path(path))
 }
 
 /// Read at most [`HEAD_BYTES`] leading bytes of `path` (empty on error) and its
@@ -119,7 +114,11 @@ fn open_classified(path: &Path, kind: FileKind, len: u64) -> Tab {
         // The backend decodes CBOR authoritatively once the document registers;
         // the tab is reserved empty and fills from the first snapshot. A corrupt
         // file answers `NotUtf8`, which converts the tab to the hex fallback.
-        FileKind::Cbor => open_pending_code(path, "CBOR"),
+        FileKind::Cbor => open_pending_code(
+            path,
+            karet_filetype::file_type_for_language("cbor")
+                .unwrap_or_else(|| karet_filetype::file_type_for_path(path)),
+        ),
         FileKind::Binary => Tab::new(
             title(path),
             TabKind::Hex {
@@ -150,12 +149,12 @@ fn open_classified(path: &Path, kind: FileKind, len: u64) -> Tab {
 /// (text as is, CBOR → diagnostic notation): the buffer starts empty and fills
 /// from the session's first snapshot once the document registers, with
 /// highlighting deferred to the session worker.
-fn open_pending_code(path: &Path, language: &'static str) -> Tab {
+fn open_pending_code(path: &Path, file_type: FileType) -> Tab {
     let mut tab = Tab::new(
         title(path),
         TabKind::Code {
             path: path.to_path_buf(),
-            language,
+            file_type,
             doc: None,
             next_version: 0,
             buffer: Default::default(),
@@ -327,7 +326,7 @@ mod tests {
         let tab = open_file(&file);
         assert_eq!(tab.fill_caret, Some(LineCol::default()));
         let TabKind::Code {
-            language,
+            file_type,
             text,
             doc,
             highlights,
@@ -336,7 +335,7 @@ mod tests {
         else {
             panic!("expected a code tab");
         };
-        assert_eq!(language, "Markdown");
+        assert_eq!(crate::tab::code_language(file_type), "Markdown");
         // Not decoded here: the session loads the file once and its first
         // snapshot supplies the text and, later, the syntax.
         assert!(text.is_empty());
@@ -379,7 +378,7 @@ mod tests {
         let _ = std::fs::write(&file, [0x82u8, 0x01, 0x02]);
         let tab = open_file(&file);
         let TabKind::Code {
-            language,
+            file_type,
             text,
             doc,
             ..
@@ -387,11 +386,24 @@ mod tests {
         else {
             panic!("expected a code tab for a .cbor file");
         };
-        assert_eq!(language, "CBOR");
+        assert_eq!(crate::tab::code_language(file_type), "CBOR");
         // The buffer is reserved empty; the session decodes authoritatively and
         // the first snapshot fills it (see the app save/open seam tests).
         assert!(text.is_empty());
         assert!(doc.is_none());
+    }
+
+    /// CBOR recognized by its content, not its name, is still stored as CBOR:
+    /// the path alone would call it an unknown file.
+    #[test]
+    fn cbor_sniffed_from_content_is_stored_as_cbor() {
+        let dir = temp_dir();
+        let file = dir.path.join("payload");
+        // The self-describe tag 55799 (0xd9d9f7), then the array [1, 2].
+        let _ = std::fs::write(&file, [0xd9u8, 0xd9, 0xf7, 0x82, 0x01, 0x02]);
+        let tab = open_file(&file);
+        assert!(matches!(tab.kind, TabKind::Code { .. }));
+        assert_eq!(tab.status_label(), "CBOR");
     }
 
     #[test]

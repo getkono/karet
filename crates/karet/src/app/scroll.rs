@@ -23,8 +23,6 @@ use karet_widgets::scroll::TrackHit;
 use crate::app::App;
 use crate::app::hit::ScrollDrag;
 use crate::app::hit::ScrollSurface;
-use crate::app::util::effective_word_wrap;
-use crate::app::util::tab_language;
 use crate::tab::TabKind;
 
 /// A cursor pulled into the window `[position, position + viewport)`, left alone when
@@ -46,11 +44,10 @@ impl App {
     /// Scroll the active non-wrapping view horizontally by `delta` columns.
     pub(super) fn scroll_columns(&mut self, delta: i32) {
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
-            effective_word_wrap(
-                tab,
+            tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab_language(tab))
+                    .for_language(tab.language_id())
                     .word_wrap(),
             )
         });

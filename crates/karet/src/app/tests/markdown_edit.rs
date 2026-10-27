@@ -14,13 +14,13 @@ fn markdown_app(text: &str, caret: LineCol) -> App {
     let mut tab = text_tab("notes.md", text);
     if let TabKind::Code {
         path,
-        language,
+        file_type,
         doc,
         ..
     } = &mut tab.kind
     {
         *path = std::path::PathBuf::from("notes.md");
-        *language = "Markdown";
+        *file_type = language_type("Markdown");
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
@@ -51,12 +51,9 @@ fn caret_of(app: &App) -> LineCol {
 #[test]
 fn the_markdown_gate_recognizes_a_markdown_path() {
     let app = markdown_app("# title\n", LineCol::new(0, 0));
-    // The gate keys off the filetype registry, not the tab's language label.
-    assert_eq!(
-        karet_filetype::file_type_for_path(std::path::Path::new("notes.md")).name(),
-        "Markdown"
-    );
+    // The gate keys off the file type the tab stores, not its status label.
     assert!(matches!(&app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert!(app.tabs[app.active].is_markdown());
 }
 
 #[test]

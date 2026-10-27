@@ -67,11 +67,10 @@ pub(super) fn draw_panes(
             .and_then(|stored| stored.tabs.get(stored.active))
             .map(|tab| app.tab_width_for(tab));
         let rendered = if is_focused {
-            let resolved = app.tabs.get(app.active).map(|tab| {
-                app.settings
-                    .editor
-                    .for_language(crate::app::tab_language(tab))
-            });
+            let resolved = app
+                .tabs
+                .get(app.active)
+                .map(|tab| app.settings.editor.for_language(tab.language_id()));
             let word_wrap = resolved.map_or(
                 app.settings
                     .editor
@@ -142,11 +141,10 @@ pub(super) fn draw_panes(
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx, hits)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
-            let resolved = stored.tabs.get(stored.active).map(|tab| {
-                app.settings
-                    .editor
-                    .for_language(crate::app::tab_language(tab))
-            });
+            let resolved = stored
+                .tabs
+                .get(stored.active)
+                .map(|tab| app.settings.editor.for_language(tab.language_id()));
             let word_wrap = resolved.map_or(
                 app.settings
                     .editor

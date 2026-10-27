@@ -30,8 +30,6 @@ use karet_widgets::PaneId;
 use ratatui::layout::Rect;
 
 use super::App;
-use super::effective_word_wrap;
-use super::tab_language;
 use crate::keymap::Focus;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -312,11 +310,10 @@ impl App {
             0
         };
         let tab = self.tabs.get(self.active)?;
-        let word_wrap = effective_word_wrap(
-            tab,
+        let word_wrap = tab.word_wrap(
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.language_id())
                 .word_wrap(),
         );
         let left = self.drag_text_left(area);

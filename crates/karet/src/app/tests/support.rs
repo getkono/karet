@@ -294,6 +294,14 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
     }
 }
 
+/// The registry file type named `language` (a protocol id, config selector or
+/// display name), or the unrecognized fallback when there is none.
+pub(crate) fn language_type(language: &str) -> karet_filetype::FileType {
+    karet_filetype::file_type_for_language(language)
+        .unwrap_or_else(|| karet_filetype::file_type_for_path(Path::new("")))
+}
+
+/// A code tab over `name` holding `text`, typed by its path.
 pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
     use karet_syntax::Highlights;
     use karet_text::TextBuffer;
@@ -301,7 +309,7 @@ pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
         name,
         TabKind::Code {
             path: PathBuf::from(name),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(name)),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text).into(),
@@ -324,7 +332,7 @@ pub(crate) fn code_tab(name: &str) -> Tab {
         name,
         TabKind::Code {
             path: PathBuf::from(name),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(name)),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("x\n").into(),

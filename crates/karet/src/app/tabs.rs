@@ -18,7 +18,6 @@ use crate::app::state::StoredPane;
 use crate::app::util::canonical;
 use crate::app::util::path_under;
 use crate::app::util::rebase_path;
-use crate::app::util::retarget_tab_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::view::View;
@@ -371,7 +370,7 @@ impl App {
                 continue;
             };
             let doc = Self::tab_doc(tab);
-            retarget_tab_path(tab, &next);
+            tab.retarget(&next);
             if let Some(doc) = doc {
                 docs.push((doc, next));
             }
@@ -739,17 +738,11 @@ impl App {
                 },
                 Err(message) => {
                     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                    let kind = if path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-                    {
-                        FileKind::Notebook
-                    } else {
-                        FileKind::Docx
-                    };
+                    // The registry routes DOCX and notebooks by extension
+                    // alone, so no bytes are needed to name what failed.
                     tab.kind = TabKind::Placeholder {
                         path: path.to_path_buf(),
-                        kind,
+                        kind: karet_filetype::classify_ignoring_size(path, &[]),
                         dims: None,
                         len,
                     };

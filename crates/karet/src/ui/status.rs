@@ -87,7 +87,7 @@ pub(super) fn draw_status(
     }
     // Pushed even when empty: with no tab the strip is a bare pair of spaces, and
     // dropping the segment entirely would collapse the strip's padding with it.
-    segments.push(active_tab.map_or("", Tab::language).to_owned());
+    segments.push(active_tab.map_or("", Tab::status_label).to_owned());
     if let Some(spelling) = active_tab.and_then(|tab| match &tab.kind {
         TabKind::Code { doc: Some(doc), .. } => app
             .docs

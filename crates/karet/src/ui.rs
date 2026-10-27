@@ -110,7 +110,6 @@ use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::app::clamp_sidebar_width;
-use crate::app::is_markdown;
 pub(crate) use crate::app::relative_time;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
@@ -695,7 +694,7 @@ fn draw_pane_tabs(
 
 fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
     match &tab.kind {
-        TabKind::Code { path, .. } if is_markdown(path) => {
+        TabKind::Code { .. } if tab.is_markdown() => {
             vec![
                 (
                     UiIcon::Preview,

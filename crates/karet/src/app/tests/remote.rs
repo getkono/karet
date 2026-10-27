@@ -311,7 +311,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             .to_string(),
         TabKind::Code {
             path: path.to_path_buf(),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(path),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text).into(),

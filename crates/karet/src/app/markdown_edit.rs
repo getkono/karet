@@ -12,7 +12,6 @@ use karet_session::DocumentCommand;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::is_markdown;
 use crate::command::Command;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -20,13 +19,7 @@ use crate::tab::TabKind;
 impl App {
     /// Whether the active tab edits a Markdown file.
     fn active_is_markdown(&self) -> bool {
-        self.tabs.get(self.active).is_some_and(|tab| {
-            matches!(
-                &tab.kind,
-                TabKind::Code { path, .. }
-                    if is_markdown(path)
-            )
-        })
+        self.tabs.get(self.active).is_some_and(Tab::is_markdown)
     }
 
     /// Toggle `marker` (e.g. `**`) around the primary selection or the word

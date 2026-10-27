@@ -18,6 +18,8 @@ use std::time::Instant;
 use karet_core::Decoration;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
+use karet_filetype::FileType;
+use karet_filetype::WrapMode;
 #[cfg(any(feature = "images", feature = "pdf"))]
 use karet_fileview::image::Image;
 use karet_markdown::WrappedDocument;
@@ -184,8 +186,12 @@ pub enum TabKind {
     Code {
         /// The file path.
         path: PathBuf,
-        /// The display language name.
-        language: &'static str,
+        /// The file type the tab was opened as: the registry entry for its
+        /// path, or CBOR when its content decoded as CBOR. The one record of
+        /// what the document is written in, so the status label, the language
+        /// configuration resolves against, the Markdown commands and the
+        /// default wrap all read it rather than re-deriving it from the path.
+        file_type: FileType,
         /// The session document backing this view, once registered. Editing routes
         /// through the session; the fields below are the latest snapshot for render.
         doc: Option<DocumentId>,
@@ -832,11 +838,54 @@ impl Tab {
         matches!(self.kind, TabKind::Diff { .. })
     }
 
+    /// The file type a code tab was opened as, or `None` for any other kind.
+    #[must_use]
+    pub(crate) fn file_type(&self) -> Option<FileType> {
+        match &self.kind {
+            TabKind::Code { file_type, .. } => Some(*file_type),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a code tab editing a Markdown document.
+    #[must_use]
+    pub(crate) fn is_markdown(&self) -> bool {
+        self.file_type()
+            .is_some_and(|file_type| file_type.name() == "Markdown")
+    }
+
+    /// Whether this tab soft-wraps long lines: the configured `override_` when
+    /// there is one, else the default its file type carries (only a code tab
+    /// has one).
+    #[must_use]
+    pub(crate) fn word_wrap(&self, override_: Option<bool>) -> bool {
+        override_.unwrap_or_else(|| {
+            self.file_type()
+                .is_some_and(|file_type| file_type.wrap_mode() == WrapMode::Wrap)
+        })
+    }
+
+    /// The language editor configuration resolves against, or `None` for a tab
+    /// with no label at all (the welcome tab).
+    ///
+    /// A code tab answers with its file type's display name. Every other kind
+    /// answers with its [status label](Self::status_label), which is what it
+    /// has always resolved against; which keys config resolution should use
+    /// for them is #617's to settle, not this accessor's.
+    #[must_use]
+    pub(crate) fn language_id(&self) -> Option<&str> {
+        let language = match &self.kind {
+            TabKind::Code { file_type, .. } => code_language(*file_type),
+            _ => self.status_label(),
+        };
+        (!language.is_empty()).then_some(language)
+    }
+
     /// A short language/kind label for the status bar.
     #[must_use]
-    pub fn language(&self) -> &str {
+    pub fn status_label(&self) -> &str {
         match &self.kind {
-            TabKind::Code { language, .. } => language,
+            TabKind::Code { file_type, .. } => code_language(*file_type),
             TabKind::MarkdownPreview { .. } => "markdown",
             #[cfg(feature = "images")]
             TabKind::Image { .. } => "image",
@@ -876,6 +925,49 @@ impl Tab {
             label.push_str(" · mixed EOL");
         }
         Some(label)
+    }
+
+    /// Point a file-backed tab at `path`, where its file now lives (a rename or
+    /// move), refreshing the title and symlink flag. A code tab whose file type
+    /// came from its old path takes the new path's; one whose content decided
+    /// it (CBOR) keeps it. Tabs with no file behind them are left alone.
+    pub(crate) fn retarget(&mut self, path: &Path) {
+        let target = match &mut self.kind {
+            TabKind::Code {
+                path: p, file_type, ..
+            } => {
+                if *file_type == karet_filetype::file_type_for_path(p) {
+                    *file_type = karet_filetype::file_type_for_path(path);
+                }
+                Some(p)
+            },
+            TabKind::Hex { path: p, .. } | TabKind::Placeholder { path: p, .. } => Some(p),
+            #[cfg(feature = "images")]
+            TabKind::Image { path: p, .. } => Some(p),
+            #[cfg(feature = "pdf")]
+            TabKind::Document { path: p, .. } => Some(p),
+            _ => None,
+        };
+        if let Some(p) = target {
+            *p = path.to_path_buf();
+            self.is_symlink = std::fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                self.title = name.to_string();
+            }
+        }
+    }
+}
+
+/// The language name a code tab of `file_type` shows and resolves settings
+/// against: the registry's display name, or `plaintext` for a file the
+/// registry does not recognize.
+#[must_use]
+pub(crate) fn code_language(file_type: FileType) -> &'static str {
+    if file_type.is_recognized() {
+        file_type.name()
+    } else {
+        "plaintext"
     }
 }
 
@@ -941,17 +1033,17 @@ mod tests {
         assert!(!tab.is_diff());
     }
 
-    #[test]
-    fn code_tab_reports_path_and_language() {
-        let tab = Tab::new(
-            "a.rs",
+    /// A code tab over `path` holding `text`, typed by its path.
+    fn code(path: &str, text: &str) -> Tab {
+        Tab::new(
+            path,
             TabKind::Code {
-                path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                path: PathBuf::from(path),
+                file_type: karet_filetype::file_type_for_path(Path::new(path)),
                 doc: None,
                 next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}").into(),
-                text: "fn main() {}".into(),
+                buffer: TextBuffer::from_text(text).into(),
+                text: text.into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
@@ -960,9 +1052,77 @@ mod tests {
                 search_decos: Vec::new(),
                 syntax_errors: Vec::new(),
             },
-        );
+        )
+    }
+
+    #[test]
+    fn code_tab_reports_path_and_language() {
+        let tab = code("/x/a.rs", "fn main() {}");
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
-        assert_eq!(tab.language(), "Rust");
+        assert_eq!(tab.status_label(), "Rust");
+        assert_eq!(tab.language_id(), Some("Rust"));
+    }
+
+    #[test]
+    fn an_unrecognized_code_tab_is_plaintext() {
+        let tab = code("/x/notes.unknownext", "");
+        assert_eq!(tab.status_label(), "plaintext");
+        assert_eq!(tab.language_id(), Some("plaintext"));
+    }
+
+    /// Non-code kinds keep resolving settings against their status label until
+    /// #617 decides otherwise; only the label-less welcome tab answers `None`.
+    #[test]
+    fn non_code_tabs_resolve_against_their_label() {
+        let stash = Tab::stash_preview("stash@{0}", String::new());
+        assert_eq!(stash.status_label(), "stash");
+        assert_eq!(stash.language_id(), Some("stash"));
+        assert_eq!(Tab::welcome().status_label(), "");
+        assert_eq!(Tab::welcome().language_id(), None);
+    }
+
+    #[test]
+    fn markdown_and_wrap_follow_the_stored_file_type() {
+        let markdown = code("/x/notes.md", "# hi");
+        let rust = code("/x/main.rs", "fn main() {}");
+        assert!(markdown.is_markdown());
+        assert!(!rust.is_markdown());
+        assert!(!Tab::welcome().is_markdown());
+        assert!(markdown.word_wrap(None));
+        assert!(!rust.word_wrap(None));
+        assert!(!markdown.word_wrap(Some(false)));
+        assert!(rust.word_wrap(Some(true)));
+        assert!(!Tab::welcome().word_wrap(None));
+    }
+
+    #[test]
+    fn retarget_moves_the_path_title_and_path_derived_type() {
+        let mut tab = code("/x/notes.txt", "");
+        tab.retarget(Path::new("/y/notes.md"));
+        assert_eq!(tab.path(), Some(Path::new("/y/notes.md")));
+        assert_eq!(tab.title, "notes.md");
+        assert!(tab.is_markdown());
+    }
+
+    /// A type the content decided (CBOR sniffed from bytes) is not the old
+    /// path's, so a rename must not throw it away.
+    #[test]
+    fn retarget_keeps_a_content_derived_type() {
+        let mut tab = code("/x/data.bin", "");
+        let cbor = karet_filetype::file_type_for_language("cbor");
+        if let (TabKind::Code { file_type, .. }, Some(cbor)) = (&mut tab.kind, cbor) {
+            *file_type = cbor;
+        }
+        tab.retarget(Path::new("/x/renamed.bin"));
+        assert_eq!(tab.status_label(), "CBOR");
+    }
+
+    #[test]
+    fn retarget_leaves_a_tab_without_a_file_alone() {
+        let mut tab = Tab::stash_preview("stash@{0}", String::new());
+        tab.retarget(Path::new("/x/a.rs"));
+        assert_eq!(tab.title, "Stash stash@{0}");
+        assert!(tab.path().is_none());
     }
 
     #[test]
@@ -972,7 +1132,7 @@ mod tests {
             "a.rs",
             TabKind::Code {
                 path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                file_type: karet_filetype::file_type_for_path(Path::new("/x/a.rs")),
                 doc: None,
                 next_version: 0,
                 buffer: buffer.into(),

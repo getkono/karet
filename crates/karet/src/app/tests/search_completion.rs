@@ -12,7 +12,7 @@ fn app_with_find_open() -> App {
         "t.rs",
         TabKind::Code {
             path: PathBuf::from("t.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("").into(),
@@ -107,7 +107,7 @@ fn switching_tabs_does_not_show_a_stale_find_bar() {
         "u.rs",
         TabKind::Code {
             path: PathBuf::from("u.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: karet_text::TextBuffer::from_text("").into(),
@@ -619,8 +619,8 @@ fn completion_enablement_resolves_against_the_tab_language() {
     app.trigger_completion(true);
     assert!(completion_requests(&backend).is_empty());
 
-    if let TabKind::Code { language, .. } = &mut app.tabs[app.active].kind {
-        *language = "Python";
+    if let TabKind::Code { file_type, .. } = &mut app.tabs[app.active].kind {
+        *file_type = language_type("Python");
     }
     app.trigger_completion(true);
     assert_eq!(completion_requests(&backend).len(), 1);

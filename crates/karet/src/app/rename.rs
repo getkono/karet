@@ -33,7 +33,6 @@ use crate::app::App;
 use crate::app::notifications::Report;
 use crate::app::util::canonical;
 use crate::app::util::rebase_path;
-use crate::app::util::retarget_tab_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::workspace;
@@ -335,7 +334,7 @@ impl App {
             for tab in self.all_tabs_mut() {
                 let moved = tab.path().and_then(|path| rebase_path(path, from, to));
                 if let Some(path) = moved {
-                    retarget_tab_path(tab, &path);
+                    tab.retarget(&path);
                 }
             }
         }
