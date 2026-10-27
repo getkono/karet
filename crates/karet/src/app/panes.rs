@@ -185,6 +185,10 @@ impl App {
         );
         self.layout.set_focus(new_pane);
         self.load_focused();
+        // A copy of a tab whose open the session has not answered yet has no
+        // document, and the answer binds only the source's view: the copy asks
+        // for its own, or it would never fill.
+        self.register_doc(self.active);
         self.focus = Focus::Editor;
     }
 
@@ -213,6 +217,14 @@ impl App {
                     // The worker's table lines for this document, so the new view
                     // keeps them until the next snapshot rather than losing them.
                     markdown_table_lines: t.markdown_table_lines.clone(),
+                    // A source still waiting for its text leaves the copy waiting
+                    // too: edits stay refused against the empty placeholder, the
+                    // loading placeholder (or the open's failure) shows, and the
+                    // first fill puts the held caret and view back.
+                    fill_caret: t.fill_caret,
+                    fill_since: t.fill_since,
+                    fill_view: t.fill_view.clone(),
+                    fill_error: t.fill_error.clone(),
                     ..Tab::new(
                         t.title.clone(),
                         TabKind::Code {
