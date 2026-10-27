@@ -79,7 +79,7 @@ impl PreparedDiff {
 
     /// Forget every intra-line pair, so a painter test can show it reads the
     /// prepared pairs rather than recomputing them.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "view"))]
     pub(crate) fn drop_intraline_pairs(&mut self) {
         for rows in &mut self.intraline {
             rows.iter_mut().for_each(|pair| *pair = None);
