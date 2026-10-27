@@ -106,11 +106,20 @@ fn lays(token: TokenId) -> bool {
 /// clangd mark both `const` bindings alike. The theme falls a semantic
 /// variable back to the variable class, so laying it here would repaint every
 /// ALL_CAPS constant in the variable colour once semantic tokens arrive.
+///
+/// A variable the server marks `mutable` or `deprecated` is laid all the
+/// same: those are the modifiers the built-in theme styles (underline,
+/// strikethrough), and a token id carries one class, so keeping the constant
+/// would drop that styling. A `static mut COUNTER` is not a constant anyway,
+/// and a struck-through deprecated name outweighs its colour.
 fn keeps_constant(base: TokenId, laid: TokenId) -> bool {
+    use karet_core::SemanticTokenModifiers as M;
     base == karet_core::StandardToken::Constant.id()
-        && laid
-            .semantic_parts()
-            .is_some_and(|(ty, _)| ty == karet_core::SemanticTokenType::Variable)
+        && laid.semantic_parts().is_some_and(|(ty, modifiers)| {
+            ty == karet_core::SemanticTokenType::Variable
+                && !modifiers.contains(M::MUTABLE)
+                && !modifiers.contains(M::DEPRECATED)
+        })
 }
 
 /// Whether a tree-sitter class is lexical -- comment, string or markup text --
@@ -281,6 +290,24 @@ mod tests {
                 (20, 23, constant),
                 (25, 28, member),
             ]
+        );
+    }
+
+    /// A mutable or deprecated semantic variable over a `@constant` span (a
+    /// `static mut COUNTER`, a deprecated ALL_CAPS const) is laid, so the
+    /// theme's underline and strikethrough rules still reach it; a variable
+    /// carrying only other modifiers keeps the constant.
+    #[test]
+    fn a_mutable_or_deprecated_variable_is_laid_over_a_constant() {
+        let constant = StandardToken::Constant.id();
+        let mutable = TokenId::semantic(T::Variable, M::MUTABLE | M::STATIC);
+        let deprecated = TokenId::semantic(T::Variable, M::READONLY | M::DEPRECATED);
+        let static_only = TokenId::semantic(T::Variable, M::STATIC | M::READONLY);
+        let base = spans(&[(0, 7, constant), (10, 17, constant), (20, 27, constant)]);
+        let semantic = spans(&[(0, 7, mutable), (10, 17, deprecated), (20, 27, static_only)]);
+        assert_eq!(
+            runs(&overlay_semantic(&base, &semantic)),
+            [(0, 7, mutable), (10, 17, deprecated), (20, 27, constant)]
         );
     }
 
