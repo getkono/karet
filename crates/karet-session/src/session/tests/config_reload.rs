@@ -193,3 +193,109 @@
         assert_eq!(doc.settings.tab_width, 2);
         Ok(())
     }
+
+    /// Global `tabSize` 4 with a `[selector]` patch setting it to `tab_size`.
+    fn tab_size_override(selector: &str, tab_size: u8) -> Option<crate::config::Settings> {
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 4;
+        settings.editor.language_overrides.insert(
+            crate::config::schema::LanguageSelector::from_language(selector)?,
+            crate::config::schema::EditorOverride {
+                tab_size: Some(tab_size),
+                ..crate::config::schema::EditorOverride::default()
+            },
+        );
+        Some(settings)
+    }
+
+    /// A rename re-types the document, so the new language's override applies to
+    /// the settings and syntax work that read `file_type`. Falsified by a
+    /// `retarget` that leaves the file type stale, keeping the old language's
+    /// override (or none).
+    #[test]
+    fn a_rename_retypes_the_document_for_its_settings() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "x = 1\n")?;
+        let settings = tab_size_override("python", 2).ok_or("no python selector")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let renamed = dir.path().join("main.py");
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: renamed,
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.file_type.config_selector(), Some("python"));
+        assert_eq!(stored.language_selector, Some("python"));
+        assert_eq!(stored.settings.indent_size, 2);
+        let resolved = session.config.settings().editor.for_language(Some(stored.file_type));
+        assert_eq!(resolved.tab_size(), 2);
+        Ok(())
+    }
+
+    /// A CBOR document recognized by content alone (the self-describe tag, no
+    /// `.cbor` extension) is typed CBOR, as the client's tab is, so `[cbor]`
+    /// reaches its session-side settings; a rename keeps it CBOR. Falsified by
+    /// typing it from the path, which finds no language at all.
+    #[cfg(feature = "cbor")]
+    #[test]
+    fn a_cbor_document_recognized_by_content_takes_the_cbor_override() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("payload");
+        // The self-describe tag 55799 (0xd9d9f7), then the array [1, 2].
+        std::fs::write(&file, [0xd9u8, 0xd9, 0xf7, 0x82, 0x01, 0x02])?;
+        let settings = tab_size_override("cbor", 2).ok_or("no cbor selector")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("cbor"));
+        assert_eq!(stored.settings.indent_size, 2);
+
+        let renamed = dir.path().join("payload.json");
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: renamed,
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("cbor"), "a rename keeps it CBOR");
+        assert_eq!(stored.settings.indent_size, 2);
+        Ok(())
+    }
+
+    /// A text document renamed to a `.cbor` path is still text (the session saves
+    /// it as text), so it keeps the language it had, as the client's tab does.
+    /// Falsified by re-typing it from the new path alone.
+    #[test]
+    fn a_text_document_renamed_to_cbor_keeps_its_language() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("notes.toml");
+        std::fs::write(&file, "a = 1\n")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: dir.path().join("notes.cbor"),
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("toml"));
+        assert_eq!(stored.file_type.config_selector(), Some("toml"));
+        Ok(())
+    }

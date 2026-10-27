@@ -4,7 +4,7 @@
     use karet_core::TextEdit;
 
     use super::*;
-    use super::documents::DocumentLanguage;
+    use super::doc_language::DocumentLanguage;
     use crate::api::Command;
     use crate::api::DebugCommand;
     use crate::api::DocumentCommand;

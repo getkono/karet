@@ -16,6 +16,8 @@ mod code_actions;
 mod columns;
 mod completion;
 mod debug;
+mod doc_language;
+use doc_language::DocumentLanguage;
 mod docfile;
 // The document-file helpers stay reachable unqualified from the sibling
 // modules that used them before the split.
@@ -203,6 +205,17 @@ enum DocFormat {
     /// Decoded on open and re-encoded on save.
     #[cfg(feature = "cbor")]
     Cbor,
+}
+
+impl DocFormat {
+    /// Whether the buffer holds CBOR diagnostic notation, whatever the path says.
+    const fn is_cbor(self) -> bool {
+        match self {
+            Self::Text => false,
+            #[cfg(feature = "cbor")]
+            Self::Cbor => true,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

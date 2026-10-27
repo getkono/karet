@@ -91,9 +91,10 @@ impl Tab {
     }
 }
 
-/// The language name a code tab of `file_type` shows and resolves settings
-/// against: the registry's display name, or `plaintext` for a file the
-/// registry does not recognize.
+/// The language name a code tab of `file_type` shows in its status label and
+/// hands the language-server badge and routing: the registry's display name, or
+/// `plaintext` for a file the registry does not recognize. Editor settings do
+/// not resolve against it; they go through [`Tab::config_file_type`].
 #[must_use]
 pub(crate) fn code_language(file_type: FileType) -> &'static str {
     if file_type.is_recognized() {

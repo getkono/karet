@@ -14,58 +14,6 @@ const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 /// Answer to a save abandoned by a [`Command::Cancel`] naming it.
 const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
 
-/// Every language identity a document carries, resolved together so the
-/// highlighter, the display name, per-language settings, and the language server
-/// never disagree about what the document is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct DocumentLanguage {
-    /// The tree-sitter grammar that parses the document, when one is compiled in.
-    pub(super) lang_id: Option<LanguageId>,
-    /// The display name (e.g. `"Rust"`).
-    pub(super) name: Option<&'static str>,
-    /// The registry file type: per-language settings resolve against it, and its
-    /// [`config_selector`](karet_filetype::FileType::config_selector) routes the
-    /// document to a language server.
-    pub(super) file_type: karet_filetype::FileType,
-    /// The protocol `languageId` announced to the language server.
-    pub(super) lsp_id: Option<&'static str>,
-}
-
-impl DocumentLanguage {
-    /// The language `path` is detected as.
-    pub(super) fn for_path(path: &Path) -> Self {
-        Self {
-            lang_id: language_id_from_path(path),
-            name: language_name_for_path(path),
-            file_type: karet_filetype::file_type_for_path(path),
-            lsp_id: lsp_language_id_for_path(path),
-        }
-    }
-
-    /// The per-language configuration and server-routing selector.
-    pub(super) fn selector(&self) -> Option<&'static str> {
-        self.file_type.config_selector()
-    }
-
-    /// The language an explicit `id` names (an LSP language id such as
-    /// `"typescriptreact"`, a configuration selector such as `"c++"`, or a display
-    /// name such as `"Rust"`), falling back to detection from `path` when `id` is
-    /// `None` or names no known language.
-    pub(super) fn resolve(path: &Path, id: Option<&str>) -> Self {
-        let Some(file_type) = id.and_then(karet_filetype::file_type_for_language) else {
-            return Self::for_path(path);
-        };
-        Self {
-            lang_id: file_type
-                .grammar()
-                .and_then(karet_treesitter::language_id_from_injection_name),
-            name: Some(file_type.name()),
-            file_type,
-            lsp_id: file_type.lsp_language_id(),
-        }
-    }
-}
-
 impl Document {
     /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
     /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
@@ -172,9 +120,10 @@ impl Session {
                 return;
             },
         };
-        // An explicit id the registry knows overrides detection; anything else,
-        // including an id it does not know, falls back to the path.
-        let detected = DocumentLanguage::resolve(&path, language);
+        // A decoded CBOR document is CBOR; otherwise an explicit id the registry
+        // knows overrides detection, and anything else, including an id it does
+        // not know, falls back to the path.
+        let detected = DocumentLanguage::for_format(&path, format, language);
         let DocumentLanguage {
             lang_id,
             name: language,
@@ -796,8 +745,8 @@ impl Session {
         self.store.by_path.remove(&old);
         doc.path = path.clone();
         let old_lsp_language = doc.lsp_language_id;
-        // The new path decides the language, as it would on a fresh open.
-        let detected = DocumentLanguage::for_path(&path);
+        // The new path decides the language, within the document's format.
+        let detected = DocumentLanguage::for_rename(doc, &path);
         doc.lang_id = detected.lang_id;
         doc.language = detected.name;
         doc.file_type = detected.file_type;
