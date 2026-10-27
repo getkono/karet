@@ -8,25 +8,13 @@
 //! backend seam) while painting stays a cheap per-frame assembly step (see the
 //! `view` feature).
 
-use karet_core::TokenId;
+use karet_core::TokenSpan;
 
 use crate::HighlightedPair;
 use crate::compute_highlights;
 use crate::model::DiffLine;
 use crate::model::FileDiff;
 use crate::model::LineKind;
-
-/// A syntax token run within a single line: a byte range and its color class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TokenSpan {
-    /// The run's starting byte offset within its line.
-    pub start: usize,
-    /// The run's ending byte offset (exclusive) within its line.
-    pub end: usize,
-    /// The run's color class.
-    pub token: TokenId,
-}
 
 /// A file diff prepared for display: the [`FileDiff`] plus per-line syntax token
 /// runs for both sides and precomputed intra-line change pairs.
@@ -177,6 +165,8 @@ fn prepare_intraline(lines: &[DiffLine]) -> Vec<Option<HighlightedPair>> {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::TokenId;
+
     use super::*;
     use crate::DiffOptions;
     use crate::diff_text;

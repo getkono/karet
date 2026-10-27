@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TokenSpan`, a line-relative token run (byte offsets within one line plus a `TokenId`), moved here from `karet-diff` so per-line token tables (prepared diffs, source previews) share one core type; its serialized shape is unchanged
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-core-v0.7.0...karet-core-v0.7.1) - 2026-10-01
 
 ### Added

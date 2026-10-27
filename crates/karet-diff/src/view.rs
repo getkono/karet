@@ -7,6 +7,7 @@
 //! maps its theme (or any fixed palette) onto the named slots.
 
 use karet_core::TokenId;
+use karet_core::TokenSpan;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -21,7 +22,6 @@ use crate::model::FileDiff;
 use crate::model::FileStatus;
 use crate::model::LineKind;
 use crate::prepared::PreparedDiff;
-use crate::prepared::TokenSpan;
 
 /// The color slots a diff painter draws from, plus the syntax token lookup.
 ///

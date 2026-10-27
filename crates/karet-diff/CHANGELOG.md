@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `TokenSpan` is now defined in `karet-core`; `karet_diff::TokenSpan` re-exports it, so existing imports keep compiling
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-diff-v0.5.0...karet-diff-v0.6.0) - 2026-08-29
 
 ### Added

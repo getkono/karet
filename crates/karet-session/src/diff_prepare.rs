@@ -10,11 +10,11 @@ use std::path::PathBuf;
 
 use karet_core::BytePos;
 use karet_core::Span as ByteSpan;
+use karet_core::TokenSpan;
 use karet_diff::DiffOptions;
 use karet_diff::FileDiff;
 use karet_diff::FileStatus;
 use karet_diff::PreparedDiff;
-use karet_diff::TokenSpan;
 use karet_diff::diff_text;
 use karet_filetype::file_type_for_path;
 use karet_syntax::LayeredHighlighter;
