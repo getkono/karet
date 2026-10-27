@@ -89,7 +89,7 @@ impl App {
     pub(crate) fn vi_editing(&self) -> Editing {
         let preset = self.keymap_preset();
         if !preset.is_modal()
-            || self.focus != Focus::Editor
+            || self.keyboard.focus() != Focus::Editor
             || self.view != View::Editor
             || self.active_code_doc().is_none()
         {

@@ -15,7 +15,6 @@ use karet_widgets::ListSelection;
 
 use crate::app::App;
 use crate::app::util::rect_contains;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 
 /// Keep at most this many misspellings. A workspace can hold far more than a list
@@ -62,7 +61,7 @@ impl App {
         }
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Spelling;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         if !self.spelling.scanned && self.spelling.scanning.is_none() {
             self.scan_workspace_spelling();
         }

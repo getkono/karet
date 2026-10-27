@@ -55,7 +55,7 @@ impl App {
                 (label.clone(), event)
             })
             .collect();
-        self.overlay = Some(Overlay::picker(
+        self.open_overlay(Overlay::picker(
             PickerKind::Tasks,
             Picker::new(RUN_TASK_TITLE, items),
         ));

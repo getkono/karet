@@ -295,7 +295,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     rename::draw_rename(f, app, &theme, editor);
     draw_diagnostic_view(f, app, &theme, area);
 
-    if let Some(overlay) = &app.overlay {
+    if let Some(overlay) = app.keyboard.overlay() {
         // Quick-open over a first walk (or a symbol request) that is taking a
         // while says so.
         let loading = app

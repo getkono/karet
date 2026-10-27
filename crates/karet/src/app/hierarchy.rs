@@ -473,14 +473,14 @@ impl App {
         if !showing {
             self.hierarchy.before = Some(Before {
                 panel: self.sidebar_panel,
-                focus: self.focus,
+                focus: self.keyboard.focus(),
                 visible: self.sidebar_visible,
             });
         }
         self.hierarchy.tree = Some(tree);
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Hierarchy;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
     }
 
     /// Whether the Hierarchy panel is on screen.
@@ -511,8 +511,8 @@ impl App {
             return;
         }
         self.sidebar_visible = before.visible;
-        if self.focus == Focus::Sidebar {
-            self.focus = before.focus;
+        if self.keyboard.focus() == Focus::Sidebar {
+            self.keyboard.focus_on(before.focus);
         }
     }
 

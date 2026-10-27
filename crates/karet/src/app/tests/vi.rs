@@ -121,7 +121,10 @@ fn a_macro_that_runs_itself_stops() {
 fn the_normal_layer_runs_commands_with_a_count() {
     let mut rig = rig(KeymapPreset::Vim, "|abc");
     typed(&mut rig, ":");
-    assert!(rig.app.overlay.is_some(), "`:` opens the command palette");
+    assert!(
+        rig.app.keyboard.overlay().is_some(),
+        "`:` opens the command palette"
+    );
     rig.step(key(KeyCode::Esc));
     typed(&mut rig, "/");
     assert!(rig.app.find_open, "`/` opens the find bar");
@@ -132,7 +135,7 @@ fn modified_chords_still_reach_the_global_layer() {
     let mut rig = rig(KeymapPreset::Vim, "|abc");
     rig.step(Step::Key(KeyCode::Char('p'), CTRL));
     assert!(
-        rig.app.overlay.is_some(),
+        rig.app.keyboard.overlay().is_some(),
         "Ctrl+P opens quick open from Normal mode"
     );
 }
@@ -218,9 +221,9 @@ fn the_default_keymap_is_untouched() {
 #[test]
 fn modal_editing_only_has_the_keys_while_the_editor_does() {
     let mut rig = rig(KeymapPreset::Vim, "|abc");
-    rig.app.focus = Focus::Sidebar;
+    rig.app.keyboard.focus_sidebar();
     assert_eq!(rig.app.vi_editing(), crate::keymap::Editing::Modeless);
-    rig.app.focus = Focus::Editor;
+    rig.app.keyboard.focus_editor();
     assert_eq!(rig.app.vi_editing(), crate::keymap::Editing::VimNormal);
     typed(&mut rig, "i");
     assert_eq!(rig.app.vi_editing(), crate::keymap::Editing::Insert);

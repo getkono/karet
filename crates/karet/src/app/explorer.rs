@@ -28,7 +28,6 @@ use crate::app::util::path_under;
 use crate::app::util::same_path;
 use crate::app::util::unique_child_path;
 use crate::command::Command;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::remote;
 use crate::tab::Tab;
@@ -136,7 +135,7 @@ impl App {
     pub(super) fn explorer_begin_new(&mut self, folder: bool) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.explorer.ensure_built(&self.root);
         self.explorer.begin_new(folder);
     }
@@ -568,7 +567,7 @@ impl App {
     pub(super) fn open_context_menu(&mut self, x: u16, y: u16, row: Option<usize>) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.explorer.ensure_built(&self.root);
         let items = if let Some(row) = row {
             if !self.explorer.is_selected(row) {
@@ -584,7 +583,7 @@ impl App {
     pub(super) fn open_context_menu_for_selection(&mut self) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.explorer.ensure_built(&self.root);
         let cursor = self.explorer.cursor();
         let (left, top) = self.explorer_content_origin();

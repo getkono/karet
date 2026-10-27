@@ -132,16 +132,16 @@ fn an_open_completion_takes_tab_first() {
 fn tab_in_the_editor_keeps_focus_and_ctrl_shift_e_toggles_it() {
     let mut rig = Rig::new("a|");
     rig.step(key(KeyCode::Tab));
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
     rig.app.sidebar_visible = true;
     rig.step(Step::Key(
         KeyCode::Char('e'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     ));
-    assert_eq!(rig.app.focus, Focus::Sidebar);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Sidebar);
     // From the sidebar, Tab still returns to the editor.
     rig.step(key(KeyCode::Tab));
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -183,17 +183,17 @@ fn enter_indents_from_the_rust_indent_query() {
 #[test]
 fn tab_without_editable_text_still_toggles_focus() {
     let mut app = app();
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 }
 
 #[test]
 fn the_palettes_indent_line_without_editable_text_does_nothing() {
     let mut app = app();
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.handle_overlay_event(crate::overlay::OverlayEvent::AcceptCommand(Command::Indent));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -201,6 +201,6 @@ fn the_palettes_indent_line_indents_the_active_code_tab() {
     let mut rig = Rig::new("ab|c");
     rig.app
         .handle_overlay_event(crate::overlay::OverlayEvent::AcceptCommand(Command::Indent));
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
     assert_eq!(rig.marked(), "ab  |c");
 }

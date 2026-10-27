@@ -428,8 +428,6 @@ pub(crate) struct CommitInput {
     pub(crate) text: String,
     /// Cursor, selection, and viewport state within the draft.
     pub(crate) edit: TextAreaState,
-    /// Whether keyboard input is currently routed into the field.
-    pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.
     pub(crate) pending: Option<RequestId>,
     /// Whether the viewport was deliberately scrolled off the caret. The box

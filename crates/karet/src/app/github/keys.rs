@@ -12,7 +12,7 @@ use crate::view::View;
 impl App {
     /// Handle dashboard and form keys before the ordinary editor keymap.
     pub(in crate::app) fn github_key(&mut self, key: KeyEvent) -> bool {
-        if self.focus != Focus::Editor {
+        if self.keyboard.focus() != Focus::Editor {
             return false;
         }
         if self.view != View::GitHub || !self.github.is_active() {

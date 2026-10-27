@@ -176,7 +176,7 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
     // Start from a different panel/focus to prove the reveal switches them.
     app.sidebar_panel = SidebarPanel::Search;
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     let target = dir.join("a/b/c.rs");
     app.reveal_in_explorer(&target);
@@ -184,7 +184,7 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -199,7 +199,7 @@ fn reveal_in_explorer_selects_a_directory() {
     app.reveal_in_explorer(&target);
 
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -209,7 +209,7 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
     write_file(&dir, "inside.txt", b"x");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     let outside = dir
         .parent()
@@ -219,7 +219,7 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
 
     // Nothing changes but a status note.
     assert!(!app.sidebar_visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
         last_message(&app)
             .as_deref()
@@ -236,13 +236,13 @@ fn reveal_in_explorer_missing_path_reports_status() {
     write_file(&dir, "inside.txt", b"x");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     app.reveal_in_explorer(&dir.join("does-not-exist.txt"));
 
     // A path under the root but absent from the tree does not steal focus.
     assert!(!app.sidebar_visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
         last_message(&app)
             .as_deref()
@@ -287,7 +287,7 @@ fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     select_explorer_path(&mut app, &dir.join("top.txt"));
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     // The root has no row of its own: revealing it shows and focuses the
     // Explorer but leaves the selection where it was.
@@ -295,7 +295,7 @@ fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
 
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(
         app.explorer.selected_path(),
         Some(dir.join("top.txt").as_path())
@@ -348,7 +348,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     write_file(&dir, "a/b/c.rs", b"code");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let target = dir.join("a/b");
     app.last_frame.panes = vec![breadcrumb_frame(&app, target.clone())];
 
@@ -362,7 +362,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -371,7 +371,7 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
     let dir = test_dir("breadcrumb-gap");
     write_file(&dir, "a/b/c.rs", b"code");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.last_frame.panes = vec![breadcrumb_frame(&app, dir.join("a/b"))];
 
     // Column 16 is past the segment (a separator gap): the click lands on the
@@ -384,7 +384,11 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
         modifiers: KeyModifiers::NONE,
     });
 
-    assert_eq!(app.focus, Focus::Sidebar, "the gap click fell through");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "the gap click fell through"
+    );
     assert_eq!(app.explorer.selected_path(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }

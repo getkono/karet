@@ -169,7 +169,7 @@ fn open_startup_goto_positions_caret_and_focuses_editor() {
 
     // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -208,7 +208,7 @@ fn open_startup_split_creates_a_second_pane_with_the_file() {
 
     assert_eq!(app.layout.panes().len(), 2, "the split adds a second pane");
     // The new pane is focused and holds exactly the split file.
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(
         app.tabs[app.active].path(),
@@ -310,7 +310,7 @@ fn open_startup_diff_opens_a_text_diff_tab() {
         _ => panic!("expected a diff tab"),
     }
     assert_eq!(app.tabs[app.active].title, "old.rs ↔ new.rs");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
         app.pending_startup_diffs
             .iter()
@@ -458,7 +458,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     // Toggling shows and focuses the panel (it has content).
     app.dispatch(Command::ToggleOutline);
     assert!(app.outline.visible);
-    assert_eq!(app.focus, Focus::Outline);
+    assert_eq!(app.keyboard.focus(), Focus::Outline);
 
     // Activating the bookmark jumps the document to its page.
     app.dispatch(Command::OutlineActivate);
@@ -471,7 +471,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     // Toggling again hides the panel and returns focus to the editor.
     app.dispatch(Command::ToggleOutline);
     assert!(!app.outline.visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[cfg(feature = "pdf")]
@@ -501,7 +501,7 @@ trailer<</Size 5/Root 1 0 R>>\n%%EOF";
         },
     ));
     app.active = app.tabs.len() - 1;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let page = |app: &App| match app.tabs.get(app.active).map(|t| &t.kind) {
         Some(TabKind::Document { page, .. }) => Some(*page),
         _ => None,
@@ -612,7 +612,7 @@ fn graphical_cursor_requires_kitty_keyboard_and_graphics() {
 fn graphical_cursor_blink_schedules_a_repaint_when_active() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
@@ -626,7 +626,7 @@ fn graphical_cursor_blink_schedules_a_repaint_when_active() {
 fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
@@ -649,7 +649,7 @@ fn queued_startup_commands_wait_for_the_active_document() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "fn main() {}\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
 
     app.run_startup_commands_when_ready();

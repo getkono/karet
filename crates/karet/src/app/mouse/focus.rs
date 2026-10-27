@@ -9,7 +9,6 @@ use crossterm::event::MouseEventKind;
 use crate::app::App;
 use crate::app::hit::TextFieldTarget;
 use crate::app::util::rect_contains;
-use crate::keymap::Focus;
 use crate::tab::SearchField;
 
 impl App {
@@ -70,14 +69,9 @@ impl App {
             TextFieldTarget::FindReplace => SearchField::Replace,
             _ => SearchField::Find,
         };
-        if let Some(find) = self.active_find_mut() {
-            find.field = field;
-            find.focused = true;
-        }
         // A field click is the bar taking the keyboard, wherever focus was —
         // including from the commit box, which would otherwise outrank it.
-        self.focus = Focus::Editor;
-        self.commit_input.focused = false;
+        self.focus_find(field);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         self.place_text_field_cursor(target, mouse.column, mouse.row, shift);
         self.text_field_drag = Some(target);

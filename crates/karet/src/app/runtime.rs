@@ -557,7 +557,7 @@ fn note_frame(_app: &mut App) {}
 /// Dispatch one terminal event to the app.
 pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
     app.reset_graphics_caret_blink();
-    let previous = (app.focus == Focus::Editor)
+    let previous = (app.keyboard.focus() == Focus::Editor)
         .then(|| app.active_code_doc())
         .flatten();
     match event {

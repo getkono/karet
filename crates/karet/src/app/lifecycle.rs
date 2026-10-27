@@ -565,7 +565,7 @@ impl App {
         }
         self.auto_save_pending
             .insert(doc, PendingAutoSave { version, deadline });
-        let focused = (self.focus == Focus::Editor)
+        let focused = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if mode == AutoSave::OnFocusChange && focused != Some(doc) {
@@ -597,7 +597,7 @@ impl App {
         if self.settings.files.auto_save != AutoSave::OnFocusChange {
             return;
         }
-        let current = (self.focus == Focus::Editor)
+        let current = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if previous != current
@@ -611,7 +611,7 @@ impl App {
     /// Save the active editor document when the terminal window itself loses focus.
     pub(super) fn auto_save_focus_lost(&mut self) {
         if self.settings.files.auto_save == AutoSave::OnFocusChange
-            && self.focus == Focus::Editor
+            && self.keyboard.focus() == Focus::Editor
             && let Some(doc) = self.active_code_doc()
             && self.auto_save_pending.contains_key(&doc)
         {

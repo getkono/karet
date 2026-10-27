@@ -535,7 +535,7 @@ impl App {
     }
 
     pub(super) fn prompt_language_server_filter(&mut self) {
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             "Filter by server or language (submit empty text to clear)",
             TextPurpose::FilterLanguageServers,
         ));

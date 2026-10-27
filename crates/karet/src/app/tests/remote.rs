@@ -370,8 +370,11 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     app.push_tab(code_tab_with_text(&path, "working\n"));
 
     app.dispatch(Command::OpenChangesWithRevision);
-    pump_until(&mut app, &mut events, |app| app.overlay.is_some()).await;
-    let Some(overlay) = app.overlay.as_ref() else {
+    pump_until(&mut app, &mut events, |app| {
+        app.keyboard.overlay().is_some()
+    })
+    .await;
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("the revision picker opens");
     };
     assert_eq!(overlay.title(), "Open Changes: With Revision");
@@ -384,7 +387,7 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     app.dispatch(Command::OverlayAccept);
     pump_until(&mut app, &mut events, filled_diff_tab).await;
 
-    assert!(app.overlay.is_none(), "accept closes the picker");
+    assert!(app.keyboard.overlay().is_none(), "accept closes the picker");
     let Some(Tab {
         title,
         kind: TabKind::Diff {
@@ -426,7 +429,7 @@ async fn open_changes_with_branch_diffs_against_the_branch_tip() {
     app.dispatch(Command::OpenChangesWithBranch);
     pump_until(&mut app, &mut events, |app| app.scm.repository.is_some()).await;
     app.dispatch(Command::OpenChangesWithBranch);
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("the branch picker opens");
     };
     assert_eq!(overlay.title(), "Open Changes: With Branch");

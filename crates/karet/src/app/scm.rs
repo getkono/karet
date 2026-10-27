@@ -32,7 +32,6 @@ use crate::app::state::LiveBlame;
 use crate::app::util::canonical;
 use crate::app::util::parse_rev_range;
 use crate::command::Command;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::overlay::Overlay;
 use crate::render::Section;
@@ -131,7 +130,7 @@ impl App {
                 commands.insert(2, Command::ScmSkip);
             }
         }
-        self.overlay = Some(Overlay::commands("Source Control", commands));
+        self.open_overlay(Overlay::commands("Source Control", commands));
     }
 
     /// Request live blame when its document/version/cursor anchor changed.
@@ -463,8 +462,7 @@ impl App {
     pub(super) fn scm_open_commit_input(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::SourceControl;
-        self.focus = Focus::Sidebar;
-        self.commit_input.focused = true;
+        self.keyboard.focus_commit_box();
     }
 
     /// Ask before throwing away the working-tree changes to the selection.
@@ -495,7 +493,7 @@ impl App {
         if self.commit_generate_cancel() {
             return;
         }
-        self.commit_input.focused = false;
+        self.keyboard.release_commit_box();
         self.notify(
             Report::Outcome,
             NotificationKind::Vcs,

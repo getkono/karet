@@ -30,6 +30,7 @@ use crate::app::completion;
 use crate::app::debugging;
 use crate::app::diffs;
 use crate::app::editor;
+use crate::app::focus::KeyboardOwner;
 use crate::app::github;
 use crate::app::hierarchy;
 use crate::app::hit::FrameHits;
@@ -108,7 +109,7 @@ impl App {
             caps: TerminalCaps::detect(),
             view: View::default(),
             github: github::GithubSurface::default(),
-            focus: Focus::Sidebar,
+            keyboard: KeyboardOwner::default(),
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
             explorer: FileTreeState::new(),
@@ -145,7 +146,6 @@ impl App {
             stored: HashMap::new(),
             closed: Vec::new(),
             view_history: Vec::new(),
-            overlay: None,
             find_open: false,
             commit_input: CommitInput::default(),
             commit_console: crate::app::commit_console::CommitConsole::default(),
@@ -415,7 +415,7 @@ impl App {
         // the new pane's tabs live and register its document with the backend.
         self.layout.set_focus(new_pane);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.register_doc(self.active);
     }
 
@@ -530,10 +530,11 @@ impl App {
     }
 
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
-        self.focus = match focus {
+        let focus = match focus {
             crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
             crate::cli::FocusChoice::Sidebar | crate::cli::FocusChoice::Editor => Focus::Editor,
         };
+        self.keyboard.focus_on(focus);
         self.startup_surface_requested = true;
     }
 
@@ -585,7 +586,7 @@ impl App {
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
         FocusTarget::from(
-            self.focus,
+            self.keyboard.focus(),
             self.sidebar_panel,
             self.active_editor_tab(),
             self.view,
@@ -629,8 +630,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::tests::support::app;
-    use crate::app::*;
     use crate::cli::FocusChoice;
+    use crate::keymap::Focus;
 
     /// `--focus sidebar` lands on the sidebar only when it is showing; a hidden
     /// sidebar, or `--focus editor`, leaves the editor focused whatever had focus.
@@ -645,10 +646,11 @@ mod tests {
         for (choice, visible, before, expect) in rows {
             let mut app = app();
             app.sidebar_visible = visible;
-            app.focus = before;
+            app.keyboard.focus_on(before);
             app.apply_startup_focus(choice);
             assert_eq!(
-                app.focus, expect,
+                app.keyboard.focus(),
+                expect,
                 "{choice:?} with sidebar visible={visible}"
             );
         }

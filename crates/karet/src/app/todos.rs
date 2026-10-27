@@ -10,7 +10,6 @@ use karet_widgets::ListSelection;
 
 use crate::app::App;
 use crate::app::util::rect_contains;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 
 /// Keep at most this many codetags (see the Spelling panel's identical cap).
@@ -44,7 +43,7 @@ impl App {
         }
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Todos;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         if !self.todos.scanned && self.todos.scanning.is_none() {
             self.scan_workspace_todos();
         }

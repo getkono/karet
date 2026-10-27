@@ -29,7 +29,6 @@ use crate::app::SEARCH_RESULT_CAP;
 use crate::app::notifications::Report;
 use crate::app::pending::Pending;
 use crate::app::state::SearchOption;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::tab::FindState;
 use crate::tab::SearchField;
@@ -60,7 +59,7 @@ impl App {
         }) = self.tabs.get_mut(self.active)
         {
             let find = find.get_or_insert_with(FindState::default);
-            find.focused = true;
+            let field = find.field;
             // A bar that was closed by any path — Esc, a tab switch, a tab
             // close, a preview install — reopens without the Search in
             // Selection scope it had: the selection it was captured from is
@@ -69,7 +68,7 @@ impl App {
                 find.scope = None;
             }
             self.find_open = true;
-            self.focus = Focus::Editor;
+            self.focus_find(field);
             // Rebuild decorations against the current buffer — cheap no-op for a
             // blank query, necessary to refresh a restored non-empty one. Opening
             // (or re-focusing) the bar is not a motion: the caret stays put, and
@@ -436,7 +435,7 @@ impl App {
         if let Some(find) = self.active_find_mut() {
             find.focused = false;
         }
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).
@@ -516,7 +515,7 @@ impl App {
     pub(super) fn start_global_search(&mut self) {
         self.sidebar_panel = SidebarPanel::Search;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.search.input = true;
         self.search
             .query_edit

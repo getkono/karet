@@ -51,7 +51,7 @@ pub(super) fn draw_outline(
         return;
     }
 
-    let focused = app.focus == Focus::Outline;
+    let focused = app.keyboard.focus() == Focus::Outline;
     let cursor = app.outline.sel.cursor();
     let sel_bg = if focused {
         ThemeRole::Selection
@@ -121,8 +121,8 @@ pub(super) fn draw_sidebar(
                         .map(Path::to_path_buf)
                 })
                 .collect();
-            let explorer_focused =
-                app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
+            let explorer_focused = app.keyboard.focus() == Focus::Sidebar
+                && app.sidebar_panel == SidebarPanel::Explorer;
             let cut_paths = app.explorer_cut_paths().to_vec();
             let repository_badges = app.nested_repository_badges(Instant::now());
             // The tree's rect is also its click target, so narrowing it here is what

@@ -69,7 +69,10 @@ fn the_picker_lists_the_upstream_remote_through_github_and_opens_on_the_last_pag
 
     // A full page asks for the next one under a fresh id, for the same remote.
     app.on_backend_event(Some(RequestId(1)), page(&[1, 2], Some(2)));
-    assert!(app.overlay.is_none(), "the picker waits for the last page");
+    assert!(
+        app.keyboard.overlay().is_none(),
+        "the picker waits for the last page"
+    );
     assert_eq!(
         listings(&backend).last(),
         Some(&(RequestId(2), "upstream".to_string(), 2))
@@ -77,7 +80,7 @@ fn the_picker_lists_the_upstream_remote_through_github_and_opens_on_the_last_pag
 
     app.on_backend_event(Some(RequestId(2)), page(&[3], None));
     assert_eq!(
-        app.overlay.as_ref().and_then(Overlay::picker_kind),
+        app.keyboard.overlay().and_then(Overlay::picker_kind),
         Some(PickerKind::PullRequests)
     );
     assert_eq!(app.pending_pull_requests, None);
@@ -92,7 +95,7 @@ fn a_page_for_another_request_is_left_to_the_github_view() {
 
     app.on_backend_event(Some(RequestId(99)), page(&[1], None));
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.pending_pull_requests, Some(RequestId(1)));
     assert_eq!(listings(&backend).len(), 1);
 }
@@ -104,7 +107,7 @@ fn an_empty_listing_says_so_instead_of_opening_an_empty_picker() {
 
     app.on_backend_event(Some(RequestId(1)), page(&[], None));
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(
         last_message(&app).as_deref(),
         Some("upstream: no open pull requests")
@@ -125,7 +128,7 @@ fn a_failed_listing_retires_the_picker_and_reports_why() {
         },
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.pending_pull_requests, None);
     assert!(app.pull_request_items.is_empty());
     assert_eq!(app.pull_request_remote, None);

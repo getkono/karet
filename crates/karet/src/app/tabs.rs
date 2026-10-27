@@ -19,7 +19,6 @@ use crate::app::util::canonical;
 use crate::app::util::path_under;
 use crate::app::util::rebase_path;
 use crate::app::util::retarget_tab_path;
-use crate::keymap::Focus;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::view::View;
@@ -79,7 +78,7 @@ impl App {
             self.set_active(idx);
             self.find_open = false;
             if steal_focus {
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
             return;
         }
@@ -116,10 +115,10 @@ impl App {
         };
         // Restored rather than suppressed: the move to the editor is spread across
         // `select_tab`/`push_tab`, so the one place that must not keep it is here.
-        let previous = self.focus;
+        let previous = self.keyboard.focus();
         self.open_path(&target);
         if !steal_focus {
-            self.focus = previous;
+            self.keyboard.focus_on(previous);
         }
         // The buffer is cloned out first (an O(1) rope share) so the tab can be
         // borrowed mutably to move its caret.
@@ -196,7 +195,7 @@ impl App {
         let mut tab = workspace::open_file_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.register_doc(self.active);
     }
 
@@ -233,7 +232,7 @@ impl App {
     /// keys to whatever view is still on screen.
     pub(super) fn show_editor(&mut self) {
         self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Allocate a fresh [`ViewId`] for a newly-opened view.
@@ -603,12 +602,12 @@ impl App {
                 // both the layout and `stored`: the moment `focus_recent_pane` needs.
                 self.focus_recent_pane();
                 self.load_focused();
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
         } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.set_active(0);
-            self.focus = Focus::Sidebar;
+            self.keyboard.focus_sidebar();
         } else if index == self.active {
             // The tab in front is going. Fall back to the neighbour that slides into
             // its slot only when the history knows none of the survivors.
@@ -674,7 +673,7 @@ impl App {
         self.tabs.clear();
         self.tabs.push(Tab::welcome());
         self.set_active(0);
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.find_open = false;
         self.reconcile_open_docs();
     }

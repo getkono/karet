@@ -22,7 +22,6 @@ use crate::app::App;
 use crate::app::notifications::Report;
 use crate::app::state::SpellingChrome;
 use crate::app::util::rect_contains;
-use crate::keymap::Focus;
 use crate::keymap::SidebarPanel;
 use crate::tab::TabKind;
 use crate::view::View;
@@ -298,7 +297,7 @@ impl App {
     pub(super) fn show_problems(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Problems;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         // Arriving at the panel lands on the list, never mid-way through a
         // filter edit the user walked away from.
         self.problems.filter_input = false;
@@ -333,7 +332,7 @@ impl App {
         if self.sidebar_panel != SidebarPanel::Problems || !self.sidebar_visible {
             self.show_problems();
         }
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.problems.filter_input = true;
     }
 
@@ -444,7 +443,7 @@ impl App {
             tab.editor.goto(&buffer, at);
         }
         self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.problems.filter_input = false;
         let label = match severity {
             Severity::Error => "error",

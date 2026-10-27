@@ -204,7 +204,7 @@ impl Rig {
         app.clipboard = crate::clipboard::Clipboard::in_memory();
         app.sidebar_visible = false;
         app.push_tab(text_tab("t.rs", &body));
-        app.focus = Focus::Editor;
+        app.keyboard.focus_editor();
         let mut rig = Self {
             app,
             backend,
@@ -626,7 +626,7 @@ fn parsing_reads_anchor_head_and_primary() {
 fn a_rig_starts_in_the_state_it_was_given() {
     let rig = Rig::new("fn [main|]() {}\n");
     assert_eq!(rig.marked(), "fn [main|]() {}\n");
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
     assert_eq!(rig.focused_index(), Some(0));
 }
 

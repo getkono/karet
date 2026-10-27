@@ -28,7 +28,6 @@ use crate::app::github::state::GithubPullRequestView;
 use crate::app::github::state::GithubViewState;
 use crate::app::pending::Pending;
 use crate::app::util::rect_contains;
-use crate::keymap::Focus;
 
 /// The pages the GitHub view is showing, and which of them is in front.
 #[derive(Debug, Default)]
@@ -244,7 +243,7 @@ impl App {
         // Clicking the surface takes the keyboard, exactly as clicking a tab strip
         // does. Without it a click from the sidebar moves the dashboard cursor while
         // `j`/`k` keep driving the Explorer.
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         if let Some(index) = self
             .github
             .close_hits

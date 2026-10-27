@@ -74,8 +74,10 @@ pub(crate) use crate::app::state::DictionaryTarget;
 pub(crate) use crate::app::state::SearchOption;
 use crate::app::*;
 pub(crate) use crate::keymap::EditorTab;
+pub(crate) use crate::keymap::Focus;
 pub(crate) use crate::keymap::FocusTarget;
 pub(crate) use crate::keymap::Modal;
+pub(crate) use crate::overlay::Overlay;
 pub(crate) use crate::render::FileView;
 pub(crate) use crate::render::Section;
 pub(crate) use crate::tab::CommitFiles;
@@ -448,7 +450,7 @@ pub(crate) fn completion_app(text: &str, caret: LineCol) -> (Arc<RecordingBacken
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", text));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
         *doc = Some(DocumentId(9));
@@ -548,7 +550,7 @@ pub(crate) fn responsive_commit_files() -> CommitFiles {
 pub(crate) fn responsive_commit_app() -> App {
     let mut app = app();
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.push_tab(Tab::commit(
         Box::new(commit_detail(&"a".repeat(40), "responsive commit")),
         responsive_commit_files(),

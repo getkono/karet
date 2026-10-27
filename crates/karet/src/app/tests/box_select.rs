@@ -209,7 +209,7 @@ fn left_width_after_the_box_chord(tab: Tab) -> Option<u16> {
     app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     app.tabs = vec![tab];
     app.active = 0;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let left = app.layout.root_pane();
     let right = app.layout.split(left, SplitDir::Right);
     app.layout.set_focus(right);

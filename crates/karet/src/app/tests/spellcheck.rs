@@ -330,7 +330,7 @@ async fn add_word_updates_an_existing_project_settings_file_without_prompt()
     app.accept_context_menu();
     pump_until(&mut app, &mut events, word_added).await;
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     let text = std::fs::read_to_string(dir.path().join(".karet/setting.jsonc"))?;
     assert!(text.contains("// keep"));
     assert!(text.contains("\"wrod\""));

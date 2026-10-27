@@ -202,7 +202,7 @@ impl App {
                 let previews = self.location_previews(&locations);
                 let entries = locations.into_iter().zip(previews).collect();
                 let title = navigation_title(kind);
-                self.overlay = Some(Overlay::locations(title, &self.root.clone(), entries));
+                self.open_overlay(Overlay::locations(title, &self.root.clone(), entries));
             },
         }
     }

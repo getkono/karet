@@ -663,7 +663,7 @@ impl App {
             return;
         };
         let short: String = hash.chars().take(7).collect();
-        self.overlay = Some(Overlay::commands(
+        self.open_overlay(Overlay::commands(
             format!("Commit {short}"),
             vec![
                 Command::CommitGraphTag,
@@ -687,7 +687,7 @@ impl App {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             format!("Tag name for {short}"),
             crate::overlay::TextPurpose::TagCreate { rev },
         ));
@@ -760,7 +760,7 @@ impl App {
                 )
             })
             .collect();
-        self.overlay = Some(Overlay::rebase_todo(onto, steps));
+        self.open_overlay(Overlay::rebase_todo(onto, steps));
     }
 
     /// Copy the issue URLs referenced (`#123`) by the selected commit's

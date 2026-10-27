@@ -189,7 +189,7 @@ impl App {
     }
 
     pub(super) fn active_graphics_caret_position(&self) -> Option<GraphicsCaret> {
-        if !self.graphical_cursor_enabled() || self.focus != Focus::Editor {
+        if !self.graphical_cursor_enabled() || self.keyboard.focus() != Focus::Editor {
             return None;
         }
         let tab = self.tabs.get(self.active)?;

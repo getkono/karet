@@ -24,7 +24,7 @@ fn pointer(kind: MouseEventKind, col: u16, row: u16, mods: KeyModifiers) -> Mous
 fn source_app(name: &str, text: &str) -> App {
     let mut app = app();
     app.push_tab(text_tab(name, text));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     app
 }
@@ -104,7 +104,7 @@ fn ctrl_click_opens_a_markdown_source_link_to_a_workspace_file() {
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     let down = MouseEventKind::Down(MouseButton::Left);
 
@@ -137,7 +137,7 @@ fn ctrl_click_on_an_unsafe_source_link_is_blocked_not_opened() {
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
 
     let click = pointer(
@@ -169,7 +169,7 @@ fn ctrl_click_on_a_source_link_in_an_unfocused_split_opens_it_there() {
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let left = app.focus_pane();
     app.dispatch(Command::SplitRight);
     assert_ne!(app.focus_pane(), left, "the new split is focused");
@@ -218,7 +218,7 @@ fn workspace_app(name: &str, readme: &[u8]) -> (App, std::path::PathBuf) {
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     (app, root)
 }
 

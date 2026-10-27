@@ -137,7 +137,7 @@ fn only_the_first_snapshot_places_the_caret() {
 #[test]
 fn an_edit_before_the_fill_is_refused_rather_than_sent_against_the_placeholder() {
     let (mut app, backend, dir) = reserved("fill-edit", "ab");
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.dispatch(Command::InsertChar('x'));
 
     assert_eq!(code_text(&app), "", "the placeholder is not edited");
@@ -163,7 +163,7 @@ fn an_edit_before_the_fill_is_refused_rather_than_sent_against_the_placeholder()
 #[test]
 fn the_first_fill_redraws_a_markdown_preview_drawn_from_the_placeholder() {
     let (mut app, _backend, dir) = reserved("fill-preview", "# Loaded heading\n");
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.last_frame.main_rect = Rect::new(0, 0, 100, 20);
     app.dispatch(Command::MarkdownPreviewSide);
     // Drawn once from the empty placeholder, at version 0.
@@ -317,7 +317,7 @@ fn a_split_of_a_waiting_tab_keeps_waiting_and_fills_with_its_held_view() {
     assert!(waiting.contains("Loading file…"), "{waiting}");
 
     // Typing into the copy is refused, not built against the placeholder.
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.dispatch(Command::InsertChar('x'));
     assert_eq!(code_text(&app), "", "the placeholder is not edited");
 

@@ -21,6 +21,7 @@ mod diffs;
 mod drag;
 mod editor;
 mod explorer;
+mod focus;
 pub(crate) mod github;
 mod graphics;
 pub(crate) mod hierarchy;
@@ -187,12 +188,10 @@ pub(crate) use util::tab_language;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
-use crate::keymap::Focus;
 use crate::keymap::KeyChord;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
-use crate::overlay::Overlay;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -289,8 +288,8 @@ pub struct App {
     pub(crate) view: View,
     /// The GitHub view's pages. Empty while the workspace is not GitHub-eligible.
     pub(crate) github: github::GithubSurface,
-    /// Which area has keyboard focus.
-    pub(crate) focus: Focus,
+    /// Who holds the keyboard: the focused pane, the commit box, the overlay.
+    pub(crate) keyboard: focus::KeyboardOwner,
     /// The active sidebar panel.
     pub(crate) sidebar_panel: SidebarPanel,
     /// Whether the sidebar is shown.
@@ -349,8 +348,6 @@ pub struct App {
     /// read, so no pruning pass is needed. `ViewId(0)` never enters, being the
     /// unassigned sentinel every welcome tab shares.
     pub(crate) view_history: Vec<ViewId>,
-    /// The open modal overlay (quick-open / command palette), if any.
-    pub(crate) overlay: Option<Overlay>,
     /// The workspace's file list behind quick-open, walked off the UI thread.
     pub(crate) file_index: workspace::FileIndex,
     /// Quick-open's `#` mode: the workspace-symbol query and its request.

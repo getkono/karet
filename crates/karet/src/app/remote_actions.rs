@@ -406,7 +406,7 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
     /// Open the diff-target picker over the workspace repository's local
@@ -447,6 +447,6 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Branch", items));
     }
 }

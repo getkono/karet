@@ -26,8 +26,8 @@ fn loaded(path: &Path) -> Theme {
 }
 
 fn rows(app: &App) -> Vec<String> {
-    app.overlay
-        .as_ref()
+    app.keyboard
+        .overlay()
         .map(|overlay| overlay.rows().into_iter().map(str::to_string).collect())
         .unwrap_or_default()
 }
@@ -115,7 +115,7 @@ fn the_picker_is_in_the_palette_and_opens_on_the_theme_in_effect() {
     assert!(crate::command::palette().contains(&Command::SelectColorTheme));
     let mut app = app();
     app.dispatch(Command::SelectColorTheme);
-    let overlay = app.overlay.as_ref();
+    let overlay = app.keyboard.overlay();
     assert_eq!(overlay.map(Overlay::title), Some(THEME_PICKER_TITLE));
     assert_eq!(overlay.map(Overlay::selected), Some(0));
     assert_eq!(rows(&app).first().map(String::as_str), Some("Dark"));
@@ -154,8 +154,39 @@ fn escape_puts_back_the_theme_from_before_the_picker() {
     key(&mut app, KeyCode::Down);
     assert_ne!(app.theme, Theme::dark());
     key(&mut app, KeyCode::Esc);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.theme, Theme::dark());
+}
+
+/// Closing the picker puts the theme back as it closes, not on the next key:
+/// a path with no key after it (a command, a pointer) leaves no preview behind.
+#[test]
+fn closing_the_picker_puts_back_the_theme_with_no_key_after_it() {
+    let (_dir, mut app) = picker_app();
+    key(&mut app, KeyCode::Down);
+    assert_ne!(app.theme, Theme::dark());
+    assert!(app.close_overlay().is_some());
+    assert_eq!(app.theme, Theme::dark());
+}
+
+/// Another overlay opening over the picker closes it, so the preview ends too.
+#[test]
+fn an_overlay_opened_over_the_picker_puts_back_the_theme() {
+    let (_dir, mut app) = picker_app();
+    key(&mut app, KeyCode::Down);
+    app.open_overlay(Overlay::command_palette());
+    assert_eq!(app.theme, Theme::dark());
+    assert!(
+        app.keyboard
+            .overlay()
+            .is_some_and(|overlay| !rows_are_themes(overlay))
+    );
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.theme, Theme::dark());
+}
+
+fn rows_are_themes(overlay: &Overlay) -> bool {
+    overlay.rows().first().copied() == Some("Dark")
 }
 
 #[test]
@@ -163,7 +194,7 @@ fn enter_keeps_the_highlighted_theme_for_the_session() {
     let (dir, mut app) = picker_app();
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     let amber = loaded(&dir.path().join("amber.json"));
     assert_eq!(app.theme, amber);
     assert_eq!(
@@ -172,7 +203,7 @@ fn enter_keeps_the_highlighted_theme_for_the_session() {
     );
     // Reopened, the picker starts on the pick.
     app.open_theme_picker_from(&[(ThemeSource::User, dir.path().to_path_buf())]);
-    assert_eq!(app.overlay.as_ref().map(Overlay::selected), Some(1));
+    assert_eq!(app.keyboard.overlay().map(Overlay::selected), Some(1));
     assert_eq!(app.theme, amber);
 }
 
@@ -186,9 +217,9 @@ fn accepting_the_configured_theme_clears_the_session_pick() {
     // Reopened on the pick, move back up to the configured built-in row.
     app.open_theme_picker_from(&[(ThemeSource::User, dir.path().to_path_buf())]);
     key(&mut app, KeyCode::Up);
-    assert_eq!(app.overlay.as_ref().map(Overlay::selected), Some(0));
+    assert_eq!(app.keyboard.overlay().map(Overlay::selected), Some(0));
     key(&mut app, KeyCode::Enter);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.theme, Theme::dark());
     assert_eq!(last_message(&app).as_deref(), Some("color theme: Dark"));
 

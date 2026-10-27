@@ -36,7 +36,6 @@ use crate::app::state::PendingOpen;
 use crate::app::util::effective_word_wrap;
 use crate::app::util::rect_contains;
 use crate::app::util::tab_language;
-use crate::keymap::Focus;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 
@@ -470,7 +469,7 @@ impl App {
             return;
         };
         self.focus_pane_switch(pane);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         if self.handle_language_server_click(mouse.column, mouse.row) {
             self.editor_drag = None;
             return;
@@ -680,7 +679,7 @@ impl App {
         ) {
             return;
         }
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         let text = match self.clipboard.get_primary() {
             Ok(text) => text.replace("\r\n", "\n").replace('\r', "\n"),
             Err(_) => {

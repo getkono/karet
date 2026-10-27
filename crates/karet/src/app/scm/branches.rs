@@ -45,7 +45,7 @@ impl App {
                 },
             ));
         }
-        self.overlay = Some(Overlay::branches(items));
+        self.open_overlay(Overlay::branches(items));
     }
 
     /// Open the full branch-creation form with every configured remote available.
@@ -62,7 +62,7 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        self.overlay = Some(Overlay::create_branch(remotes));
+        self.open_overlay(Overlay::create_branch(remotes));
     }
 
     /// Query open pull requests for the upstream-aware primary remote.
@@ -119,7 +119,7 @@ impl App {
 
     /// Open stash creation controls.
     pub(in crate::app) fn open_stash_form(&mut self) {
-        self.overlay = Some(Overlay::stash_form());
+        self.open_overlay(Overlay::stash_form());
     }
 
     /// Open actions for every current stash entry.
@@ -132,7 +132,7 @@ impl App {
             self.notify(Report::Refusal, NotificationKind::Vcs, "stashes: none");
             return;
         }
-        self.overlay = Some(Overlay::stashes(&snapshot.stashes));
+        self.open_overlay(Overlay::stashes(&snapshot.stashes));
     }
 
     /// Publish the current branch to its upstream remote, `origin`, or first remote.
@@ -194,7 +194,7 @@ impl App {
             );
             return;
         };
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             format!("Rename {old}"),
             TextPurpose::RenameBranch { old },
         ));
@@ -219,7 +219,7 @@ impl App {
                 "delete branch: no eligible local branches",
             );
         } else {
-            self.overlay = Some(Overlay::delete_local_branches(items));
+            self.open_overlay(Overlay::delete_local_branches(items));
         }
     }
 
@@ -242,7 +242,7 @@ impl App {
                 "delete remote branch: no eligible branches",
             );
         } else {
-            self.overlay = Some(Overlay::delete_remote_branches(items));
+            self.open_overlay(Overlay::delete_remote_branches(items));
         }
     }
 }

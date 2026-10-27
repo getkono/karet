@@ -23,7 +23,6 @@ use crate::app::util::rect_contains;
 use crate::command::Command;
 use crate::keymap;
 use crate::keymap::Context;
-use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
 use crate::keymap::KeyChord;
 use crate::keymap::Resolved;
@@ -290,7 +289,7 @@ impl App {
             .min(area.height.saturating_sub(1));
         let mode = pane.mode();
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
         // A program tracking the mouse (htop, vim with `mouse=a`) gets the event;
         // Shift is the escape hatch to select text over it, as in xterm.

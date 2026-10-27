@@ -286,7 +286,7 @@ pub(crate) fn draw_search_panel(
     // The row cursor and the caret in a field are both visible at once, so only
     // the one holding the focus gets the full selection bar; the other stays a
     // quieter "you are here" marker. Same two tiers the file tree uses.
-    let results_focused = app.focus == Focus::Sidebar && !app.search.input;
+    let results_focused = app.keyboard.focus() == Focus::Sidebar && !app.search.input;
     let list = List::new(items).highlight_style(if results_focused {
         Style::default()
             .bg(theme.role(ThemeRole::Selection).to_ratatui())

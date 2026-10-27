@@ -366,7 +366,7 @@ impl App {
             );
             return;
         }
-        self.overlay = Some(crate::overlay::Overlay::text(
+        self.open_overlay(crate::overlay::Overlay::text(
             "Evaluate in debuggee",
             crate::overlay::TextPurpose::DebugEvaluate,
         ));

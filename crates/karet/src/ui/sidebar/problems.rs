@@ -49,7 +49,7 @@ pub(super) fn draw_problems_panel(
     let dim = theme.style(ThemeRole::LineNumber);
     let muted = theme.style(ThemeRole::Muted);
     let problems = &app.problems;
-    let editing = problems.filter_input && app.focus == Focus::Sidebar;
+    let editing = problems.filter_input && app.keyboard.focus() == Focus::Sidebar;
 
     // The filter field: what is typed (with a caret while typing), else a hint.
     let filter = if problems.filter.is_empty() && !editing {

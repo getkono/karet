@@ -220,7 +220,7 @@ impl Overlay {
     }
 
     /// Whether this is the Select Color Theme picker.
-    fn is_theme_picker(&self) -> bool {
+    pub(super) fn is_theme_picker(&self) -> bool {
         self.picker_kind() == Some(PickerKind::ColorTheme)
     }
 }
@@ -247,9 +247,9 @@ impl App {
             .pick
             .as_ref()
             .map_or_else(|| configured.clone(), |pick| pick.setting.clone());
-        self.overlay = Some(Overlay::color_themes(discover(dirs, &configured), &current));
+        self.open_overlay(Overlay::color_themes(discover(dirs, &configured), &current));
         // Reopened over a preview that never settled, the theme to put back is
-        // still the one from before it.
+        // still the one from before it (replacing the open picker restored it).
         let original = match self.theme_ui.preview.take() {
             Some(preview) => preview.original,
             None => self.theme.clone(),
@@ -261,17 +261,14 @@ impl App {
         self.sync_theme_preview();
     }
 
-    /// Follow the picker: paint the highlighted theme while it is open, and
-    /// put back the theme from before it once it has closed without a pick.
-    /// A theme that fails to load previews as the one from before the picker.
+    /// Follow the open picker: paint the theme on its highlighted row. A theme
+    /// that fails to load previews as the one from before the picker. Closing
+    /// the picker puts that theme back ([`App::close_overlay`]).
     pub(crate) fn sync_theme_preview(&mut self) {
         let Some(preview) = self.theme_ui.preview.as_mut() else {
             return;
         };
-        let Some(overlay) = self.overlay.as_ref().filter(|o| o.is_theme_picker()) else {
-            if let Some(preview) = self.theme_ui.preview.take() {
-                self.theme = preview.original;
-            }
+        let Some(overlay) = self.keyboard.overlay().filter(|o| o.is_theme_picker()) else {
             return;
         };
         let highlighted = overlay.highlighted_theme();
@@ -283,6 +280,13 @@ impl App {
             .and_then(|setting| load_theme(setting).ok())
             .unwrap_or_else(|| preview.original.clone());
         preview.shown = highlighted;
+    }
+
+    /// Put back the theme from before the picker, ending its preview.
+    pub(super) fn restore_theme_preview(&mut self) {
+        if let Some(preview) = self.theme_ui.preview.take() {
+            self.theme = preview.original;
+        }
     }
 
     /// Apply the theme accepted in the picker for the rest of the session.

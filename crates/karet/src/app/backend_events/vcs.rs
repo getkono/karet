@@ -297,7 +297,7 @@ impl App {
             self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
             let items = std::mem::take(&mut self.pull_request_items);
             self.pull_request_remote = None;
-            self.overlay = Some(Overlay::pull_requests(remote, items));
+            self.open_overlay(Overlay::pull_requests(remote, items));
         }
     }
 

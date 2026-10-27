@@ -56,7 +56,7 @@ fn show_sidebar(app: &mut App, panel: SidebarPanel) {
 
 fn github_view(app: &mut App) {
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
 }
 

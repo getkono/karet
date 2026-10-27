@@ -108,8 +108,8 @@ impl App {
     /// the keyboard in the editor view, and the pane and tab it began in still
     /// the focused ones.
     fn drag_is_live(&self, drag: &EditorDrag) -> bool {
-        self.overlay.is_none()
-            && self.focus == Focus::Editor
+        self.keyboard.overlay().is_none()
+            && self.keyboard.focus() == Focus::Editor
             && self.view == View::Editor
             && self.focus_pane() == drag.pane
             && self

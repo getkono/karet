@@ -57,7 +57,7 @@ impl App {
                 }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
-                self.focus = Focus::Sidebar;
+                self.keyboard.focus_sidebar();
                 // Lazily fetch the first commit-log page when Source Control opens.
                 if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
                     self.request_scm_log(0);
@@ -89,7 +89,7 @@ impl App {
             Command::GoToSymbolInWorkspace => self.open_workspace_symbols(),
             Command::GoToLine => self.open_go_to_line(),
             Command::OpenRecentWorkspace => self.open_recent_workspace(),
-            Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
+            Command::OpenCommandPalette => self.open_overlay(Overlay::command_palette()),
             Command::OpenFind => self.open_find(),
             Command::OpenGlobalSearch => self.start_global_search(),
             Command::CloseTab => self.request_close_active_tab(),
@@ -475,17 +475,19 @@ impl App {
 
             // Modal-scoped commands (resolved only while a modal context is active).
             Command::OverlayUp => {
-                if let Some(overlay) = self.overlay.as_mut() {
+                if let Some(overlay) = self.keyboard.overlay_mut() {
                     overlay.select_up();
                 }
             },
             Command::OverlayDown => {
-                if let Some(overlay) = self.overlay.as_mut() {
+                if let Some(overlay) = self.keyboard.overlay_mut() {
                     overlay.select_down();
                 }
             },
             Command::OverlayAccept => self.overlay_accept(),
-            Command::OverlayCancel => self.overlay = None,
+            Command::OverlayCancel => {
+                self.close_overlay();
+            },
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
@@ -616,7 +618,7 @@ impl App {
             // `should_quit` until now, so Esc while browsing results quit karet.
             Command::SearchQuit => {
                 self.search.input = false;
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             },
             Command::SearchExpand => self.search_expand(),
             Command::SearchCollapse => self.search_collapse(),
@@ -700,8 +702,8 @@ impl App {
         self.sidebar_visible = false;
         self.outline.visible = false;
         self.outline.overlay = false;
-        if matches!(self.focus, Focus::Sidebar | Focus::Outline) {
-            self.focus = Focus::Editor;
+        if matches!(self.keyboard.focus(), Focus::Sidebar | Focus::Outline) {
+            self.keyboard.focus_editor();
         }
     }
 

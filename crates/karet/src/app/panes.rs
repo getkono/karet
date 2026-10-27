@@ -26,7 +26,6 @@ use crate::app::notifications::Report;
 use crate::app::state::StoredPane;
 use crate::app::util::rect_contains;
 use crate::app::util::tab_at;
-use crate::keymap::Focus;
 use crate::tab::FillView;
 use crate::tab::MarkdownPreviewState;
 use crate::tab::Tab;
@@ -157,7 +156,7 @@ impl App {
         }
         self.layout.set_focus(dest);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.reconcile_open_docs();
     }
 
@@ -190,7 +189,7 @@ impl App {
             .take()
             .is_none()
             .then(MarkdownPreviewState::default);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Split the focused pane in `dir` via the keyboard, opening a second view of the
@@ -214,7 +213,7 @@ impl App {
         // document, and the answer binds only the source's view: the copy asks
         // for its own, or it would never fill.
         self.register_doc(self.active);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Build a second view of the active tab for a new pane: the same document

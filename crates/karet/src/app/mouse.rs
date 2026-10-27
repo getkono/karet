@@ -152,7 +152,7 @@ impl App {
         if self.handle_confirm_mouse(mouse) {
             return;
         }
-        if self.overlay.is_some() {
+        if self.keyboard.overlay().is_some() {
             return;
         }
         if self.handle_diagnostic_view_mouse(mouse) {
@@ -409,7 +409,7 @@ impl App {
                     .map(|f| (f.pane, f.editor_rect))
                 {
                     self.focus_pane_switch(pane);
-                    self.focus = Focus::Editor;
+                    self.keyboard.focus_editor();
                     self.right_click_caret(area, mouse.column, mouse.row);
                     self.open_pane_context_menu(mouse.column, mouse.row, true);
                     self.add_spelling_to_menu(area, mouse.column, mouse.row);
@@ -429,7 +429,7 @@ impl App {
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else if !self.handle_find_bar_click(mouse) {
-                    self.commit_input.focused = false;
+                    self.keyboard.release_commit_box();
                     // A read-only surface owns the click before the editor sees it;
                     // the editor's own handler only answers for code tabs.
                     if !self.begin_surface_selection(mouse.column, mouse.row) {
@@ -486,19 +486,19 @@ impl App {
     /// row; Ctrl toggles it in the selection and Shift extends a range to it
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
-        if self.focus != Focus::Sidebar {
+        if self.keyboard.focus() != Focus::Sidebar {
             // Arriving by click lands on the Problems list, not a filter edit
             // abandoned when focus left; a click on the filter field re-enters it.
             self.problems.filter_input = false;
         }
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         // The AI chip sits on the commit box's border, so it is tested before the
         // box itself — and only when it was actually painted, since the rect is
         // cleared each frame.
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.ai_chip_rect, (col, row_y))
         {
-            self.commit_input.focused = true;
+            self.keyboard.focus_commit_box();
             if self.ai_commit.generating().is_some() {
                 self.commit_generate_cancel();
             } else {
@@ -509,7 +509,7 @@ impl App {
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.commit_rect, (col, row_y))
         {
-            self.commit_input.focused = true;
+            self.keyboard.focus_commit_box();
             self.commit_input.place_cursor(
                 col.saturating_sub(self.scm_ui.commit_rect.x),
                 row_y.saturating_sub(self.scm_ui.commit_rect.y),
@@ -519,7 +519,7 @@ impl App {
             self.text_field_drag = Some(TextFieldTarget::Commit);
             return;
         }
-        self.commit_input.focused = false;
+        self.keyboard.release_commit_box();
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
         if row_y == self.last_frame.sidebar_rect.y
             && let Some(cmd) = self

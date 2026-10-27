@@ -132,7 +132,6 @@ fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
 fn commit_input_display_preserves_lines_and_marks_the_caret() {
     let mut input = CommitInput {
         text: "subject\nbody".to_string(),
-        focused: true,
         ..CommitInput::default()
     };
     input.edit.set_cursor(&input.text, 8, false);
