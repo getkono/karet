@@ -74,3 +74,31 @@ async fn a_loopback_self_connect_is_recognised() -> TestResult {
     assert!(is_self_connect(&stream));
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_discarded_self_connect_leaves_the_port_bindable() -> TestResult {
+    // A normal close of a self-connection leaves its port in TIME_WAIT, and
+    // the adapter's listener could not bind it before the connect deadline.
+    // The bind below also races concurrent tests for the freed port, but only
+    // for the few milliseconds the teardown takes.
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let addr = socket.local_addr()?;
+    let stream = socket.connect(addr).await?;
+    // The abortive close tears the socket down asynchronously (the RST goes
+    // through loopback), so the port frees within milliseconds rather than at
+    // once; a TIME_WAIT would hold it for about a minute, far past this bound.
+    discard_self_connect(stream);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                drop(listener);
+                return Ok(());
+            },
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e.into()),
+            Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+        }
+    }
+}

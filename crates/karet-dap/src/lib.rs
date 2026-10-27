@@ -649,10 +649,13 @@ async fn connect_with_retries(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let attempt = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
-            Ok(stream) if is_self_connect(&stream) => Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "connected to itself (nothing listening yet)",
-            )),
+            Ok(stream) if is_self_connect(&stream) => {
+                discard_self_connect(stream);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "connected to itself (nothing listening yet)",
+                ))
+            },
             other => other,
         };
         match attempt {
@@ -674,6 +677,17 @@ fn is_self_connect(stream: &tokio::net::TcpStream) -> bool {
         (stream.local_addr(), stream.peer_addr()),
         (Ok(local), Ok(peer)) if local == peer
     )
+}
+
+/// Drop a self-connected `stream` with an abortive close (zero linger, so an
+/// RST rather than a FIN). A normal close would leave the adapter's port in
+/// `TIME_WAIT` for about a minute, and the adapter could then never bind it
+/// before the connect deadline.
+fn discard_self_connect(stream: tokio::net::TcpStream) {
+    // Best effort: if the option cannot be set, the normal close is all
+    // that is left, and the deadline still bounds the launch.
+    let _ = stream.set_zero_linger();
+    drop(stream);
 }
 
 #[cfg(test)]
