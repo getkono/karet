@@ -262,7 +262,7 @@ fn diff_revs(backend: &RecordingBackend) -> Vec<String> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::DiffWithRev { rev, .. } => Some(rev.clone()),
+                    SessionCommand::Vcs(VcsCommand::DiffWithRev { rev, .. }) => Some(rev.clone()),
                     _ => None,
                 })
                 .collect()
@@ -343,7 +343,7 @@ fn landing_answer(
 ) -> (Option<RequestId>, PreparedChange) {
     let id = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().rev().find_map(|(id, command)| {
-            matches!(command, SessionCommand::DiffWithRev { .. }).then_some(*id)
+            matches!(command, SessionCommand::Vcs(VcsCommand::DiffWithRev { .. })).then_some(*id)
         })
     });
     let diff = karet_diff::diff_text(

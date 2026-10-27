@@ -189,14 +189,20 @@ fn an_edit_is_wrapped_in_its_before_and_after_selections() {
         .map(|sent| sent.iter().map(|(_, command)| command.clone()).collect())
         .unwrap_or_default();
     let reported = |command: &SessionCommand| match command {
-        SessionCommand::SetCursor {
+        SessionCommand::Document(DocumentCommand::SetCursor {
             doc: DocumentId(9),
             view: from,
             cursors,
-        } if *from == view => Some(cursors.clone()),
+        }) if *from == view => Some(cursors.clone()),
         _ => None,
     };
-    let [before, SessionCommand::ApplyChange { .. }, after, ..] = sent.as_slice() else {
+    let [
+        before,
+        SessionCommand::Document(DocumentCommand::ApplyChange { .. }),
+        after,
+        ..,
+    ] = sent.as_slice()
+    else {
         panic!("expected SetCursor, ApplyChange, SetCursor; got {sent:?}");
     };
     assert_eq!(reported(before), Some(parse_marked("a[lp|]ha\nbeta#\n").1));

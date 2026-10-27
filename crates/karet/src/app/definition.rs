@@ -1,6 +1,6 @@
 //! Go to Definition and its siblings: request, correlate, and land the caret.
 //!
-//! The backend seam already existed — `Command::Definition` in, `Event::Definitions`
+//! The backend seam already existed — `LspCommand::Definition` in, `Event::Definitions`
 //! out — and this module is the client half. Ctrl+click and F12 funnel through the
 //! same [`App::request_definition`], so a mouse jump and a keyboard jump behave
 //! identically and there is one place where staleness is decided.
@@ -116,8 +116,8 @@ impl App {
             return;
         };
         let command = match kind {
-            None => SessionCommand::Definition { doc, position },
-            Some(kind) => SessionCommand::FindLocations {
+            None => LspCommand::Definition { doc, position },
+            Some(kind) => LspCommand::FindLocations {
                 doc,
                 position,
                 kind,

@@ -81,7 +81,7 @@ impl App {
             );
             return;
         }
-        self.send_command(SessionCommand::UndeclineLanguageServer {
+        self.send_command(LanguageServerCommand::Undecline {
             server: status.server,
         });
         self.notify(
@@ -95,7 +95,7 @@ impl App {
     /// Record that the user does not want this provider offered again.
     pub(in crate::app) fn decline_language_server(&mut self, server: LanguageServerId) {
         let name = server.display_name().to_string();
-        self.send_command(SessionCommand::DeclineLanguageServer { server });
+        self.send_command(LanguageServerCommand::Decline { server });
         self.notify(
             Report::Outcome,
             NotificationKind::Lsp,

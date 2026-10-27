@@ -23,7 +23,7 @@ impl App {
                     .and_then(Path::file_name)
                     .is_some_and(|name| name == ".git")
         }) {
-            self.send_command(SessionCommand::GithubRefresh);
+            self.send_command(GithubCommand::Refresh);
         }
     }
 

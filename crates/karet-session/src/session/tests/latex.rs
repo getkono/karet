@@ -11,7 +11,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -19,7 +19,7 @@
         let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: Change::new(
                     0,
@@ -36,7 +36,7 @@
         );
         while events.try_recv().is_some() {}
 
-        session.handle(RequestId(3), Command::BuildLatex { doc });
+        session.handle(RequestId(3), DocumentCommand::BuildLatex { doc });
         assert!(
             std::fs::read_to_string(path)
                 .is_ok_and(|contents| contents.contains("saved before compilation")),

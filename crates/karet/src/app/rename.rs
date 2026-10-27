@@ -99,7 +99,7 @@ impl App {
         let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) else {
             return;
         };
-        let preparing = self.send(SessionCommand::PrepareRename {
+        let preparing = self.send(LspCommand::PrepareRename {
             doc,
             position: caret,
         });
@@ -184,7 +184,7 @@ impl App {
         if name == prompt.original {
             return; // nothing to rename
         }
-        let id = self.send(SessionCommand::Rename {
+        let id = self.send(LspCommand::Rename {
             doc: prompt.doc,
             position: prompt.range.start,
             new_name: name.clone(),
@@ -351,7 +351,7 @@ impl App {
                 self.tabs.push(tab);
                 self.register_doc(self.tabs.len() - 1);
             }
-            self.send_command(SessionCommand::CloseDocument { doc: *doc });
+            self.send_command(DocumentCommand::Close { doc: *doc });
         }
     }
 }

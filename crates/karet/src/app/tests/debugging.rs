@@ -9,26 +9,25 @@ use karet_session::DebugSessionState;
 use super::support::*;
 use crate::app::*;
 
-fn debug_commands(backend: &RecordingBackend) -> Vec<SessionCommand> {
+fn debug_commands(backend: &RecordingBackend) -> Vec<DebugCommand> {
     backend
         .sent
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| {
-                    matches!(
-                        command,
-                        SessionCommand::DebugStart { .. }
-                            | SessionCommand::DebugStop
-                            | SessionCommand::DebugContinue
-                            | SessionCommand::DebugPause
-                            | SessionCommand::DebugStepOver
-                            | SessionCommand::DebugStepIn
-                            | SessionCommand::DebugStepOut
-                            | SessionCommand::DebugSetBreakpoints { .. }
-                    )
+                .filter_map(|(_, command)| match command {
+                    SessionCommand::Debug(
+                        command @ (DebugCommand::Start { .. }
+                        | DebugCommand::Stop
+                        | DebugCommand::Continue
+                        | DebugCommand::Pause
+                        | DebugCommand::StepOver
+                        | DebugCommand::StepIn
+                        | DebugCommand::StepOut
+                        | DebugCommand::SetBreakpoints { .. }),
+                    ) => Some(command.clone()),
+                    _ => None,
                 })
-                .map(|(_, command)| command.clone())
                 .collect()
         })
         .unwrap_or_default()
@@ -47,12 +46,12 @@ fn toggling_breakpoints_sends_the_full_set_per_file() {
     assert_eq!(sent.len(), 3);
     assert!(matches!(
         &sent[1],
-        SessionCommand::DebugSetBreakpoints { path, lines }
+        DebugCommand::SetBreakpoints { path, lines }
             if path == &PathBuf::from("main.rs") && lines == &[1, 3]
     ));
     assert!(matches!(
         &sent[2],
-        SessionCommand::DebugSetBreakpoints { path, lines }
+        DebugCommand::SetBreakpoints { path, lines }
             if path == &PathBuf::from("main.rs") && lines == &[3]
     ));
 }
@@ -71,11 +70,11 @@ fn f5_starts_when_idle_and_continues_when_stopped() {
     assert_eq!(sent.len(), 2);
     assert!(matches!(
         sent[0],
-        SessionCommand::DebugStart {
+        DebugCommand::Start {
             configuration: None
         }
     ));
-    assert!(matches!(sent[1], SessionCommand::DebugContinue));
+    assert!(matches!(sent[1], DebugCommand::Continue));
 }
 
 #[test]
@@ -83,13 +82,13 @@ fn steps_are_gated_on_the_stopped_state() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.debug_step(SessionCommand::DebugStepOver);
+    app.debug_step(DebugCommand::StepOver);
     assert!(debug_commands(&backend).is_empty());
     app.debugger.state = DebugSessionState::Stopped;
-    app.debug_step(SessionCommand::DebugStepOver);
+    app.debug_step(DebugCommand::StepOver);
     let sent = debug_commands(&backend);
     assert_eq!(sent.len(), 1);
-    assert!(matches!(sent[0], SessionCommand::DebugStepOver));
+    assert!(matches!(sent[0], DebugCommand::StepOver));
 }
 
 #[test]
@@ -185,7 +184,7 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::DebugStackTrace))
+                .find(|(_, c)| matches!(c, SessionCommand::Debug(DebugCommand::StackTrace)))
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));
@@ -201,7 +200,9 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::DebugScopes { frame: 41 }))
+                .find(|(_, c)| {
+                    matches!(c, SessionCommand::Debug(DebugCommand::Scopes { frame: 41 }))
+                })
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));
@@ -233,7 +234,12 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::DebugVariables { reference: 11 }))
+                .find(|(_, c)| {
+                    matches!(
+                        c,
+                        SessionCommand::Debug(DebugCommand::Variables { reference: 11 })
+                    )
+                })
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));
@@ -293,7 +299,7 @@ fn evaluate_logs_the_expression_and_its_answer() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::DebugEvaluate { .. }))
+                .find(|(_, c)| matches!(c, SessionCommand::Debug(DebugCommand::Evaluate { .. })))
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));

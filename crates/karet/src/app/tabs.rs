@@ -358,7 +358,7 @@ impl App {
             // The session may hand the moved document to another language's
             // server, so what the old one said it formats on no longer holds.
             self.on_type.triggers.remove(&doc);
-            self.send_command(SessionCommand::RetargetDocument { doc, path });
+            self.send_command(DocumentCommand::Retarget { doc, path });
         }
     }
 
@@ -375,7 +375,7 @@ impl App {
             self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
-                let _ = backend.send(id, SessionCommand::CloseDocument { doc });
+                let _ = backend.send(id, DocumentCommand::Close { doc }.into());
             }
         }
     }

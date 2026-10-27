@@ -5,8 +5,10 @@ use karet_core::Decoration;
 use karet_core::ThemeRole;
 
 use super::*;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
+use crate::api::VcsCommand;
 use crate::session::SessionConfig;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -16,10 +18,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 async fn answer(
     backend: &LocalBackend,
     events: &mut EventRx,
-    command: Command,
+    command: impl Into<Command>,
 ) -> Result<Event, Box<dyn std::error::Error>> {
     let id = backend.next_id();
-    backend.send(id, command)?;
+    backend.send(id, command.into())?;
     let found = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((event_id, event)) = events.recv().await {
             if event_id == Some(id) {
@@ -78,7 +80,7 @@ async fn opened(
     events: &mut EventRx,
     path: PathBuf,
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error>> {
-    let command = Command::OpenDocument {
+    let command = DocumentCommand::Open {
         path,
         language: None,
     };
@@ -95,7 +97,7 @@ async fn line_changes(
     doc: DocumentId,
 ) -> Result<Option<Answered>, Box<dyn std::error::Error>> {
     Ok(
-        match answer(backend, events, Command::LineChanges { doc }).await? {
+        match answer(backend, events, VcsCommand::LineChanges { doc }).await? {
             Event::LineChanges {
                 doc,
                 version,
@@ -188,7 +190,12 @@ async fn line_changes_mark_the_buffer_against_head() -> TestResult {
 
     // A document closed before the request lands answers with nothing to mark.
     let stale = DocumentId(doc.0 + 1000);
-    let unknown = answer(&backend, &mut events, Command::LineChanges { doc: stale }).await?;
+    let unknown = answer(
+        &backend,
+        &mut events,
+        VcsCommand::LineChanges { doc: stale },
+    )
+    .await?;
     assert!(
         matches!(
             &unknown,

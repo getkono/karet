@@ -362,10 +362,10 @@ impl App {
             return;
         };
         let doc = *doc;
-        let _ = self.send(SessionCommand::FixMarkdownLint { doc });
+        let _ = self.send(DocumentCommand::FixMarkdownLint { doc });
     }
 
-    /// Report how many lint issues a [`SessionCommand::FixMarkdownLint`] fixed.
+    /// Report how many lint issues a [`DocumentCommand::FixMarkdownLint`] fixed.
     pub(super) fn markdown_lint_fixed(&mut self, fixed: usize) {
         if fixed == 0 {
             self.notify(

@@ -283,7 +283,7 @@ impl App {
                 self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
             },
             ConfirmAction::AnswerLanguageServerMessage { request, action } => {
-                self.send_command(SessionCommand::AnswerLanguageServerMessage { request, action });
+                self.send_command(LanguageServerCommand::AnswerMessage { request, action });
             },
         }
     }

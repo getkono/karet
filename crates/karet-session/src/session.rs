@@ -102,6 +102,7 @@ use syntax_state::SyntaxState;
 use tokio::sync::mpsc;
 
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::DocumentEncoding;
 use crate::api::DocumentId;
 use crate::api::DocumentLineEnding;
@@ -111,7 +112,9 @@ use crate::api::Event;
 use crate::api::RangeSpec;
 use crate::api::RequestId;
 use crate::api::SaveCause;
+use crate::api::SeamCommand;
 use crate::api::SwapInfo;
+use crate::api::WorkspaceCommand;
 use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
 use crate::backup::discard;
@@ -258,7 +261,7 @@ struct Document {
     /// The buffer version last written to a crash-recovery swap, so a tick does not
     /// rewrite an unchanged buffer.
     backed_up_version: Option<u64>,
-    /// The caret the client last reported through [`Command::SetCursor`], with
+    /// The caret the client last reported through [`DocumentCommand::SetCursor`], with
     /// the buffer version it arrived at. A save's own rewrites record it as the
     /// cursor their undo restores, but only while that version is still
     /// current: once any edit lands after it, the report no longer says where
@@ -400,18 +403,12 @@ const LOG_RELOAD_PAGE: usize = 25;
 impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
-    pub fn handle(&mut self, id: RequestId, command: Command) {
-        if self.handle_debug_command(id, &command) {
-            return;
-        }
-        #[cfg(feature = "notebook-kernel")]
-        if self.handle_notebook_command(&command) {
-            return;
-        }
-        if self.handle_lsp_command(id, &command) {
-            return;
-        }
-        match command {
+    ///
+    /// Each family is handed, by value, to the one handler that owns it, and
+    /// every handler matches its family exhaustively: a variant nobody routed
+    /// fails to compile rather than being dropped.
+    pub fn handle(&mut self, id: RequestId, command: impl Into<Command>) {
+        match command.into() {
             Command::Cancel { request } => {
                 // A save parked on its formatter is not a worker job, so the
                 // registry alone would let it write anyway once the answer (or
@@ -419,303 +416,106 @@ impl Session {
                 self.cancel_format_on_save(request);
                 self.cancellations.cancel(request);
             },
-            Command::OpenDocument { path, language } => {
-                self.open(Some(id), path, language.as_deref())
-            },
-            Command::CloseDocument { doc } => self.close(id, doc),
-            Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
-            Command::Undo { doc } => self.undo_redo(id, doc, true),
-            Command::Redo { doc } => self.undo_redo(id, doc, false),
-            Command::Save { doc, cause } => self.save(id, doc, cause),
-            Command::RetargetDocument { doc, path } => self.retarget(Some(id), doc, path),
-            Command::BuildLatex { doc } => self.request_latex_build(id, doc),
-            // The caret is UI-local; the backend keeps only the last report per
-            // document, so the next edit -- the client's own, or a save's
-            // rewrite -- can undo back to it. The first report after an edit
-            // is also the cursor redoing that edit restores.
-            Command::SetCursor { doc, cursors, .. } => {
-                if let Some(doc) = self.store.docs.get_mut(&doc) {
-                    doc.buffer.note_cursor_after(&cursors);
-                    doc.reported_cursor = Some((doc.buffer.version(), cursors));
-                }
-            },
-            Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
-            Command::ApplyIndexPatch { patch, reverse } => {
-                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
-            },
-            Command::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
-            Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
-            Command::StageAll => self.vcs_write(id, Repository::stage_all),
-            Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
-            Command::Commit { message } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Commit {
-                    id,
-                    message,
-                    cancel,
-                });
-            },
-            Command::GenerateCommitMessage => self.generate_commit_message(id),
-            Command::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
-            Command::SetAiCommitOptions { options } => self.set_ai_commit_options(id, *options),
-            Command::RefreshVcs => self.emit_vcs_status(Some(id)),
-            Command::RepositorySnapshot => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Snapshot {
-                    id,
-                    cancel,
-                });
-            },
-            Command::NestedRepositoryStatus { path } => {
-                self.submit_vcs(id, |id, cancel| {
-                    crate::vcs_worker::VcsJob::NestedRepositoryStatus { id, path, cancel }
-                });
-            },
-            Command::VcsAction { action } => {
-                self.emit(
-                    Some(id),
-                    Event::VcsOperationStarted {
-                        action: action.clone(),
-                    },
-                );
-                let _ = self
-                    .vcs_worker
-                    .send(crate::vcs_worker::VcsJob::Action { id, action });
-            },
-            Command::PullRequests {
-                remote,
-                page,
-                per_page,
-            } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PullRequests {
-                    id,
-                    remote,
-                    page,
-                    per_page,
-                    cancel,
-                });
-            },
-            Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
-            Command::LineChanges { doc } => self.request_line_changes(id, doc),
-            Command::VcsLog { skip, limit } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Log {
-                    id,
-                    skip,
-                    limit,
-                    cancel,
-                });
-            },
-            Command::CommitDetail { rev } => {
-                let syntax = self.diff_syntax;
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::CommitDetail {
-                    id,
-                    rev,
-                    syntax,
-                    cancel,
-                });
-            },
-            Command::RangeChanges { spec } => {
-                let syntax = self.diff_syntax;
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RangeChanges {
-                    id,
-                    spec,
-                    syntax,
-                    cancel,
-                });
-            },
-            Command::MergeConflict { path } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::MergeConflict {
-                    id,
-                    path,
-                    cancel,
-                });
-            },
-            Command::FileHistory { path, skip, limit } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::FileHistory {
-                    id,
-                    path,
-                    skip,
-                    limit,
-                    cancel,
-                });
-            },
-            Command::FetchCommitVerification { hash } => self.fetch_commit_verification(id, hash),
+            Command::Document(command) => self.handle_document(id, command),
+            Command::Lsp(command) => self.handle_lsp(id, command),
+            Command::LanguageServer(command) => self.handle_language_server(id, command),
+            Command::Vcs(command) => self.handle_vcs(id, command),
             #[cfg(feature = "github")]
-            Command::GithubRefresh => self.refresh_github(id),
-            #[cfg(feature = "github")]
-            Command::GithubLogin { token } => self.send_github(
-                id,
-                GithubJob::Login {
-                    token: token.into_inner(),
-                },
-            ),
-            #[cfg(feature = "github")]
-            Command::GithubSearchIssues { query, page } => {
-                self.send_github(id, GithubJob::Issues { query, page })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubSearchPullRequests { query, page } => {
-                self.send_github(id, GithubJob::PullRequests { query, page })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubActions { page } => self.send_github(id, GithubJob::Actions { page }),
-            #[cfg(feature = "github")]
-            Command::GithubIssue { number } => self.send_github(id, GithubJob::Issue { number }),
-            #[cfg(feature = "github")]
-            Command::GithubPullRequest { number } => {
-                self.send_github(id, GithubJob::PullRequest { number })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubUpdatePullRequestBody { number, body } => {
-                self.send_github(id, GithubJob::UpdatePullRequestBody { number, body })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubCommentPullRequest { number, body } => {
-                self.send_github(id, GithubJob::CommentPullRequest { number, body })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubMergePullRequest { number, head_sha } => {
-                self.send_github(id, GithubJob::MergePullRequest { number, head_sha })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubSetPullRequestDraft {
-                node_id,
-                number,
-                draft,
-            } => self.send_github(
-                id,
-                GithubJob::SetPullRequestDraft {
-                    node_id,
-                    number,
-                    draft,
-                },
-            ),
-            #[cfg(feature = "github")]
-            Command::GithubIssueMetadata => self.send_github(id, GithubJob::IssueMetadata),
-            #[cfg(feature = "github")]
-            Command::GithubCreateIssue { issue } => {
-                self.send_github(id, GithubJob::CreateIssue { issue })
-            },
-            #[cfg(feature = "github")]
-            Command::GithubCreatePullRequest { pull_request } => {
-                self.send_github(id, GithubJob::CreatePullRequest { pull_request })
-            },
+            Command::Github(command) => self.handle_github(id, command),
             #[cfg(not(feature = "github"))]
-            Command::GithubRefresh
-            | Command::GithubLogin { .. }
-            | Command::GithubSearchIssues { .. }
-            | Command::GithubSearchPullRequests { .. }
-            | Command::GithubActions { .. }
-            | Command::GithubIssue { .. }
-            | Command::GithubPullRequest { .. }
-            | Command::GithubUpdatePullRequestBody { .. }
-            | Command::GithubCommentPullRequest { .. }
-            | Command::GithubMergePullRequest { .. }
-            | Command::GithubSetPullRequestDraft { .. }
-            | Command::GithubIssueMetadata
-            | Command::GithubCreateIssue { .. }
-            | Command::GithubCreatePullRequest { .. } => self.emit(
+            Command::Github(_) => self.emit(
                 Some(id),
                 Event::GithubError {
                     operation: crate::api::GithubOperation::FeatureDisabled,
                     message: "the backend was built without the github feature".to_string(),
                 },
             ),
-            Command::RecoverSwaps => self.recover_swaps(id),
-            Command::DiscardSwaps => self.discard_swaps(),
-            Command::DependencyGraph => self.emit_dependency_graph(id),
-            Command::LoadedConfig => self.emit(
+            Command::Debug(command) => self.handle_debug(id, command),
+            #[cfg(feature = "notebook-kernel")]
+            Command::Notebook(command) => self.handle_notebook(command),
+            // A build without the `notebook-kernel` feature has no kernel to
+            // drive, so there is nothing to run, interrupt, or restart.
+            #[cfg(not(feature = "notebook-kernel"))]
+            Command::Notebook(_) => {},
+            Command::Seam(command) => self.handle_seam(id, command),
+            Command::Workspace(command) => self.handle_workspace(id, command),
+        }
+    }
+
+    /// Serve one [`DocumentCommand`].
+    fn handle_document(&mut self, id: RequestId, command: DocumentCommand) {
+        match command {
+            DocumentCommand::Open { path, language } => {
+                self.open(Some(id), path, language.as_deref());
+            },
+            DocumentCommand::Close { doc } => self.close(id, doc),
+            DocumentCommand::ApplyChange { doc, change, cause } => {
+                self.apply(id, doc, &change, cause);
+            },
+            DocumentCommand::Undo { doc } => self.undo_redo(id, doc, true),
+            DocumentCommand::Redo { doc } => self.undo_redo(id, doc, false),
+            DocumentCommand::Save { doc, cause } => self.save(id, doc, cause),
+            DocumentCommand::Retarget { doc, path } => self.retarget(Some(id), doc, path),
+            DocumentCommand::BuildLatex { doc } => self.request_latex_build(id, doc),
+            // The caret is UI-local; the backend keeps only the last report per
+            // document, so the next edit -- the client's own, or a save's
+            // rewrite -- can undo back to it. The first report after an edit
+            // is also the cursor redoing that edit restores.
+            DocumentCommand::SetCursor { doc, cursors, .. } => {
+                if let Some(doc) = self.store.docs.get_mut(&doc) {
+                    doc.buffer.note_cursor_after(&cursors);
+                    doc.reported_cursor = Some((doc.buffer.version(), cursors));
+                }
+            },
+            DocumentCommand::Convert { path } => {
+                #[cfg(feature = "notebook-kernel")]
+                self.warm_notebook_kernel(&path);
+                self.convert_document(id, path);
+            },
+            DocumentCommand::FixMarkdownLint { doc } => self.fix_markdown_lint(id, doc),
+            DocumentCommand::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
+            DocumentCommand::RecoverSwaps => self.recover_swaps(id),
+            DocumentCommand::DiscardSwaps => self.discard_swaps(),
+        }
+    }
+
+    /// Serve one [`WorkspaceCommand`].
+    fn handle_workspace(&mut self, id: RequestId, command: WorkspaceCommand) {
+        match command {
+            WorkspaceCommand::Search {
+                query,
+                file_limit,
+                match_limit,
+            } => self.search_workspace(id, query, file_limit, match_limit),
+            WorkspaceCommand::ReplaceAll { query, replacement } => {
+                self.search_replace_all(id, query, replacement);
+            },
+            WorkspaceCommand::ScanSpelling { limit } => self.scan_workspace_spelling(id, limit),
+            WorkspaceCommand::ScanTodos { limit } => self.scan_workspace_todos(id, limit),
+            WorkspaceCommand::AddDictionaryWord {
+                word,
+                scope,
+                create_project,
+            } => self.add_dictionary_word(id, word, scope, create_project),
+            WorkspaceCommand::ApplyEdit { edit, label } => {
+                let applied = self.apply_workspace_edit(edit, Columns::Buffer, label);
+                self.emit(Some(id), Event::WorkspaceEdit { applied });
+            },
+            WorkspaceCommand::DependencyGraph => self.emit_dependency_graph(id),
+            WorkspaceCommand::LoadedConfig => self.emit(
                 Some(id),
                 Event::LoadedConfig {
                     report: Box::new(self.config.loaded_config.clone()),
                 },
             ),
-            cmd @ (Command::Completion { .. } | Command::ResolveCompletion { .. }) => {
-                self.completion_command(id, cmd);
-            },
-            Command::InlayHints { doc, range } => self.inlay_hints(id, doc, range),
-            Command::ResolveInlayHint { doc, hint } => self.resolve_inlay_hint(id, doc, hint),
-            cmd @ (Command::Hover { .. } | Command::SignatureHelp { .. }) => self.at_caret(id, cmd),
-            Command::Definition { doc, position } => self.definition(id, doc, position, None),
-            Command::FindLocations {
-                doc,
-                position,
-                kind,
-            } => self.definition(id, doc, position, Some(kind)),
-            Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
-            Command::WorkspaceSymbols { query } => self.workspace_symbols(id, query),
-            Command::PrepareRename { doc, position } => self.prepare_rename(id, doc, position),
-            Command::Rename {
-                doc,
-                position,
-                new_name,
-            } => self.rename(id, doc, position, new_name),
-            Command::CodeActions {
-                doc,
-                range,
-                kinds,
-                trigger,
-            } => self.code_actions(id, doc, range, kinds, trigger),
-            Command::ApplyCodeAction {
-                doc,
-                version,
-                action,
-            } => self.apply_code_action(id, doc, version, action),
-            Command::ApplyWorkspaceEdit { edit, label } => {
-                let applied = self.apply_workspace_edit(edit, Columns::Buffer, label);
-                self.emit(Some(id), Event::WorkspaceEdit { applied });
-            },
-            Command::RemoteFacts { path } => {
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RemoteFacts {
-                    id,
-                    path,
-                    cancel,
-                });
-            },
-            Command::PrepareChange { path, staged } => {
-                let syntax = self.diff_syntax;
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareChange {
-                    id,
-                    path,
-                    staged,
-                    syntax,
-                    cancel,
-                });
-            },
-            Command::ConvertDocument { path } => self.convert_document(id, path),
-            Command::FixMarkdownLint { doc } => self.fix_markdown_lint(id, doc),
-            Command::PrepareDiff { path, old, new } => {
-                let syntax = self.diff_syntax;
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {
-                    id,
-                    path,
-                    old,
-                    new,
-                    syntax,
-                    cancel,
-                });
-            },
-            Command::DiffWithRev { path, rev, live } => {
-                let syntax = self.diff_syntax;
-                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::DiffWithRev {
-                    id,
-                    path,
-                    rev,
-                    live,
-                    syntax,
-                    cancel,
-                });
-            },
-            Command::AddDictionaryWord {
-                word,
-                scope,
-                create_project,
-            } => self.add_dictionary_word(id, word, scope, create_project),
-            Command::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
-            Command::Search {
-                query,
-                file_limit,
-                match_limit,
-            } => self.search_workspace(id, query, file_limit, match_limit),
-            Command::IndexSeams { root, mode } => {
+        }
+    }
+
+    /// Serve one [`SeamCommand`] on the seam worker.
+    fn handle_seam(&mut self, id: RequestId, command: SeamCommand) {
+        use crate::seam_worker::SeamJob;
+        let job = match command {
+            SeamCommand::Index { root, mode } => {
                 let Some(root) = root.or_else(|| self.config.roots.first().cloned()) else {
                     // Answered, not dropped: a request is never left outstanding
                     // just because there is nothing to index (see `Backend`).
@@ -727,7 +527,7 @@ impl Session {
                     );
                     return;
                 };
-                let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
+                SeamJob::Index {
                     id,
                     root,
                     mode,
@@ -736,83 +536,14 @@ impl Session {
                     options: karet_seam::IndexOptions {
                         max_files: self.config.settings.seam.max_indexed_files,
                     },
-                });
+                }
             },
-            Command::ReindexSeams { path, text } => {
-                let _ =
-                    self.seam_worker
-                        .send(crate::seam_worker::SeamJob::Reindex { id, path, text });
-            },
-            Command::SeamQuery { text } => {
-                let _ = self
-                    .seam_worker
-                    .send(crate::seam_worker::SeamJob::Query { id, text });
-            },
-            Command::SeamNode { path } => {
-                let _ = self
-                    .seam_worker
-                    .send(crate::seam_worker::SeamJob::Node { id, path });
-            },
-            Command::SetSeamConfiguration { name } => {
-                let _ = self
-                    .seam_worker
-                    .send(crate::seam_worker::SeamJob::SetConfiguration { id, name });
-            },
-            Command::ScanWorkspaceSpelling { limit } => self.scan_workspace_spelling(id, limit),
-            Command::ScanWorkspaceTodos { limit } => self.scan_workspace_todos(id, limit),
-            Command::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
-            Command::SearchReplaceAll { query, replacement } => {
-                self.search_replace_all(id, query, replacement);
-            },
-            // Consumed by the pre-dispatch functions above, so they never reach
-            // this match. Named rather than matched by a wildcard so that a new
-            // `Command` variant nobody routed fails to compile instead of being
-            // silently dropped. The notebook-kernel commands land here only in a
-            // build without the `notebook-kernel` feature, where there is no
-            // kernel to drive.
-            Command::DebugStart { .. }
-            | Command::DebugStop
-            | Command::DebugContinue
-            | Command::DebugStepOver
-            | Command::DebugStepIn
-            | Command::DebugStepOut
-            | Command::DebugPause
-            | Command::DebugSetBreakpoints { .. }
-            | Command::DebugStackTrace
-            | Command::DebugScopes { .. }
-            | Command::DebugVariables { .. }
-            | Command::DebugEvaluate { .. }
-            | Command::NotebookRunAll { .. }
-            | Command::NotebookRunCell { .. }
-            | Command::NotebookInterrupt
-            | Command::NotebookRestart
-            | Command::LanguageServerStatus
-            | Command::InstallLanguageServer { .. }
-            | Command::DeclineLanguageServer { .. }
-            | Command::UndeclineLanguageServer { .. }
-            | Command::CheckLanguageServerUpdates { .. }
-            | Command::ApplyLanguageServerPlan { .. }
-            | Command::UninstallLanguageServer { .. }
-            | Command::Format(_)
-            | Command::SelectionRanges { .. }
-            | Command::DocumentHighlights { .. }
-            | Command::PrepareHierarchy { .. }
-            | Command::ExpandHierarchy { .. }
-            | Command::LinkedEditingRanges { .. }
-            | Command::FormatOnType { .. }
-            | Command::CodeLenses { .. }
-            | Command::RunCodeLens { .. }
-            | Command::LinksAndColors { .. }
-            | Command::ResolveDocumentLink { .. }
-            | Command::RestartLanguageServer { .. }
-            | Command::CancelLanguageServerWork { .. }
-            | Command::AnswerLanguageServerMessage { .. }
-            | Command::InlineCompletion { .. }
-            | Command::AcceptInlineCompletion { .. }
-            | Command::SignInLanguageServer { .. }
-            | Command::SignOutLanguageServer { .. }
-            | Command::LanguageServerLog { .. } => {},
-        }
+            SeamCommand::Reindex { path, text } => SeamJob::Reindex { id, path, text },
+            SeamCommand::Query { text } => SeamJob::Query { id, text },
+            SeamCommand::Node { path } => SeamJob::Node { id, path },
+            SeamCommand::SetConfiguration { name } => SeamJob::SetConfiguration { id, name },
+        };
+        let _ = self.seam_worker.send(job);
     }
 
     fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
@@ -979,7 +710,7 @@ fn save_edit_context(tick_ms: u64, doc: &Document, change: &Change) -> EditConte
 }
 
 /// The cursor/selection set the client last reported through
-/// [`Command::SetCursor`], clamped to the buffer, as long as no edit has landed
+/// [`DocumentCommand::SetCursor`], clamped to the buffer, as long as no edit has landed
 /// since it: that is the whole set an undo of the next edit restores. A stale
 /// or missing report yields `None`, and the caller falls back to the first
 /// edit's start -- the only position the change itself says anything about.

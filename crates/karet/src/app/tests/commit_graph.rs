@@ -145,7 +145,10 @@ fn history_is_prefetched_well_before_the_viewport_reaches_the_end() {
             .map(|sent| {
                 sent.iter()
                     .filter(|(_, command)| {
-                        matches!(command, SessionCommand::VcsLog { skip: 100, .. })
+                        matches!(
+                            command,
+                            SessionCommand::Vcs(VcsCommand::Log { skip: 100, .. })
+                        )
                     })
                     .count()
             })

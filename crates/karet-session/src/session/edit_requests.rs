@@ -86,8 +86,9 @@ impl Session {
         false
     }
 
-    /// Forward a [`Command::LinkedEditingRanges`], or answer it with none
-    /// when no server serves the document.
+    /// Forward a
+    /// [`LspCommand::LinkedEditingRanges`](crate::api::LspCommand::LinkedEditingRanges),
+    /// or answer it with none when no server serves the document.
     pub(super) fn linked_editing_ranges(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
@@ -110,7 +111,8 @@ impl Session {
         }
     }
 
-    /// Forward a [`Command::FormatOnType`], indented as the document is, or
+    /// Forward a [`LspCommand::FormatOnType`](crate::api::LspCommand::FormatOnType),
+    /// indented as the document is, or
     /// answer it with no edits when no server serves the document.
     pub(super) fn format_on_type(
         &mut self,

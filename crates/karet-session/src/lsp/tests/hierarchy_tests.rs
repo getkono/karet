@@ -1,5 +1,5 @@
-//! The seam contract for [`Command::PrepareHierarchy`] and
-//! [`Command::ExpandHierarchy`]: a server that offers the hierarchy answers
+//! The seam contract for [`LspCommand::PrepareHierarchy`] and
+//! [`LspCommand::ExpandHierarchy`]: a server that offers the hierarchy answers
 //! with items in buffer columns, an item handed back to grow the tree reaches
 //! the server exactly as it gave it, and every other case -- a server without
 //! the hierarchy, no server at all -- still answers, with no items.
@@ -28,10 +28,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc))
@@ -67,11 +68,12 @@ async fn prepare(
     let position = LineCol::new(0, 2);
     backend.send(
         request,
-        Command::PrepareHierarchy {
+        LspCommand::PrepareHierarchy {
             doc,
             position,
             direction,
-        },
+        }
+        .into(),
     )?;
     answer_to(events, request).await
 }
@@ -87,11 +89,12 @@ async fn expand(
     let item = Box::new(item);
     backend.send(
         request,
-        Command::ExpandHierarchy {
+        LspCommand::ExpandHierarchy {
             doc,
             item,
             direction,
-        },
+        }
+        .into(),
     )?;
     answer_to(events, request).await
 }

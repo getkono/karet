@@ -1,33 +1,35 @@
-//! `Notebook*` command pre-dispatch (feature `notebook-kernel`): the session
-//! actor routes kernel commands to [`crate::notebook_kernel::NotebookKernels`],
-//! and warms a kernel at preview-open time when `notebook.kernel.autoStart`
-//! asks for it.
+//! [`NotebookCommand`] dispatch (feature `notebook-kernel`): the session actor
+//! routes kernel commands to [`crate::notebook_kernel::NotebookKernels`], and
+//! warms a kernel at preview-open time when `notebook.kernel.autoStart` asks
+//! for it.
+
+use std::path::Path;
 
 use super::Session;
-use crate::api::Command;
+use crate::api::NotebookCommand;
 
 impl Session {
-    /// Consume a notebook-kernel command; `false` when `command` is not one.
-    /// `ConvertDocument` is *observed* (for the auto-start hook) but never
-    /// consumed — the conversion path still runs.
-    pub(super) fn handle_notebook_command(&mut self, command: &Command) -> bool {
+    /// Serve one [`NotebookCommand`].
+    pub(super) fn handle_notebook(&mut self, command: NotebookCommand) {
         match command {
-            Command::NotebookRunAll { path } => self.notebooks.run(path, None),
-            Command::NotebookRunCell { path, cell } => self.notebooks.run(path, Some(*cell)),
-            Command::NotebookInterrupt => self.notebooks.interrupt(),
-            Command::NotebookRestart => self.notebooks.restart(),
-            Command::ConvertDocument { path } => {
-                if self.config.settings.notebook.kernel.auto_start
-                    && path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-                {
-                    self.notebooks.warm(path);
-                }
-                return false;
-            },
-            _ => return false,
+            NotebookCommand::RunAll { path } => self.notebooks.run(&path, None),
+            NotebookCommand::RunCell { path, cell } => self.notebooks.run(&path, Some(cell)),
+            NotebookCommand::Interrupt => self.notebooks.interrupt(),
+            NotebookCommand::Restart => self.notebooks.restart(),
         }
-        true
+    }
+
+    /// Start the kernel of a notebook whose preview is being converted, when
+    /// `notebook.kernel.autoStart` asks for it. Observes a
+    /// [`DocumentCommand::Convert`](crate::api::DocumentCommand::Convert)
+    /// without consuming it: the conversion still runs.
+    pub(super) fn warm_notebook_kernel(&mut self, path: &Path) {
+        if self.config.settings.notebook.kernel.auto_start
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
+        {
+            self.notebooks.warm(path);
+        }
     }
 }

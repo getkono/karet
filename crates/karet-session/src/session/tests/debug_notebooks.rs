@@ -29,18 +29,18 @@
     async fn debug_commands_without_a_session_answer_on_their_request() {
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
-        session.handle(RequestId(1), Command::DebugContinue);
+        session.handle(RequestId(1), DebugCommand::Continue);
         assert_eq!(
             next_notification(&mut events).await.as_deref(),
             Some("no debug session")
         );
-        session.handle(RequestId(2), Command::DebugStop);
+        session.handle(RequestId(2), DebugCommand::Stop);
         assert_eq!(
             next_notification(&mut events).await.as_deref(),
             Some("no debug session to stop")
         );
 
-        session.handle(RequestId(3), Command::DebugStackTrace);
+        session.handle(RequestId(3), DebugCommand::StackTrace);
         let stack = next_matching(&mut events, |id, event| match event {
             Event::DebugStack { frames } => Some((id, frames)),
             _ => None,
@@ -48,7 +48,7 @@
         .await;
         assert_eq!(stack, Some((Some(RequestId(3)), Vec::new())));
 
-        session.handle(RequestId(4), Command::DebugScopes { frame: 5 });
+        session.handle(RequestId(4), DebugCommand::Scopes { frame: 5 });
         let scopes = next_matching(&mut events, |id, event| match event {
             Event::DebugScopes { frame, scopes } => Some((id, frame, scopes.len())),
             _ => None,
@@ -56,7 +56,7 @@
         .await;
         assert_eq!(scopes, Some((Some(RequestId(4)), 5, 0)));
 
-        session.handle(RequestId(5), Command::DebugVariables { reference: 11 });
+        session.handle(RequestId(5), DebugCommand::Variables { reference: 11 });
         let variables = next_matching(&mut events, |id, event| match event {
             Event::DebugVariables {
                 reference,
@@ -69,7 +69,7 @@
 
         session.handle(
             RequestId(6),
-            Command::DebugEvaluate {
+            DebugCommand::Evaluate {
                 expression: "x".to_owned(),
                 frame: None,
             },
@@ -86,7 +86,7 @@
 
         session.handle(
             RequestId(7),
-            Command::DebugSetBreakpoints {
+            DebugCommand::SetBreakpoints {
                 path: PathBuf::from("/w/main.rs"),
                 lines: vec![2],
             },
@@ -108,7 +108,7 @@
             "with no adapter the set is echoed back unverified"
         );
 
-        session.handle(RequestId(8), Command::DebugStart { configuration: None });
+        session.handle(RequestId(8), DebugCommand::Start { configuration: None });
         let refused = next_notification(&mut events).await.unwrap_or_default();
         assert!(refused.contains("no matching debug configuration"), "{refused}");
     }
@@ -192,7 +192,7 @@
         let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
         session.debug.set_connector(recording_connector(seen_tx));
 
-        session.handle(RequestId(1), Command::DebugStart { configuration: None });
+        session.handle(RequestId(1), DebugCommand::Start { configuration: None });
         let stopped = next_matching(&mut events, |_, event| match event {
             Event::DebugStopped { thread, .. } => Some(thread),
             _ => None,
@@ -203,11 +203,11 @@
 
         let mut sent = Vec::new();
         for (n, command) in [
-            Command::DebugStepIn,
-            Command::DebugStepOut,
-            Command::DebugStepOver,
-            Command::DebugPause,
-            Command::DebugContinue,
+            DebugCommand::StepIn,
+            DebugCommand::StepOut,
+            DebugCommand::StepOver,
+            DebugCommand::Pause,
+            DebugCommand::Continue,
         ]
         .into_iter()
         .enumerate()
@@ -226,14 +226,16 @@
     #[cfg(feature = "notebook-kernel")]
     #[tokio::test]
     async fn notebook_commands_reach_the_kernel_manager() -> TestResult {
+        use crate::api::NotebookCommand;
+
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
-        session.handle(RequestId(1), Command::NotebookInterrupt);
+        session.handle(RequestId(1), NotebookCommand::Interrupt);
         assert_eq!(
             next_notification(&mut events).await.as_deref(),
             Some("no notebook kernel to interrupt")
         );
-        session.handle(RequestId(2), Command::NotebookRestart);
+        session.handle(RequestId(2), NotebookCommand::Restart);
         assert_eq!(
             next_notification(&mut events).await.as_deref(),
             Some("no notebook kernel to restart")
@@ -243,8 +245,8 @@
         // diagnoses the file before it discovers or launches anything.
         let dir = tempfile::tempdir()?;
         for (n, command) in [
-            |path| Command::NotebookRunAll { path },
-            |path| Command::NotebookRunCell { path, cell: 0 },
+            |path| NotebookCommand::RunAll { path },
+            |path| NotebookCommand::RunCell { path, cell: 0 },
         ]
         .into_iter()
         .enumerate()
@@ -254,6 +256,71 @@
             session.handle(RequestId(3 + n as u64), command(path));
             let message = next_notification(&mut events).await.unwrap_or_default();
             assert!(message.starts_with("notebook:"), "{message}");
+        }
+        Ok(())
+    }
+
+    /// `DocumentCommand::Convert` warms the notebook's kernel when
+    /// `notebook.kernel.autoStart` is on and the path is a `.ipynb`, and the
+    /// conversion still answers. With the setting off, or for another file
+    /// type, no kernel starts: a following `Restart` finds none.
+    #[cfg(feature = "notebook-kernel")]
+    #[tokio::test]
+    async fn convert_warms_the_notebook_kernel_only_when_auto_start_asks() -> TestResult {
+        use crate::api::NotebookCommand;
+
+        let dir = tempfile::tempdir()?;
+        let notebook = dir.path().join("broken.ipynb");
+        std::fs::write(&notebook, "not json")?;
+        let document = dir.path().join("broken.docx");
+        std::fs::write(&document, "not a zip")?;
+        let session_with = |auto_start: bool| {
+            let mut settings = crate::config::Settings::default();
+            settings.notebook.kernel.auto_start = auto_start;
+            Session::new(SessionConfig {
+                settings,
+                ..SessionConfig::default()
+            })
+        };
+
+        // Warmed: the kernel task diagnoses the unparsable notebook before it
+        // discovers or launches anything, and the conversion answers too.
+        let (mut session, mut events, _snaps) = session_with(true);
+        session.handle(RequestId(1), DocumentCommand::Convert { path: notebook.clone() });
+        let (mut kernel, mut converted) = (None, None);
+        let both = next_matching(&mut events, |id, event| {
+            match event {
+                Event::Notification { message, .. } => kernel = Some(message),
+                Event::DocumentConverted { path, markdown } => {
+                    converted = Some((id, path, markdown.is_err()));
+                },
+                _ => {},
+            }
+            (kernel.is_some() && converted.is_some()).then_some(())
+        })
+        .await;
+        assert_eq!(both, Some(()), "kernel {kernel:?}, converted {converted:?}");
+        let kernel = kernel.unwrap_or_default();
+        assert!(kernel.starts_with("notebook:"), "{kernel}");
+        assert_eq!(converted, Some((Some(RequestId(1)), notebook.clone(), true)));
+
+        // Not warmed: auto-start off for a notebook, or on for another type.
+        for (auto_start, path) in [(false, &notebook), (true, &document)] {
+            let (mut session, mut events, _snaps) = session_with(auto_start);
+            session.handle(RequestId(1), DocumentCommand::Convert { path: path.clone() });
+            let converted = next_matching(&mut events, |id, event| match event {
+                Event::DocumentConverted { path, .. } => Some((id, path)),
+                _ => None,
+            })
+            .await;
+            assert_eq!(converted, Some((Some(RequestId(1)), path.clone())));
+            session.handle(RequestId(2), NotebookCommand::Restart);
+            assert_eq!(
+                next_notification(&mut events).await.as_deref(),
+                Some("no notebook kernel to restart"),
+                "auto_start {auto_start}, {}",
+                path.display()
+            );
         }
         Ok(())
     }

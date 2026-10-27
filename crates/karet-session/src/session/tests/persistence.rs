@@ -30,7 +30,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -38,7 +38,7 @@
         let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: insert_change("x"),
                 cause: EditCause::Replace,
@@ -51,7 +51,7 @@
         assert_eq!(scan(swapdir.path()).len(), 1, "dirty doc backed up");
 
         // A successful save clears the swap.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -97,7 +97,7 @@
             ..SessionConfig::default()
         });
 
-        session.handle(RequestId(42), Command::LoadedConfig);
+        session.handle(RequestId(42), WorkspaceCommand::LoadedConfig);
         let received = events.try_recv();
         let Some((Some(RequestId(42)), Event::LoadedConfig { report })) = received else {
             return Err(

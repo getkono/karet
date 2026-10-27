@@ -160,7 +160,7 @@ fn asked(backend: &super::support::RecordingBackend) -> Vec<(RequestId, Vec<Line
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::SelectionRanges { positions, .. } => {
+                    SessionCommand::Lsp(LspCommand::SelectionRanges { positions, .. }) => {
                         Some((*id, positions.clone()))
                     },
                     _ => None,

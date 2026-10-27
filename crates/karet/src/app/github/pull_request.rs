@@ -144,12 +144,8 @@ impl App {
             return;
         }
         let command = match editor {
-            GithubPullRequestEditor::Body => {
-                SessionCommand::GithubUpdatePullRequestBody { number, body }
-            },
-            GithubPullRequestEditor::Comment => {
-                SessionCommand::GithubCommentPullRequest { number, body }
-            },
+            GithubPullRequestEditor::Body => GithubCommand::UpdatePullRequestBody { number, body },
+            GithubPullRequestEditor::Comment => GithubCommand::CommentPullRequest { number, body },
         };
         let request = self.send(command);
         if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
@@ -180,7 +176,7 @@ impl App {
             );
             return;
         };
-        let request = self.send(SessionCommand::GithubMergePullRequest { number, head_sha });
+        let request = self.send(GithubCommand::MergePullRequest { number, head_sha });
         self.set_pull_request_pending(request);
     }
 
@@ -208,7 +204,7 @@ impl App {
             );
             return;
         };
-        let request = self.send(SessionCommand::GithubSetPullRequestDraft {
+        let request = self.send(GithubCommand::SetPullRequestDraft {
             node_id,
             number,
             draft,

@@ -420,7 +420,7 @@ fn fix_all_lint_issues_asks_the_session_for_the_active_document() {
     assert!(
         sent.iter().any(|(_, command)| matches!(
             command,
-            SessionCommand::FixMarkdownLint { doc: DocumentId(9) }
+            SessionCommand::Document(DocumentCommand::FixMarkdownLint { doc: DocumentId(9) })
         )),
         "{sent:?}"
     );

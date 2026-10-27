@@ -623,7 +623,9 @@ fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::NestedRepositoryStatus { path } => Some((*id, path.clone())),
+                    SessionCommand::Vcs(VcsCommand::NestedRepositoryStatus { path }) => {
+                        Some((*id, path.clone()))
+                    },
                     _ => None,
                 })
                 .collect()

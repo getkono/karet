@@ -24,9 +24,9 @@ fn requests(backend: &RecordingBackend) -> Vec<(RequestId, LineCol, bool)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::SignatureHelp {
+                    SessionCommand::Lsp(LspCommand::SignatureHelp {
                         position, manual, ..
-                    } => Some((*id, *position, *manual)),
+                    }) => Some((*id, *position, *manual)),
                     _ => None,
                 })
                 .collect()

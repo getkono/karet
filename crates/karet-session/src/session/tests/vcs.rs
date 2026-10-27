@@ -81,7 +81,7 @@
         // Stage it → a fresh status with the file staged as Added.
         session.handle(
             RequestId(1),
-            Command::Stage {
+            VcsCommand::Stage {
                 paths: vec![file.clone()],
             },
         );
@@ -121,7 +121,7 @@
         // CommitDetail(HEAD) answers with the "add b" commit and its single change.
         session.handle(
             RequestId(1),
-            Command::CommitDetail {
+            VcsCommand::CommitDetail {
                 rev: "HEAD".to_string(),
             },
         );
@@ -143,7 +143,7 @@
         // FileHistory(a.txt) answers with exactly the "add a" commit.
         session.handle(
             RequestId(2),
-            Command::FileHistory {
+            VcsCommand::FileHistory {
                 path: file_abs,
                 skip: 0,
                 limit: 10,
@@ -183,7 +183,7 @@
         // A two-dot HEAD~1..HEAD range answers with a.txt (modified) and b.txt (added).
         session.handle(
             RequestId(1),
-            Command::RangeChanges {
+            VcsCommand::RangeChanges {
                 spec: RangeSpec::Between {
                     base: "HEAD~1".to_string(),
                     head: "HEAD".to_string(),
@@ -210,7 +210,7 @@
         // Unpushed with no configured upstream is a graceful notification, not a panic.
         session.handle(
             RequestId(2),
-            Command::RangeChanges {
+            VcsCommand::RangeChanges {
                 spec: RangeSpec::Unpushed,
             },
         );
@@ -304,7 +304,7 @@
         });
         session.start();
         wait_vcs_status(&mut events).ok_or("no initial VcsStatus arrived")?;
-        session.handle(RequestId(1), Command::Stage { paths: vec![file] });
+        session.handle(RequestId(1), VcsCommand::Stage { paths: vec![file] });
         wait_vcs_status(&mut events).ok_or("no VcsStatus arrived after staging")?;
         Ok((session, events))
     }
@@ -338,7 +338,7 @@
         hook(&root, "echo hook says hello")?;
         let (mut session, mut events) = staged_session(&root, file)?;
 
-        session.handle(RequestId(2), Command::Commit {
+        session.handle(RequestId(2), VcsCommand::Commit {
             message: "subject".to_string(),
         });
         let seen = drain_commit(&mut events);
@@ -386,7 +386,7 @@
         hook(&root, "echo why it refused\nexit 1")?;
         let (mut session, mut events) = staged_session(&root, file)?;
 
-        session.handle(RequestId(2), Command::Commit {
+        session.handle(RequestId(2), VcsCommand::Commit {
             message: "subject".to_string(),
         });
         let seen = drain_commit(&mut events);
@@ -437,7 +437,7 @@
         )?;
         let (mut session, mut events) = staged_session(&root, file)?;
 
-        session.handle(RequestId(2), Command::Commit {
+        session.handle(RequestId(2), VcsCommand::Commit {
             message: "subject".to_string(),
         });
         // Cancel only once the hook's output arrives: the worker is then blocked
@@ -491,7 +491,7 @@
 
         // Cancel in the same breath as the commit: the job is still queued, so
         // the hook is registered against a token that is already cancelled.
-        session.handle(RequestId(2), Command::Commit {
+        session.handle(RequestId(2), VcsCommand::Commit {
             message: "subject".to_string(),
         });
         session.handle(RequestId(3), Command::Cancel {

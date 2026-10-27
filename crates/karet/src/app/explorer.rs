@@ -21,7 +21,7 @@ impl App {
                 continue;
             }
             if let Some(request) =
-                self.send(SessionCommand::NestedRepositoryStatus { path: path.clone() })
+                self.send(VcsCommand::NestedRepositoryStatus { path: path.clone() })
             {
                 self.nested_repository_pending
                     .insert(request, (path, Pending::start()));
@@ -118,7 +118,7 @@ impl App {
         for request in pending {
             self.cancel_backend_request(request);
         }
-        self.send_command(SessionCommand::RefreshVcs);
+        self.send_command(VcsCommand::Refresh);
     }
 
     /// Apply the explorer inline edit: create the file/folder or rename on disk, then
@@ -140,7 +140,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.explorer.rebuild(&self.root);
-                        self.send_command(SessionCommand::RefreshVcs);
+                        self.send_command(VcsCommand::Refresh);
                         if !*folder {
                             self.open_path(path);
                         }
@@ -159,7 +159,7 @@ impl App {
                 Ok(()) => {
                     self.retarget_open_paths(from, to);
                     self.explorer.rebuild(&self.root);
-                    self.send_command(SessionCommand::RefreshVcs);
+                    self.send_command(VcsCommand::Refresh);
                 },
                 Err(e) => {
                     self.explorer.restore_edit(&pending);
@@ -287,7 +287,7 @@ impl App {
                 self.retarget_open_paths(from, to);
             }
             self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
+            self.send_command(VcsCommand::Refresh);
             if clipboard.op == ExplorerFileOp::Cut {
                 self.explorer_clipboard = None;
             }
@@ -373,7 +373,7 @@ impl App {
         }
         if copied > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
+            self.send_command(VcsCommand::Refresh);
             self.notify(
                 Report::Outcome,
                 NotificationKind::Io,
@@ -473,7 +473,7 @@ impl App {
         }
         if deleted > 0 {
             self.explorer.rebuild(&self.root);
-            self.send_command(SessionCommand::RefreshVcs);
+            self.send_command(VcsCommand::Refresh);
             self.notify(
                 Report::Outcome,
                 NotificationKind::Io,

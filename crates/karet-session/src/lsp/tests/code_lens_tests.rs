@@ -1,4 +1,4 @@
-//! The seam contract for [`Command::CodeLenses`] and [`Command::RunCodeLens`]:
+//! The seam contract for [`LspCommand::CodeLenses`] and [`LspCommand::RunCodeLens`]:
 //! a server's lenses arrive in buffer columns with the ones on the asked
 //! lines resolved, every case without a server still answers, and a lens's
 //! command runs on the server with its own arguments.
@@ -30,10 +30,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc, version))
@@ -79,7 +80,10 @@ fn ask(
     doc: DocumentId,
 ) -> Result<RequestId, Box<dyn std::error::Error + Send + Sync>> {
     let request = backend.next_id();
-    backend.send(request, Command::CodeLenses { doc, lines: (0, 2) })?;
+    backend.send(
+        request,
+        LspCommand::CodeLenses { doc, lines: (0, 2) }.into(),
+    )?;
     Ok(request)
 }
 
@@ -164,10 +168,11 @@ async fn a_lens_runs_its_command_and_a_foreign_one_is_refused() -> TestResult {
     let run = backend.next_id();
     backend.send(
         run,
-        Command::RunCodeLens {
+        LspCommand::RunCodeLens {
             doc,
             lens: lens.clone(),
-        },
+        }
+        .into(),
     )?;
     let applied = ran(&mut events, run).await.ok_or("no answer")?;
     assert!(applied.result.applied, "{applied:?}");
@@ -193,7 +198,7 @@ async fn a_lens_runs_its_command_and_a_foreign_one_is_refused() -> TestResult {
     foreign.payload = Some(literal.to_string());
     foreign.command = Some(CommandId("editor.showReferences".into()));
     let run = backend.next_id();
-    backend.send(run, Command::RunCodeLens { doc, lens: foreign })?;
+    backend.send(run, LspCommand::RunCodeLens { doc, lens: foreign }.into())?;
     let refused = ran(&mut events, run).await.ok_or("no answer")?;
     assert!(!refused.result.applied);
     assert_eq!(refused.label.as_deref(), Some("Run"));
@@ -211,7 +216,7 @@ async fn a_lens_that_only_informs_runs_nothing() -> TestResult {
         title: Some("3 references".into()),
         ..CodeLens::default()
     };
-    backend.send(run, Command::RunCodeLens { doc, lens })?;
+    backend.send(run, LspCommand::RunCodeLens { doc, lens }.into())?;
     let applied = ran(&mut events, run).await.ok_or("no answer")?;
     assert!(applied.result.applied);
     assert_eq!(applied.label.as_deref(), Some("3 references"));
@@ -228,7 +233,7 @@ fn a_listing_from_a_retired_generation_is_answered_unanswered() -> TestResult {
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -275,7 +280,7 @@ fn a_listing_for_a_superseded_version_is_answered_failed() -> TestResult {
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -287,7 +292,7 @@ fn a_listing_for_a_superseded_version_is_answered_failed() -> TestResult {
         .ok_or("no document")?;
     session.handle(
         RequestId(2),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 old,

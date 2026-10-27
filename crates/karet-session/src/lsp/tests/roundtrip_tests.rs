@@ -21,10 +21,11 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -32,11 +33,12 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
 
     let (rid, cdoc, cversion, items) = await_completions(&mut events)
@@ -79,14 +81,15 @@ async fn document_symbols_round_trip_with_utf16_conversion() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
-    backend.send(request, Command::DocumentSymbols { doc })?;
+    backend.send(request, LspCommand::DocumentSymbols { doc }.into())?;
     let (answer, answer_doc, symbols) =
         await_symbols(&mut events).await.ok_or("no Symbols event")?;
     assert_eq!(answer, Some(request));
@@ -108,10 +111,11 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -120,7 +124,7 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
         let range = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
         backend.send(
             backend.next_id(),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: Change::new(
                     version + i as u64,
@@ -130,17 +134,19 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
                     }],
                 ),
                 cause: EditCause::Type,
-            },
+            }
+            .into(),
         )?;
     }
     // A completion flushes the pending change ahead of itself.
     backend.send(
         backend.next_id(),
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(1, 1),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let _ = await_completions(&mut events).await.ok_or("no answer")?;
 
@@ -200,23 +206,25 @@ async fn inlay_hints_round_trip_with_utf16_conversion() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: Range {
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, 3),
             },
-        },
+        }
+        .into(),
     )?;
 
     let (rid, hdoc, hversion, hints) = await_inlay_hints(&mut events)
@@ -260,23 +268,25 @@ async fn a_language_with_no_server_answers_inlay_hints_immediately() -> TestResu
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
 
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: Range {
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, 5),
             },
-        },
+        }
+        .into(),
     )?;
     let (rid, _, _, hints) = await_inlay_hints(&mut events)
         .await

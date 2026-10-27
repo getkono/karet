@@ -134,7 +134,7 @@
 
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -146,7 +146,7 @@
 
         session.handle(
             RequestId(2),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -155,7 +155,7 @@
         // Clearing a refusal that is not there is the state asked for already.
         session.handle(
             RequestId(3),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -173,7 +173,7 @@
 
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -198,13 +198,13 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
         session.handle(
             RequestId(2),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );

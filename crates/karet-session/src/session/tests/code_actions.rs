@@ -49,7 +49,7 @@
             let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
             session.handle(
                 RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.clone(),
                     language: None,
                 },
@@ -137,7 +137,7 @@
 
             let mut disabled = action("Inline", &path, Some(edit(4, 5, "b")));
             disabled.disabled = Some("nothing to inline".into());
-            session.handle(RequestId(20), Command::ApplyCodeAction {
+            session.handle(RequestId(20), LspCommand::ApplyCodeAction {
                 doc,
                 version,
                 action: disabled,
@@ -147,7 +147,7 @@
             assert_eq!(refused.result.failure_reason.as_deref(), Some("nothing to inline"));
 
             let rename = action("Rename to b", &path, Some(edit(4, 5, "b")));
-            session.handle(RequestId(21), Command::ApplyCodeAction {
+            session.handle(RequestId(21), LspCommand::ApplyCodeAction {
                 doc,
                 version,
                 action: rename.clone(),
@@ -159,7 +159,7 @@
             assert_eq!(text(&session, doc).as_deref(), Some("let b = 1;\n"));
 
             // Listed at the version before that edit: its ranges are stale.
-            session.handle(RequestId(22), Command::ApplyCodeAction {
+            session.handle(RequestId(22), LspCommand::ApplyCodeAction {
                 doc,
                 version,
                 action: rename,
@@ -230,7 +230,7 @@
             let (_dir, path, mut session, mut events, doc) = session_with("notes.txt", "word\n")?;
             let version = session.document(doc).ok_or("doc")?.version();
 
-            session.handle(RequestId(40), Command::CodeActions {
+            session.handle(RequestId(40), LspCommand::CodeActions {
                 doc,
                 range: Range::default(),
                 kinds: Vec::new(),
@@ -249,7 +249,7 @@
                 payload: Some("{}".into()),
                 ..CodeAction::default()
             };
-            session.handle(RequestId(41), Command::ApplyCodeAction {
+            session.handle(RequestId(41), LspCommand::ApplyCodeAction {
                 doc,
                 version,
                 action: deferred,
@@ -261,7 +261,7 @@
             // the answer says so beside what the edit changed.
             let mut both = action("Fix", &path, Some(edit(0, 4, "text")));
             both.command = Some(karet_core::CommandId("fix".into()));
-            session.handle(RequestId(42), Command::ApplyCodeAction {
+            session.handle(RequestId(42), LspCommand::ApplyCodeAction {
                 doc,
                 version,
                 action: both,

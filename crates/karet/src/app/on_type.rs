@@ -4,7 +4,7 @@
 //!
 //! Off unless `editor.formatOnType` says otherwise for the language, and
 //! Toggle Format on Type flips that for the session. While on, a typed
-//! character goes to the session as `Command::FormatOnType`; the answering
+//! character goes to the session as `LspCommand::FormatOnType`; the answering
 //! `Event::OnTypeFormatting` names the server's trigger characters, after
 //! which only those are sent. Its edits are applied here, by the app, as an
 //! edit of its own -- and only when the text is still the text the server was
@@ -15,7 +15,6 @@ use std::collections::HashMap;
 
 use karet_core::Change;
 use karet_core::TextEdit;
-use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
 
 use super::*;
@@ -126,8 +125,8 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::FormatOnType { doc, position, ch };
-        if backend.send(id, command).is_ok() {
+        let command = LspCommand::FormatOnType { doc, position, ch };
+        if backend.send(id, command.into()).is_ok() {
             self.on_type.pending = Some(PendingOnType { id, doc, version });
         }
     }

@@ -2,8 +2,12 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::*;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
+use crate::api::LspCommand;
+use crate::api::VcsCommand;
+use crate::api::WorkspaceCommand;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -41,11 +45,11 @@ fn init_repo(dir: &Path) -> TestResult {
 async fn answer<T>(
     backend: &LocalBackend,
     events: &mut EventRx,
-    command: Command,
+    command: impl Into<Command>,
     mut pick: impl FnMut(Event) -> Option<T>,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let id = backend.next_id();
-    backend.send(id, command)?;
+    backend.send(id, command.into())?;
     let found = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((event_id, event)) = events.recv().await {
             if event_id == Some(id)
@@ -66,7 +70,7 @@ async fn open(
     events: &mut EventRx,
     path: PathBuf,
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error>> {
-    let command = Command::OpenDocument {
+    let command = DocumentCommand::Open {
         path,
         language: None,
     };
@@ -130,10 +134,11 @@ async fn opening_markdown_publishes_markdownlint_diagnostics() -> TestResult {
     let id = backend.next_id();
     backend.send(
         id,
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let rules = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((_, event)) = events.recv().await {
@@ -171,7 +176,7 @@ async fn workspace_todo_scan_streams_codetag_hits() -> TestResult {
     let (session, mut events, _snaps) = Session::new(config);
     let backend = local_session(session, None);
     let id = backend.next_id();
-    backend.send(id, Command::ScanWorkspaceTodos { limit: 100 })?;
+    backend.send(id, WorkspaceCommand::ScanTodos { limit: 100 }.into())?;
     let (mut tags, mut finished) = (Vec::new(), false);
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((event_id, event)) = events.recv().await {
@@ -218,7 +223,7 @@ async fn local_backend_reports_an_exact_nested_repository_status() -> TestResult
         ..SessionConfig::default()
     });
     let backend = local_session(session, None);
-    let command = Command::NestedRepositoryStatus {
+    let command = VcsCommand::NestedRepositoryStatus {
         path: nested.clone(),
     };
     let (path, summary) = answer(&backend, &mut events, command, |event| match event {
@@ -254,7 +259,7 @@ async fn repository_actions_and_blame_run_off_actor() -> TestResult {
     });
     let backend = local_session(session, None);
     let (doc, version) = open(&backend, &mut events, root.join("code.rs")).await?;
-    let blame = Command::Blame {
+    let blame = VcsCommand::Blame {
         doc,
         version,
         line: 0,
@@ -272,7 +277,7 @@ async fn repository_actions_and_blame_run_off_actor() -> TestResult {
     std::fs::write(root.join("untracked.rs"), "fn new_file() {}\n")?;
     let (untracked_doc, untracked_version) =
         open(&backend, &mut events, root.join("untracked.rs")).await?;
-    let blame = Command::Blame {
+    let blame = VcsCommand::Blame {
         doc: untracked_doc,
         version: untracked_version,
         line: 0,
@@ -291,7 +296,7 @@ async fn repository_actions_and_blame_run_off_actor() -> TestResult {
 
     let mut branch_options = CreateBranchOptions::default();
     branch_options.name = "feature".to_string();
-    let create = Command::VcsAction {
+    let create = VcsCommand::Action {
         action: VcsAction::CreateBranch(branch_options),
     };
     let branch = answer(&backend, &mut events, create, |event| match event {
@@ -338,10 +343,11 @@ async fn injected_language_is_highlighted_through_the_worker() -> TestResult {
         backend
             .send(
                 id,
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -374,10 +380,11 @@ async fn syntax_error_lines_reach_the_snapshot_stream() -> TestResult {
         backend
             .send(
                 backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -404,10 +411,11 @@ async fn markdown_table_lines_reach_the_snapshot_stream() -> TestResult {
         backend
             .send(
                 backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -429,10 +437,11 @@ async fn semantic_blocks_reach_the_snapshot_stream() -> TestResult {
         backend
             .send(
                 backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -468,7 +477,7 @@ async fn document_symbols_fall_back_to_the_syntax_worker() -> TestResult {
         .await
     );
 
-    let request = Command::DocumentSymbols { doc };
+    let request = LspCommand::DocumentSymbols { doc };
     let symbols = answer(&backend, &mut events, request, |event| match event {
         Event::Symbols { symbols, .. } => Some(symbols),
         _ => None,
@@ -494,10 +503,11 @@ async fn todo_comments_are_marked_in_a_real_rust_buffer() -> TestResult {
         backend
             .send(
                 backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -531,10 +541,11 @@ async fn disabling_semantic_comments_leaves_comments_plain() -> TestResult {
         backend
             .send(
                 backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path,
                     language: None
                 }
+                .into()
             )
             .is_ok()
     );
@@ -596,11 +607,12 @@ async fn editing_republishes_highlights_for_the_new_text() -> TestResult {
     assert!(backend.next_id() > id);
     backend.send(
         id,
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change,
             cause: EditCause::Paste,
-        },
+        }
+        .into(),
     )?;
 
     // The fence did not exist a moment ago; the worker must discover the injection

@@ -1,5 +1,5 @@
-//! The seam contract for [`Command::LinksAndColors`] and
-//! [`Command::ResolveDocumentLink`]: a server's links and colours arrive in
+//! The seam contract for [`LspCommand::LinksAndColors`] and
+//! [`LspCommand::ResolveDocumentLink`]: a server's links and colours arrive in
 //! buffer columns, every case without a server still answers, and a deferred
 //! link resolves through the server with its own data.
 
@@ -61,10 +61,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc, version))
@@ -112,7 +113,7 @@ fn ask(
     doc: DocumentId,
 ) -> Result<RequestId, Box<dyn std::error::Error + Send + Sync>> {
     let request = backend.next_id();
-    backend.send(request, Command::LinksAndColors { doc })?;
+    backend.send(request, LspCommand::LinksAndColors { doc }.into())?;
     Ok(request)
 }
 
@@ -166,10 +167,11 @@ async fn a_deferred_link_resolves_through_the_server() -> TestResult {
     let resolve = backend.next_id();
     backend.send(
         resolve,
-        Command::ResolveDocumentLink {
+        LspCommand::ResolveDocumentLink {
             doc,
             link: deferred.clone(),
-        },
+        }
+        .into(),
     )?;
     let (answered, result) = resolved(&mut events, resolve).await.ok_or("no answer")?;
     assert_eq!(answered, doc);
@@ -184,10 +186,11 @@ async fn a_deferred_link_resolves_through_the_server() -> TestResult {
     let resolve = backend.next_id();
     backend.send(
         resolve,
-        Command::ResolveDocumentLink {
+        LspCommand::ResolveDocumentLink {
             doc,
             link: targetless,
-        },
+        }
+        .into(),
     )?;
     let (_, result) = resolved(&mut events, resolve).await.ok_or("no answer")?;
     assert_eq!(result, Err(crate::lsp::NO_TARGET.to_owned()));
@@ -208,10 +211,11 @@ async fn a_link_with_nothing_to_resolve_is_answered_without_a_server() -> TestRe
     let resolve = backend.next_id();
     backend.send(
         resolve,
-        Command::ResolveDocumentLink {
+        LspCommand::ResolveDocumentLink {
             doc,
             link: known.clone(),
-        },
+        }
+        .into(),
     )?;
     let (_, result) = resolved(&mut events, resolve).await.ok_or("no answer")?;
     assert_eq!(result, Ok(known));
@@ -219,10 +223,11 @@ async fn a_link_with_nothing_to_resolve_is_answered_without_a_server() -> TestRe
     let resolve = backend.next_id();
     backend.send(
         resolve,
-        Command::ResolveDocumentLink {
+        LspCommand::ResolveDocumentLink {
             doc,
             link: DocumentLink::default(),
-        },
+        }
+        .into(),
     )?;
     let (_, result) = resolved(&mut events, resolve).await.ok_or("no answer")?;
     assert_eq!(result, Err(crate::lsp::NO_TARGET.to_owned()));
@@ -264,10 +269,11 @@ async fn a_document_no_server_serves_answers_none_of_either() -> TestResult {
     };
     backend.send(
         resolve,
-        Command::ResolveDocumentLink {
+        LspCommand::ResolveDocumentLink {
             doc,
             link: deferred,
-        },
+        }
+        .into(),
     )?;
     let (_, result) = resolved(&mut events, resolve).await.ok_or("no answer")?;
     assert!(result.is_err(), "no server resolves it: {result:?}");
@@ -283,7 +289,7 @@ fn session_with_notes(
     let (mut session, events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -353,7 +359,7 @@ fn a_listing_for_a_superseded_version_learns_nothing() -> TestResult {
     let (mut session, mut events, doc, old) = session_with_notes(&dir)?;
     session.handle(
         RequestId(2),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 old,

@@ -79,7 +79,7 @@ impl App {
         // Only once the request is actually out: a card raised for a command a
         // closed backend never took has nothing left to retire it.
         if self
-            .send(SessionCommand::RefreshManifestHints { doc })
+            .send(DocumentCommand::RefreshManifestHints { doc })
             .is_some()
         {
             self.notify_progress(

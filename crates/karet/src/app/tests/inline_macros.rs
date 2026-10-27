@@ -14,9 +14,12 @@ fn inline_macro_app(name: &str, text: &str) -> (App, Arc<RecordingBackend>) {
 
 /// The last edit sent: each one is followed by the selection set it left.
 fn last_edit(sent: &[(RequestId, SessionCommand)]) -> Option<&(RequestId, SessionCommand)> {
-    sent.iter()
-        .rev()
-        .find(|(_, command)| matches!(command, SessionCommand::ApplyChange { .. }))
+    sent.iter().rev().find(|(_, command)| {
+        matches!(
+            command,
+            SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+        )
+    })
 }
 
 #[test]
@@ -43,7 +46,9 @@ fn markdown_selection_character_runs_the_inline_macro_atomically() {
         .sent
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let Some((_, SessionCommand::ApplyChange { change, cause, .. })) = last_edit(&sent) else {
+    let Some((_, SessionCommand::Document(DocumentCommand::ApplyChange { change, cause, .. }))) =
+        last_edit(&sent)
+    else {
         panic!("macro did not submit an edit");
     };
     assert_eq!(*cause, EditCause::Replace);
@@ -189,7 +194,9 @@ fn markdown_macro_expands_every_selected_caret_in_one_change() {
         .sent
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let Some((_, SessionCommand::ApplyChange { change, .. })) = last_edit(&sent) else {
+    let Some((_, SessionCommand::Document(DocumentCommand::ApplyChange { change, .. }))) =
+        last_edit(&sent)
+    else {
         panic!("macro did not submit an edit");
     };
     assert_eq!(change.edits.len(), 2);

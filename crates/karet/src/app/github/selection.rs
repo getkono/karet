@@ -27,10 +27,10 @@ impl App {
         }
         let command = match refresh {
             Refresh::Dashboard => return true,
-            Refresh::Issue(number) => SessionCommand::GithubIssue { number },
-            Refresh::PullRequest(number) => SessionCommand::GithubPullRequest { number },
-            Refresh::Actions => SessionCommand::GithubActions { page: 1 },
-            Refresh::IssueMetadata => SessionCommand::GithubIssueMetadata,
+            Refresh::Issue(number) => GithubCommand::Issue { number },
+            Refresh::PullRequest(number) => GithubCommand::PullRequest { number },
+            Refresh::Actions => GithubCommand::Actions { page: 1 },
+            Refresh::IssueMetadata => GithubCommand::IssueMetadata,
         };
         let request = self.send(command);
         if let Some(view) = self.github.active_page_mut() {
@@ -113,7 +113,7 @@ impl App {
                 if self.focus_open_github_page(&github_issue(number, None)) {
                     return;
                 }
-                let request = self.send(SessionCommand::GithubIssue { number });
+                let request = self.send(GithubCommand::Issue { number });
                 self.push_github_page(github_issue(number, request));
             },
             Selection::PullRequest(_repository, pull_request, can_write) => {
@@ -124,7 +124,7 @@ impl App {
                 )) {
                     return;
                 }
-                let request = self.send(SessionCommand::GithubPullRequest {
+                let request = self.send(GithubCommand::PullRequest {
                     number: pull_request.number,
                 });
                 self.push_github_page(github_pull_request(pull_request, can_write, request));
@@ -152,7 +152,7 @@ impl App {
         }
         match section {
             GithubSection::Issues => {
-                let pending = self.send(SessionCommand::GithubIssueMetadata);
+                let pending = self.send(GithubCommand::IssueMetadata);
                 self.push_github_page(github_new_issue(repository, pending));
             },
             GithubSection::PullRequests => {

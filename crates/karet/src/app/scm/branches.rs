@@ -94,7 +94,7 @@ impl App {
         };
         self.pull_request_items.clear();
         self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
+        self.pending_pull_requests = self.send(VcsCommand::PullRequests {
             remote: remote.clone(),
             page: 1,
             per_page: 100,

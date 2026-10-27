@@ -28,7 +28,11 @@ fn reported_before_save(
     let kinds: Vec<_> = sent.iter().map(|(_, c)| c).collect();
     matches!(
         kinds.as_slice(),
-        [.., SessionCommand::SetCursor { doc: d, view: v, cursors }, SessionCommand::Save { .. }]
+        [
+            ..,
+            SessionCommand::Document(DocumentCommand::SetCursor { doc: d, view: v, cursors }),
+            SessionCommand::Document(DocumentCommand::Save { .. }),
+        ]
             if *d == DocumentId(doc) && *v == view && cursors.primary().head == caret
     )
 }

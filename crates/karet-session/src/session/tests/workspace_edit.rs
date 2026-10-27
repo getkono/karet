@@ -32,7 +32,7 @@
         fn open(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
             session.handle(
                 RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.to_path_buf(),
                     language: None,
                 },
@@ -48,7 +48,7 @@
         ) -> Option<AppliedWorkspaceEdit> {
             session.handle(
                 RequestId(50),
-                Command::ApplyWorkspaceEdit {
+                WorkspaceCommand::ApplyEdit {
                     edit,
                     label: Some("contract".into()),
                 },
@@ -109,7 +109,7 @@
             assert_eq!(std::fs::read_to_string(&open_path)?, "let old = 1;\n");
 
             // Undo is per document: undoing one leaves the other renamed.
-            session.handle(RequestId(60), Command::Undo { doc: *background });
+            session.handle(RequestId(60), DocumentCommand::Undo { doc: *background });
             assert_eq!(text(&session, *background).as_deref(), Some("use old;\n"));
             assert_eq!(text(&session, doc).as_deref(), Some("let new = 1;\n"));
             Ok(())
@@ -397,7 +397,7 @@
             // The open document followed its file.
             session.handle(
                 RequestId(70),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: moved.clone(),
                     language: None,
                 },
@@ -507,7 +507,7 @@
 
             session.handle(
                 RequestId(90),
-                Command::Rename {
+                LspCommand::Rename {
                     doc,
                     position: LineCol::new(0, 1),
                     new_name: "other".into(),
@@ -519,7 +519,7 @@
 
             session.handle(
                 RequestId(91),
-                Command::PrepareRename {
+                LspCommand::PrepareRename {
                     doc,
                     position: LineCol::new(0, 1),
                 },

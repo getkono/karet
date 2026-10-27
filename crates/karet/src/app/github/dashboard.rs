@@ -24,11 +24,9 @@ impl App {
             return;
         };
         let command = match section {
-            GithubSection::Issues => SessionCommand::GithubSearchIssues { query, page: 1 },
-            GithubSection::PullRequests => {
-                SessionCommand::GithubSearchPullRequests { query, page: 1 }
-            },
-            GithubSection::Actions => SessionCommand::GithubActions { page: 1 },
+            GithubSection::Issues => GithubCommand::SearchIssues { query, page: 1 },
+            GithubSection::PullRequests => GithubCommand::SearchPullRequests { query, page: 1 },
+            GithubSection::Actions => GithubCommand::Actions { page: 1 },
         };
         let request = self.send(command);
         if let Some(dashboard) = self.dashboard_mut() {
@@ -62,7 +60,7 @@ impl App {
             }
             return;
         }
-        let request = self.send(SessionCommand::GithubLogin {
+        let request = self.send(GithubCommand::Login {
             token: karet_session::GithubToken::new(token),
         });
         if let Some(dashboard) = self.active_dashboard_mut() {

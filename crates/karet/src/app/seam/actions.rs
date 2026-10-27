@@ -7,8 +7,8 @@
 use std::collections::HashSet;
 
 use karet_core::NotificationKind;
-use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
+use karet_session::api::SeamCommand;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
@@ -232,7 +232,7 @@ impl App {
 
     /// Send the index request and record what the view is waiting on.
     fn request_seam_index(&mut self, root: std::path::PathBuf, mode: SeamSync) {
-        self.seam_index_req = self.send(SessionCommand::IndexSeams {
+        self.seam_index_req = self.send(SeamCommand::Index {
             root: Some(root),
             mode,
         });
@@ -266,7 +266,7 @@ impl App {
         if !self.seam_view().is_some_and(|state| state.covers(path)) {
             return;
         }
-        self.seam_index_req = self.send(SessionCommand::ReindexSeams {
+        self.seam_index_req = self.send(SeamCommand::Reindex {
             path: path.to_path_buf(),
             text,
         });
@@ -336,7 +336,7 @@ impl App {
             );
             return;
         };
-        self.seam_index_req = self.send(SessionCommand::SetSeamConfiguration { name: next });
+        self.seam_index_req = self.send(SeamCommand::SetConfiguration { name: next });
     }
 
     /// Copy the selected node's identity — its citation form.
@@ -536,7 +536,7 @@ impl App {
             // delay decides whether they say anything while the answer is on its way.
             state.detail_since = Some(Pending::start());
         }
-        self.seam_node_req = self.send(SessionCommand::SeamNode { path: id });
+        self.seam_node_req = self.send(SeamCommand::Node { path: id });
     }
 
     /// Send the current query text for evaluation.
@@ -551,7 +551,7 @@ impl App {
             }
             return;
         }
-        self.seam_query_req = self.send(SessionCommand::SeamQuery { text });
+        self.seam_query_req = self.send(SeamCommand::Query { text });
     }
 
     /// Open the selected node's source in an ordinary editor tab.
