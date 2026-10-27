@@ -119,7 +119,7 @@ impl App {
                 adjust(&mut view.scroll, delta);
             },
             TabKind::Hex { bytes, scroll, .. } => {
-                let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
+                let max = karet_fileview::hex::row_count(bytes).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
@@ -215,7 +215,7 @@ impl App {
                 *scroll = if top {
                     0
                 } else {
-                    bytes.len().div_ceil(16).saturating_sub(1)
+                    karet_fileview::hex::row_count(bytes).saturating_sub(1)
                 };
             },
             #[cfg(feature = "pdf")]

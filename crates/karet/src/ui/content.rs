@@ -524,7 +524,7 @@ pub(super) fn draw_pane_content(
             hits,
         ),
         TabKind::Hex { bytes, scroll, .. } => {
-            let rows = bytes.len().div_ceil(16);
+            let rows = karet_fileview::hex::row_count(bytes);
             *scroll = (*scroll).min(rows.saturating_sub(1));
             let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);

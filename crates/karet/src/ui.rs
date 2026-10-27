@@ -43,7 +43,7 @@ use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
-use karet_fileview::HexView;
+use karet_fileview::hex::HexView;
 use karet_fileview::image::GraphicsProtocol;
 #[cfg(feature = "pdf")]
 use karet_fileview::image::Image;

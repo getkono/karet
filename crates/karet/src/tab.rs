@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use karet_core::Decoration;
 use karet_editor::EditorState;
+use karet_filetype::FileKind;
 #[cfg(any(feature = "images", feature = "pdf"))]
 use karet_fileview::image::Image;
-use karet_fileview::viewer::FileKind;
 use karet_markdown::WrappedDocument;
 #[cfg(feature = "pdf")]
 use karet_pdf::Document as PdfDocument;
