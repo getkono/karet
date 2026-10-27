@@ -1,9 +1,10 @@
 //! `karet-syntax` — tree-sitter-powered syntactic analysis for karet editors.
 //!
 //! Produces *data*, not rendering: highlight spans tagged with semantic
-//! [`TokenId`]s. Consumers apply a theme (`karet-theme`) and render. This is the
-//! crate behind the standalone "highlight a code snippet" use case. Highlighting
-//! runs a grammar's query through `karet-treesitter`'s single parse host.
+//! [`TokenId`](karet_core::TokenId)s. Consumers apply a theme (`karet-theme`)
+//! and render. This is the crate behind the standalone "highlight a code
+//! snippet" use case. Highlighting runs a grammar's query through
+//! `karet-treesitter`'s single parse host.
 //!
 //! [`Highlighter`] highlights one language. [`LayeredHighlighter`] highlights a
 //! `LayeredTree` — a document plus its injected languages — so a markdown code fence
@@ -18,16 +19,20 @@
 //! [`TableFinder`] finds the lines GFM tables occupy.
 
 mod blocks;
+mod codetag;
 mod folding;
 mod highlight;
 mod indent;
 mod inline_macro;
 mod map;
 mod outline;
-mod semantic;
 mod tables;
 
 pub use blocks::SemanticBlocker;
+pub use codetag::CodetagHit;
+pub use codetag::SemanticCommentConfig;
+pub use codetag::find_codetags;
+pub use codetag::mark_semantic_comments;
 pub use folding::Folder;
 pub use folding::fold;
 pub use folding::fold_by_indent;
@@ -37,11 +42,21 @@ pub use indent::Indenter;
 pub use inline_macro::InlineMacroEngine;
 pub use inline_macro::InlineMacroExpansion;
 pub use inline_macro::InlineMacroTrigger;
+// The parse-host items this crate's signatures take or return, plus what
+// produces them (a language from a path or fence name, a tree from a parser),
+// so a consumer can depend on `karet-syntax` alone: resolve a language, parse
+// a buffer, then analyze it. The highlight/fold/semantic-block *data* shapes
+// are `karet-core` vocabulary and are named from there
+// (`karet_core::Highlights`, …), not re-exported here.
+pub use karet_treesitter::LanguageId;
+pub use karet_treesitter::LayeredParser;
+pub use karet_treesitter::LayeredTree;
+pub use karet_treesitter::ParserPool;
+pub use karet_treesitter::SyntaxTree;
+pub use karet_treesitter::TsError;
+pub use karet_treesitter::language_id_from_injection_name;
+pub use karet_treesitter::language_id_from_path;
 pub use outline::OutlineExtractor;
-pub use semantic::CodetagHit;
-pub use semantic::SemanticCommentConfig;
-pub use semantic::find_codetags;
-pub use semantic::mark_semantic_comments;
 pub use tables::TableFinder;
 
 /// Errors produced by syntactic analysis.
@@ -51,25 +66,15 @@ pub enum SyntaxError {
     /// No highlight configuration exists (is compiled in) for the language.
     #[error("unsupported language")]
     UnsupportedLanguage,
-    /// A highlight/fold query failed.
+    /// A highlight/fold query failed, as the parse host reported it.
     #[error("query error: {0}")]
-    Query(String),
+    Query(#[from] TsError),
 }
-
-// The highlight/fold/semantic-block *data* shapes live in `karet-core` (so
-// renderers can name them without pulling this crate's tree-sitter stack); this
-// crate is the engine that computes them. Re-exported here so existing imports keep working.
-pub use karet_core::FoldKind;
-pub use karet_core::FoldRegion;
-pub use karet_core::FoldRegions;
-pub use karet_core::HighlightSpan;
-pub use karet_core::Highlights;
-pub use karet_core::SemanticBlock;
-pub use karet_core::SemanticBlocks;
 
 #[cfg(test)]
 mod tests {
     use karet_core::BytePos;
+    use karet_core::Highlights;
     use karet_core::StandardToken;
     use karet_core::TokenId;
 
@@ -81,6 +86,17 @@ mod tests {
             SyntaxError::UnsupportedLanguage.to_string(),
             "unsupported language"
         );
+    }
+
+    #[test]
+    fn query_error_keeps_the_parse_host_error_as_its_source() {
+        let err = SyntaxError::from(TsError::InvalidQuery("bad capture".to_owned()));
+        assert!(matches!(
+            &err,
+            SyntaxError::Query(TsError::InvalidQuery(message)) if message == "bad capture"
+        ));
+        assert_eq!(err.to_string(), "query error: invalid query: bad capture");
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     /// The token covering `needle`'s first byte in `text`, per `highlights`.
@@ -218,7 +234,7 @@ pub fn add_one() {}
 
     #[test]
     fn layered_highlight_tracks_a_live_edit() -> Result<(), Box<dyn std::error::Error>> {
-        use karet_treesitter::Edit;
+        use karet_core::AppliedEdit;
         use karet_treesitter::LayeredParser;
         use karet_treesitter::language_id_from_injection_name;
 
@@ -237,7 +253,7 @@ pub fn add_one() {}
 
         parser.reparse(
             &mut tree,
-            &[Edit {
+            &[AppliedEdit {
                 start_byte: old.len(),
                 old_end_byte: old.len(),
                 new_end_byte: new.len(),
@@ -359,10 +375,8 @@ pub fn add_one() {}
     fn highlights_rust_code_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
         use std::path::Path;
 
-        use karet_treesitter::ParserPool;
-        use karet_treesitter::SyntaxTree;
-        use karet_treesitter::language_id_from_path;
-
+        // Every parse-host item here comes through this crate's own re-exports
+        // (`super::*`), which is what lets a consumer depend on karet-syntax alone.
         let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
             return Ok(()); // rust grammar not compiled into this build; nothing to test
         };

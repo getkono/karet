@@ -18,13 +18,13 @@ use std::collections::BTreeSet;
 
 use karet_core::Change;
 use karet_core::CursorState;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Selection;
 use karet_core::TextEdit;
 use karet_editor::editing;
-use karet_text::EditCause;
 use karet_text::TextBuffer;
 
 use super::indent::SyntaxIndent;

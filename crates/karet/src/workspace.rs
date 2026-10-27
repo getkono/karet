@@ -5,7 +5,6 @@
 
 use std::path::Path;
 use std::path::PathBuf;
-
 mod file_index;
 mod recent;
 

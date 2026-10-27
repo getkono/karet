@@ -61,8 +61,8 @@ fn snapshot(rig: &Rig, edits: Vec<TextEdit>, cursor: Option<CursorState>) -> Doc
     DocSnapshot {
         version: buffer.version(),
         buffer,
-        highlights: Arc::new(karet_syntax::Highlights::default()),
-        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        highlights: Arc::new(karet_core::Highlights::default()),
+        semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),

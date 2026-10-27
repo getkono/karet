@@ -4,6 +4,7 @@
 //! the editor inserted, so only those are typed over.
 
 use karet_core::CursorState;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TextEdit;
@@ -14,7 +15,6 @@ use karet_editor::editing::autopair::AutoPairs;
 use karet_filetype::file_type_for_path;
 use karet_session::ViewId;
 use karet_session::config::schema::AutoClosing;
-use karet_text::EditCause;
 use karet_text::TextBuffer;
 
 use super::indent::SyntaxIndent;

@@ -302,7 +302,7 @@ fn filled_diff_tab(app: &App) -> bool {
 
 /// A code tab over `path` whose live buffer holds `text`.
 fn code_tab_with_text(path: &Path, text: &str) -> Tab {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     Tab::new(
         path.file_name()
@@ -317,7 +317,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             buffer: TextBuffer::from_text(text).into(),
             text: text.into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),

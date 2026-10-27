@@ -13,6 +13,7 @@ pub(crate) use karet_core::Change;
 pub(crate) use karet_core::Decoration;
 pub(crate) use karet_core::DecorationKind;
 pub(crate) use karet_core::Diagnostic;
+pub(crate) use karet_core::EditCause;
 pub(crate) use karet_core::LineCol;
 pub(crate) use karet_core::Notification;
 pub(crate) use karet_core::NotificationId;
@@ -54,7 +55,6 @@ pub(crate) use karet_session::VcsCommand;
 pub(crate) use karet_session::VcsOutcome;
 pub(crate) use karet_session::config::schema::AutoSave;
 pub(crate) use karet_session::local;
-pub(crate) use karet_text::EditCause;
 pub(crate) use karet_text::TextBuffer;
 pub(crate) use karet_vcs::Commit;
 pub(crate) use karet_vcs::CommitDetail;
@@ -306,7 +306,7 @@ pub(crate) fn language_type(language: &str) -> karet_filetype::FileType {
 
 /// A code tab over `name` holding `text`, typed by its path.
 pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     Tab::new(
         name,
@@ -318,7 +318,7 @@ pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
             buffer: TextBuffer::from_text(text).into(),
             text: text.into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -329,7 +329,7 @@ pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
 }
 
 pub(crate) fn code_tab(name: &str) -> Tab {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     Tab::new(
         name,
@@ -341,7 +341,7 @@ pub(crate) fn code_tab(name: &str) -> Tab {
             buffer: TextBuffer::from_text("x\n").into(),
             text: "x\n".into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -660,8 +660,8 @@ pub(crate) fn buffer_snapshot(buffer: TextBuffer) -> DocSnapshot {
     DocSnapshot {
         version: buffer.version(),
         buffer,
-        highlights: Arc::new(karet_syntax::Highlights::default()),
-        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        highlights: Arc::new(karet_core::Highlights::default()),
+        semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),

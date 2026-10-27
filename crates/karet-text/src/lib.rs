@@ -9,7 +9,7 @@
 //!
 //! The mutation surface ([`apply`](TextBuffer::apply) / [`undo`](TextBuffer::undo)
 //! / [`redo`](TextBuffer::redo)) records an in-memory edit history and reports
-//! each applied edit back as an [`AppliedEdit`] (with tree-sitter-shaped points) so
+//! each applied edit back as a [`karet_core::AppliedEdit`] (with tree-sitter-shaped points) so
 //! a parse host can reparse incrementally. Loading ([`load`](TextBuffer::load)) is
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
 //! round-trips the detected encoding and is atomic, falling back to a direct
@@ -37,8 +37,6 @@ pub use apply::Applied;
 pub use history::EditContext;
 use history::History;
 pub use history::HistorySnapshot;
-pub use karet_core::AppliedEdit;
-pub use karet_core::EditCause;
 pub use lines::lines;
 pub use load::Encoding;
 pub use load::Eol;

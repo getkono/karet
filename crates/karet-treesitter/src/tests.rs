@@ -185,7 +185,7 @@ fn incremental_reparse_matches_full() -> Result<(), TsError> {
     let mut pool = ParserPool::new();
     let mut tree = SyntaxTree::parse(&mut pool, lang, old)?;
     // The insertion happens at byte 11 (before '}'), 8 bytes long, same line.
-    tree.edit(&Edit {
+    tree.edit(&AppliedEdit {
         start_byte: 11,
         old_end_byte: 11,
         new_end_byte: 19,
@@ -329,7 +329,7 @@ fn reparse_discovers_a_newly_typed_code_fence() -> Result<(), TsError> {
     assert!(!layer_langs(&tree).contains(&rust), "no fence yet");
 
     // Append the fence — the edit turns a paragraph into an injected rust region.
-    let edit = Edit {
+    let edit = AppliedEdit {
         start_byte: old.len(),
         old_end_byte: old.len(),
         new_end_byte: new.len(),
@@ -368,7 +368,7 @@ fn deleting_a_fence_drops_its_layer() -> Result<(), TsError> {
 
     parser.reparse(
         &mut tree,
-        &[Edit {
+        &[AppliedEdit {
             start_byte: 0,
             old_end_byte: old.len(),
             new_end_byte: 0,

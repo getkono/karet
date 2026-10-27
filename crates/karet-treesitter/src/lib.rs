@@ -13,8 +13,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+use karet_core::AppliedEdit;
 use karet_core::BytePos;
 use karet_core::Span;
+use karet_core::merge_spans;
 
 mod changes;
 mod detect;
@@ -32,10 +34,6 @@ pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use indent::IndentAnchor;
 pub use injection::InjectionRegion;
-// The span helpers live in `karet-core` beside `Highlights::translate`, which
-// shares their shifting rule; these keep their `karet_treesitter::` paths working.
-pub use karet_core::merge_spans;
-pub use karet_core::shift_span;
 pub use walk::WalkControl;
 pub use walk::WalkNode;
 
@@ -171,13 +169,6 @@ impl ParserPool {
         }
     }
 }
-
-/// The neutral applied-edit descriptor consumed by [`SyntaxTree::edit`], shared
-/// with `karet-text` (which produces one per applied edit) through `karet-core`.
-///
-/// Points are `(row, column-in-bytes)` — tree-sitter columns are byte offsets from
-/// the line start, **not** `char` columns.
-pub type Edit = karet_core::AppliedEdit;
 
 /// A parsed syntax tree for one buffer.
 pub struct SyntaxTree {
@@ -409,13 +400,17 @@ impl SyntaxTree {
         Ok(())
     }
 
-    /// Mark an [`Edit`] on the tree so the next reparse can reuse unaffected
-    /// subtrees.
+    /// Mark an [`AppliedEdit`] on the tree so the next reparse can reuse
+    /// unaffected subtrees.
+    ///
+    /// The edit is the neutral `karet-core` descriptor `karet-text` produces
+    /// per applied edit. Its points are `(row, column-in-bytes)` — tree-sitter
+    /// columns are byte offsets from the line start, **not** `char` columns.
     ///
     /// Apply edits in **descending start-byte order** with original-frame
     /// coordinates (matching `karet-text`'s applied edits), so each edit's
     /// coordinates remain valid against the tree's evolving state.
-    pub fn edit(&mut self, edit: &Edit) {
+    pub fn edit(&mut self, edit: &AppliedEdit) {
         self.tree.edit(&tree_sitter::InputEdit {
             start_byte: edit.start_byte,
             old_end_byte: edit.old_end_byte,
@@ -735,7 +730,7 @@ impl LayeredParser {
     pub fn reparse(
         &mut self,
         tree: &mut LayeredTree,
-        edits: &[Edit],
+        edits: &[AppliedEdit],
         text: &str,
     ) -> Result<(), TsError> {
         self.reparse_changed(tree, edits, text).map(drop)
@@ -757,7 +752,7 @@ impl LayeredParser {
     pub fn reparse_changed(
         &mut self,
         tree: &mut LayeredTree,
-        edits: &[Edit],
+        edits: &[AppliedEdit],
         text: &str,
     ) -> Result<Vec<Span>, TsError> {
         // With no edits the reparse is cold, and tree-sitter's `changed_ranges`
@@ -1054,7 +1049,7 @@ mod reparse_tests {
         let mid = "fn main() {let z=1;}\n";
         let mut pool = ParserPool::new();
         let mut tree = SyntaxTree::parse(&mut pool, rust, OLD)?;
-        tree.edit(&Edit {
+        tree.edit(&AppliedEdit {
             start_byte: 11,
             old_end_byte: 11,
             new_end_byte: 19,

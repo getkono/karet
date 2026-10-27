@@ -352,7 +352,7 @@ fn closing_a_docx_preview_never_arms_the_close_guard() {
 #[cfg(feature = "docx")]
 #[test]
 fn a_snapshot_never_touches_a_docx_preview() {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     let mut app = app();
     app.push_tab(docx_preview_tab("# original", 0));
@@ -365,7 +365,7 @@ fn a_snapshot_never_touches_a_docx_preview() {
             version,
             buffer,
             highlights: Arc::new(Highlights::default()),
-            semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+            semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
             folds: Arc::new(FoldRegions::default()),
             syntax_error_lines: Arc::new(Vec::new()),
             table_lines: Arc::default(),
