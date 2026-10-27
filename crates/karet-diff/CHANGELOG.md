@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `PreparedDiff`'s fields are private, so its intra-line pairs can only be the ones derived from its diff; read them through `diff()`, `intraline(hunk, row)`, `old_tokens()` and `new_tokens()`, and adjust a `FileDiff` before `PreparedDiff::new` rather than after. Deserializing (feature `serde`) rejects a payload whose pair table does not match its hunks
 - `TokenSpan` is now defined in `karet-core`; `karet_diff::TokenSpan` re-exports it, so existing imports keep compiling
 
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-diff-v0.5.0...karet-diff-v0.6.0) - 2026-08-29

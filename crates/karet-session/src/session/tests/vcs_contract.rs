@@ -284,7 +284,7 @@
     fn added_lines(change: &crate::api::PreparedChange) -> Vec<String> {
         change
             .diff
-            .diff
+            .diff()
             .hunks
             .iter()
             .flat_map(|hunk| &hunk.lines)

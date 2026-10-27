@@ -397,7 +397,7 @@ fn landed_scroll_in(
     rig.render();
     open(&mut rig);
     let (id, change) = landing_answer(&backend, buffer, context);
-    let rows = (0..change.diff.diff.hunks.len())
+    let rows = (0..change.diff.diff().hunks.len())
         .map(|index| match layout {
             ViewMode::Unified => karet_diff::unified_hunk_row(&change.diff, index),
             ViewMode::SideBySide => karet_diff::side_by_side_hunk_row(&change.diff, index),

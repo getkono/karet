@@ -18,19 +18,24 @@ use crate::model::LineKind;
 
 /// A file diff prepared for display: the [`FileDiff`] plus per-line syntax token
 /// runs for both sides and precomputed intra-line change pairs.
+///
+/// The fields are private so the intra-line pairs, which are indexed by the
+/// diff's hunks and rows, can only ever be the ones [`new`](Self::new) derived
+/// from that diff. Deserializing (feature `serde`) checks the same shape and
+/// rejects a payload whose pair table does not match its hunks.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct PreparedDiff {
     /// The line diff.
-    pub diff: FileDiff,
+    diff: FileDiff,
     /// Per old-side line (0-based), the syntax token runs. Empty for plaintext.
-    pub old_tokens: Vec<Vec<TokenSpan>>,
+    old_tokens: Vec<Vec<TokenSpan>>,
     /// Per new-side line (0-based), the syntax token runs. Empty for plaintext.
-    pub new_tokens: Vec<Vec<TokenSpan>>,
+    new_tokens: Vec<Vec<TokenSpan>>,
     /// Intra-line pairs indexed by hunk and diff-line row. Computing these uses an
     /// LCS, so they are prepared once here rather than on every frame; both the
     /// unified and the side-by-side painters read them from here.
-    pub intraline: Vec<Vec<Option<HighlightedPair>>>,
+    intraline: Vec<Vec<Option<HighlightedPair>>>,
 }
 
 impl PreparedDiff {
@@ -53,6 +58,44 @@ impl PreparedDiff {
             new_tokens,
             intraline,
         }
+    }
+
+    /// The line diff this was prepared from.
+    #[must_use]
+    pub fn diff(&self) -> &FileDiff {
+        &self.diff
+    }
+
+    /// The intra-line change pair for row `row` of hunk `hunk` (both indices
+    /// into [`diff`](Self::diff)'s hunks and their lines).
+    ///
+    /// `None` for a context row, for the unpaired tail of an uneven
+    /// remove/add run, and for an index out of range. Both rows of a pair carry
+    /// the same pair, computed old → new.
+    #[must_use]
+    pub fn intraline(&self, hunk: usize, row: usize) -> Option<&HighlightedPair> {
+        self.intraline.get(hunk)?.get(row)?.as_ref()
+    }
+
+    /// Forget every intra-line pair, so a painter test can show it reads the
+    /// prepared pairs rather than recomputing them.
+    #[cfg(test)]
+    pub(crate) fn drop_intraline_pairs(&mut self) {
+        for rows in &mut self.intraline {
+            rows.iter_mut().for_each(|pair| *pair = None);
+        }
+    }
+
+    /// Per old-side line (0-based), the syntax token runs. Empty for plaintext.
+    #[must_use]
+    pub fn old_tokens(&self) -> &[Vec<TokenSpan>] {
+        &self.old_tokens
+    }
+
+    /// Per new-side line (0-based), the syntax token runs. Empty for plaintext.
+    #[must_use]
+    pub fn new_tokens(&self) -> &[Vec<TokenSpan>] {
+        &self.new_tokens
     }
 
     /// Whether the underlying file changed as binary (no textual hunks).
@@ -111,6 +154,45 @@ impl PreparedDiff {
             .and_then(|n| (n as usize).checked_sub(1))
             .and_then(|i| table.get(i))
             .map_or(&[][..], Vec::as_slice)
+    }
+}
+
+/// The wire form of a [`PreparedDiff`], deserialized as-is and then checked.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct PreparedDiffWire {
+    diff: FileDiff,
+    old_tokens: Vec<Vec<TokenSpan>>,
+    new_tokens: Vec<Vec<TokenSpan>>,
+    intraline: Vec<Vec<Option<HighlightedPair>>>,
+}
+
+/// Accepts the payload only when its intra-line table has one row list per
+/// hunk and one entry per hunk line, so a pair can never be read against a row
+/// it was not computed for. The pairs themselves are trusted rather than
+/// recomputed: recomputing them is the LCS work preparation exists to move off
+/// the receiving thread.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PreparedDiff {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = PreparedDiffWire::deserialize(deserializer)?;
+        let shaped = wire.intraline.len() == wire.diff.hunks.len()
+            && wire
+                .intraline
+                .iter()
+                .zip(&wire.diff.hunks)
+                .all(|(rows, hunk)| rows.len() == hunk.lines.len());
+        if !shaped {
+            return Err(serde::de::Error::custom(
+                "intra-line pairs do not match the diff's hunks",
+            ));
+        }
+        Ok(Self {
+            diff: wire.diff,
+            old_tokens: wire.old_tokens,
+            new_tokens: wire.new_tokens,
+            intraline: wire.intraline,
+        })
     }
 }
 
@@ -295,6 +377,75 @@ mod tests {
         for (rows, hunk) in p.intraline.iter().zip(&p.diff.hunks) {
             assert_eq!(rows.len(), hunk.lines.len());
         }
+    }
+
+    /// The accessor reads the pair of the hunk it is asked for, not the first
+    /// one, and is total past either index. Falsified by indexing rows across
+    /// hunks or panicking out of range.
+    #[test]
+    fn intraline_accessor_reads_the_named_hunk_and_is_total() {
+        let diff = diff_text(
+            "a\nb\nc\nd\ne\nf\ng\nh\n",
+            "A\nb\nc\nd\ne\nf\ng\nH\n",
+            &DiffOptions {
+                context_lines: 1,
+                ..Default::default()
+            },
+        );
+        let p = PreparedDiff::new(diff, Vec::new(), Vec::new());
+        assert_eq!(p.diff().hunks.len(), 2);
+        // Each hunk opens with its remove/add pair (no context precedes line 1,
+        // and the second hunk's context row follows line 7's removal).
+        assert_eq!(p.intraline(0, 0), Some(&compute_highlights("a", "A")));
+        let second = &p.diff().hunks[1].lines;
+        let removed = second.iter().position(|l| l.kind == LineKind::Remove);
+        assert_eq!(
+            removed.and_then(|row| p.intraline(1, row)),
+            Some(&compute_highlights("h", "H"))
+        );
+        assert_eq!(p.intraline(0, 2), None, "a context row carries no pair");
+        assert_eq!(p.intraline(0, 99), None);
+        assert_eq!(p.intraline(9, 0), None);
+    }
+
+    #[test]
+    fn token_accessors_return_the_tables_as_given() {
+        let tok = TokenSpan {
+            start: 0,
+            end: 1,
+            token: TokenId(4),
+        };
+        let p = PreparedDiff::new(
+            diff_text("a\n", "b\n", &DiffOptions::default()),
+            vec![vec![tok]],
+            Vec::new(),
+        );
+        assert_eq!(p.old_tokens(), [vec![tok]]);
+        assert!(p.new_tokens().is_empty());
+    }
+
+    /// A prepared diff survives the serialized seam, and a payload whose pair
+    /// table no longer matches its hunks is refused rather than painted against
+    /// the wrong rows. Falsified by deriving `Deserialize` without the check.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserializing_checks_the_pair_table_against_the_hunks() -> Result<(), serde_json::Error> {
+        let p = prepared("a\nold b\nc\n", "a\nnew b\nc\n");
+        let json = serde_json::to_value(&p)?;
+        assert_eq!(serde_json::from_value::<PreparedDiff>(json.clone())?, p);
+
+        let mut short_row = json.clone();
+        if let Some(rows) = short_row["intraline"][0].as_array_mut() {
+            rows.pop();
+        }
+        assert!(serde_json::from_value::<PreparedDiff>(short_row).is_err());
+
+        let mut extra_hunk = json;
+        if let Some(hunks) = extra_hunk["intraline"].as_array_mut() {
+            hunks.push(serde_json::Value::Array(Vec::new()));
+        }
+        assert!(serde_json::from_value::<PreparedDiff>(extra_hunk).is_err());
+        Ok(())
     }
 
     #[test]
