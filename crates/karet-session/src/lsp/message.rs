@@ -1,7 +1,7 @@
 //! The vocabulary spoken between the session actor and its server tasks.
 //!
 //! [`ServerCmd`] travels down to the task serving one slot (a provider at a
-//! repository root, see [`SlotKey`](super::SlotKey)); [`LspUpdate`] travels
+//! repository root, see [`SlotKey`]); [`LspUpdate`] travels
 //! back. Both are plain data on purpose: the task owns the `LspClient` and the
 //! protocol, while position conversion (LSP UTF-16 ↔ buffer UTF-32) and event
 //! emission happen on the actor, where the buffer lives.
