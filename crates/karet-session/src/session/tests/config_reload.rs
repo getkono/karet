@@ -135,6 +135,98 @@
         Ok(())
     }
 
+    /// The paths of every `KeymapChanged` in `events`, in order.
+    fn keymap_changes(events: &[Event]) -> Vec<Vec<PathBuf>> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::KeymapChanged { paths } => Some(paths.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The user's keymap lives outside every root: its change reaches the client
+    /// as `KeymapChanged` and, being configuration, raises no `FsChanged`.
+    /// Falsified by dropping the keymap filter in `handle_fs_event`.
+    #[test]
+    fn a_user_keymap_change_emits_keymap_changed_without_fs_changed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let user = tempfile::tempdir()?;
+        let keymap = user.path().join("keymap.jsonc");
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![keymap.clone()],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Created,
+            paths: vec![keymap.clone()],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert_eq!(keymap_changes(&emitted), vec![vec![keymap]], "{emitted:?}");
+        assert!(
+            !emitted.iter().any(|event| matches!(event, Event::FsChanged { .. })),
+            "a keymap outside every root is not workspace content: {emitted:?}"
+        );
+        Ok(())
+    }
+
+    /// The project's keymap sits inside the root, so it is both configuration
+    /// (`KeymapChanged`) and workspace content (`FsChanged`, for search and
+    /// status), and only the keymap path is named in `KeymapChanged`.
+    #[test]
+    fn a_project_keymap_change_is_also_workspace_content() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let keymap = root.path().join(".karet").join("keymap.jsonc");
+        let other = root.path().join("a.txt");
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![keymap.clone()],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![keymap.clone(), other.clone()],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert_eq!(keymap_changes(&emitted), vec![vec![keymap.clone()]], "{emitted:?}");
+        let fs_changed = emitted.iter().find_map(|event| match event {
+            Event::FsChanged { paths } => Some(paths.clone()),
+            _ => None,
+        });
+        assert_eq!(fs_changed, Some(vec![keymap, other]), "{emitted:?}");
+        Ok(())
+    }
+
+    /// A workspace change that touches no keymap file emits no `KeymapChanged`,
+    /// so an ordinary save never costs the client a keymap reload.
+    #[test]
+    fn a_non_keymap_change_emits_no_keymap_changed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![root.path().join(".karet").join("keymap.jsonc")],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![root.path().join("keymap.jsonc")],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert!(keymap_changes(&emitted).is_empty(), "{emitted:?}");
+        Ok(())
+    }
+
     #[test]
     fn files_encoding_decides_the_byte_order_mark_on_save() -> TestResult {
         let dir = tempfile::tempdir()?;

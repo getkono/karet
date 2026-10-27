@@ -54,6 +54,13 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
         // The stored seam index, so opening the view a second time does not re-parse a
         // repository that has not changed. Losing it costs a rebuild and nothing else.
         seam_cache_dir: karet_session::default_seam_cache_dir(),
+        // Saving a `keymap.jsonc` rebinds live: the session watches the files and
+        // reports `KeymapChanged`, so the app runs no watcher of its own.
+        keymap_paths: app
+            .keymap_files
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect(),
     }
 }
 
@@ -345,16 +352,6 @@ async fn event_loop(
     let mut file_scans = app.file_index.take_receiver();
     let mut seam_discoveries = app.seam_discovery.take_receiver();
     let mut terminal_events = terminal_events(app);
-    // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
-    let keymap_paths: Vec<std::path::PathBuf> =
-        crate::keymap::user::paths(std::slice::from_ref(&app.root))
-            .into_iter()
-            .map(|(_, path)| path)
-            .collect();
-    let (_keymap_watcher, mut keymap_changes) = match crate::keymap::user::watch(&keymap_paths) {
-        Some((watcher, rx)) => (Some(watcher), Some(rx)),
-        None => (None, None),
-    };
 
     // Every wake-up repaints, except one that brought only integrated-terminal
     // output arriving faster than its frame cap: that output waits for the
@@ -418,11 +415,6 @@ async fn event_loop(
                 app.on_seam_discovery(discovery);
             },
             terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
-            change = recv_decoded(&mut keymap_changes) => if change.is_some() {
-                // One reload covers a burst of events (an atomic-rename save).
-                while keymap_changes.as_mut().is_some_and(|rx| rx.try_recv().is_ok()) {}
-                app.reload_keymap();
-            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,

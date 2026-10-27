@@ -176,6 +176,9 @@ impl App {
 /// [`App::on_config_changed`]'s side effects beyond applying the settings.
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
     use karet_core::LineCol;
     use karet_core::Severity;
     use karet_fileview::image::GraphicsProtocol;
@@ -321,5 +324,74 @@ mod tests {
             reload(&mut app, settings);
             assert_eq!(app.completion.pending.is_some(), kept, "enabled={enabled}");
         }
+    }
+
+    /// An app whose only keymap file is `text`, written into `dir`, so a reload
+    /// reads nothing from the developer's own configuration. Either text below
+    /// merges to the compiled-in defaults, so the process-wide keymap other
+    /// tests read never changes.
+    fn keymap_app(dir: &std::path::Path, text: &str) -> std::io::Result<App> {
+        let path = dir.join("keymap.jsonc");
+        std::fs::write(&path, text)?;
+        let mut app = app();
+        app.keymap_files = vec![(crate::keymap::user::Source::Project, path)];
+        app.pending
+            .push(crate::keymap::KeyChord::from_event(KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL,
+            )));
+        Ok(app)
+    }
+
+    /// The session's `KeymapChanged` re-reads the keymap files and installs the
+    /// result: a half-typed chord is dropped and the reload is announced.
+    /// Falsified by not routing `KeymapChanged` to `reload_keymap`.
+    #[test]
+    fn keymap_changed_reloads_the_keymap() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut app = keymap_app(dir.path(), r#"{ "bindings": [] }"#)?;
+        app.on_backend_event(
+            None,
+            SessionEvent::KeymapChanged {
+                paths: vec![dir.path().join("keymap.jsonc")],
+            },
+        );
+        assert!(
+            app.pending.is_empty(),
+            "the old chord was resolved against the old table"
+        );
+        assert_eq!(
+            notes(&app),
+            vec![(Severity::Hint, "keymap reloaded".into())]
+        );
+        Ok(())
+    }
+
+    /// The reload reads the files on disk now, not a cached copy: a file that
+    /// became invalid is reported against its own path.
+    #[test]
+    fn keymap_changed_reports_a_file_that_no_longer_parses() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("keymap.jsonc");
+        let mut app = keymap_app(dir.path(), "{ not a keymap")?;
+        app.on_backend_event(
+            None,
+            SessionEvent::KeymapChanged {
+                paths: vec![path.clone()],
+            },
+        );
+        let notes = notes(&app);
+        assert!(
+            notes
+                .iter()
+                .any(|(severity, title)| *severity == Severity::Warning
+                    && title.starts_with(&format!("config: {}", path.display()))),
+            "{notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|(_, title)| title == "keymap reloaded"),
+            "{notes:?}"
+        );
+        Ok(())
     }
 }

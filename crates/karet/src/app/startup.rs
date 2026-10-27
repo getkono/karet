@@ -97,6 +97,7 @@ impl App {
             workspace_symbols: quick_open::WorkspaceSymbolSearch::default(),
             recent: workspace::RecentStore::in_memory(),
             relaunch: None,
+            keymap_files: crate::keymap::user::paths(std::slice::from_ref(&root)),
             root,
             settings: Settings::default(),
             loaded_config: LoadedConfig::default(),

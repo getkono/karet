@@ -256,6 +256,10 @@ const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 pub struct App {
     /// The workspace root.
     pub(crate) root: PathBuf,
+    /// The keymap files merged over the defaults, lowest precedence first: the
+    /// user's and `root`'s. The session watches them and reports
+    /// `KeymapChanged`; [`App::reload_keymap`] re-reads them.
+    pub(crate) keymap_files: Vec<(keymap::user::Source, PathBuf)>,
     /// The loaded, verified configuration (see `karet_session::config`). Applied to
     /// the UI at startup and handed to the session backend.
     pub(crate) settings: Settings,
@@ -630,7 +634,7 @@ impl App {
     /// make the merged result the live keymap, and say what happened: each
     /// problem as a notification, or a transient "reloaded" when there are none.
     pub(crate) fn reload_keymap(&mut self) {
-        let (keymap, report) = keymap::user::load(std::slice::from_ref(&self.root));
+        let (keymap, report) = keymap::user::load_files(&self.keymap_files);
         self.apply_keymap(keymap, &report);
     }
 

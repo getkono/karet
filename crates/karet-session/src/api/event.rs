@@ -79,6 +79,14 @@ pub enum Event {
         /// The merged settings, diagnostics, and provenance now used by the session.
         report: Box<LoadedConfig>,
     },
+    /// One of the client's keymap files
+    /// ([`SessionConfig::keymap_paths`](crate::SessionConfig::keymap_paths))
+    /// was created, changed, or removed. The session does not parse keymaps; the
+    /// client reloads its bindings. Emitted once per debounced watcher event.
+    KeymapChanged {
+        /// The keymap paths the burst touched.
+        paths: Vec<PathBuf>,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.
