@@ -134,3 +134,29 @@
         );
         Ok(())
     }
+
+    #[test]
+    fn files_encoding_decides_the_byte_order_mark_on_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "\u{feff}x\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.files.encoding = crate::config::schema::Encoding::Utf8;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            },
+        );
+
+        assert_eq!(std::fs::read(&file)?, b"x\n", "`utf-8` drops the file's BOM");
+        Ok(())
+    }

@@ -224,3 +224,20 @@ fn camel_case_enum_labels_round_trip() {
         Some(AutoSave::OnFocusChange)
     );
 }
+
+#[test]
+fn files_encoding_takes_editorconfig_charset_names() {
+    // The former informational default, `"utf-8"`, still parses, so a file
+    // that spelled it out keeps loading.
+    let parse = |text: &str| serde_json::from_str::<Encoding>(text).ok();
+    assert_eq!(Files::default().encoding, Encoding::Auto);
+    assert_eq!(parse("\"auto\""), Some(Encoding::Auto));
+    assert_eq!(parse("\"utf-8\""), Some(Encoding::Utf8));
+    assert_eq!(parse("\"utf8\""), Some(Encoding::Utf8));
+    assert_eq!(parse("\"utf-8-bom\""), Some(Encoding::Utf8Bom));
+    assert_eq!(parse("\"latin1\""), None, "karet edits UTF-8 only");
+    assert_eq!(
+        serde_json::to_string(&Encoding::Utf8Bom).ok().as_deref(),
+        Some("\"utf-8-bom\"")
+    );
+}

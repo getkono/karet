@@ -920,6 +920,26 @@
       },
       "additionalProperties": false
     },
+    "Encoding": {
+      "description": "Text encoding used when saving. karet edits UTF-8 only; the choice is\nwhether a byte-order mark is written. Spelled as EditorConfig's `charset`.",
+      "oneOf": [
+        {
+          "description": "Preserve the encoding the file was opened with (UTF-8 without a BOM for\na new file).",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "UTF-8 without a byte-order mark: one an existing file carries is dropped\non save.",
+          "type": "string",
+          "const": "utf-8"
+        },
+        {
+          "description": "UTF-8 with a leading byte-order mark.",
+          "type": "string",
+          "const": "utf-8-bom"
+        }
+      ]
+    },
     "Eol": {
       "description": "Line-ending style used when saving.",
       "oneOf": [
@@ -974,9 +994,9 @@
           "default": true
         },
         "encoding": {
-          "description": "Default text encoding label (informational; karet edits UTF-8).",
-          "type": "string",
-          "default": "utf-8"
+          "description": "Text encoding used when saving. An `.editorconfig` `charset` overrides it.",
+          "$ref": "#/$defs/Encoding",
+          "default": "auto"
         },
         "eol": {
           "description": "Line-ending style used when saving.",

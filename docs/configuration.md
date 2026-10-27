@@ -233,7 +233,7 @@ the typing after it in two steps rather than one.
 |---|---|---|---|
 | `autoSave` | `"off"`\|`"afterDelay"`\|`"onFocusChange"` | `"off"` | When dirty buffers auto-save. |
 | `autoSaveDelay` | number | `1000` | Delay (ms) for `afterDelay`. |
-| `encoding` | string | `"utf-8"` | Default encoding label. |
+| `encoding` | `"auto"`\|`"utf-8"`\|`"utf-8-bom"` | `"auto"` | Encoding on save: `auto` keeps the file's own (no BOM for a new file), `utf-8` drops a byte-order mark, `utf-8-bom` writes one. An `.editorconfig` `charset` overrides it. |
 | `eol` | `"auto"`\|`"lf"`\|`"crlf"` | `"auto"` | Line-ending style on save. |
 | `exclude` | string[] | `[]` | Globs hidden from the file explorer. |
 | `watcherExclude` | string[] | `[]` | Globs excluded from the filesystem watcher. |
