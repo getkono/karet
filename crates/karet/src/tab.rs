@@ -66,6 +66,7 @@ pub(crate) use commit::commit_title;
 pub(crate) use file_tree::ChangedFileRow;
 pub(crate) use file_tree::changed_file_rows;
 pub(crate) use language::code_language;
+use language::is_cbor;
 pub(crate) use merge_conflict::MergeConflictState;
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field
@@ -863,16 +864,22 @@ impl Tab {
     }
 
     /// Point a file-backed tab at `path`, where its file now lives (a rename or
-    /// move), refreshing the title and symlink flag. A code tab whose file type
-    /// came from its old path takes the new path's; one whose content decided
-    /// it (CBOR) keeps it. Tabs with no file behind them are left alone.
+    /// move), refreshing the title and symlink flag. Tabs with no file behind
+    /// them are left alone.
+    ///
+    /// A code tab's file type follows the new path only within the document's
+    /// format, which the session fixed when it loaded the file and a rename does
+    /// not change: a text document takes the new path's text type, while a CBOR
+    /// document stays CBOR (the session still saves it as CBOR), and a text
+    /// document renamed to `.cbor` is still text, so it keeps the type it had.
     pub(crate) fn retarget(&mut self, path: &Path) {
         let target = match &mut self.kind {
             TabKind::Code {
                 path: p, file_type, ..
             } => {
-                if *file_type == karet_filetype::file_type_for_path(p) {
-                    *file_type = karet_filetype::file_type_for_path(path);
+                let renamed = karet_filetype::file_type_for_path(path);
+                if !is_cbor(*file_type) && !is_cbor(renamed) {
+                    *file_type = renamed;
                 }
                 Some(p)
             },
@@ -987,17 +994,35 @@ mod tests {
         assert!(tab.is_markdown());
     }
 
-    /// A type the content decided (CBOR sniffed from bytes) is not the old
-    /// path's, so a rename must not throw it away.
+    /// A CBOR document stays CBOR through a rename, whether its type came from
+    /// sniffed bytes or from a `.cbor` name it is renamed away from: the session
+    /// keeps saving it as CBOR.
     #[test]
-    fn retarget_keeps_a_content_derived_type() {
-        let mut tab = code("/x/data.bin", "");
+    fn retarget_keeps_a_cbor_document_cbor() {
+        let mut sniffed = code("/x/data.bin", "");
         let cbor = karet_filetype::file_type_for_language("cbor");
-        if let (TabKind::Code { file_type, .. }, Some(cbor)) = (&mut tab.kind, cbor) {
+        if let (TabKind::Code { file_type, .. }, Some(cbor)) = (&mut sniffed.kind, cbor) {
             *file_type = cbor;
         }
-        tab.retarget(Path::new("/x/renamed.bin"));
-        assert_eq!(tab.status_label(), "CBOR");
+        sniffed.retarget(Path::new("/x/renamed.bin"));
+        assert_eq!(sniffed.status_label(), "CBOR");
+
+        let mut named = code("/x/data.cbor", "");
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.bin"));
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.md"));
+        assert!(!named.is_markdown());
+    }
+
+    /// A text document renamed to `.cbor` is still text to the session, so it
+    /// keeps its text type rather than taking the CBOR label.
+    #[test]
+    fn retarget_does_not_make_a_text_document_cbor() {
+        let mut tab = code("/x/notes.md", "");
+        tab.retarget(Path::new("/x/notes.cbor"));
+        assert_eq!(tab.status_label(), "Markdown");
+        assert!(tab.is_markdown());
     }
 
     #[test]

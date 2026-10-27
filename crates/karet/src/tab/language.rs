@@ -96,6 +96,13 @@ pub(crate) fn code_language(file_type: FileType) -> &'static str {
     }
 }
 
+/// Whether `file_type` is CBOR: the one code-tab type whose document the
+/// session decodes and saves in a format other than text.
+#[must_use]
+pub(crate) fn is_cbor(file_type: FileType) -> bool {
+    karet_filetype::file_type_for_language("cbor") == Some(file_type)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
