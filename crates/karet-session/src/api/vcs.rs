@@ -18,31 +18,6 @@ pub struct RepositorySnapshot {
     pub stashes: Vec<StashEntry>,
 }
 
-/// A forge-neutral open pull request suitable for the branch picker.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PullRequestSummary {
-    /// Repository-local pull request number.
-    pub number: u64,
-    /// Pull request title.
-    pub title: String,
-    /// Author login, when available.
-    pub author: Option<String>,
-    /// Whether the pull request is a draft.
-    pub draft: bool,
-    /// Source branch name.
-    pub head_ref: String,
-    /// Source repository, including fork owner.
-    pub head_repo: String,
-    /// Current source commit.
-    pub head_sha: String,
-    /// Target branch name.
-    pub base_ref: String,
-    /// Target repository.
-    pub base_repo: String,
-    /// Browser URL.
-    pub url: String,
-}
-
 /// One serialized repository mutation. The backend runs these off the actor thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

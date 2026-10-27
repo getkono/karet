@@ -880,15 +880,6 @@ pub enum Event {
         /// Human-readable failure, if the action failed.
         error: Option<String>,
     },
-    /// One page of open pull requests for a remote.
-    PullRequests {
-        /// Remote queried by the command.
-        remote: String,
-        /// Returned entries.
-        items: Vec<PullRequestSummary>,
-        /// Next page advertised by the forge.
-        next_page: Option<u32>,
-    },
     /// Current-buffer blame, safe to discard when document/version/cursor changed.
     BlameResult {
         /// Attributed document.
@@ -1048,9 +1039,12 @@ pub enum Event {
         /// Search result page.
         page: GithubPage<GithubIssue>,
     },
-    /// A page of pull-request search results.
+    /// A page of pull requests: search results for
+    /// [`GithubCommand::SearchPullRequests`](crate::api::GithubCommand::SearchPullRequests),
+    /// or a remote's open pull requests for
+    /// [`GithubCommand::ListOpenPullRequests`](crate::api::GithubCommand::ListOpenPullRequests).
     GithubPullRequests {
-        /// Search result page.
+        /// Result page.
         page: GithubPage<GithubPullRequest>,
     },
     /// Actions workflows and runs loaded together for a layout-stable screen.

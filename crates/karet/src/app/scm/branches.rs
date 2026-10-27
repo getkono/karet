@@ -94,10 +94,9 @@ impl App {
         };
         self.pull_request_items.clear();
         self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send(VcsCommand::PullRequests {
+        self.pending_pull_requests = self.send(GithubCommand::ListOpenPullRequests {
             remote: remote.clone(),
             page: 1,
-            per_page: 100,
         });
         // Only once the request is actually out: nothing would ever answer — and
         // so retire the card — for a command a closed backend never took.

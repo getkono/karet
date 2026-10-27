@@ -1,5 +1,7 @@
 //! GitHub eligibility and asynchronous request worker.
 
+mod open_pulls;
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -43,6 +45,13 @@ pub(super) enum GithubJob {
     },
     PullRequests {
         query: String,
+        page: u32,
+    },
+    /// List the open pull requests of the repository `remote` points at; the
+    /// remote is resolved off the actor thread, in `root`'s repository.
+    OpenPullRequests {
+        root: Option<PathBuf>,
+        remote: String,
         page: u32,
     },
     Actions {
@@ -113,6 +122,13 @@ impl Session {
             GithubCommand::SearchIssues { query, page } => GithubJob::Issues { query, page },
             GithubCommand::SearchPullRequests { query, page } => {
                 GithubJob::PullRequests { query, page }
+            },
+            GithubCommand::ListOpenPullRequests { remote, page } => {
+                let root = self.vcs.as_ref().and_then(Repository::worktree_root);
+                if self.github_tx.is_none() {
+                    return self.open_pull_requests_without_worker(id, root, remote, page);
+                }
+                GithubJob::OpenPullRequests { root, remote, page }
             },
             GithubCommand::Actions { page } => GithubJob::Actions { page },
             GithubCommand::Issue { number } => GithubJob::Issue { number },
@@ -315,6 +331,9 @@ async fn run_job(
                     total_count: page.total_count,
                 },
             }),
+        GithubJob::OpenPullRequests { root, remote, page } => {
+            Ok(open_pulls::open_pull_requests(client, root, remote, page).await)
+        },
         GithubJob::Actions { page } => match client.workflows(repository, page).await {
             Ok(workflows) => {
                 client
@@ -447,7 +466,9 @@ fn operation_name(job: &GithubJob) -> GithubOperation {
         GithubJob::Refresh => GithubOperation::Refresh,
         GithubJob::Login { .. } => GithubOperation::SignIn,
         GithubJob::Issues { .. } => GithubOperation::Issues,
-        GithubJob::PullRequests { .. } => GithubOperation::PullRequests,
+        GithubJob::PullRequests { .. } | GithubJob::OpenPullRequests { .. } => {
+            GithubOperation::PullRequests
+        },
         GithubJob::Actions { .. } => GithubOperation::Actions,
         GithubJob::Issue { .. } => GithubOperation::IssueDetail,
         GithubJob::PullRequest { .. } => GithubOperation::PullRequestDetail,

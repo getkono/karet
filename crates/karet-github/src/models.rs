@@ -80,9 +80,6 @@ pub struct IssueSummary {
     /// GitHub web URL.
     #[serde(default)]
     pub html_url: String,
-    /// Whether this result is a pull request returned through the Issues API.
-    #[serde(default)]
-    pub pull_request: Option<serde_json::Value>,
 }
 
 impl IssueSummary {

@@ -29,7 +29,7 @@ pub enum GithubOperation {
     Refresh,
     /// Searching issues.
     Issues,
-    /// Searching pull requests.
+    /// Searching pull requests, or listing a remote's open pull requests.
     PullRequests,
     /// Listing workflows and their runs.
     Actions,

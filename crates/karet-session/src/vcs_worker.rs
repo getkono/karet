@@ -12,7 +12,6 @@ use karet_vcs::VcsError;
 
 use crate::api::DocumentId;
 use crate::api::Event;
-use crate::api::PullRequestSummary;
 use crate::api::RangeSpec;
 use crate::api::RepositorySnapshot;
 use crate::api::RequestId;
@@ -101,14 +100,6 @@ pub(crate) enum VcsJob {
     Commit {
         id: RequestId,
         message: String,
-        cancel: Cancellation,
-    },
-    /// Query open GitHub pull requests.
-    PullRequests {
-        id: RequestId,
-        remote: String,
-        page: u32,
-        per_page: u8,
         cancel: Cancellation,
     },
     /// Attribute a current document buffer.
@@ -341,24 +332,6 @@ fn run(
                 ),
             }
         },
-        VcsJob::PullRequests {
-            id,
-            remote,
-            page,
-            per_page,
-            cancel,
-        } => match pull_requests(root, &remote, page, per_page) {
-            Ok((items, next_page)) => events.emit_if_live(
-                Some(id),
-                &cancel,
-                Event::PullRequests {
-                    remote,
-                    items,
-                    next_page,
-                },
-            ),
-            Err(message) => events.emit_if_live(Some(id), &cancel, vcs_failure(message)),
-        },
         VcsJob::Blame {
             id,
             doc,
@@ -561,56 +534,6 @@ fn execute(repo: &Repository, action: &VcsAction) -> Result<VcsOutcome, String> 
             .map(|branch| VcsOutcome::PullRequestCheckedOut { branch }),
     };
     result.map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "github")]
-fn pull_requests(
-    root: &Option<PathBuf>,
-    remote_name: &str,
-    page: u32,
-    per_page: u8,
-) -> Result<(Vec<PullRequestSummary>, Option<u32>), String> {
-    let repo = repository(root)?;
-    let remote = repo
-        .remotes()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|remote| remote.name == remote_name)
-        .ok_or_else(|| format!("unknown remote: {remote_name}"))?;
-    let url = remote
-        .url
-        .ok_or_else(|| format!("remote {remote_name} has no fetch URL"))?;
-    let (owner, name) = karet_github::parse_remote(&url)
-        .ok_or_else(|| format!("remote {remote_name} is not hosted on GitHub"))?;
-    let response = karet_github::open_pull_requests(&owner, &name, page, per_page)
-        .map_err(|error| error.to_string())?;
-    let items = response
-        .items
-        .into_iter()
-        .map(|item| PullRequestSummary {
-            number: item.number,
-            title: item.title,
-            author: item.author,
-            draft: item.draft,
-            head_ref: item.head_ref,
-            head_repo: item.head_repo,
-            head_sha: item.head_sha,
-            base_ref: item.base_ref,
-            base_repo: item.base_repo,
-            url: item.url,
-        })
-        .collect();
-    Ok((items, response.next_page))
-}
-
-#[cfg(not(feature = "github"))]
-fn pull_requests(
-    _root: &Option<PathBuf>,
-    _remote_name: &str,
-    _page: u32,
-    _per_page: u8,
-) -> Result<(Vec<PullRequestSummary>, Option<u32>), String> {
-    Err("GitHub integration is disabled in this build".to_string())
 }
 
 /// The answer to a git job that failed: an error notification carrying

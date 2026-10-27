@@ -10,7 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::LineCol;
-use karet_session::PullRequestSummary;
+use karet_session::GithubPullRequest;
 use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
 use karet_vcs::StashOptions;
@@ -602,12 +602,12 @@ impl Overlay {
 
     /// Build an open-pull-request picker.
     #[must_use]
-    pub fn pull_requests(remote: String, items: Vec<PullRequestSummary>) -> Self {
+    pub fn pull_requests(remote: String, items: Vec<GithubPullRequest>) -> Self {
         let rows = items
             .into_iter()
             .map(|item| {
                 let draft = if item.draft { "draft · " } else { "" };
-                let author = item.author.as_deref().unwrap_or("unknown");
+                let author = item.creator.as_deref().unwrap_or("unknown");
                 (
                     format!("#{}  {}  {draft}{author}", item.number, item.title),
                     OverlayEvent::AcceptPullRequest {

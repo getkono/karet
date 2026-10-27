@@ -152,16 +152,6 @@
                 is_error_notice,
             ),
             (
-                "PullRequests",
-                VcsCommand::PullRequests {
-                    remote: "origin".to_owned(),
-                    page: 1,
-                    per_page: 10,
-                }
-                .into(),
-                is_error_notice,
-            ),
-            (
                 "Search",
                 WorkspaceCommand::Search {
                     query: literal_query("needle"),

@@ -476,11 +476,6 @@ impl App {
             SessionEvent::LineChanges { doc, markers, .. } => {
                 self.on_line_changes(id, doc, markers);
             },
-            SessionEvent::PullRequests {
-                remote,
-                items,
-                next_page,
-            } => self.on_pull_requests(id, remote, items, next_page),
             SessionEvent::VcsLog {
                 skip,
                 commits,
@@ -526,6 +521,9 @@ impl App {
                 self.apply_github_availability(repository, auth);
             },
             SessionEvent::GithubIssues { page } => self.apply_github_issues(id, page),
+            SessionEvent::GithubPullRequests { page } if self.answers_pull_request_picker(id) => {
+                self.on_pull_requests(page);
+            },
             SessionEvent::GithubPullRequests { page } => {
                 self.apply_github_pull_requests(id, page);
             },
@@ -556,6 +554,16 @@ impl App {
                         activity,
                         activity_error,
                     },
+                );
+            },
+            // The branch picker is a Source Control surface, so its failure is
+            // a Source Control error with the bare reason, not a GitHub-view one.
+            SessionEvent::GithubError { message, .. } if self.answers_pull_request_picker(id) => {
+                self.on_notification(
+                    id,
+                    karet_core::Severity::Error,
+                    NotificationKind::Vcs,
+                    message,
                 );
             },
             SessionEvent::GithubError { operation, message } => {

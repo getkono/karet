@@ -243,39 +243,34 @@ impl App {
         }
     }
 
-    /// Accumulate open-pull-request pages; the last page opens the picker.
-    pub(super) fn on_pull_requests(
-        &mut self,
-        id: Option<RequestId>,
-        remote: String,
-        items: Vec<PullRequestSummary>,
-        next_page: Option<u32>,
-    ) {
-        if id.is_some() && id == self.pending_pull_requests {
-            self.pending_pull_requests = None;
-            self.pull_request_items.extend(items);
-            if let Some(page) = next_page {
-                self.pending_pull_requests = self.send(VcsCommand::PullRequests {
-                    remote,
-                    page,
-                    per_page: 100,
-                });
-            } else if self.pull_request_items.is_empty() {
-                self.pull_request_remote = None;
-                self.notify_tagged(
-                    Report::Refusal,
-                    NotificationKind::Vcs,
-                    format!("{remote}: no open pull requests"),
-                    Some(Self::PULL_REQUESTS_TAG.to_string()),
-                );
-            } else {
-                // The picker opening is the answer, so the "loading…" card goes
-                // with it rather than sitting behind the overlay.
-                self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
-                let items = std::mem::take(&mut self.pull_request_items);
-                let remote = self.pull_request_remote.take().unwrap_or(remote);
-                self.overlay = Some(Overlay::pull_requests(remote, items));
-            }
+    /// Whether `id` is the open-pull-request picker's in-flight request.
+    pub(super) fn answers_pull_request_picker(&self, id: Option<RequestId>) -> bool {
+        id.is_some() && id == self.pending_pull_requests
+    }
+
+    /// Accumulate the picker's open-pull-request pages; the last page opens it.
+    pub(super) fn on_pull_requests(&mut self, page: GithubPage<GithubPullRequest>) {
+        self.pending_pull_requests = None;
+        self.pull_request_items.extend(page.items);
+        let remote = self.pull_request_remote.clone().unwrap_or_default();
+        if let Some(page) = page.next_page {
+            self.pending_pull_requests =
+                self.send(GithubCommand::ListOpenPullRequests { remote, page });
+        } else if self.pull_request_items.is_empty() {
+            self.pull_request_remote = None;
+            self.notify_tagged(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                format!("{remote}: no open pull requests"),
+                Some(Self::PULL_REQUESTS_TAG.to_string()),
+            );
+        } else {
+            // The picker opening is the answer, so the "loading…" card goes
+            // with it rather than sitting behind the overlay.
+            self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
+            let items = std::mem::take(&mut self.pull_request_items);
+            self.pull_request_remote = None;
+            self.overlay = Some(Overlay::pull_requests(remote, items));
         }
     }
 

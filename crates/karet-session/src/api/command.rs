@@ -656,15 +656,6 @@ pub enum VcsCommand {
         /// Action to run.
         action: VcsAction,
     },
-    /// Fetch a page of open pull requests for one GitHub remote.
-    PullRequests {
-        /// Configured remote whose URL identifies the GitHub repository.
-        remote: String,
-        /// One-based page number.
-        page: u32,
-        /// Maximum entries per page, from 1 to 100.
-        per_page: u8,
-    },
     /// Attribute the current buffer's cursor line.
     Blame {
         /// Open document to attribute.
@@ -788,6 +779,21 @@ pub enum GithubCommand {
     SearchPullRequests {
         /// User query without the repository/object scope controlled by the backend.
         query: String,
+        /// One-based result page.
+        page: u32,
+    },
+    /// List one page of the open pull requests, most recently updated first, of
+    /// the GitHub repository a configured remote points at. Answered with
+    /// [`Event::GithubPullRequests`](crate::api::Event::GithubPullRequests), or a
+    /// [`GithubOperation::PullRequests`](crate::api::GithubOperation::PullRequests)
+    /// error carrying the bare reason when the remote is unknown, not hosted on
+    /// github.com, or the request fails. Unlike the other GitHub commands it does
+    /// not need an eligible workspace: it uses the GitHub worker's client when
+    /// one is running and discovers a credential the same way otherwise.
+    ListOpenPullRequests {
+        /// Configured remote whose URL names the repository; it need not be the
+        /// `origin` the rest of the GitHub view is scoped to.
+        remote: String,
         /// One-based result page.
         page: u32,
     },

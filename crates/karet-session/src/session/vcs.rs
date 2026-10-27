@@ -61,19 +61,6 @@ impl Session {
                 );
                 let _ = self.vcs_worker.send(VcsJob::Action { id, action });
             },
-            VcsCommand::PullRequests {
-                remote,
-                page,
-                per_page,
-            } => {
-                self.submit_vcs(id, |id, cancel| VcsJob::PullRequests {
-                    id,
-                    remote,
-                    page,
-                    per_page,
-                    cancel,
-                });
-            },
             VcsCommand::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
             VcsCommand::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
             VcsCommand::LineChanges { doc } => self.request_line_changes(id, doc),
