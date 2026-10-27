@@ -770,7 +770,7 @@ fn land(
 
 fn picker(app: &mut crate::app::App) -> &mut crate::overlay::Picker<crate::overlay::OverlayEvent> {
     match app.overlay.as_mut() {
-        Some(crate::overlay::Overlay::Picker(picker)) => picker,
+        Some(crate::overlay::Overlay::Picker { picker, .. }) => picker,
         _ => panic!("a picker is open"),
     }
 }

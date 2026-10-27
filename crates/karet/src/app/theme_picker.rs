@@ -14,8 +14,10 @@
 
 use super::*;
 use crate::overlay::Picker;
+use crate::overlay::PickerKind;
 
-/// The picker's title, which is also how an open overlay is recognised as it.
+/// The picker's title. An open overlay is recognised as it by
+/// [`PickerKind::ColorTheme`], not by this.
 pub(crate) const THEME_PICKER_TITLE: &str = "Select Color Theme";
 
 /// The directory, beside a `setting.jsonc`, that holds the themes offered.
@@ -193,7 +195,7 @@ impl Overlay {
         for _ in 0..row.unwrap_or_default() {
             picker.select_down();
         }
-        Self::Picker(picker)
+        Self::picker(PickerKind::ColorTheme, picker)
     }
 
     /// The setting of the highlighted theme, when this is the theme picker
@@ -207,7 +209,7 @@ impl Overlay {
 
     /// Whether this is the Select Color Theme picker.
     fn is_theme_picker(&self) -> bool {
-        matches!(self, Self::Picker(picker) if picker.title() == THEME_PICKER_TITLE)
+        self.picker_kind() == Some(PickerKind::ColorTheme)
     }
 }
 

@@ -24,25 +24,14 @@ use karet_core::WorkspaceSymbol;
 use super::Overlay;
 use super::OverlayEvent;
 use super::Picker;
-use super::QUICK_OPEN_TITLE;
-use super::goto_line::FILE_AT_LINE_TITLE;
+use super::PickerKind;
 use super::goto_line::GO_TO_LINE_PREFIX;
-use super::goto_line::GO_TO_LINE_TITLE;
 
 /// The sigil that turns quick-open into Go to Symbol in Editor.
 pub const DOCUMENT_SYMBOL_PREFIX: &str = "@";
 
-/// The document-symbol picker's title, which is also how it is told apart.
-const DOCUMENT_SYMBOLS_TITLE: &str = "Go to Symbol in Editor";
-
-/// The breadcrumb's sibling picker's title.
-const SIBLING_SYMBOLS_TITLE: &str = "Go to Sibling Symbol";
-
 /// The sigil that turns quick-open into Go to Symbol in Workspace.
 pub const WORKSPACE_SYMBOL_PREFIX: &str = "#";
-
-/// The workspace-symbol picker's title, which is also how it is told apart.
-const WORKSPACE_SYMBOLS_TITLE: &str = "Go to Symbol in Workspace";
 
 /// Which list quick-open shows, chosen by the query's leading sigil.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +81,10 @@ impl Overlay {
     #[must_use]
     pub fn document_symbols(path: Option<&Path>, symbols: &[Symbol]) -> Self {
         let rows = symbol_rows(path, symbols);
-        Self::Picker(Picker::new(DOCUMENT_SYMBOLS_TITLE, rows).with_prefix(DOCUMENT_SYMBOL_PREFIX))
+        Self::picker(
+            PickerKind::DocumentSymbols,
+            Picker::new("Go to Symbol in Editor", rows).with_prefix(DOCUMENT_SYMBOL_PREFIX),
+        )
     }
 
     /// Build the breadcrumb's sibling picker: one row per symbol in `siblings`
@@ -117,32 +109,35 @@ impl Overlay {
                 (symbol.name.clone(), accept)
             })
             .collect();
-        let mut picker = Picker::new(SIBLING_SYMBOLS_TITLE, rows);
+        let mut picker = Picker::new("Go to Sibling Symbol", rows);
         let row = order.iter().position(|&i| i == current).unwrap_or_default();
         for _ in 0..row {
             picker.select_down();
         }
-        Self::Picker(picker)
+        Self::picker(PickerKind::SiblingSymbols, picker)
     }
 
     /// Which quick-open mode this overlay is, or `None` for any other overlay.
     #[must_use]
     pub fn quick_open_mode(&self) -> Option<QuickOpenMode> {
-        match self {
-            Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE => {
-                Some(QuickOpenMode::Files)
-            },
-            Self::Picker(picker) if picker.title() == DOCUMENT_SYMBOLS_TITLE => {
-                Some(QuickOpenMode::DocumentSymbols)
-            },
-            Self::Picker(picker) if picker.title() == WORKSPACE_SYMBOLS_TITLE => {
-                Some(QuickOpenMode::WorkspaceSymbols)
-            },
-            Self::Picker(picker) if picker.title() == FILE_AT_LINE_TITLE => {
-                Some(QuickOpenMode::FileAtLine)
-            },
-            Self::Picker(picker) if picker.title() == GO_TO_LINE_TITLE => Some(QuickOpenMode::Line),
-            _ => None,
+        match self.picker_kind()? {
+            PickerKind::QuickOpen => Some(QuickOpenMode::Files),
+            PickerKind::DocumentSymbols => Some(QuickOpenMode::DocumentSymbols),
+            PickerKind::WorkspaceSymbols => Some(QuickOpenMode::WorkspaceSymbols),
+            PickerKind::FileAtLine => Some(QuickOpenMode::FileAtLine),
+            PickerKind::GoToLine => Some(QuickOpenMode::Line),
+            PickerKind::SiblingSymbols
+            | PickerKind::ColorTheme
+            | PickerKind::SeamRoots
+            | PickerKind::RecentWorkspaces
+            | PickerKind::Locations
+            | PickerKind::Commands
+            | PickerKind::DiffTarget
+            | PickerKind::Branches
+            | PickerKind::PullRequests
+            | PickerKind::Stashes
+            | PickerKind::DeleteLocalBranch
+            | PickerKind::DeleteRemoteBranch => None,
         }
     }
 
@@ -152,7 +147,7 @@ impl Overlay {
         if self.quick_open_mode() != Some(QuickOpenMode::DocumentSymbols) {
             return;
         }
-        if let Self::Picker(picker) = self {
+        if let Self::Picker { picker, .. } = self {
             picker.set_items(symbol_rows(path, symbols));
         }
     }
@@ -166,8 +161,9 @@ impl Overlay {
     #[must_use]
     pub fn workspace_symbols(root: &Path, symbols: &[WorkspaceSymbol]) -> Self {
         let rows = workspace_symbol_rows(root, symbols);
-        Self::Picker(
-            Picker::new(WORKSPACE_SYMBOLS_TITLE, rows)
+        Self::picker(
+            PickerKind::WorkspaceSymbols,
+            Picker::new("Go to Symbol in Workspace", rows)
                 .with_prefix(WORKSPACE_SYMBOL_PREFIX)
                 .unranked(),
         )
@@ -179,7 +175,7 @@ impl Overlay {
         if self.quick_open_mode() != Some(QuickOpenMode::WorkspaceSymbols) {
             return;
         }
-        if let Self::Picker(picker) = self {
+        if let Self::Picker { picker, .. } = self {
             picker.set_items(workspace_symbol_rows(root, symbols));
         }
     }
