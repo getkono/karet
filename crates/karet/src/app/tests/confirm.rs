@@ -130,7 +130,7 @@ fn a_confirmation_shadows_the_editor_underneath_it() {
 fn discarding_from_source_control_asks_before_it_acts() {
     let (backend, mut app) = recording_app();
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::ScmDiscard);
     assert!(app.confirm.is_some(), "the discard raised a confirmation");
     assert!(

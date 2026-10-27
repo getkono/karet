@@ -3,7 +3,7 @@
 //! These live beside the pages rather than in the tab-kind match they were spelled
 //! out in, so the offsets stay reachable once a view rather than a tab owns them.
 
-use super::*;
+use crate::app::github::state::GithubViewState;
 use crate::app::scroll::adjust;
 use crate::app::scroll::clamp_u16;
 use crate::app::scroll::cursor_in_window;
@@ -64,7 +64,12 @@ impl GithubViewState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use karet_session::GithubPage;
+    use karet_session::GithubRepository;
+
+    use crate::app::github::forms::GithubPullRequestForm;
+    use crate::app::github::state::GithubViewState;
+    use crate::app::pending::Pending;
 
     fn issue() -> GithubViewState {
         GithubViewState::Issue {

@@ -1,6 +1,17 @@
 //! Application wiring for parser-backed inline editing macros.
 
-use super::*;
+use std::sync::Arc;
+
+use karet_core::Change;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_text::EditCause;
+
+use crate::app::App;
+use crate::app::syntax_select;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Resolve the active tab's configured inline macro for every caret and submit

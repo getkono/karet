@@ -22,7 +22,7 @@ fn diff_app(old: &str, new: &str) -> App {
     let mut app = App::new(dir, Vec::new(), vec![changed], false);
     app.backend = Some(Arc::new(RecordingBackend::new()));
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     app.on_backend_event(
         None,
@@ -493,7 +493,7 @@ fn a_commit_selection_skips_the_chrome_between_two_cards() {
 fn the_find_bar_supports_keyboard_and_mouse_selection() {
     let mut app = app();
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.push_tab(text_tab("t.rs", "alpha bravo charlie"));
     app.dispatch(Command::OpenFind);
     for c in "bravo".chars() {
@@ -527,7 +527,7 @@ fn the_find_bar_supports_keyboard_and_mouse_selection() {
 fn dragging_the_find_field_selects_the_text_under_the_pointer() {
     let mut app = app();
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.push_tab(text_tab("t.rs", "alpha"));
     app.dispatch(Command::OpenFind);
     for c in "alphabet".chars() {
@@ -550,7 +550,7 @@ fn dragging_the_find_field_selects_the_text_under_the_pointer() {
 fn clicking_the_replace_row_moves_the_edited_field() {
     let mut app = app();
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.push_tab(text_tab("t.rs", "alpha"));
     app.dispatch(Command::OpenFind);
     app.dispatch(Command::FindToggleReplace);
@@ -580,7 +580,7 @@ fn dragging_the_explorer_rename_field_selects_within_the_name() {
     write_file(&dir, "readme.md", b"hi\n");
     let mut app = App::new(dir, Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     screen(&mut app, 80, 24);
     app.dispatch(Command::ExplorerRename);
     screen(&mut app, 80, 24);

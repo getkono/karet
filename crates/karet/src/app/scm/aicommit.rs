@@ -315,7 +315,7 @@ impl App {
             .map(|status| status.options.clone())
             .unwrap_or_else(|| self.settings.git.ai_commit.clone());
         self.send_command(VcsCommand::ProbeAiCommit);
-        self.overlay = Some(crate::overlay::Overlay::AiCommit(
+        self.open_overlay(crate::overlay::Overlay::AiCommit(
             crate::overlay::AiCommitForm::new(options, self.ai_commit.availability.clone()),
         ));
     }

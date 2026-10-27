@@ -1,4 +1,22 @@
-use super::*;
+use std::path::Path;
+
+use karet_core::NotificationKind;
+use karet_session::LspCommand;
+
+use crate::app::App;
+use crate::app::COMMIT_AUTOLOAD_THRESHOLD;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::util::canonical;
+use crate::app::util::path_under;
+use crate::app::util::row_in_rect;
+use crate::app::util::same_path;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::outline::OutlineRow;
+use crate::outline::OutlineTarget;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
@@ -10,33 +28,6 @@ impl App {
             .panel_hits
             .iter()
             .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
-    }
-
-    /// Move focus between the sidebar and the editor.
-    pub(super) fn toggle_focus(&mut self) {
-        // A Problems filter edit belongs to one visit: leaving ends it, and
-        // coming back lands on the list rather than resuming the edit.
-        self.problems.filter_input = false;
-        self.focus = match self.focus {
-            Focus::Sidebar => Focus::Editor,
-            // A view that owns the full width has no sidebar to toggle into;
-            // focus would otherwise land on a panel that is not on screen.
-            Focus::Editor if self.view.shows_sidebar() => Focus::Sidebar,
-            Focus::Editor => Focus::Editor,
-            // Toggling out of the outline returns to the editor it annotates.
-            Focus::Outline => Focus::Editor,
-        };
-    }
-
-    /// Show `view` in the content area, moving focus onto it.
-    ///
-    /// Focus follows the switch for the same reason selecting a sidebar panel
-    /// focuses it: the user asked for that surface. It is also load-bearing for a
-    /// view that hides the sidebar — leaving focus on a panel that is no longer
-    /// drawn would strand every keystroke somewhere invisible.
-    pub(super) fn select_view(&mut self, view: View) {
-        self.view = view;
-        self.focus = Focus::Editor;
     }
 
     /// The flattened outline rows for the active tab, or empty when it has none.
@@ -90,12 +81,12 @@ impl App {
             // Focus the panel for immediate navigation, but only when it has content —
             // an empty "No outline" panel should not steal focus from the editor.
             if !self.active_outline_rows().is_empty() {
-                self.focus = Focus::Outline;
+                self.keyboard.focus_outline();
             }
         } else {
             self.outline.overlay = false;
-            if self.focus == Focus::Outline {
-                self.focus = Focus::Editor;
+            if self.keyboard.focus() == Focus::Outline {
+                self.keyboard.focus_editor();
             }
         }
     }
@@ -151,8 +142,8 @@ impl App {
         if self.outline.overlay {
             self.outline.visible = false;
             self.outline.overlay = false;
-            if self.focus == Focus::Outline {
-                self.focus = Focus::Editor;
+            if self.keyboard.focus() == Focus::Outline {
+                self.keyboard.focus_editor();
             }
         }
     }
@@ -165,7 +156,7 @@ impl App {
 
     /// Leave the outline panel, returning focus to the editor (the panel stays open).
     pub(super) fn outline_collapse(&mut self) {
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Navigate to the selected outline entry: jump a document to its page, or move
@@ -205,7 +196,7 @@ impl App {
     /// navigate to it. `outline_scroll` (recorded during draw) maps the screen row to
     /// the right entry even when the list is scrolled.
     pub(super) fn handle_outline_click(&mut self, row_y: u16) {
-        self.focus = Focus::Outline;
+        self.keyboard.focus_outline();
         let top = self.outline.content_rect.y;
         if row_y < top {
             return; // a click on the header just focuses the panel
@@ -509,7 +500,7 @@ impl App {
             self.explorer.ensure_built(&root);
             self.sidebar_panel = SidebarPanel::Explorer;
             self.sidebar_visible = true;
-            self.focus = Focus::Sidebar;
+            self.keyboard.focus_sidebar();
             return;
         }
         // Expand every ancestor directory from the root down to the target, plus the
@@ -542,7 +533,7 @@ impl App {
         self.explorer.select_index(idx);
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
     }
 
     /// The explorer row index for `path`: an exact row match (files, plain

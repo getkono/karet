@@ -321,7 +321,7 @@ fn switching_tab_closes_the_popup() {
 #[test]
 fn the_editor_losing_the_keyboard_closes_the_popup() {
     let (_backend, mut app) = open_popup("add(1)\n", LineCol::new(0, 4));
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.reconcile_completion();
     assert!(app.signature.ui.is_none());
 }

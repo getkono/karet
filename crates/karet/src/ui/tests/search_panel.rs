@@ -364,7 +364,7 @@ fn a_file_heading_never_overruns_the_list_width() -> Result<(), std::convert::In
 fn only_the_focused_cursor_wears_the_selection_bar() -> Result<(), std::convert::Infallible> {
     let dir = search_dir("focus-tiers");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.query = "needle".into();
     app.search.hits = vec![hit(&dir.join("a.rs"), 0, "let needle = 1;")];

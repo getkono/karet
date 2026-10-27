@@ -1,4 +1,84 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use crossterm::event::KeyModifiers;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_filetype::FileKind;
+use karet_filetype::IconStyle;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::ChangeSummary;
+#[cfg(test)]
+use karet_session::ConfigDiagnostic;
+use karet_session::LoadedConfig;
+use karet_session::Settings;
+use karet_session::VcsCommand;
+use karet_theme::Theme;
+use karet_widgets::FileTreeState;
+use karet_widgets::ListSelection;
+use karet_widgets::PaneLayout;
+use karet_widgets::SplitDir;
+
+use crate::app::App;
+use crate::app::DEFAULT_SIDEBAR_WIDTH;
+use crate::app::code_actions;
+use crate::app::code_lens;
+use crate::app::completion;
+use crate::app::debugging;
+use crate::app::diffs;
+use crate::app::editor;
+use crate::app::focus::KeyboardOwner;
+use crate::app::github;
+use crate::app::hierarchy;
+use crate::app::hit::FrameHits;
+use crate::app::inlay;
+use crate::app::inline_completion;
+use crate::app::language_servers;
+use crate::app::link_color;
+use crate::app::notifications::Report;
+use crate::app::occurrences;
+use crate::app::on_type;
+use crate::app::problems::ProblemsChrome;
+use crate::app::problems::ProblemsPanel;
+use crate::app::quick_open;
+use crate::app::review;
+use crate::app::seam;
+use crate::app::search::SearchPanel;
+use crate::app::signature;
+use crate::app::spelling::SpellingPanel;
+use crate::app::state::CommitInput;
+use crate::app::state::DocState;
+use crate::app::state::OutlinePanel;
+use crate::app::state::Scm;
+use crate::app::state::ScmChrome;
+use crate::app::state::ScreenModes;
+use crate::app::state::SearchChrome;
+use crate::app::state::SpellingChrome;
+use crate::app::state::StoredPane;
+use crate::app::state::TerminalCaps;
+use crate::app::state::TodosChrome;
+use crate::app::syntax_select;
+use crate::app::theme_picker;
+use crate::app::todos::TodosPanel;
+use crate::app::util::tab_language;
+use crate::app::vi;
+use crate::clipboard::Clipboard;
+use crate::command::Command;
+use crate::keymap::EditorTab;
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::SidebarPanel;
+use crate::notify::NotificationCenter;
+use crate::render::FileView;
+use crate::render::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
+use crate::view::View;
+use crate::workspace;
 
 impl App {
     /// Build the shell rooted at `root`, with the staged/working change groups for
@@ -29,7 +109,7 @@ impl App {
             caps: TerminalCaps::detect(),
             view: View::default(),
             github: github::GithubSurface::default(),
-            focus: Focus::Sidebar,
+            keyboard: KeyboardOwner::default(),
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
             explorer: FileTreeState::new(),
@@ -66,7 +146,6 @@ impl App {
             stored: HashMap::new(),
             closed: Vec::new(),
             view_history: Vec::new(),
-            overlay: None,
             find_open: false,
             commit_input: CommitInput::default(),
             commit_console: crate::app::commit_console::CommitConsole::default(),
@@ -336,7 +415,7 @@ impl App {
         // the new pane's tabs live and register its document with the backend.
         self.layout.set_focus(new_pane);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.register_doc(self.active);
     }
 
@@ -451,10 +530,11 @@ impl App {
     }
 
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
-        self.focus = match focus {
+        let focus = match focus {
             crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
             crate::cli::FocusChoice::Sidebar | crate::cli::FocusChoice::Editor => Focus::Editor,
         };
+        self.keyboard.focus_on(focus);
         self.startup_surface_requested = true;
     }
 
@@ -506,7 +586,7 @@ impl App {
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
         FocusTarget::from(
-            self.focus,
+            self.keyboard.focus(),
             self.sidebar_panel,
             self.active_editor_tab(),
             self.view,
@@ -550,8 +630,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::tests::support::app;
-    use crate::app::*;
     use crate::cli::FocusChoice;
+    use crate::keymap::Focus;
 
     /// `--focus sidebar` lands on the sidebar only when it is showing; a hidden
     /// sidebar, or `--focus editor`, leaves the editor focused whatever had focus.
@@ -566,10 +646,11 @@ mod tests {
         for (choice, visible, before, expect) in rows {
             let mut app = app();
             app.sidebar_visible = visible;
-            app.focus = before;
+            app.keyboard.focus_on(before);
             app.apply_startup_focus(choice);
             assert_eq!(
-                app.focus, expect,
+                app.keyboard.focus(),
+                expect,
                 "{choice:?} with sidebar visible={visible}"
             );
         }

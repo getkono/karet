@@ -1,9 +1,13 @@
 //! Hover request/response handling on the [`App`] (model in [`crate::hover`]).
 
 use karet_core::Hover;
+use karet_core::NotificationKind;
+use karet_session::LspCommand;
 use karet_session::RequestId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
 use crate::hover::HoverUi;
 use crate::hover::PendingHover;
 

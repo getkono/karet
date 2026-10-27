@@ -5,7 +5,17 @@
 //! of `SpellingScanProgress` batches and a single `SpellingScanFinished` — so the
 //! list fills as the walk proceeds rather than appearing all at once at the end.
 
-use super::*;
+use std::path::Path;
+
+use karet_session::Command as SessionCommand;
+use karet_session::RequestId;
+use karet_session::SpellingHit;
+use karet_session::WorkspaceCommand;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::util::rect_contains;
+use crate::keymap::SidebarPanel;
 
 /// Keep at most this many misspellings. A workspace can hold far more than a list
 /// is useful for, and every hit costs a `PathBuf` plus its line of context; past
@@ -51,7 +61,7 @@ impl App {
         }
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Spelling;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         if !self.spelling.scanned && self.spelling.scanning.is_none() {
             self.scan_workspace_spelling();
         }

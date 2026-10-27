@@ -2,10 +2,32 @@
 //! routing keys, pastes and the mouse to the active one, and applying what the
 //! terminals' background threads report.
 
+use std::time::Duration;
+use std::time::Instant;
+
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::term::TermMode;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::NotificationKind;
+use karet_session::ViewId;
+use karet_widgets::PaneId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::rect_contains;
+use crate::command::Command;
+use crate::keymap;
+use crate::keymap::Context;
+use crate::keymap::FocusTarget;
+use crate::keymap::KeyChord;
+use crate::keymap::Resolved;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::terminal::MouseAction;
 use crate::terminal::MouseButtonKind;
 use crate::terminal::MouseReport;
@@ -267,7 +289,7 @@ impl App {
             .min(area.height.saturating_sub(1));
         let mode = pane.mode();
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
         // A program tracking the mouse (htop, vim with `mouse=a`) gets the event;
         // Shift is the escape hatch to select text over it, as in xterm.

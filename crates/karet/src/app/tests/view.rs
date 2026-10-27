@@ -21,13 +21,13 @@ fn click(column: u16, row: u16) -> MouseEvent {
 fn selecting_a_view_moves_focus_onto_it() {
     let mut app = app();
     assert_eq!(app.view, View::Editor);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     app.dispatch(Command::SelectView(View::GitHub));
     assert_eq!(app.view, View::GitHub);
     // Load-bearing rather than merely tidy: focus follows the surface that now owns
     // the content area, so keys land on what the user is looking at.
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     app.dispatch(Command::SelectView(View::Editor));
     assert_eq!(app.view, View::Editor);
@@ -40,7 +40,7 @@ fn the_view_decides_the_active_keymap_layers() {
     assert_eq!(app.focus_target(), FocusTarget::Github);
     // The sidebar is not the content area, so it keeps its own layers whatever
     // view is showing.
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     assert_eq!(app.focus_target(), FocusTarget::Explorer);
 }
 
@@ -141,7 +141,7 @@ fn the_github_hooks_do_not_fire_under_another_view() {
         Some(super::support::repository()),
         super::github::anonymous_auth(),
     );
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let section = |app: &App| {
         app.github
             .dashboard()
@@ -231,7 +231,7 @@ fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
     let mut app = app();
     app.open_path(std::path::Path::new("Cargo.toml"));
     app.outline.visible = true;
-    app.focus = Focus::Outline;
+    app.keyboard.focus_outline();
     let _ = screen(&mut app, 100, 12);
     let tiled = app.last_frame.main_rect;
 
@@ -246,7 +246,7 @@ fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
     assert!(!app.outline.visible);
     assert_eq!(app.outline.rect, Rect::default());
     // Focus sat on the outline that vanished, so it moves where keys can land.
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
         !rows[11].contains("EDITOR"),
         "no status bar: {:?}",

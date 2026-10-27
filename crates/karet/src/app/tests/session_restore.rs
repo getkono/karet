@@ -78,7 +78,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     );
     assert_eq!(tab_paths(&after.tabs), vec![root.join("c.rs")]);
     assert!(
-        matches!(after.focus, Focus::Editor),
+        matches!(after.keyboard.focus(), Focus::Editor),
         "the keyboard is in the restored editor"
     );
     let left: Vec<&StoredPane> = after.stored.values().collect();
@@ -197,7 +197,7 @@ fn a_requested_startup_view_or_focus_outlasts_the_restored_layout() {
     sidebar.restore_workspace_layout(&state);
     assert_eq!(sidebar.layout.pane_count(), 2, "the layout is restored");
     assert!(
-        matches!(sidebar.focus, Focus::Sidebar),
+        matches!(sidebar.keyboard.focus(), Focus::Sidebar),
         "the sidebar keeps focus"
     );
     cleanup(&[&root, &state]);

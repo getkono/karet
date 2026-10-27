@@ -146,7 +146,7 @@ fn closing_a_panes_last_tab_focuses_the_most_recently_active_pane() {
     assert_eq!(app.layout.pane_count(), 2);
     assert_eq!(app.focus_pane(), first);
     assert_ne!(app.focus_pane(), second);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]

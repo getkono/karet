@@ -14,10 +14,19 @@
 use std::collections::HashMap;
 
 use karet_core::Change;
+use karet_core::NotificationKind;
 use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RequestId;
+use karet_text::EditCause;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::tab_language;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The on-type formatting state of the app.
 #[derive(Debug, Default)]

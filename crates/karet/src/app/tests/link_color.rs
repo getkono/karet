@@ -310,7 +310,7 @@ fn workspace(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
     app.open_path(&root.join("notes.md"));
     fill_reserved_tabs(&mut app);
     app.backend = Some(backend.clone());
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
         *doc = Some(DOC);

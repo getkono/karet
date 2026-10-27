@@ -2,11 +2,23 @@
 //! characters -- and resolving what the server deferred for the selected
 //! item.
 
+use karet_core::Change;
 use karet_core::CompletionItem;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_text::EditCause;
+use karet_text::TextBuffer;
 
-use super::*;
+use crate::app::App;
 use crate::completion::AcceptFollowUp;
 use crate::completion::CompletionMode;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The characters of `line` in columns `[from, to)`, or `None` past its end.
 fn columns(line: &str, from: u32, to: u32) -> Option<String> {
@@ -320,6 +332,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn buffer(text: &str) -> TextBuffer {

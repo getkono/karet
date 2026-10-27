@@ -2,7 +2,16 @@
 //! the streamed results grouped into file and match rows, and the folding and
 //! focus rules the Search panel's commands in [`super`] drive.
 
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_session::RequestId;
+use karet_session::SearchHit;
+use karet_widgets::ListSelection;
+use karet_widgets::textfield::TextFieldState;
+
+use crate::app::pending::Pending;
 
 /// The workspace-search panel state.
 pub(crate) struct SearchPanel {

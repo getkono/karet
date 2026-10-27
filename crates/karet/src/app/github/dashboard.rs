@@ -1,6 +1,11 @@
 //! Dashboard accessors, section requests, navigation, and sign-in.
 
-use super::*;
+use karet_session::GithubCommand;
+
+use crate::app::App;
+use crate::app::github::state::GithubDashboard;
+use crate::app::github::state::GithubSection;
+use crate::app::pending::Pending;
 
 impl App {
     /// The dashboard, but only while it is the page in front — what a key or a click

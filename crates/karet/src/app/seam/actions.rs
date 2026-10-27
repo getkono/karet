@@ -120,7 +120,7 @@ impl App {
         let explorer = self.explorer_seam_root();
         let root = self.root.clone();
         let items = self.seam_root_candidates(&root, current.clone(), explorer.clone());
-        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
+        self.open_overlay(crate::overlay::Overlay::seam_roots(items));
         self.seam_discovery.start(&root, current, explorer);
     }
 
@@ -144,7 +144,7 @@ impl App {
         let Some(items) = self.seam_discovery.accept(&root, discovery) else {
             return;
         };
-        if let Some(overlay) = self.overlay.as_mut() {
+        if let Some(overlay) = self.keyboard.overlay_mut() {
             overlay.set_seam_roots(items);
         }
     }
@@ -177,7 +177,7 @@ impl App {
             Some((pane, index)) => {
                 self.focus_pane_switch(pane);
                 self.set_active(index);
-                self.focus = crate::app::Focus::Editor;
+                self.keyboard.focus_editor();
                 if let Some(tab) = self.tabs.get_mut(index) {
                     tab.repoint_seam(root.clone());
                 }

@@ -354,7 +354,7 @@ fn scm_app(root: PathBuf) -> (App, EventRx) {
     let mut app = App::new(root, Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     (app, events)
 }
 

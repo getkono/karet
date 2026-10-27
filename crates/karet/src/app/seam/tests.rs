@@ -769,7 +769,7 @@ fn land(
 }
 
 fn picker(app: &mut crate::app::App) -> &mut crate::overlay::Picker<crate::overlay::OverlayEvent> {
-    match app.overlay.as_mut() {
+    match app.keyboard.overlay_mut() {
         Some(crate::overlay::Overlay::Picker { picker, .. }) => picker,
         _ => panic!("a picker is open"),
     }
@@ -819,7 +819,7 @@ fn a_reopened_seam_picker_offers_the_known_packages_and_keeps_the_highlight_when
     let (_dir, mut app, mut rx) = picker_app();
     app.open_seam_view_picker();
     land(&mut app, &mut rx);
-    app.overlay = None;
+    app.close_overlay();
 
     app.open_seam_view_picker();
     assert!(
@@ -841,7 +841,7 @@ fn a_reopened_seam_picker_offers_the_known_packages_and_keeps_the_highlight_when
 fn a_discovery_landing_after_the_picker_closed_leaves_the_overlay_in_its_place_alone() {
     let (_dir, mut app, mut rx) = picker_app();
     app.open_seam_view_picker();
-    app.overlay = Some(crate::overlay::Overlay::command_palette());
+    app.open_overlay(crate::overlay::Overlay::command_palette());
     let before = picker_rows(&mut app);
 
     land(&mut app, &mut rx);

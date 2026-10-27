@@ -2,10 +2,20 @@
 //! its first stop, following every edit, and Tab / Shift+Tab / Esc (see
 //! [`crate::completion::SnippetSession`]).
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use karet_core::CompletionItem;
+use karet_core::LineCol;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::ViewId;
+use karet_text::EditCause;
 
-use super::*;
+use crate::app::App;
 use crate::completion::SnippetSession;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The session `item`'s snippet starts, inserted as `text` by the

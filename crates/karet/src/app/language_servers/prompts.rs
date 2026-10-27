@@ -6,7 +6,15 @@
 //! in what they say — and in all three the first answer, the one every way of
 //! backing out takes, is the one that spends no bandwidth.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
 
 impl App {
     /// Offer to install a missing provider.

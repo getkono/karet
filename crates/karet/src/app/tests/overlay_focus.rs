@@ -11,7 +11,7 @@ use karet_vcs::CommitOutputLine;
 use karet_vcs::OutputStream;
 
 use super::harness::*;
-use super::support::*;
+use crate::app::util::rect_contains;
 use crate::app::*;
 
 /// Type `text` key by key, as a user would.
@@ -331,12 +331,32 @@ fn clicking_the_find_field_takes_the_keyboard_back() {
     rig.run(&[click(text(0, 5))]);
     let query = rig.app.last_frame.find_rects().query;
     // Even from the commit box, which outranks the bar while it is focused.
-    rig.app.commit_input.focused = true;
+    rig.app.keyboard.focus_commit_box();
     rig.run(&[click(At::Cell(query.x + 2, query.y))]);
     assert_eq!(rig.app.input_context().modal, Some(Modal::Find));
     rig.run(&typed("o"));
     assert_eq!(find_state(&rig).2, "foo");
     assert_eq!(rig.marked(), "|foo bar\n", "the document never saw the key");
+}
+
+/// Opening the bar from the commit box is the same hand-over as clicking its
+/// field: the box lets go, or it would keep outranking the bar it just opened.
+#[test]
+fn opening_find_from_the_commit_box_takes_the_keyboard() {
+    let mut rig = Rig::new("|foo bar\n");
+    rig.app.keyboard.focus_commit_box();
+    assert_eq!(rig.app.input_context().modal, Some(Modal::CommitInput));
+    rig.app.dispatch(Command::OpenFind);
+    assert!(!rig.app.keyboard.commit_box_focused());
+    assert_eq!(rig.app.input_context().modal, Some(Modal::Find));
+    rig.run(&typed("o"));
+    assert_eq!(find_state(&rig).2, "o");
+    assert_eq!(
+        code_tab_text(&rig.app),
+        "foo bar\n",
+        "the document never saw the key"
+    );
+    assert_eq!(rig.app.commit_input.text, "", "nor did the commit box");
 }
 
 #[test]
@@ -352,7 +372,7 @@ fn completion_keys_belong_to_the_focused_editor_only() {
         )],
         crate::completion::CompletionMode::Filtered,
     ));
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Explorer;
 
     send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);

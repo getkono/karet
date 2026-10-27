@@ -11,13 +11,22 @@
 //! Shrink walks back, so Shrink is the same whichever source grew it.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use karet_core::CursorState;
+use karet_core::Range;
 use karet_core::Span;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_text::TextBuffer;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredTree;
 
-use super::*;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// An Expand Selection waiting on the language server's selection ranges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,6 +306,10 @@ fn enclosing_ranges(tree: &LayeredTree, buffer: &TextBuffer, range: Range) -> Ve
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    use karet_core::Change;
+    use karet_core::LineCol;
+    use karet_core::TextEdit;
 
     use super::*;
 

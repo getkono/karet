@@ -1,8 +1,23 @@
 //! Application of asynchronous GitHub backend results.
 
+use karet_core::NotificationKind;
+use karet_session::GithubComment;
+use karet_session::GithubIssue;
 use karet_session::GithubOperation;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubWorkflow;
+use karet_session::GithubWorkflowRun;
+use karet_session::RequestId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubPullRequestSupplement;
+use crate::app::github::state::GithubPullRequestView;
+use crate::app::github::state::GithubViewState;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
 
 fn human_github_error(operation: GithubOperation, message: &str) -> String {
     let action = match operation {

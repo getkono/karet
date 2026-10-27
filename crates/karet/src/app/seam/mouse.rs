@@ -15,7 +15,6 @@ use crossterm::event::MouseEventKind;
 use super::Reroot;
 use super::geometry::SeamTarget;
 use crate::app::App;
-use crate::app::Focus;
 use crate::app::seam::SeamFocus;
 
 impl App {
@@ -42,7 +41,7 @@ impl App {
             MouseEventKind::ScrollLeft => self.seam_wheel_across(&target, -1),
             MouseEventKind::ScrollRight => self.seam_wheel_across(&target, 1),
             MouseEventKind::Down(MouseButton::Left) => {
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
                 let repeat = self.click_streak(mouse.column, mouse.row);
                 self.seam_click(&target, repeat >= 2);
             },

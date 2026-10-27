@@ -4,7 +4,32 @@
 //! hover and diagnostic popups. Split from the core mouse module to respect the
 //! per-file code-line ceiling.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::Notification;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_editor::resolve_folds;
+use karet_widgets::PaneId;
+use karet_widgets::breadcrumbs::BreadcrumbTarget;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::hit::ScrollSurface;
+use crate::app::hit::TabDrag;
+use crate::app::notifications::Report;
+use crate::app::state::StoredPane;
+use crate::app::util::rect_contains;
+use crate::app::util::tab_at;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Handle a mouse event over a pane's tab strip (click to switch / close, wheel
@@ -224,7 +249,7 @@ impl App {
             .map(|frame| frame.pane)
         {
             self.focus_pane_switch(pane);
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
         if self.click_streak(mouse.column, mouse.row) >= 2 {
             self.open_live_blame_detail();
@@ -283,7 +308,7 @@ impl App {
             .map(|frame| frame.pane)
         {
             self.focus_pane_switch(pane);
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
         if let Some((doc, link)) = server {
             self.follow_document_link(doc, link);
@@ -486,7 +511,7 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(_) => {
                 self.focus_pane_switch(pane);
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
                 self.scrollbar_mouse(mouse)
             },
             MouseEventKind::ScrollDown

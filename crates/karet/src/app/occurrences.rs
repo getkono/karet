@@ -14,11 +14,28 @@
 //! once, since it no longer describes what the caret is on. An answer for a
 //! caret or a text that has moved on is dropped.
 
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::BytePos;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::ThemeRole;
+use karet_search::SearchQuery;
+use karet_search::search_chunks;
+use karet_session::DocumentId;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
 use karet_session::api::DocumentHighlight;
 use karet_session::api::HighlightKind;
+use karet_text::TextBuffer;
 
-use super::*;
+use crate::app::App;
+use crate::tab::TabKind;
 
 /// Where the occurrence probe stands: a caret at one revision of one view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

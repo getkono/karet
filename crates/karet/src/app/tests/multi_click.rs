@@ -2,7 +2,6 @@
 //! (`docs/editing-behavior.md`, "Multi-click").
 
 use super::harness::*;
-use super::support::*;
 use crate::app::editor::ClickSurface;
 use crate::app::*;
 

@@ -345,7 +345,7 @@ fn language_server_install_action_is_the_only_install_approval() {
         })
         .unwrap_or_default();
     assert!(install_sent);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
@@ -593,7 +593,7 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
         })
         .unwrap_or_default();
     assert!(apply_sent);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)

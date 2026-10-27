@@ -1,16 +1,37 @@
+use std::path::Path;
+use std::path::PathBuf;
+
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Selection;
+use karet_filetype::FileKind;
 use karet_session::layout;
 use karet_session::layout::LayoutAxis;
 use karet_session::layout::LayoutNode;
 use karet_session::layout::LayoutPane;
 use karet_session::layout::LayoutTab;
 use karet_session::layout::WorkspaceLayout;
+use karet_widgets::DropZone;
+use karet_widgets::PaneId;
+use karet_widgets::PaneLayout;
+use karet_widgets::SplitAxis;
+use karet_widgets::SplitDir;
+use karet_widgets::drop_zone;
 use karet_widgets::pane::tree::PaneTree;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::StoredPane;
+use crate::app::util::rect_contains;
+use crate::app::util::tab_at;
 use crate::tab::FillView;
+use crate::tab::MarkdownPreviewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::tab::place_fill;
+use crate::workspace;
 
 impl App {
     /// Grow the focused pane toward `dir` by the keyboard resize step.
@@ -135,7 +156,7 @@ impl App {
         }
         self.layout.set_focus(dest);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.reconcile_open_docs();
     }
 
@@ -168,7 +189,7 @@ impl App {
             .take()
             .is_none()
             .then(MarkdownPreviewState::default);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Split the focused pane in `dir` via the keyboard, opening a second view of the
@@ -192,7 +213,7 @@ impl App {
         // document, and the answer binds only the source's view: the copy asks
         // for its own, or it would never fill.
         self.register_doc(self.active);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Build a second view of the active tab for a new pane: the same document

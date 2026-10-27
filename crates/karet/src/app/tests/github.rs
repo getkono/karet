@@ -46,7 +46,7 @@ pub(super) fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
 fn github_app() -> App {
     let mut app = app();
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
     app
 }
@@ -57,7 +57,7 @@ pub(super) fn tagged_github_app() -> App {
     let mut app = app();
     app.backend = Some(Arc::new(RecordingBackend::new()));
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
     app
 }
@@ -242,7 +242,7 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
     if let Ok(mut sent) = backend.sent.lock() {
         sent.clear();
@@ -311,7 +311,7 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     let mut app = app();
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // A detail page stacks on the dashboard; the surface refuses to hold one without
     // it, since `Esc` would then have nothing to fall back to.
     app.apply_github_availability(Some(repository()), anonymous_auth());
@@ -408,7 +408,7 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // A detail page stacks on the dashboard; the surface refuses to hold one without
     // it, since `Esc` would then have nothing to fall back to.
     app.apply_github_availability(Some(repository()), anonymous_auth());
@@ -713,7 +713,7 @@ fn opening_a_tab_from_the_github_view_shows_it() {
     app.push_tab(Tab::welcome());
 
     assert_eq!(app.view, View::Editor);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -795,7 +795,7 @@ fn selecting_an_existing_tab_from_the_github_view_shows_it() {
     app.select_tab(0);
 
     assert_eq!(app.view, View::Editor);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -803,12 +803,12 @@ fn previewing_from_the_sidebar_does_not_yank_you_out_of_the_github_view() {
     // Selection-follows-preview is passive: arrowing a file tree must not rip the
     // user out of the view they are reading. Only a focus-stealing open does that.
     let mut app = github_app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     app.install_preview_tab(Tab::welcome(), false);
 
     assert_eq!(app.view, View::GitHub);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 }
 
 #[test]
@@ -820,7 +820,7 @@ fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
     app.apply_github_issues(
         dashboard_pending(&app),

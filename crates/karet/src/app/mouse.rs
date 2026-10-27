@@ -1,4 +1,25 @@
-use super::*;
+use std::io;
+use std::io::Write;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_widgets::SplitAxis;
+use karet_widgets::scroll::TrackHit;
+
+use crate::app::App;
+use crate::app::MIN_SCM_REGION;
+use crate::app::SIDEBAR_MIN_WIDTH;
+use crate::app::hit::PaneResize;
+use crate::app::hit::TextFieldTarget;
+use crate::app::search::SearchPanelField;
+use crate::app::search::SearchRow;
+use crate::app::util::rect_contains;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::view::View;
 
 pub(super) mod chrome;
 mod focus;
@@ -131,7 +152,7 @@ impl App {
         if self.handle_confirm_mouse(mouse) {
             return;
         }
-        if self.overlay.is_some() {
+        if self.keyboard.overlay().is_some() {
             return;
         }
         if self.handle_diagnostic_view_mouse(mouse) {
@@ -388,7 +409,7 @@ impl App {
                     .map(|f| (f.pane, f.editor_rect))
                 {
                     self.focus_pane_switch(pane);
-                    self.focus = Focus::Editor;
+                    self.keyboard.focus_editor();
                     self.right_click_caret(area, mouse.column, mouse.row);
                     self.open_pane_context_menu(mouse.column, mouse.row, true);
                     self.add_spelling_to_menu(area, mouse.column, mouse.row);
@@ -408,7 +429,7 @@ impl App {
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
                 } else if !self.handle_find_bar_click(mouse) {
-                    self.commit_input.focused = false;
+                    self.keyboard.release_commit_box();
                     // A read-only surface owns the click before the editor sees it;
                     // the editor's own handler only answers for code tabs.
                     if !self.begin_surface_selection(mouse.column, mouse.row) {
@@ -465,19 +486,19 @@ impl App {
     /// row; Ctrl toggles it in the selection and Shift extends a range to it
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
-        if self.focus != Focus::Sidebar {
+        if self.keyboard.focus() != Focus::Sidebar {
             // Arriving by click lands on the Problems list, not a filter edit
             // abandoned when focus left; a click on the filter field re-enters it.
             self.problems.filter_input = false;
         }
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         // The AI chip sits on the commit box's border, so it is tested before the
         // box itself — and only when it was actually painted, since the rect is
         // cleared each frame.
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.ai_chip_rect, (col, row_y))
         {
-            self.commit_input.focused = true;
+            self.keyboard.focus_commit_box();
             if self.ai_commit.generating().is_some() {
                 self.commit_generate_cancel();
             } else {
@@ -488,7 +509,7 @@ impl App {
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.commit_rect, (col, row_y))
         {
-            self.commit_input.focused = true;
+            self.keyboard.focus_commit_box();
             self.commit_input.place_cursor(
                 col.saturating_sub(self.scm_ui.commit_rect.x),
                 row_y.saturating_sub(self.scm_ui.commit_rect.y),
@@ -498,7 +519,7 @@ impl App {
             self.text_field_drag = Some(TextFieldTarget::Commit);
             return;
         }
-        self.commit_input.focused = false;
+        self.keyboard.release_commit_box();
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
         if row_y == self.last_frame.sidebar_rect.y
             && let Some(cmd) = self
@@ -713,91 +734,6 @@ impl App {
                     },
                     _ => self.open_selected_result(),
                 }
-            },
-        }
-    }
-
-    fn place_text_field_cursor(
-        &mut self,
-        target: TextFieldTarget,
-        column: u16,
-        row: u16,
-        extend: bool,
-    ) {
-        match target {
-            TextFieldTarget::Commit => self.commit_input.place_cursor(
-                column.saturating_sub(self.scm_ui.commit_rect.x),
-                row.saturating_sub(self.scm_ui.commit_rect.y),
-                self.scm_ui.commit_rect.width,
-                extend,
-            ),
-            TextFieldTarget::SearchFind => {
-                let cell = usize::from(
-                    column
-                        .saturating_sub(self.search_ui.query_rect.x)
-                        .saturating_add(self.search.query_edit.scroll),
-                );
-                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.query, cell);
-                self.search
-                    .query_edit
-                    .set_cursor(&self.search.query, cursor, extend);
-            },
-            TextFieldTarget::ExplorerRename => {
-                let Some(rect) = self.explorer.edit_rect() else {
-                    return;
-                };
-                self.explorer
-                    .edit_place_cursor(usize::from(column.saturating_sub(rect.x)), extend);
-            },
-            TextFieldTarget::FindQuery | TextFieldTarget::FindReplace => {
-                let query = target == TextFieldTarget::FindQuery;
-                let rect = if query {
-                    Some(self.last_frame.find_rects().query)
-                } else {
-                    self.last_frame.find_rects().replace
-                };
-                let Some(rect) = rect else {
-                    return;
-                };
-                let Some(find) = self.active_find_mut() else {
-                    return;
-                };
-                let (text, edit) = if query {
-                    (&mut find.query, &mut find.query_edit)
-                } else {
-                    (&mut find.replace, &mut find.replace_edit)
-                };
-                let cell = usize::from(column.saturating_sub(rect.x).saturating_add(edit.scroll));
-                let cursor = karet_widgets::textfield::byte_at_cell(text, cell);
-                edit.set_cursor(text, cursor, extend);
-            },
-            TextFieldTarget::SearchReplace
-            | TextFieldTarget::SearchIncludes
-            | TextFieldTarget::SearchExcludes => {
-                let (rect, text, edit) = match target {
-                    TextFieldTarget::SearchIncludes => (
-                        self.search_ui.includes_rect,
-                        &self.search.includes,
-                        &mut self.search.includes_edit,
-                    ),
-                    TextFieldTarget::SearchExcludes => (
-                        self.search_ui.excludes_rect,
-                        &self.search.excludes,
-                        &mut self.search.excludes_edit,
-                    ),
-                    _ => (
-                        self.search_ui.replace_rect,
-                        &self.search.replace,
-                        &mut self.search.replace_edit,
-                    ),
-                };
-                let Some(rect) = rect else {
-                    return;
-                };
-                let cell = usize::from(column.saturating_sub(rect.x).saturating_add(edit.scroll));
-                let cursor = karet_widgets::textfield::byte_at_cell(text, cell);
-                let owned = text.clone();
-                edit.set_cursor(&owned, cursor, extend);
             },
         }
     }

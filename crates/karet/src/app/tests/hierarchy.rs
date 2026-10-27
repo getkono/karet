@@ -126,10 +126,13 @@ fn each_command_opens_its_tree_at_once_asking_at_the_caret() {
         );
         let shown = app.hierarchy.tree.as_ref().map(HierarchyTree::title);
         assert_eq!(shown, Some(title));
-        assert!(app.overlay.is_none(), "the tree is a panel, not an overlay");
+        assert!(
+            app.keyboard.overlay().is_none(),
+            "the tree is a panel, not an overlay"
+        );
         assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
         assert!(app.sidebar_visible);
-        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(app.keyboard.focus(), Focus::Sidebar);
         assert!(rows(&app).is_empty(), "nothing is shown before the answer");
     }
 }
@@ -218,7 +221,11 @@ fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.tabs[app.active].path(), Some(lib.as_path()));
-    assert_eq!(app.focus, Focus::Editor, "the opened item takes the keys");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Editor,
+        "the opened item takes the keys"
+    );
     // The opened tab waits for its text; the caret lands once it arrives.
     fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 3));
@@ -229,7 +236,7 @@ fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
     assert_eq!(rows(&app), vec!["▾ main", "  · caller"]);
     assert_eq!(selected(&app), Some(1));
     app.handle_key(KeyEvent::new(KeyCode::Char('8'), KeyModifiers::CONTROL));
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
     key(&mut app, KeyCode::Up);
     key(&mut app, KeyCode::Enter);
@@ -378,7 +385,7 @@ fn no_roots_closes_the_tree_and_says_why() {
     assert!(app.hierarchy.tree.is_none());
     assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
     assert!(!app.sidebar_visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     let titles: Vec<_> = app
         .notifications
         .active()
@@ -603,7 +610,7 @@ fn an_empty_replacement_returns_to_what_the_first_tree_replaced() {
     answer(&mut app, second, Vec::new());
     assert!(app.hierarchy.tree.is_none());
     assert_eq!(app.sidebar_panel, SidebarPanel::Todos);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 /// A sidebar the user hid while the roots were on their way stays hidden
@@ -617,12 +624,12 @@ fn an_empty_answer_leaves_a_sidebar_hidden_meanwhile_hidden() {
     app.dispatch(Command::ShowSubtypes);
     let prepare = sent(&backend)[0].0;
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     answer(&mut app, prepare, Vec::new());
     assert!(app.hierarchy.tree.is_none());
     assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
     assert!(!app.sidebar_visible, "the hidden sidebar is not reopened");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 /// A tree with one level answered: `main` (in `main.rs`) expanded onto
@@ -740,7 +747,7 @@ fn selecting_the_panel_without_a_tree_refuses() {
     let (_backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
     app.handle_key(KeyEvent::new(KeyCode::Char('8'), KeyModifiers::CONTROL));
     assert_ne!(app.sidebar_panel, SidebarPanel::Hierarchy);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.notifications.active().len(), 1);
 }
 

@@ -10,7 +10,9 @@ use karet_syntax::FoldKind;
 use karet_syntax::FoldRegion;
 use karet_syntax::FoldRegions;
 
-use super::super::*;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The region a cursor-scoped fold command acts on at `line`: the one headed
 /// on that line, else the innermost one containing it.

@@ -1,4 +1,34 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
+
+use crate::app::App;
+use crate::app::OPERATION_SHUTDOWN_TIMEOUT;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::OperationBlocker;
+use crate::app::state::PendingAutoSave;
+use crate::app::state::PendingSave;
+use crate::app::util::close_prompt_choices;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::Modal;
+use crate::tab::FindState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The most tab titles the close confirmation spells out before summarizing.
 const NAMED_TABS: usize = 6;
@@ -535,7 +565,7 @@ impl App {
         }
         self.auto_save_pending
             .insert(doc, PendingAutoSave { version, deadline });
-        let focused = (self.focus == Focus::Editor)
+        let focused = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if mode == AutoSave::OnFocusChange && focused != Some(doc) {
@@ -567,7 +597,7 @@ impl App {
         if self.settings.files.auto_save != AutoSave::OnFocusChange {
             return;
         }
-        let current = (self.focus == Focus::Editor)
+        let current = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if previous != current
@@ -581,7 +611,7 @@ impl App {
     /// Save the active editor document when the terminal window itself loses focus.
     pub(super) fn auto_save_focus_lost(&mut self) {
         if self.settings.files.auto_save == AutoSave::OnFocusChange
-            && self.focus == Focus::Editor
+            && self.keyboard.focus() == Focus::Editor
             && let Some(doc) = self.active_code_doc()
             && self.auto_save_pending.contains_key(&doc)
         {

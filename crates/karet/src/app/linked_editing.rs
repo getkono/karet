@@ -10,10 +10,18 @@
 //! is ordinary multi-caret editing: it ends with the carets.
 
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
 use karet_core::Selection;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RequestId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// A Start Linked Editing waiting on the server's linked ranges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,6 +175,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn on(line: u32, from: u32, to: u32) -> Range {

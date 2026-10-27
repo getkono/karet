@@ -1,4 +1,16 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_session::ChangeSummary;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::app::util::canonical;
+use crate::render::Section;
+use crate::tab::MergeConflictState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::workspace;
 
 impl App {
     /// Open the Source-Control cursor's change as a materialized view and focus it.

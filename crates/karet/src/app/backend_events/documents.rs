@@ -2,7 +2,19 @@
 //! symbols, and the non-UTF-8 fallback. Called only from the
 //! [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::Diagnostic;
+use karet_core::NotificationKind;
+use karet_core::Symbol;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::TabKind;
 
 impl App {
     /// Bind an answered open to the code tab that requested it, or release the

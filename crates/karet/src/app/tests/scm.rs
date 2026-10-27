@@ -293,13 +293,13 @@ fn commit_metadata_response_progressively_fills_pending_tab() {
 fn command_palette_keys_route_through_the_overlay_layer() {
     let mut app = app();
     app.dispatch(Command::OpenCommandPalette);
-    assert!(app.overlay.is_some());
+    assert!(app.keyboard.overlay().is_some());
     // A printable is a fall-through into the query; Esc resolves to
     // OverlayCancel via the Overlay layer and dismisses the overlay.
     send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
-    assert!(app.overlay.is_some());
+    assert!(app.keyboard.overlay().is_some());
     send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn discard_prompt_confirms_and_cancels_through_the_keymap() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     // Enter takes the selected row, which on an unread dialog is the safe one.
     app.dispatch(Command::ScmDiscard);
@@ -462,13 +462,13 @@ fn scm_cursor_display_row_reserves_line_for_empty_staged_section() {
 fn permanent_commit_input_focuses_even_before_changes_are_staged() {
     let mut app = app();
     app.dispatch(Command::ScmCommit);
-    assert!(app.commit_input.focused);
+    assert!(app.keyboard.commit_box_focused());
 
     // Drafting is always available; only submission requires staged changes.
     app.apply_vcs_status(Vec::new(), vec![change("b.rs", StatusKind::Modified)]);
     app.commit_cancel();
     app.dispatch(Command::ScmCommit);
-    assert!(app.commit_input.focused);
+    assert!(app.keyboard.commit_box_focused());
     app.commit_input.text = "draft".to_string();
     app.commit_input
         .edit
@@ -543,7 +543,7 @@ fn commit_editor_supports_multiline_navigation_paste_and_submit() {
 #[test]
 fn commit_editor_selection_replaces_and_deletes_words() {
     let mut app = app();
-    app.commit_input.focused = true;
+    app.keyboard.focus_commit_box();
     app.commit_input.text = "subject line\nbody text".to_string();
     app.commit_input
         .edit
@@ -583,7 +583,7 @@ fn opening_a_diff_keeps_source_control_focused() {
     assert!(app.active_is_diff(), "the diff preview is shown");
     assert!(app.tabs[app.active].is_preview);
     assert_eq!(app.tabs[app.active].title, "b.rs");
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.focus_target(), FocusTarget::SourceControl);
     assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
     // Arrowing back retargets the SAME preview slot — never one tab per
@@ -596,7 +596,7 @@ fn opening_a_diff_keeps_source_control_focused() {
     );
     assert!(app.tabs[app.active].is_preview);
     assert_eq!(app.tabs[app.active].title, "a.rs");
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 }
 
 #[test]
@@ -613,13 +613,13 @@ fn enter_on_a_change_materializes_and_focuses_the_diff() {
     assert_eq!(app.tabs.len(), 1, "Enter must reuse the previewed diff");
     assert!(!app.tabs[app.active].is_preview, "Enter materializes");
     assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
     // Enter again (back from the sidebar): re-focuses, never duplicates.
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -638,7 +638,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
     app.handle_sidebar_click(3, 2, KeyModifiers::NONE);
     assert!(app.active_is_diff());
     assert!(app.tabs[app.active].is_preview);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let view = app.tabs[app.active].view;
 
     // Second click: the SAME view is materialized and focused — the bug was
@@ -654,7 +654,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
         "double-click materializes"
     );
     assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
 }
 
@@ -664,7 +664,7 @@ fn enter_on_an_explorer_file_materializes_it() {
     write_file(&dir, "a.rs", b"fn a() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     select_explorer_path(&mut app, &dir.join("a.rs"));
 
     // Enter opens the file materialized (not a preview) and focuses it.
@@ -674,13 +674,13 @@ fn enter_on_an_explorer_file_materializes_it() {
         !app.tabs[0].is_preview,
         "Enter materializes, never previews"
     );
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     // Enter again re-focuses the same tab — no duplicate.
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     // And Enter on a file currently in the preview slot materializes that
     // same tab in place.
@@ -688,7 +688,7 @@ fn enter_on_an_explorer_file_materializes_it() {
     app.open_path_preview(&dir.join("a.rs"), false);
     assert!(app.tabs[0].is_preview);
     let view = app.tabs[0].view;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1);
     assert!(!app.tabs[0].is_preview);

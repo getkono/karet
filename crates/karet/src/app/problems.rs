@@ -7,7 +7,24 @@
 //! whenever a document's diagnostic set is replaced or the document closes, so
 //! it can never show a diagnostic the editor has already dropped.
 
-use super::*;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::Diagnostic;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::SpellingChrome;
+use crate::app::util::rect_contains;
+use crate::keymap::SidebarPanel;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// The `source` the spell checker stamps on its diagnostics (mirrors
 /// `karet_session`'s private `SPELL_SOURCE`). Misspellings have a panel of
@@ -280,7 +297,7 @@ impl App {
     pub(super) fn show_problems(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Problems;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         // Arriving at the panel lands on the list, never mid-way through a
         // filter edit the user walked away from.
         self.problems.filter_input = false;
@@ -315,7 +332,7 @@ impl App {
         if self.sidebar_panel != SidebarPanel::Problems || !self.sidebar_visible {
             self.show_problems();
         }
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.problems.filter_input = true;
     }
 
@@ -426,7 +443,7 @@ impl App {
             tab.editor.goto(&buffer, at);
         }
         self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.problems.filter_input = false;
         let label = match severity {
             Severity::Error => "error",
@@ -453,6 +470,7 @@ pub(crate) type ProblemsChrome = SpellingChrome;
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn diagnostic(line: u32, col: u32, severity: Severity, message: &str) -> Diagnostic {

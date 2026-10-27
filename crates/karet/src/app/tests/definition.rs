@@ -217,7 +217,7 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
         },
     );
 
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("several locations should offer a choice");
     };
     // Paths are shown relative to the workspace and lines 1-based, as everywhere
@@ -503,7 +503,7 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
 #[test]
 fn alt_left_in_the_search_field_is_still_word_motion() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.query = "foo bar".into();
     app.search_focus_field(SearchPanelField::Find);
@@ -776,7 +776,7 @@ fn a_single_reference_still_opens_the_picker() {
 
     // Where the symbol is used is the answer, so one use is listed rather than
     // jumped to; the caret stays put until the user picks it.
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("references should be listed");
     };
     assert_eq!(overlay.title(), "References");
@@ -807,7 +807,7 @@ fn a_single_implementation_is_jumped_to() {
     );
     fill_reserved_tabs(&mut app);
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 0));
 }
@@ -843,7 +843,11 @@ fn a_reference_preview_reads_the_open_buffer_over_the_file_on_disk() {
         },
     );
 
-    let rows = app.overlay.as_ref().map(Overlay::rows).unwrap_or_default();
+    let rows = app
+        .keyboard
+        .overlay()
+        .map(Overlay::rows)
+        .unwrap_or_default();
     assert_eq!(
         rows,
         vec![
@@ -870,7 +874,7 @@ fn an_empty_references_answer_names_what_was_not_found() {
         },
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(last_message(&app).as_deref(), Some("no references found"));
 }
 

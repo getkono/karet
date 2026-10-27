@@ -16,17 +16,34 @@
 //! ([`code_lens_rows`]); a click on a title runs its command on the server,
 //! and only a failure is reported.
 
+use std::collections::HashMap;
+use std::time::Duration;
+use std::time::Instant;
+
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use karet_core::CodeLens;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_core::VirtualLine;
 use karet_session::AppliedWorkspaceEdit;
+use karet_session::DocumentId;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_text::TextBuffer;
 
 use super::inlay::HintRange;
 use super::inlay::PendingInlay;
 use super::inlay::inlay_retry_delay;
 use super::inlay::shift_position;
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::rect_contains;
+use crate::tab::TabKind;
 
 /// The lenses held for each document, and the requests for them.
 #[derive(Default)]

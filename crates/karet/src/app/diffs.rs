@@ -1,4 +1,21 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::PreparedChange;
+use karet_session::RequestId;
+use karet_session::VcsCommand;
+use karet_session::ViewId;
+use karet_vcs::StatusKind;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::render::FileView;
+use crate::render::Section;
+use crate::tab::PagerState;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
 
 /// A trivially-constructible prepared change for a binary pair: an empty diff
 /// flagged binary, so the painter shows the standard placeholder without a

@@ -255,7 +255,7 @@ impl App {
             return false;
         }
         self.focus_pane_switch(pane);
-        self.focus = super::Focus::Editor;
+        self.keyboard.focus_editor();
         let at = self.surface_pos_at(&region, col, row);
         self.surface_selection = Some(SurfaceSelection {
             surface: region.surface,
