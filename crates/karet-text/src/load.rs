@@ -79,8 +79,23 @@ pub enum LoadError {
         offset: usize,
     },
     /// An I/O error while reading the file.
-    #[error("load i/o error: {0}")]
-    Io(String),
+    #[error("load i/o error: {message}")]
+    Io {
+        /// The kind of failure, so a caller can tell a missing file or a
+        /// permission problem from any other error without re-reading the file.
+        kind: std::io::ErrorKind,
+        /// The operating system's description of the failure.
+        message: String,
+    },
+}
+
+impl From<std::io::Error> for LoadError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
 }
 
 /// The UTF-8 byte-order mark: stripped on load, re-added on save.
@@ -127,7 +142,7 @@ impl TextBuffer {
     /// Returns [`LoadError::Io`] if the file cannot be read, or
     /// [`LoadError::NotUtf8`] if its contents are not valid UTF-8.
     pub fn load(path: &Path) -> Result<Self, LoadError> {
-        let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
+        let bytes = std::fs::read(path)?;
         let mut buf = Self::from_bytes(&bytes)?;
         buf.record_disk_state(path, &bytes);
         Ok(buf)
@@ -207,6 +222,24 @@ mod tests {
     fn encoding_labels() {
         assert_eq!(Encoding::Utf8.to_string(), "UTF-8");
         assert_eq!(Encoding::Utf8Bom.to_string(), "UTF-8 BOM");
+    }
+
+    /// A missing file reports its `io::ErrorKind`, so a caller can tell "does not
+    /// exist" from any other failure without reading the file a second time.
+    #[test]
+    fn loading_a_missing_file_keeps_the_error_kind() -> Result<(), std::io::Error> {
+        let dir = tempfile::tempdir()?;
+        let result = TextBuffer::load(&dir.path().join("absent.txt"));
+        assert!(
+            matches!(
+                &result,
+                Err(LoadError::Io { kind: std::io::ErrorKind::NotFound, message })
+                    if !message.is_empty()
+            ),
+            "{:?}",
+            result.err()
+        );
+        Ok(())
     }
 
     #[test]

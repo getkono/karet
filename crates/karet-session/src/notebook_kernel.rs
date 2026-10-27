@@ -38,7 +38,7 @@ enum Job {
 struct Active {
     path: PathBuf,
     jobs: mpsc::UnboundedSender<Job>,
-    connection: kernel::ConnectionInfo,
+    connection: kernel::Connection,
 }
 
 /// Notebook-kernel orchestration owned by the session actor.
@@ -173,7 +173,7 @@ impl NotebookKernels {
 struct KernelTask {
     path: PathBuf,
     supervisor: Option<PathBuf>,
-    connection: kernel::ConnectionInfo,
+    connection: kernel::Connection,
     spec_dirs: Vec<PathBuf>,
     events: EventTx,
 }
@@ -279,7 +279,7 @@ impl Drop for ConnectionFile {
 async fn boot(
     ctx: &KernelTask,
     spec: &kernel::KernelSpec,
-    connection: &kernel::ConnectionInfo,
+    connection: &kernel::Connection,
     notify: &impl Fn(String),
 ) -> Option<(
     KernelClient<ZmqTransport>,

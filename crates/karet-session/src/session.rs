@@ -19,6 +19,7 @@ mod debug;
 mod docfile;
 // The document-file helpers stay reachable unqualified from the sibling
 // modules that used them before the split.
+use docfile::SaveError;
 use docfile::apply_serialization_settings;
 use docfile::load_document;
 use docfile::normalize_text_for_save;

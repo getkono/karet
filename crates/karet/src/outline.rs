@@ -302,7 +302,7 @@ impl From<&karet_pdf::OutlineItem> for OutlineEntry {
     fn from(item: &karet_pdf::OutlineItem) -> Self {
         Self {
             label: item.title.clone(),
-            target: item.page.map(OutlineTarget::Page),
+            target: item.dest.page().map(OutlineTarget::Page),
             children: item.children.iter().map(OutlineEntry::from).collect(),
         }
     }
@@ -377,15 +377,18 @@ mod tests {
     #[cfg(feature = "pdf")]
     #[test]
     fn pdf_bookmarks_convert_to_page_targets() {
-        let items = vec![karet_pdf::OutlineItem {
-            title: "Chapter 1".into(),
-            page: Some(2),
-            children: Vec::new(),
-        }];
+        let items = vec![
+            karet_pdf::OutlineItem::new("Chapter 1", karet_pdf::OutlineDest::Page(2), Vec::new()),
+            karet_pdf::OutlineItem::new("Links", karet_pdf::OutlineDest::Unresolved, Vec::new()),
+        ];
         let entries = from_pdf(&items);
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].label, "Chapter 1");
         assert_eq!(entries[0].target, Some(OutlineTarget::Page(2)));
+        assert_eq!(
+            entries[1].target, None,
+            "an unresolved bookmark has no target"
+        );
     }
 
     #[test]

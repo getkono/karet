@@ -181,7 +181,8 @@ impl Document {
     /// resolved. A document with no outline — or a malformed one — yields an empty
     /// `Vec` rather than an error. Named destinations (`/Names` → `/Dests` name
     /// trees) and remote/URI actions are not resolved: those entries keep their
-    /// title but report `page = None`.
+    /// title but report [`OutlineDest::Unresolved`]; an entry with neither a destination
+    /// nor an action reports [`OutlineDest::Absent`].
     #[must_use]
     pub fn outline(&self) -> Vec<OutlineItem> {
         let xref = self.pdf.xref();
@@ -212,19 +213,57 @@ impl Document {
 }
 
 /// One entry in a PDF's navigation outline (a bookmark / table-of-contents node).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OutlineItem {
     /// The bookmark's display title, decoded from the PDF text string: UTF-16BE
     /// when it starts with a `FE FF` byte-order mark, otherwise byte-by-byte as
     /// Latin-1 (an approximation of PDFDocEncoding; a UTF-8 BOM is not handled).
     pub title: String,
-    /// The 0-based page index the bookmark points to, if it targets an in-document
-    /// page via an explicit destination or a `GoTo` action. `None` when the entry
-    /// has no destination or uses one this crate does not resolve (named
-    /// destinations, remote/URI actions).
-    pub page: Option<usize>,
+    /// Where the bookmark points.
+    pub dest: OutlineDest,
     /// Nested child bookmarks, in document order.
     pub children: Vec<OutlineItem>,
+}
+
+impl OutlineItem {
+    /// An outline entry from its parts, for a consumer that builds an outline
+    /// itself (the struct is `#[non_exhaustive]`, so it has no literal syntax
+    /// outside this crate).
+    #[must_use]
+    pub fn new(title: impl Into<String>, dest: OutlineDest, children: Vec<OutlineItem>) -> Self {
+        Self {
+            title: title.into(),
+            dest,
+            children,
+        }
+    }
+}
+
+/// Where an [`OutlineItem`] points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OutlineDest {
+    /// A 0-based page index in this document, reached through an explicit
+    /// destination or a `GoTo` action.
+    Page(usize),
+    /// The entry has a destination or action this crate does not resolve: a
+    /// named destination, a remote/URI action, or an explicit destination whose
+    /// target is not a page of this document.
+    Unresolved,
+    /// The entry has no destination and no action at all (a pure grouping node).
+    Absent,
+}
+
+impl OutlineDest {
+    /// The 0-based page index, when the destination resolved to one.
+    #[must_use]
+    pub fn page(self) -> Option<usize> {
+        match self {
+            Self::Page(page) => Some(page),
+            Self::Unresolved | Self::Absent => None,
+        }
+    }
 }
 
 /// Cap on outline nesting depth, guarding against a pathological or cyclic `/First`
@@ -248,7 +287,7 @@ fn walk_outline_siblings(
             break;
         }
         let title = outline_title(&item).unwrap_or_default();
-        let page = outline_page(&item, page_index);
+        let dest = outline_dest(&item, page_index);
         let children = if depth < MAX_OUTLINE_DEPTH {
             item.get::<Dict>(keys::FIRST)
                 .map(|child| walk_outline_siblings(child, page_index, visited, depth + 1))
@@ -258,7 +297,7 @@ fn walk_outline_siblings(
         };
         items.push(OutlineItem {
             title,
-            page,
+            dest,
             children,
         });
         current = item.get::<Dict>(keys::NEXT);
@@ -270,6 +309,16 @@ fn walk_outline_siblings(
 fn outline_title(item: &Dict<'_>) -> Option<String> {
     item.get::<PdfString>(keys::TITLE)
         .map(|s| decode_pdf_text_string(s.as_bytes()))
+}
+
+/// Classify an outline entry's destination: [`OutlineDest::Absent`] when it has
+/// neither `/Dest` nor `/A`, otherwise the page [`outline_page`] resolves, or
+/// [`OutlineDest::Unresolved`] when it resolves none.
+fn outline_dest(item: &Dict<'_>, page_index: &HashMap<ObjectIdentifier, usize>) -> OutlineDest {
+    if !item.contains_key(keys::DEST) && !item.contains_key(keys::A) {
+        return OutlineDest::Absent;
+    }
+    outline_page(item, page_index).map_or(OutlineDest::Unresolved, OutlineDest::Page)
 }
 
 /// Resolve an outline entry's target page index from `/Dest` or a `GoTo` `/A`
@@ -321,6 +370,10 @@ fn decode_pdf_text_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use OutlineDest::Absent;
+    use OutlineDest::Page;
+    use OutlineDest::Unresolved;
+
     use super::*;
 
     /// A minimal, valid single-page PDF (an empty US-Letter page). Kept inline so
@@ -429,8 +482,21 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
             .unwrap_or_default();
         assert_eq!(items.len(), 1);
         assert_eq!(items.first().map(|i| i.title.as_str()), Some("Chapter 1"));
-        assert_eq!(items.first().and_then(|i| i.page), Some(0));
+        assert_eq!(items.first().map(|i| i.dest), Some(OutlineDest::Page(0)));
         assert!(items.first().is_some_and(|i| i.children.is_empty()));
+    }
+
+    /// Only a resolved destination has a page; the two unpaged kinds stay apart.
+    #[test]
+    fn outline_dest_reports_a_page_only_when_resolved() {
+        assert_eq!(Page(3).page(), Some(3));
+        assert_eq!(Unresolved.page(), None);
+        assert_eq!(Absent.page(), None);
+        let item = OutlineItem::new("Intro", Page(1), Vec::new());
+        assert_eq!(
+            (item.title.as_str(), item.dest, item.children.len()),
+            ("Intro", Page(1), 0)
+        );
     }
 
     #[test]
@@ -516,15 +582,15 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         .unwrap_or_default()
     }
 
-    /// Flatten an outline into `(depth, title, page)` rows in document order.
-    fn flatten(items: &[OutlineItem], depth: usize, out: &mut Vec<(usize, String, Option<usize>)>) {
+    /// Flatten an outline into `(depth, title, dest)` rows in document order.
+    fn flatten(items: &[OutlineItem], depth: usize, out: &mut Vec<(usize, String, OutlineDest)>) {
         for item in items {
-            out.push((depth, item.title.clone(), item.page));
+            out.push((depth, item.title.clone(), item.dest));
             flatten(&item.children, depth + 1, out);
         }
     }
 
-    fn rows(items: &[OutlineItem]) -> Vec<(usize, String, Option<usize>)> {
+    fn rows(items: &[OutlineItem]) -> Vec<(usize, String, OutlineDest)> {
         let mut out = Vec::new();
         flatten(items, 0, &mut out);
         out
@@ -547,16 +613,17 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "One".to_owned(), Some(0)),
-                (1, "One.a".to_owned(), None),
-                (1, "One.b".to_owned(), Some(1)),
-                (0, "Two".to_owned(), Some(1)),
+                (0, "One".to_owned(), Page(0)),
+                (1, "One.a".to_owned(), Absent),
+                (1, "One.b".to_owned(), Page(1)),
+                (0, "Two".to_owned(), Page(1)),
             ]
         );
     }
 
     /// Only `GoTo` actions resolve; a URI action, a named `/Dest`, and a `/Dest`
-    /// whose page reference is not a page keep their title with `page = None`.
+    /// whose page reference is not a page keep their title and report
+    /// `Unresolved`, which stays distinct from an entry with no destination at all.
     #[test]
     fn outline_leaves_unresolvable_destinations_unpaged() {
         let items = outline_doc(&[
@@ -579,11 +646,11 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "Uri".to_owned(), None),
-                (0, "Named".to_owned(), None),
-                (0, "NotAPage".to_owned(), None),
-                (0, String::new(), None),
-                (0, "Fallback".to_owned(), Some(1)),
+                (0, "Uri".to_owned(), Unresolved),
+                (0, "Named".to_owned(), Unresolved),
+                (0, "NotAPage".to_owned(), Unresolved),
+                (0, String::new(), Absent),
+                (0, "Fallback".to_owned(), Page(1)),
             ]
         );
     }
@@ -592,7 +659,7 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
     #[test]
     fn outline_self_next_cycle_terminates() {
         let items = outline_doc(&[(6, "<</Title(Loop)/Dest[3 0 R/Fit]/Next 6 0 R>>".to_owned())]);
-        assert_eq!(rows(&items), vec![(0, "Loop".to_owned(), Some(0))]);
+        assert_eq!(rows(&items), vec![(0, "Loop".to_owned(), Page(0))]);
     }
 
     /// A `/Next` back to an earlier sibling and a `/First` back to an ancestor are
@@ -607,9 +674,9 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "A".to_owned(), None),
-                (1, "A.child".to_owned(), None),
-                (0, "B".to_owned(), None),
+                (0, "A".to_owned(), Absent),
+                (1, "A.child".to_owned(), Absent),
+                (0, "B".to_owned(), Absent),
             ]
         );
     }
@@ -634,7 +701,7 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(flat.len(), MAX_OUTLINE_DEPTH + 1);
         assert_eq!(
             flat.last(),
-            Some(&(MAX_OUTLINE_DEPTH, format!("L{MAX_OUTLINE_DEPTH}"), None))
+            Some(&(MAX_OUTLINE_DEPTH, format!("L{MAX_OUTLINE_DEPTH}"), Absent))
         );
     }
 

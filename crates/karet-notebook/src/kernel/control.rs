@@ -3,13 +3,13 @@
 
 use std::time::Duration;
 
-use jupyter_protocol::ConnectionInfo;
 use jupyter_protocol::JupyterMessage;
 use jupyter_protocol::messaging::JupyterMessageContent;
 use zeromq::Socket;
 use zeromq::SocketRecv;
 use zeromq::SocketSend;
 
+use super::Connection;
 use super::KernelError;
 use super::transport::decode;
 use super::transport::encode;
@@ -29,7 +29,8 @@ impl KernelControl {
     ///
     /// # Errors
     /// Returns [`KernelError::Transport`] when the socket cannot connect.
-    pub async fn connect(info: &ConnectionInfo) -> Result<Self, KernelError> {
+    pub async fn connect(connection: &Connection) -> Result<Self, KernelError> {
+        let info = connection.info();
         let mut socket = zeromq::DealerSocket::new();
         socket
             .connect(&format!("tcp://{}:{}", info.ip, info.control_port))

@@ -5,7 +5,47 @@ use std::path::PathBuf;
 
 use jupyter_protocol::ConnectionInfo;
 
-/// Mint a loopback [`ConnectionInfo`]: five OS-assigned free ports and a
+/// Where one kernel listens and the key that signs its messages.
+///
+/// Opaque on purpose: the ports and the hmac key are what a kernel process is
+/// told about through [`write_connection_file`], and what
+/// [`ZmqTransport::connect`](super::ZmqTransport::connect) and
+/// [`KernelControl::connect`](super::KernelControl::connect) dial. Nothing
+/// else needs to read them, and the key in particular never leaves this crate
+/// except into that owner-only file (its `Debug` output redacts it).
+#[derive(Clone)]
+pub struct Connection(ConnectionInfo);
+
+impl Connection {
+    /// Wrap a hand-built description (the loopback transport tests bind their
+    /// own ports and key).
+    #[cfg(test)]
+    pub(crate) fn from_info(info: ConnectionInfo) -> Self {
+        Self(info)
+    }
+
+    /// The wire-level description the transports dial.
+    pub(crate) fn info(&self) -> &ConnectionInfo {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let info = &self.0;
+        f.debug_struct("Connection")
+            .field("ip", &info.ip)
+            .field("shell_port", &info.shell_port)
+            .field("iopub_port", &info.iopub_port)
+            .field("stdin_port", &info.stdin_port)
+            .field("control_port", &info.control_port)
+            .field("hb_port", &info.hb_port)
+            .field("key", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Mint a loopback [`Connection`]: five OS-assigned free ports and a
 /// fresh signing key (`hmac-sha256`).
 ///
 /// The ports are bound and released, the standard race-tolerant approach —
@@ -15,7 +55,7 @@ use jupyter_protocol::ConnectionInfo;
 /// Fails when the OS has no entropy source for the signing key (an empty
 /// key would make the kernel skip message signing, so there is no fallback),
 /// or propagates the bind failure (exotic: no loopback at all).
-pub fn local_connection() -> std::io::Result<ConnectionInfo> {
+pub fn local_connection() -> std::io::Result<Connection> {
     local_connection_from(getrandom::fill)
 }
 
@@ -23,13 +63,13 @@ pub fn local_connection() -> std::io::Result<ConnectionInfo> {
 type Fill = fn(&mut [u8]) -> Result<(), getrandom::Error>;
 
 /// [`local_connection`] with its signing key drawn from `fill`.
-fn local_connection_from(fill: Fill) -> std::io::Result<ConnectionInfo> {
+fn local_connection_from(fill: Fill) -> std::io::Result<Connection> {
     let key = random_hex::<16>(fill)?;
     let port = || -> std::io::Result<u16> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         Ok(listener.local_addr()?.port())
     };
-    Ok(ConnectionInfo {
+    Ok(Connection(ConnectionInfo {
         ip: "127.0.0.1".to_owned(),
         transport: jupyter_protocol::connection_info::Transport::TCP,
         shell_port: port()?,
@@ -40,7 +80,7 @@ fn local_connection_from(fill: Fill) -> std::io::Result<ConnectionInfo> {
         key,
         signature_scheme: "hmac-sha256".to_owned(),
         kernel_name: None,
-    })
+    }))
 }
 
 /// Write `info` as a `karet-kernel-<pid>-<nonce>.json` connection file in the
@@ -56,8 +96,8 @@ fn local_connection_from(fill: Fill) -> std::io::Result<ConnectionInfo> {
 /// # Errors
 /// Fails when no nonce can be drawn or the path already exists, and
 /// propagates serialization and write failures.
-pub fn write_connection_file(info: &ConnectionInfo) -> std::io::Result<PathBuf> {
-    let json = serde_json::to_string_pretty(info).map_err(std::io::Error::other)?;
+pub fn write_connection_file(info: &Connection) -> std::io::Result<PathBuf> {
+    let json = serde_json::to_string_pretty(&info.0).map_err(std::io::Error::other)?;
     let nonce = random_hex::<8>(getrandom::fill)?;
     let path =
         std::env::temp_dir().join(format!("karet-kernel-{}-{nonce}.json", std::process::id()));
@@ -179,7 +219,7 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(nonce.len(), 16, "unexpected name {name:?}");
             assert!(nonce.bytes().all(|b| b.is_ascii_hexdigit()), "{name:?}");
-            for window in info.key.as_bytes().windows(8) {
+            for window in info.0.key.as_bytes().windows(8) {
                 assert!(
                     !nonce.as_bytes().windows(8).any(|w| w == window),
                     "name {name:?} carries part of the key"
@@ -244,9 +284,9 @@ mod tests {
     fn connections_are_distinct_and_write_jupyters_shape() -> Result<(), std::io::Error> {
         let a = local_connection()?;
         let b = local_connection()?;
-        assert_ne!(a.key, b.key);
-        assert_eq!(a.key.len(), 32);
-        assert_eq!(a.signature_scheme, "hmac-sha256");
+        assert_ne!(a.0.key, b.0.key);
+        assert_eq!(a.0.key.len(), 32);
+        assert_eq!(a.0.signature_scheme, "hmac-sha256");
         let path = write_connection_file(&a)?;
         let text = std::fs::read_to_string(&path)?;
         let value: serde_json::Value =
@@ -254,9 +294,23 @@ mod tests {
         assert_eq!(value.get("transport"), Some(&serde_json::json!("tcp")));
         assert_eq!(
             value.get("shell_port").and_then(serde_json::Value::as_u64),
-            Some(u64::from(a.shell_port))
+            Some(u64::from(a.0.shell_port))
         );
         let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    /// The signing key never shows up in a connection's debug output.
+    #[test]
+    fn debug_output_redacts_the_signing_key() -> std::io::Result<()> {
+        let connection = local_connection()?;
+        let shown = format!("{connection:?}");
+        assert!(!shown.contains(&connection.0.key), "{shown}");
+        assert!(shown.contains("<redacted>"), "{shown}");
+        assert!(
+            shown.contains(&connection.0.shell_port.to_string()),
+            "{shown}"
+        );
         Ok(())
     }
 

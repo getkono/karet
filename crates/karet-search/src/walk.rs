@@ -32,10 +32,98 @@ pub struct FileHit {
 /// are skipped. Tune later alongside the deferred parallel walk.
 pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
-/// A gitignore-aware workspace search.
+/// Walk `root` and run `query`, invoking `sink` once per file with matches.
+///
+/// The walk honors `.gitignore`/hidden-file conventions and the query's
+/// `includes`/`excludes` globs (ripgrep `-g` semantics), and skips binary and
+/// oversize files. Results stream through `sink` as each matching file is
+/// found.
+///
+/// The current walk is single-threaded; a parallel
+/// [`ignore::WalkBuilder::build_parallel`]-based path is a deferred
+/// optimization.
+///
+/// # Errors
+/// Returns [`SearchError::InvalidPattern`] if the pattern or an include/exclude
+/// glob is invalid.
+pub fn search_workspace(
+    root: &Path,
+    query: &SearchQuery,
+    mut sink: impl FnMut(FileHit),
+) -> Result<(), SearchError> {
+    if query.pattern.is_empty() {
+        return Ok(());
+    }
+    let matcher = Matcher::new(query)?;
+    walk_text_files(root, &query.includes, &query.excludes, |path, text| {
+        let matches = matcher.find(&text);
+        if !matches.is_empty() {
+            sink(FileHit {
+                path: path.to_path_buf(),
+                matches,
+            });
+        }
+        ControlFlow::Continue(())
+    })
+}
+
+/// Walk `root` and replace every match of `query` with `replacement`, writing
+/// each changed file back to disk. Honors the same gitignore / glob / binary /
+/// size filters as [`search_workspace`]; returns a [`ReplaceSummary`] of what
+/// changed. Regex capture substitutions (`$1`, `${name}`) apply when
+/// [`SearchQuery::regex`] is set.
+///
+/// A file that cannot be written back does not stop the walk: the other files
+/// are still rewritten, and the one that failed is listed in
+/// [`ReplaceSummary::failures`] (and counted nowhere else), so the caller can
+/// tell a partial replace from a complete one.
+///
+/// # Errors
+/// Returns [`SearchError::InvalidPattern`] if the pattern or a glob is invalid.
+pub fn replace_in_workspace(
+    root: &Path,
+    query: &SearchQuery,
+    replacement: &str,
+) -> Result<ReplaceSummary, SearchError> {
+    if query.pattern.is_empty() {
+        return Ok(ReplaceSummary::default());
+    }
+    let matcher = Matcher::new(query)?;
+    let mut summary = ReplaceSummary::default();
+    walk_text_files(root, &query.includes, &query.excludes, |path, text| {
+        let plan = matcher.plan(&text, replacement, query.regex);
+        if !plan.is_empty() {
+            let updated = apply_replacements(&text, &plan);
+            match write_replacing(path, updated.as_bytes()) {
+                Ok(()) => {
+                    summary.files_changed += 1;
+                    summary.replacements += plan.len();
+                },
+                Err(error) => summary.failures.push(WriteFailure {
+                    path: path.to_path_buf(),
+                    error: error.to_string(),
+                }),
+            }
+        }
+        ControlFlow::Continue(())
+    })?;
+    Ok(summary)
+}
+
+/// A gitignore-aware workspace search: an empty namespace for
+/// [`search_workspace`] and [`replace_in_workspace`], kept for one release so
+/// existing callers keep compiling.
+#[deprecated(
+    since = "0.8.0",
+    note = "call `search_workspace` / `replace_in_workspace` directly"
+)]
 #[derive(Default)]
 pub struct WorkspaceSearch {}
 
+#[allow(
+    deprecated,
+    reason = "the deprecated namespace forwards to the free functions"
+)]
 impl WorkspaceSearch {
     /// Create a workspace search.
     #[must_use]
@@ -43,84 +131,30 @@ impl WorkspaceSearch {
         Self::default()
     }
 
-    /// Walk `root` and run `query`, invoking `sink` once per file with matches.
-    ///
-    /// The walk honors `.gitignore`/hidden-file conventions and the query's
-    /// `includes`/`excludes` globs (ripgrep `-g` semantics), and skips binary and
-    /// oversize files. Results stream through `sink` as each matching file is
-    /// found.
-    ///
-    /// The current walk is single-threaded; a parallel
-    /// [`ignore::WalkBuilder::build_parallel`]-based path is a deferred
-    /// optimization.
+    /// Forwards to [`search_workspace`].
     ///
     /// # Errors
-    /// Returns [`SearchError::InvalidPattern`] if the pattern or an include/exclude
-    /// glob is invalid.
+    /// As [`search_workspace`].
     pub fn run(
         &self,
         root: &Path,
         query: &SearchQuery,
-        mut sink: impl FnMut(FileHit),
+        sink: impl FnMut(FileHit),
     ) -> Result<(), SearchError> {
-        if query.pattern.is_empty() {
-            return Ok(());
-        }
-        let matcher = Matcher::new(query)?;
-        walk_text_files(root, &query.includes, &query.excludes, |path, text| {
-            let matches = matcher.find(&text);
-            if !matches.is_empty() {
-                sink(FileHit {
-                    path: path.to_path_buf(),
-                    matches,
-                });
-            }
-            ControlFlow::Continue(())
-        })
+        search_workspace(root, query, sink)
     }
 
-    /// Walk `root` and replace every match of `query` with `replacement`, writing
-    /// each changed file back to disk. Honors the same gitignore / glob / binary /
-    /// size filters as [`run`](Self::run); returns a [`ReplaceSummary`] of what
-    /// changed. Regex capture substitutions (`$1`, `${name}`) apply when
-    /// [`SearchQuery::regex`] is set.
-    ///
-    /// A file that cannot be written back does not stop the walk: the other files
-    /// are still rewritten, and the one that failed is listed in
-    /// [`ReplaceSummary::failures`] (and counted nowhere else), so the caller can
-    /// tell a partial replace from a complete one.
+    /// Forwards to [`replace_in_workspace`].
     ///
     /// # Errors
-    /// Returns [`SearchError::InvalidPattern`] if the pattern or a glob is invalid.
+    /// As [`replace_in_workspace`].
     pub fn replace(
         &self,
         root: &Path,
         query: &SearchQuery,
         replacement: &str,
     ) -> Result<ReplaceSummary, SearchError> {
-        if query.pattern.is_empty() {
-            return Ok(ReplaceSummary::default());
-        }
-        let matcher = Matcher::new(query)?;
-        let mut summary = ReplaceSummary::default();
-        walk_text_files(root, &query.includes, &query.excludes, |path, text| {
-            let plan = matcher.plan(&text, replacement, query.regex);
-            if !plan.is_empty() {
-                let updated = apply_replacements(&text, &plan);
-                match write_replacing(path, updated.as_bytes()) {
-                    Ok(()) => {
-                        summary.files_changed += 1;
-                        summary.replacements += plan.len();
-                    },
-                    Err(error) => summary.failures.push(WriteFailure {
-                        path: path.to_path_buf(),
-                        error: error.to_string(),
-                    }),
-                }
-            }
-            ControlFlow::Continue(())
-        })?;
-        Ok(summary)
+        replace_in_workspace(root, query, replacement)
     }
 }
 
@@ -163,7 +197,7 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Walk `root` gitignore-aware and hand every readable text file to `sink`.
 ///
-/// The walk applies exactly the filters [`WorkspaceSearch::run`] does — `.gitignore`
+/// The walk applies exactly the filters [`search_workspace`] does — `.gitignore`
 /// and hidden-file conventions, the pruned [`IGNORED_DIRS`], ripgrep `-g` semantics
 /// for `includes`/`excludes`, and the binary/oversize/non-UTF-8 skips — so a consumer
 /// that needs the *files* rather than pattern matches (a workspace linter, a
@@ -171,7 +205,7 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 ///
 /// `sink` receives each file's path and its full contents, and returns
 /// [`ControlFlow::Break`] to stop the walk early (a result cap, a cancelled request).
-/// The walk is single-threaded, matching [`WorkspaceSearch::run`].
+/// The walk is single-threaded, matching [`search_workspace`].
 ///
 /// # Errors
 /// Returns [`SearchError::InvalidPattern`] if an include/exclude glob is invalid.
@@ -215,7 +249,7 @@ pub fn walk_files(root: &Path) -> impl Iterator<Item = PathBuf> {
         .map(ignore::DirEntry::into_path)
 }
 
-/// The result of a workspace [`replace`](WorkspaceSearch::replace).
+/// The result of a workspace [`replace_in_workspace`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReplaceSummary {
@@ -228,7 +262,7 @@ pub struct ReplaceSummary {
     pub failures: Vec<WriteFailure>,
 }
 
-/// A file a workspace [`replace`](WorkspaceSearch::replace) could not write back.
+/// A file a workspace [`replace_in_workspace`] could not write back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WriteFailure {
