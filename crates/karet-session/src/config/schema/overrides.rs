@@ -6,6 +6,7 @@
 //! (selector parsing, serde plumbing, resolution precedence), not settings
 //! vocabulary.
 
+use std::borrow::Borrow;
 #[cfg(feature = "schema")]
 use std::borrow::Cow;
 use std::fmt;
@@ -46,6 +47,16 @@ impl LanguageSelector {
     /// Return the normalized language name without surrounding brackets.
     #[must_use]
     pub fn language(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Looks a selector up by its normalized name, so a registry
+/// [`config_selector`](karet_filetype::FileType::config_selector) (already
+/// lowercase, trimmed and bracket-free) finds its override without allocating.
+/// Consistent with the derived `Ord`/`Eq`/`Hash`, which compare the inner string.
+impl Borrow<str> for LanguageSelector {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }

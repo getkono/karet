@@ -4,7 +4,7 @@
     use karet_core::TextEdit;
 
     use super::*;
-    use super::documents::DocumentLanguage;
+    use super::doc_language::DocumentLanguage;
     use crate::api::Command;
     use crate::api::DebugCommand;
     use crate::api::DocumentCommand;
@@ -221,7 +221,7 @@
         settings.spellcheck.language = "fr_FR".to_owned();
 
         let (resolved, error) =
-            resolve_document_settings(&path, Some("Markdown"), &settings);
+            resolve_document_settings(&path, karet_filetype::file_type_for_language("markdown"), &settings);
 
         assert_eq!(resolved.spelling_language, None);
         assert!(error.is_some_and(|message| {
@@ -842,7 +842,7 @@
         Ok(DocumentLanguage {
             lang_id: doc.lang_id,
             name: doc.language,
-            selector: doc.language_selector,
+            file_type: doc.file_type,
             lsp_id: doc.lsp_language_id,
         })
     }

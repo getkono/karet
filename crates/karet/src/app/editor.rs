@@ -56,7 +56,7 @@ impl App {
         let fallback = u16::from(
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .tab_size(),
         );
         App::tab_doc(tab)
@@ -69,7 +69,7 @@ impl App {
     /// combine hard tabs and spaces when an indent is not divisible by tab width.
     pub(super) fn active_indentation(&self) -> String {
         let tab = self.tabs.get(self.active);
-        let resolved = tab.map(|tab| self.settings.editor.for_language(tab.language_id()));
+        let resolved = tab.map(|tab| self.settings.editor.for_language(tab.config_file_type()));
         let fallback_size = resolved.map_or(4, |settings| u16::from(settings.tab_size()));
         let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
         let document = tab
@@ -103,7 +103,7 @@ impl App {
             tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab.language_id())
+                    .for_language(tab.config_file_type())
                     .word_wrap(),
             )
         });

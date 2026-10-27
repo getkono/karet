@@ -62,7 +62,7 @@ impl App {
         let setting = self
             .settings
             .editor
-            .for_language(tab.language_id())
+            .for_language(tab.config_file_type())
             .format_on_type();
         setting != self.on_type.flipped
     }

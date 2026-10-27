@@ -467,17 +467,21 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// Resolve this editor configuration for `language`.
+    /// Resolve this editor configuration for a document of `file_type`, or the
+    /// global values alone for `None`.
     ///
-    /// Language names are matched case-insensitively after trimming outer
-    /// whitespace. The selected language patch is applied over the already-merged
-    /// global editor values, so language specificity wins over config-layer
-    /// specificity.
+    /// The `[language]` override that applies is the one keyed by the file
+    /// type's [`config_selector`](karet_filetype::FileType::config_selector), never
+    /// its display name, so a `Cargo.lock` (display name `"Cargo lockfile"`,
+    /// selector `toml`) takes the `[toml]` patch. A file type with no selector
+    /// (an unrecognized file, plain text) resolves to the global values. The
+    /// selected patch is applied over the already-merged global editor values, so
+    /// language specificity wins over config-layer specificity.
     #[must_use]
-    pub fn for_language(&self, language: Option<&str>) -> ResolvedEditor<'_> {
-        let override_ = language
-            .and_then(LanguageSelector::from_language)
-            .and_then(|selector| self.language_overrides.get(&selector));
+    pub fn for_language(&self, file_type: Option<karet_filetype::FileType>) -> ResolvedEditor<'_> {
+        let override_ = file_type
+            .and_then(|file_type| file_type.config_selector())
+            .and_then(|selector| self.language_overrides.get(selector));
         ResolvedEditor::new(self, override_)
     }
 

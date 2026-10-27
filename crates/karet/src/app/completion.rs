@@ -57,7 +57,7 @@ impl App {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .completion()
                 .enabled()
         });
@@ -126,7 +126,7 @@ impl App {
         let completion = self.tabs.get(self.active).map(|tab| {
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .completion()
         });
         if !completion.is_some_and(|completion| completion.enabled() && completion.auto_trigger()) {

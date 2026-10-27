@@ -10,6 +10,7 @@ use ec4rs::property::IndentStyle;
 use ec4rs::property::SpellingLanguage as EditorConfigSpellingLanguage;
 use ec4rs::property::TabWidth;
 use ec4rs::property::TrimTrailingWs;
+use karet_filetype::FileType;
 
 use crate::api::DocumentEncoding;
 use crate::api::DocumentLineEnding;
@@ -23,10 +24,10 @@ use crate::config::schema::Eol;
 /// `.editorconfig` from the filesystem root down to `path`.
 pub(crate) fn resolve(
     path: &Path,
-    language: Option<&str>,
+    file_type: Option<FileType>,
     settings: &Settings,
 ) -> Result<DocumentSettings, ec4rs::Error> {
-    let mut resolved = defaults(language, settings);
+    let mut resolved = defaults(file_type, settings);
     let mut properties = ec4rs::properties_of(path)?;
     properties.use_fallbacks();
 
@@ -40,8 +41,8 @@ pub(crate) fn resolve(
 }
 
 /// Resolve karet's own global and language-specific defaults without reading disk.
-pub(crate) fn defaults(language: Option<&str>, settings: &Settings) -> DocumentSettings {
-    let editor = settings.editor.for_language(language);
+pub(crate) fn defaults(file_type: Option<FileType>, settings: &Settings) -> DocumentSettings {
+    let editor = settings.editor.for_language(file_type);
     DocumentSettings {
         insert_spaces: editor.insert_spaces(),
         indent_size: u16::from(editor.tab_size()),
@@ -138,7 +139,11 @@ mod tests {
         let mut settings = Settings::default();
         settings.editor.tab_size = 7;
 
-        let resolved = resolve(&file, Some("Rust"), &settings)?;
+        let resolved = resolve(
+            &file,
+            karet_filetype::file_type_for_language("rust"),
+            &settings,
+        )?;
 
         assert_eq!(resolved.indent_size, 7, "unset reveals the editor default");
         assert!(
@@ -162,7 +167,11 @@ mod tests {
              trim_trailing_whitespace = false\ninsert_final_newline = false\n",
         )?;
 
-        let resolved = resolve(&file, Some("Rust"), &Settings::default())?;
+        let resolved = resolve(
+            &file,
+            karet_filetype::file_type_for_language("rust"),
+            &Settings::default(),
+        )?;
 
         assert_eq!(
             resolved,
@@ -189,10 +198,14 @@ mod tests {
         let config = dir.path().join(".editorconfig");
         std::fs::write(&config, "[*.rs]\nthis is not valid\n")?;
 
-        let error = resolve(&file, Some("Rust"), &Settings::default())
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
+        let error = resolve(
+            &file,
+            karet_filetype::file_type_for_language("rust"),
+            &Settings::default(),
+        )
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
 
         assert!(error.contains(".editorconfig:2"), "{error}");
         Ok(())
@@ -211,7 +224,11 @@ mod tests {
         let mut settings = Settings::default();
         settings.spellcheck.enabled = true;
 
-        let resolved = resolve(&file, Some("Markdown"), &settings)?;
+        let resolved = resolve(
+            &file,
+            karet_filetype::file_type_for_language("markdown"),
+            &settings,
+        )?;
 
         assert_eq!(
             resolved.spelling_language,
@@ -230,7 +247,11 @@ mod tests {
             "root = true\n[*.md]\nspelling_language = en-GB\n",
         )?;
 
-        let resolved = resolve(&file, Some("Markdown"), &Settings::default())?;
+        let resolved = resolve(
+            &file,
+            karet_filetype::file_type_for_language("markdown"),
+            &Settings::default(),
+        )?;
 
         assert_eq!(resolved.spelling_language, None);
         Ok(())

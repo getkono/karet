@@ -61,7 +61,7 @@ impl App {
         else {
             return None;
         };
-        let settings = self.settings.editor.for_language(tab.language_id());
+        let settings = self.settings.editor.for_language(tab.config_file_type());
         let rules = AutoPairs {
             pairs: file_type_for_path(path).auto_pairs(),
             brackets: auto_close(settings.auto_closing_brackets()),

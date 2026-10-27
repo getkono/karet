@@ -609,7 +609,7 @@ impl App {
                 .map_or(self.settings.editor.graphical_cursor, |tab| {
                     self.settings
                         .editor
-                        .for_language(tab.language_id())
+                        .for_language(tab.config_file_type())
                         .graphical_cursor()
                 });
         match configured {

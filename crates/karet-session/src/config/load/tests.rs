@@ -218,8 +218,14 @@ fn language_specificity_wins_after_layer_merging() -> TestResult {
         (ConfigLayer::Project, project),
     ]);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let rust = report.settings.editor.for_language(Some("Rust"));
-    let python = report.settings.editor.for_language(Some("python"));
+    let rust = report
+        .settings
+        .editor
+        .for_language(karet_filetype::file_type_for_language("rust"));
+    let python = report
+        .settings
+        .editor
+        .for_language(karet_filetype::file_type_for_language("python"));
     assert_eq!(rust.tab_size(), 6, "selector specificity wins");
     assert!(!rust.completion().enabled());
     assert!(!rust.completion().auto_trigger(), "nested patches merge");

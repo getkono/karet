@@ -210,7 +210,7 @@ impl App {
             let completion = self
                 .settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .completion();
             completion.enabled() && completion.auto_trigger()
         });

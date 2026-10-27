@@ -297,12 +297,12 @@ mod tests {
         assert_eq!(global.word_wrap(), Some(true));
         assert_eq!(global.wrap_column(), Some(72));
         assert_eq!(global.wrapping_indent(), WrappingIndent::Indent);
-        let markdown = settings.for_language(Some("markdown"));
+        let markdown = settings.for_language(karet_filetype::file_type_for_language("markdown"));
         assert_eq!(markdown.wrap_column(), None, "`on` wraps at the viewport");
         assert_eq!(markdown.wrapping_indent(), WrappingIndent::None);
-        let python = settings.for_language(Some("python"));
+        let python = settings.for_language(karet_filetype::file_type_for_language("python"));
         assert_eq!(python.wrap_column(), Some(100));
-        let rust = settings.for_language(Some("rust"));
+        let rust = settings.for_language(karet_filetype::file_type_for_language("rust"));
         assert_eq!(rust.word_wrap(), None, "`null` restores the file type's");
         assert_eq!(rust.wrap_column(), None);
     }

@@ -118,7 +118,7 @@ impl App {
         let enabled = self
             .settings
             .editor
-            .for_language(tab.language_id())
+            .for_language(tab.config_file_type())
             .inline_completion();
         let cursors = tab.editor.cursors();
         let [selection] = cursors.selections.as_slice() else {

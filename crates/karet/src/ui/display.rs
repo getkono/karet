@@ -257,11 +257,11 @@ mod tests {
             (InlineDiagnostics::All, Severity::Information)
         );
         assert_eq!(
-            resolve(Some("Rust")),
+            resolve(karet_filetype::file_type_for_language("rust")),
             (InlineDiagnostics::Off, Severity::Information)
         );
         assert_eq!(
-            resolve(Some("python")),
+            resolve(karet_filetype::file_type_for_language("python")),
             (InlineDiagnostics::All, Severity::Error)
         );
     }

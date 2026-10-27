@@ -44,7 +44,7 @@ impl Session {
             .config
             .settings()
             .editor
-            .for_language(doc.language_selector);
+            .for_language(Some(doc.file_type));
         let format = editor.format_on_save();
         let (version, selector, path) = (
             doc.buffer.version(),

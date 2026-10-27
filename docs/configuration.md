@@ -84,7 +84,11 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 
 Every `editor` key can be overridden for one language with a `[language]` selector in
 the same object. Selectors are matched case-insensitively against the file type's stable
-configuration identity:
+configuration identity, never its display name: `Cargo.lock` (shown as "Cargo lockfile")
+takes `[toml]`, and `.gitmodules` takes `[gitconfig]`. A diff tab takes its file's selector
+and a rendered Markdown preview takes `[markdown]`; tabs that show no document text (images,
+PDFs, hex, logs, commit and graph views) use the global settings, as does a file with no
+selector (plain text, or a file karet does not recognize). For example:
 
 ```jsonc
 {

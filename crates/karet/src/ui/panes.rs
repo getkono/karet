@@ -70,7 +70,7 @@ pub(super) fn draw_panes(
             let resolved = app
                 .tabs
                 .get(app.active)
-                .map(|tab| app.settings.editor.for_language(tab.language_id()));
+                .map(|tab| app.settings.editor.for_language(tab.config_file_type()));
             let word_wrap = resolved.map_or(
                 app.settings
                     .editor
@@ -144,7 +144,7 @@ pub(super) fn draw_panes(
             let resolved = stored
                 .tabs
                 .get(stored.active)
-                .map(|tab| app.settings.editor.for_language(tab.language_id()));
+                .map(|tab| app.settings.editor.for_language(tab.config_file_type()));
             let word_wrap = resolved.map_or(
                 app.settings
                     .editor
