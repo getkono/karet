@@ -761,25 +761,37 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Res
     );
 
     let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
-    let mut ruff_states = Vec::new();
-    while ruff_states.last() != Some(&LanguageServerRuntimeState::Running)
+    // Each transition keeps the runtime's own failure text beside its state.
+    // States alone made a past flake unreadable: `[Starting, Unavailable]`
+    // says the launch was judged permanent and nothing about why, and the
+    // cause (the `ETXTBSY` exec `stage_testbed` documents) had to be
+    // reconstructed from the code. The error names it outright.
+    let mut ruff_transitions = Vec::new();
+    while ruff_transitions.last().map(|(state, _)| state)
+        != Some(&LanguageServerRuntimeState::Running)
         && tokio::time::Instant::now() < deadline
     {
         let remaining = deadline - tokio::time::Instant::now();
         let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
             break;
         };
-        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event
+        if let Event::LanguageServerRuntimeChanged {
+            server,
+            state,
+            error,
+            ..
+        } = event
             && server.key() == "ruff"
         {
-            ruff_states.push(state);
+            ruff_transitions.push((state, error));
         }
     }
     assert_eq!(
-        ruff_states.last(),
+        ruff_transitions.last().map(|(state, _)| state),
         Some(&LanguageServerRuntimeState::Running),
         "Ruff must still provide diagnostics when Python's primary provider is missing; \
-         its states before the stream ended or {STARTUP_DEADLINE:?} passed: {ruff_states:?}"
+         its states and errors before the stream ended or {STARTUP_DEADLINE:?} passed: \
+         {ruff_transitions:?}"
     );
     Ok(())
 }

@@ -84,7 +84,7 @@ impl App {
     /// `editor.inlineCompletion` on for its language.
     fn inline_target(&self) -> Option<(InlineKey, String)> {
         if !self.editor_owns_keyboard()
-            || self.completion.is_some()
+            || self.completion.popup.is_some()
             || !matches!(self.vi_editing(), Editing::Modeless | Editing::Insert)
         {
             return None;
@@ -360,7 +360,9 @@ impl App {
     /// Tell the user what came of a sign-in or sign-out. A device code goes
     /// on the clipboard and stays on screen until dismissed, with the page to
     /// enter it at: the user opens that page and types it in, which takes a
-    /// while. Whether the sign-in then landed arrives as a second outcome.
+    /// while. Whether the sign-in then landed arrives as a second outcome,
+    /// except for a sign-in a later sign-in or sign-out superseded, or whose
+    /// server stopped first, which gets none.
     pub(super) fn on_language_server_account(
         &mut self,
         server: &LanguageServerId,

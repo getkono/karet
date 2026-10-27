@@ -13,6 +13,12 @@
 //! outcome of the same sign-in -- signed in, or failed and why. A server too
 //! old to return a command is sent `signInConfirm` with the code instead,
 //! which is what it waits on.
+//!
+//! The completing request can wait for minutes, so the user may retry the
+//! sign-in, or sign out, while it does. Each server task holds its sign-in's
+//! running completing request in a [`FollowUpTask`], and a new sign-in or
+//! sign-out aborts it first: the abandoned flow never reports, so its late
+//! "signed in" or "sign-in failed" cannot land over the flow the user is in.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +26,7 @@ use std::time::Duration;
 use karet_lsp::LspClient;
 use serde_json::Value;
 use serde_json::json;
+use tokio::task::AbortHandle;
 
 use crate::api::AccountOutcome;
 
@@ -39,15 +46,43 @@ const EXPIRY_GRACE: Duration = Duration::from_secs(30);
 /// to wait for the user to confirm the code.
 type FollowUp = (&'static str, Value, Duration);
 
+/// The completing request of a server's last sign-in, while it runs: one per
+/// server task, superseded -- aborted, so it reports nothing -- when the next
+/// sign-in or sign-out starts, or when the server task ends.
+#[derive(Debug, Default)]
+pub(super) struct FollowUpTask(Option<AbortHandle>);
+
+impl FollowUpTask {
+    /// Abort the running completing request, if any. A request whose reply
+    /// was already being reported when this runs still reports it -- abort
+    /// takes effect at the task's next await -- but that outcome was settled
+    /// before the new flow began.
+    fn supersede(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for FollowUpTask {
+    fn drop(&mut self) {
+        self.supersede();
+    }
+}
+
 /// Run the server's sign-in (`sign_in`) or sign-out flow, handing `report`
-/// what the user is to do or what came of it. A device code's completing
-/// request then runs on a task of its own, and `report` is handed what came
-/// of that too, after the code.
+/// what the user is to do or what came of it. The completing request of an
+/// earlier sign-in still held in `follow_up_task` is aborted first, so it
+/// reports nothing. A device code's completing request then runs on a task
+/// of its own, held there in turn, and `report` is handed what came of that too,
+/// after the code.
 pub(super) async fn account(
     client: &Arc<LspClient>,
     sign_in: bool,
+    follow_up_task: &mut FollowUpTask,
     report: impl Fn(AccountOutcome) + Send + 'static,
 ) {
+    follow_up_task.supersede();
     let method = if sign_in { "signIn" } else { "signOut" };
     let reply = client.custom_request::<_, Value>(method, json!({})).await;
     let (outcome, follow_up) = match reply {
@@ -61,12 +96,13 @@ pub(super) async fn account(
     report(outcome);
     if let Some((method, params, timeout)) = follow_up {
         let client = Arc::clone(client);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let reply = client
                 .custom_request_with::<_, Value>(method, params, timeout)
                 .await;
             report(read_completion(reply.map_err(|error| error.to_string())));
         });
+        follow_up_task.0 = Some(task.abort_handle());
     }
 }
 
@@ -140,12 +176,19 @@ mod tests {
 
     use super::*;
 
-    /// A connected client whose server answers the handshake and `signIn`
-    /// with a device code at once, then answers the completing command only
-    /// after `delay` -- the time the user takes to confirm in the browser.
-    async fn slow_confirming_client(
-        delay: Duration,
-    ) -> Result<Arc<LspClient>, Box<dyn std::error::Error>> {
+    type Reader = tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>;
+    type Writer = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A connected client whose server answers the handshake, then runs
+    /// `script` over the rest of the connection.
+    async fn scripted_client<F, Fut>(
+        script: F,
+    ) -> Result<Arc<LspClient>, Box<dyn std::error::Error>>
+    where
+        F: FnOnce(Reader, Writer) -> Fut + Send + 'static,
+        Fut: Future<Output = Option<Value>> + Send,
+    {
         let (client_end, server_end) = tokio::io::duplex(1 << 16);
         let (client_read, client_write) = tokio::io::split(client_end);
         tokio::spawn(async move {
@@ -154,24 +197,64 @@ mod tests {
             let init = read(&mut reader).await?;
             answer(&mut writer, &init, json!({"capabilities": {}})).await?;
             read(&mut reader).await?; // initialized
+            script(reader, writer).await
+        });
+        Ok(Arc::new(
+            LspClient::connect(client_read, client_write, Path::new("/")).await?,
+        ))
+    }
+
+    /// A `signIn` reply handing the user `user_code`, with the command that
+    /// waits for them to confirm it.
+    fn device_code(user_code: &str) -> Value {
+        json!({
+            "userCode": user_code,
+            "verificationUri": "https://github.com/login/device",
+            "expiresIn": 900,
+            "command": {"command": "github.copilot.finishDeviceFlow", "arguments": []}
+        })
+    }
+
+    /// A connected client whose server answers `signIn` with a device code
+    /// at once, then answers the completing command only after `delay` --
+    /// the time the user takes to confirm in the browser.
+    async fn slow_confirming_client(
+        delay: Duration,
+    ) -> Result<Arc<LspClient>, Box<dyn std::error::Error>> {
+        scripted_client(move |mut reader, mut writer| async move {
             let sign_in = read(&mut reader).await?;
-            let code = json!({
-                "userCode": "ABCD-EFGH",
-                "verificationUri": "https://github.com/login/device",
-                "expiresIn": 900,
-                "command": {"command": "github.copilot.finishDeviceFlow", "arguments": []}
-            });
-            answer(&mut writer, &sign_in, code).await?;
+            answer(&mut writer, &sign_in, device_code("ABCD-EFGH")).await?;
             let finish = read(&mut reader).await?;
             tokio::time::sleep(delay).await;
             let landed = json!({"status": "OK", "user": "octocat"});
             answer(&mut writer, &finish, landed).await?;
             // Hold the connection open until the client goes.
             read(&mut reader).await
-        });
-        Ok(Arc::new(
-            LspClient::connect(client_read, client_write, Path::new("/")).await?,
-        ))
+        })
+        .await
+    }
+
+    /// Every outcome reported to the returned receiver.
+    fn reporter() -> (
+        impl Fn(AccountOutcome) + Clone + Send + 'static,
+        tokio::sync::mpsc::UnboundedReceiver<AccountOutcome>,
+    ) {
+        let (sender, outcomes) = tokio::sync::mpsc::unbounded_channel();
+        let report = move |outcome| {
+            let _ = sender.send(outcome);
+        };
+        (report, outcomes)
+    }
+
+    /// What `recv` answers next -- an outcome, or `None` once every reporter
+    /// is gone -- or `None` itself if it answers nothing for longer than any
+    /// code lasts, so a lingering reporter fails the test instead of hanging
+    /// it.
+    async fn nothing_more(
+        outcomes: &mut tokio::sync::mpsc::UnboundedReceiver<AccountOutcome>,
+    ) -> Option<Option<AccountOutcome>> {
+        let wait = MAX_DEVICE_CODE_LIFETIME * 2;
+        tokio::time::timeout(wait, outcomes.recv()).await.ok()
     }
 
     async fn read<R>(reader: &mut R) -> Option<Value>
@@ -197,14 +280,11 @@ mod tests {
     /// timeout. A confirmation a minute in still reports the sign-in landed,
     /// not a false "timed out".
     #[tokio::test(start_paused = true)]
-    async fn a_confirmation_slower_than_the_request_timeout_still_lands()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_confirmation_slower_than_the_request_timeout_still_lands() -> TestResult {
         let client = slow_confirming_client(Duration::from_secs(60)).await?;
-        let (sender, mut outcomes) = tokio::sync::mpsc::unbounded_channel();
-        account(&client, true, move |outcome| {
-            let _ = sender.send(outcome);
-        })
-        .await;
+        let (report, mut outcomes) = reporter();
+        let mut follow_up = FollowUpTask::default();
+        account(&client, true, &mut follow_up, report).await;
         assert!(matches!(
             outcomes.recv().await,
             Some(AccountOutcome::DeviceCode { .. })
@@ -215,6 +295,88 @@ mod tests {
                 user: Some("octocat".to_owned()),
             })
         );
+        Ok(())
+    }
+
+    /// Regression (#759): a retried sign-in supersedes the first one's
+    /// completing request. The server answers the abandoned request with a
+    /// refusal before it answers the live one, and that refusal is never
+    /// reported -- only the retry's sign-in is.
+    #[tokio::test(start_paused = true)]
+    async fn a_retried_sign_in_drops_the_first_ones_late_answer() -> TestResult {
+        let (first_sent, first_seen) = tokio::sync::oneshot::channel();
+        let client = scripted_client(move |mut reader, mut writer| async move {
+            let sign_in = read(&mut reader).await?;
+            answer(&mut writer, &sign_in, device_code("FIRST-CODE")).await?;
+            let first_finish = read(&mut reader).await?;
+            first_sent.send(()).ok()?;
+            let retry = read(&mut reader).await?;
+            answer(&mut writer, &retry, device_code("RETRY-CODE")).await?;
+            let retry_finish = read(&mut reader).await?;
+            let refused = json!({"status": "NotAuthorized"});
+            answer(&mut writer, &first_finish, refused).await?;
+            let landed = json!({"status": "OK", "user": "octocat"});
+            answer(&mut writer, &retry_finish, landed).await?;
+            read(&mut reader).await
+        })
+        .await?;
+        let (report, mut outcomes) = reporter();
+        let mut follow_up = FollowUpTask::default();
+        account(&client, true, &mut follow_up, report.clone()).await;
+        first_seen.await?;
+        account(&client, true, &mut follow_up, report).await;
+        let codes = [outcomes.recv().await, outcomes.recv().await];
+        assert!(
+            matches!(
+                &codes,
+                [
+                    Some(AccountOutcome::DeviceCode { user_code: first, .. }),
+                    Some(AccountOutcome::DeviceCode { user_code: retry, .. }),
+                ] if first == "FIRST-CODE" && retry == "RETRY-CODE"
+            ),
+            "got {codes:?}"
+        );
+        assert_eq!(
+            outcomes.recv().await,
+            Some(AccountOutcome::SignedIn {
+                user: Some("octocat".to_owned()),
+            })
+        );
+        // Every reporter is gone -- the abandoned one with its aborted task --
+        // and nothing else was reported.
+        assert_eq!(nothing_more(&mut outcomes).await, Some(None));
+        Ok(())
+    }
+
+    /// Regression (#759): signing out supersedes a sign-in still waiting on
+    /// its code, so the server's late answer to it is not reported as a
+    /// sign-in after the sign-out.
+    #[tokio::test(start_paused = true)]
+    async fn signing_out_drops_a_pending_sign_ins_late_answer() -> TestResult {
+        let (finish_sent, finish_seen) = tokio::sync::oneshot::channel();
+        let client = scripted_client(move |mut reader, mut writer| async move {
+            let sign_in = read(&mut reader).await?;
+            answer(&mut writer, &sign_in, device_code("ABCD-EFGH")).await?;
+            let finish = read(&mut reader).await?;
+            finish_sent.send(()).ok()?;
+            let sign_out = read(&mut reader).await?;
+            answer(&mut writer, &sign_out, Value::Null).await?;
+            let landed = json!({"status": "OK", "user": "octocat"});
+            answer(&mut writer, &finish, landed).await?;
+            read(&mut reader).await
+        })
+        .await?;
+        let (report, mut outcomes) = reporter();
+        let mut follow_up = FollowUpTask::default();
+        account(&client, true, &mut follow_up, report.clone()).await;
+        finish_seen.await?;
+        account(&client, false, &mut follow_up, report).await;
+        assert!(matches!(
+            outcomes.recv().await,
+            Some(AccountOutcome::DeviceCode { .. })
+        ));
+        assert_eq!(outcomes.recv().await, Some(AccountOutcome::SignedOut));
+        assert_eq!(nothing_more(&mut outcomes).await, Some(None));
         Ok(())
     }
 

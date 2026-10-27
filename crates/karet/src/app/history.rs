@@ -270,7 +270,7 @@ impl App {
         }) = self.active_commit_graph()
             && let Some(commit) = commits.get(*selected)
         {
-            let short = commit.short_hash.clone();
+            let short = commit.short_hash().to_string();
             *compare_base = Some(commit.hash.clone());
             self.notify(
                 Report::Outcome,
@@ -386,7 +386,7 @@ impl App {
     /// block in a progressive loading state.
     pub(super) fn fill_commit_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -429,7 +429,7 @@ impl App {
     ) {
         let mut files = Some(commit_file_views(prepared));
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -728,7 +728,7 @@ impl App {
             .map(|commit| {
                 (
                     commit.hash.clone(),
-                    commit.short_hash.clone(),
+                    commit.short_hash().to_string(),
                     commit.summary.clone(),
                 )
             })

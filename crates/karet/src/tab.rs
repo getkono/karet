@@ -693,7 +693,7 @@ impl Tab {
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: CommitFiles) -> Self {
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         Self::new(
             title,
             TabKind::Commit {
@@ -999,7 +999,6 @@ mod tests {
         };
         let detail = karet_vcs::CommitDetail {
             hash: "a".repeat(40),
-            short_hash: "aaaaaaa".to_string(),
             summary: "subject".to_string(),
             body: String::new(),
             author: identity.clone(),

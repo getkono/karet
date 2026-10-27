@@ -377,13 +377,13 @@ impl App {
             .map(|c| {
                 let display = format!(
                     "{} {} \u{2014} {}",
-                    c.short_hash,
+                    c.short_hash(),
                     c.summary,
                     ui::relative_time(c.time)
                 );
                 let target = DiffTarget {
+                    label: c.short_hash().to_string(),
                     rev: c.hash,
-                    label: c.short_hash,
                 };
                 (display, target)
             })

@@ -31,6 +31,7 @@ impl Session {
         for key in keys {
             self.clear_lsp_diagnostic_layer(&key, None);
             self.clear_semantic_tokens_of(&key);
+            self.clear_server_folds_of(&key);
             self.emit(
                 None,
                 Event::LanguageServerRuntimeChanged {
