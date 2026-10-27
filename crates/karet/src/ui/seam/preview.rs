@@ -14,7 +14,7 @@
 //! is reserved and left blank rather than closed up, for the same reason.
 
 use karet_core::ThemeRole;
-use karet_diff::TokenSpan;
+use karet_core::TokenSpan;
 use karet_filetype::IconStyle;
 use karet_session::api::SeamPreview;
 use karet_theme::Theme;

@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use karet_core::Range;
-use karet_diff::TokenSpan;
+use karet_core::TokenSpan;
 
 /// One node, flattened for the presentation layer.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

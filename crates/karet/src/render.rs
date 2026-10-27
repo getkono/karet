@@ -7,8 +7,8 @@
 use std::cell::RefCell;
 
 use karet_core::TokenId;
-use karet_diff::DiffPalette;
-pub use karet_diff::pad_diff_lines;
+use karet_diff::view::DiffPalette;
+pub use karet_diff::view::pad_diff_lines;
 use karet_session::PreparedChange;
 use karet_theme::Rgba;
 use karet_theme::Theme;
@@ -169,7 +169,7 @@ pub fn side_by_side_lines(
     theme: &Theme,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     with_palette(theme, |palette| {
-        karet_diff::side_by_side_lines(&file.change.diff, palette)
+        karet_diff::view::side_by_side_lines(&file.change.diff, palette)
     })
 }
 
@@ -183,7 +183,7 @@ fn ensure_unified(file: &FileView, theme: &Theme) {
         return;
     }
     let lines = with_palette(theme, |palette| {
-        karet_diff::unified_lines(&file.change.diff, palette)
+        karet_diff::view::unified_lines(&file.change.diff, palette)
     });
     *file.unified_cache.borrow_mut() = Some((theme.clone(), lines));
 }

@@ -35,6 +35,8 @@ unicode-width = { workspace = true, optional = true }
 [dev-dependencies]
 # Scratch files for the `diff_files` tests (binary sniffing, i/o errors).
 tempfile.workspace = true
+# The serialized-seam round trip of `PreparedDiff` (feature `serde`).
+serde_json.workspace = true
 
 [lints]
 workspace = true

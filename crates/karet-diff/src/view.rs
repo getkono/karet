@@ -7,6 +7,7 @@
 //! maps its theme (or any fixed palette) onto the named slots.
 
 use karet_core::TokenId;
+use karet_core::TokenSpan;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -21,7 +22,6 @@ use crate::model::FileDiff;
 use crate::model::FileStatus;
 use crate::model::LineKind;
 use crate::prepared::PreparedDiff;
-use crate::prepared::TokenSpan;
 
 /// The color slots a diff painter draws from, plus the syntax token lookup.
 ///
@@ -63,18 +63,16 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
         lines.push(Line::default());
         return lines;
     }
-    if prepared.diff.hunks.is_empty() {
-        lines.push(placeholder(&empty_reason(&prepared.diff), palette));
+    if prepared.diff().hunks.is_empty() {
+        lines.push(placeholder(&empty_reason(prepared.diff()), palette));
         lines.push(Line::default());
         return lines;
     }
-    let empty = Vec::new();
-    for (hunk_index, hunk) in prepared.diff.hunks.iter().enumerate() {
-        let intraline = prepared.intraline.get(hunk_index).unwrap_or(&empty);
+    for (hunk_index, hunk) in prepared.diff().hunks.iter().enumerate() {
         if let Some(scope) = &hunk.scope {
             lines.push(scope_line(scope, palette));
         }
-        lines.push(header_line(&hunk.header, palette));
+        lines.push(header_line(&hunk.header(), palette));
 
         let hl = &hunk.lines;
         let mut i = 0;
@@ -95,7 +93,7 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
             }
             let removes = &hl[r_start..r_end];
             let adds = &hl[r_end..i];
-            let pair_at = |row: usize| intraline.get(row).and_then(Option::as_ref);
+            let pair_at = |row: usize| prepared.intraline(hunk_index, row);
             for (k, dl) in removes.iter().enumerate() {
                 let seg = pair_at(r_start + k).map(|pair| pair.old_segments.as_slice());
                 lines.push(diff_line(prepared, palette, dl, seg));
@@ -125,28 +123,25 @@ pub fn side_by_side_lines(
         right.push(Line::default());
         return (left, right);
     }
-    if prepared.diff.hunks.is_empty() {
-        left.push(placeholder(&empty_reason(&prepared.diff), palette));
+    if prepared.diff().hunks.is_empty() {
+        left.push(placeholder(&empty_reason(prepared.diff()), palette));
         right.push(Line::default());
         left.push(Line::default());
         right.push(Line::default());
         return (left, right);
     }
-    let empty = Vec::new();
-    for (hunk_index, hunk) in prepared.diff.hunks.iter().enumerate() {
-        let intraline = prepared.intraline.get(hunk_index).unwrap_or(&empty);
+    for (hunk_index, hunk) in prepared.diff().hunks.iter().enumerate() {
         if let Some(scope) = &hunk.scope {
             left.push(scope_line(scope, palette));
             right.push(scope_line(hunk.right_scope().unwrap_or(scope), palette));
         }
-        left.push(header_line(&hunk.header, palette));
+        left.push(header_line(&hunk.header(), palette));
         right.push(header_line(&hunk.right_header(), palette));
 
         // `align_hunk` pairs removes with adds exactly as `PreparedDiff` paired
         // them for `intraline`, so each cell reads its own row's prepared pair.
         let pair_of = |cell: Option<&crate::Cell>| {
-            cell.and_then(|cell| intraline.get(cell.hunk_line_idx))
-                .and_then(Option::as_ref)
+            cell.and_then(|cell| prepared.intraline(hunk_index, cell.hunk_line_idx))
         };
         for row in align_hunk(&hunk.lines) {
             let old = pair_of(row.left.as_ref()).map(|pair| pair.old_segments.as_slice());
@@ -391,6 +386,7 @@ mod tests {
     use crate::DiffOptions;
     use crate::diff_text;
     use crate::layout::tests::prepared;
+    use crate::layout::tests::prepared_with;
     use crate::layout::tests::three_hunks;
     use crate::side_by_side_hunk_at_row;
     use crate::side_by_side_hunk_row;
@@ -430,7 +426,11 @@ mod tests {
         let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\n";
         let new = "A\nb\nc\nd\ne\nf\ng\nh\nI\n";
         let prep = prepared(old, new);
-        assert_eq!(prep.diff.hunks.len(), 2, "context split produces two hunks");
+        assert_eq!(
+            prep.diff().hunks.len(),
+            2,
+            "context split produces two hunks"
+        );
         // Row 0 is the first hunk header; its body follows.
         assert_eq!(unified_hunk_at_row(&prep, 0), Some(0));
         let token_fg = |_: TokenId| Color::White;
@@ -450,15 +450,15 @@ mod tests {
     #[test]
     fn hunk_row_opens_each_hunk_on_its_first_painted_row() {
         let prep = three_hunks();
-        assert_eq!(prep.diff.hunks.len(), 3);
+        assert_eq!(prep.diff().hunks.len(), 3);
         let token_fg = |_: TokenId| Color::White;
         let unified = unified_lines(&prep, &palette(&token_fg));
         let (left, _) = side_by_side_lines(&prep, &palette(&token_fg));
-        for (index, hunk) in prep.diff.hunks.iter().enumerate() {
+        for (index, hunk) in prep.diff().hunks.iter().enumerate() {
             let opening = hunk
                 .scope
                 .as_ref()
-                .map_or(hunk.header.clone(), |scope| format!("  {scope}"));
+                .map_or_else(|| hunk.header(), |scope| format!("  {scope}"));
             let row = unified_hunk_row(&prep, index);
             assert_eq!(
                 row.and_then(|row| unified_hunk_at_row(&prep, row)),
@@ -680,9 +680,7 @@ mod tests {
         );
 
         // With the prepared pairs dropped, the painter recomputes nothing.
-        for rows in &mut prep.intraline {
-            rows.iter_mut().for_each(|pair| *pair = None);
-        }
+        prep.drop_intraline_pairs();
         let (left, right) = side_by_side_lines(&prep, &palette);
         assert!(emphasis(&left, Color::LightRed).is_empty());
         assert!(emphasis(&right, Color::LightGreen).is_empty());
@@ -715,8 +713,7 @@ mod tests {
     #[test]
     fn binary_diff_shows_placeholder() {
         let token_fg = |_: TokenId| Color::White;
-        let mut p = prepared("", "");
-        p.diff.is_binary = true;
+        let p = prepared_with("", "", |diff| diff.is_binary = true);
         let text = rendered_text(&unified_lines(&p, &palette(&token_fg)));
         assert!(text.contains("binary"));
     }
@@ -727,23 +724,26 @@ mod tests {
         let palette = palette(&token_fg);
 
         // A pure rename: identical contents, so there is nothing to diff.
-        let mut renamed = prepared("", "");
-        renamed.diff.status = FileStatus::Renamed { similarity: 100 };
+        let renamed = prepared_with("", "", |diff| {
+            diff.status = FileStatus::Renamed { similarity: 100 };
+        });
         let text = rendered_text(&unified_lines(&renamed, &palette));
         assert!(text.contains("renamed, contents identical"), "{text:?}");
 
         // A chmod: no hunks at all, but the mode is the story.
-        let mut chmod = prepared("", "");
-        chmod.diff.old_mode = Some(0o100644);
-        chmod.diff.new_mode = Some(0o100755);
+        let chmod = prepared_with("", "", |diff| {
+            diff.old_mode = Some(0o100644);
+            diff.new_mode = Some(0o100755);
+        });
         let text = rendered_text(&unified_lines(&chmod, &palette));
         assert!(text.contains("file mode 100644 → 100755"), "{text:?}");
 
         // Both at once are reported together.
-        let mut both = prepared("", "");
-        both.diff.status = FileStatus::Copied { similarity: 100 };
-        both.diff.old_mode = Some(0o100644);
-        both.diff.new_mode = Some(0o100755);
+        let both = prepared_with("", "", |diff| {
+            diff.status = FileStatus::Copied { similarity: 100 };
+            diff.old_mode = Some(0o100644);
+            diff.new_mode = Some(0o100755);
+        });
         let text = rendered_text(&unified_lines(&both, &palette));
         assert!(text.contains("copied, contents identical"), "{text:?}");
         assert!(text.contains("file mode"), "{text:?}");
@@ -756,8 +756,7 @@ mod tests {
     #[test]
     fn an_unmerged_file_is_labelled_not_blank() {
         let token_fg = |_: TokenId| Color::White;
-        let mut p = prepared("", "");
-        p.diff.status = FileStatus::Unmerged;
+        let p = prepared_with("", "", |diff| diff.status = FileStatus::Unmerged);
         let text = rendered_text(&unified_lines(&p, &palette(&token_fg)));
         assert!(text.contains("unresolved merge conflict"), "{text:?}");
     }

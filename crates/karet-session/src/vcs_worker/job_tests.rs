@@ -218,9 +218,9 @@ fn diff_with_rev(
         },
     );
     events.into_iter().find_map(|(_, event)| match event {
-        Event::DiffPrepared { result, .. } => {
-            Some(result.map(|change| (change.diff.diff.is_binary, change.diff.diff.hunks.len())))
-        },
+        Event::DiffPrepared { result, .. } => Some(
+            result.map(|change| (change.diff.diff().is_binary, change.diff.diff().hunks.len())),
+        ),
         _ => None,
     })
 }

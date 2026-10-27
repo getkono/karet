@@ -40,7 +40,7 @@ pub(super) fn diff_line_of_row(text: &str, row: u32) -> u32 {
 /// hunk lands on the last one; a binary or hunkless diff has no row.
 fn landing_row(prepared: &karet_diff::PreparedDiff, layout: ViewMode, line: u32) -> Option<usize> {
     let line = line.saturating_add(1);
-    let hunks = &prepared.diff.hunks;
+    let hunks = &prepared.diff().hunks;
     let index = hunks
         .iter()
         .position(|hunk| {
@@ -115,7 +115,7 @@ impl App {
             ViewMode::Unified => karet_diff::unified_hunk_at_row(prepared, row),
             ViewMode::SideBySide => karet_diff::side_by_side_hunk_at_row(prepared, row),
         };
-        let Some(hunk) = hunk_index.and_then(|index| prepared.diff.hunks.get(index)) else {
+        let Some(hunk) = hunk_index.and_then(|index| prepared.diff().hunks.get(index)) else {
             self.notify(
                 Report::Refusal,
                 NotificationKind::Vcs,
@@ -123,7 +123,7 @@ impl App {
             );
             return;
         };
-        let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
+        let patch = karet_diff::format_hunk_patch(prepared.diff(), hunk);
         let (path, section) = (path.clone(), *section);
         if self
             .send(VcsCommand::ApplyIndexPatch { patch, reverse })

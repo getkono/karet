@@ -143,7 +143,7 @@ fn facts_app(root: PathBuf) -> (App, EventRx) {
 fn diff_sides(file: &FileView) -> (String, String) {
     let mut old = String::new();
     let mut new = String::new();
-    for hunk in &file.change.diff.diff.hunks {
+    for hunk in &file.change.diff.diff().hunks {
         for line in &hunk.lines {
             match line.kind {
                 karet_diff::LineKind::Context => {

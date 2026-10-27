@@ -20,6 +20,23 @@ pub struct HighlightSpan {
     pub token: TokenId,
 }
 
+/// A highlighted run within a single line: byte offsets relative to the line's
+/// start, tagged with a semantic [`TokenId`].
+///
+/// The line-relative counterpart of [`HighlightSpan`], for consumers that carry
+/// per-line token tables (a prepared diff, a source preview) rather than a whole
+/// buffer's spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TokenSpan {
+    /// The run's starting byte offset within its line.
+    pub start: usize,
+    /// The run's ending byte offset (exclusive) within its line.
+    pub end: usize,
+    /// The run's semantic token class.
+    pub token: TokenId,
+}
+
 /// An ordered, non-overlapping set of [`HighlightSpan`]s for a buffer.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -654,5 +671,23 @@ mod tests {
         // A region holding the deletion shrinks to nothing and goes.
         let single = FoldRegions::from_sorted_regions(vec![FoldRegion::new(1, 2)]);
         assert!(single.translate(&rows(1, 2, 1)).regions().is_empty());
+    }
+
+    /// `TokenSpan` moved here from `karet-diff`, whose prepared diffs and the
+    /// seam previews already cross the backend seam with it: the wire shape
+    /// must stay `{start, end, token}` with the token as a bare number.
+    /// Falsified by renaming a field or wrapping the token.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn token_span_keeps_its_wire_shape() -> Result<(), serde_json::Error> {
+        let span = TokenSpan {
+            start: 2,
+            end: 5,
+            token: TokenId(7),
+        };
+        let json = serde_json::to_string(&span)?;
+        assert_eq!(json, r#"{"start":2,"end":5,"token":7}"#);
+        assert_eq!(serde_json::from_str::<TokenSpan>(&json)?, span);
+        Ok(())
     }
 }

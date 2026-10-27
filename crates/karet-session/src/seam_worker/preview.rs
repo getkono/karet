@@ -13,7 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::Range;
-use karet_diff::TokenSpan;
+use karet_core::TokenSpan;
 use karet_treesitter::language_id_from_path;
 
 use crate::api::SeamPreview;

@@ -25,9 +25,9 @@
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
-//! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
-//!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
-//!   [`merge_spans`].
+//! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], the line-relative
+//!   [`TokenSpan`], [`FoldRegion`], [`FoldKind`], [`FoldRegions`], plus the span
+//!   helpers [`shift_span`] and [`merge_spans`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`CompletionOptions`],
 //!   [`SignatureHelpOptions`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
@@ -83,6 +83,7 @@ pub use highlight::HighlightSpan;
 pub use highlight::Highlights;
 pub use highlight::SemanticBlock;
 pub use highlight::SemanticBlocks;
+pub use highlight::TokenSpan;
 pub use highlight::merge_spans;
 pub use highlight::shift_span;
 pub use model::CodeAction;

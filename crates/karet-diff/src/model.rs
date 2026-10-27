@@ -91,8 +91,6 @@ pub struct Hunk {
     pub new_start: u32,
     /// The number of new-side lines the hunk spans (context + additions).
     pub new_count: u32,
-    /// The `@@ -a,b +c,d @@` header line (without any trailing scope text).
-    pub header: String,
     /// Enclosing scope text from a git hunk header (e.g. `fn process`), always from
     /// the pre-image. `None` for engine-generated diffs (which have no scope text).
     pub scope: Option<String>,
@@ -111,23 +109,49 @@ impl Hunk {
         self.new_scope.as_deref().or(self.scope.as_deref())
     }
 
-    /// The header line for the new (right) side: the same `@@ -a,b +c,d @@` range,
-    /// but with the trailing scope suffix replaced by the new signature when known.
-    /// Falls back to [`header`](Self::header) verbatim otherwise.
+    /// The hunk's `@@ -a,b +c,d @@` header line, followed by ` scope` when the
+    /// hunk has a [`scope`](Self::scope).
+    ///
+    /// Built from the numeric fields every time, so it cannot disagree with
+    /// them. Counts are always written explicitly (`-3,1`, never git's
+    /// shorthand `-3`), which every unified-diff reader accepts.
+    #[must_use]
+    pub fn header(&self) -> String {
+        header_line(
+            self.old_start,
+            self.old_count,
+            self.new_start,
+            self.new_count,
+            self.scope.as_deref(),
+        )
+    }
+
+    /// The header line for the new (right) side: the same ranges as
+    /// [`header`](Self::header), followed by the [`right_scope`](Self::right_scope).
     #[must_use]
     pub fn right_header(&self) -> String {
-        let Some(new_scope) = &self.new_scope else {
-            return self.header.clone();
-        };
-        // Locate the byte just past the closing `@@`, mirroring scope extraction.
-        let prefix_end = self
-            .header
-            .strip_prefix("@@ ")
-            .and_then(|after| after.find(" @@").map(|c| "@@ ".len() + c + " @@".len()));
-        match prefix_end {
-            Some(end) => format!("{} {}", &self.header[..end], new_scope),
-            None => self.header.clone(),
-        }
+        header_line(
+            self.old_start,
+            self.old_count,
+            self.new_start,
+            self.new_count,
+            self.right_scope(),
+        )
+    }
+}
+
+/// A `@@ -a,b +c,d @@` hunk header, with ` scope` appended when there is one.
+pub(crate) fn header_line(
+    old_start: u32,
+    old_count: u32,
+    new_start: u32,
+    new_count: u32,
+    scope: Option<&str>,
+) -> String {
+    let ranges = format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@");
+    match scope {
+        Some(scope) => format!("{ranges} {scope}"),
+        None => ranges,
     }
 }
 
@@ -281,47 +305,55 @@ mod tests {
         assert!(!binary.is_content_unchanged());
     }
 
-    fn hunk_with(header: &str, scope: Option<&str>, new_scope: Option<&str>) -> Hunk {
+    fn hunk_with(scope: Option<&str>, new_scope: Option<&str>) -> Hunk {
         Hunk {
             old_start: 1,
             old_count: 2,
             new_start: 1,
             new_count: 2,
-            header: header.into(),
             scope: scope.map(Into::into),
             new_scope: new_scope.map(Into::into),
             lines: vec![],
         }
     }
 
+    /// The header is derived from the numbers, so editing a count or a start
+    /// moves the header with it. Falsified by caching the header anywhere.
+    #[test]
+    fn header_follows_the_counts_and_the_scope() {
+        let mut h = hunk_with(None, None);
+        assert_eq!(h.header(), "@@ -1,2 +1,2 @@");
+        h.old_start = 7;
+        h.old_count = 0;
+        h.new_start = 0;
+        h.new_count = 1;
+        assert_eq!(h.header(), "@@ -7,0 +0,1 @@");
+        h.scope = Some("fn f()".into());
+        assert_eq!(h.header(), "@@ -7,0 +0,1 @@ fn f()");
+    }
+
     #[test]
     fn right_header_swaps_in_the_new_scope() {
-        let h = hunk_with(
-            "@@ -1,2 +1,2 @@ fn old()",
-            Some("fn old()"),
-            Some("fn new()"),
-        );
+        let h = hunk_with(Some("fn old()"), Some("fn new()"));
+        assert_eq!(h.header(), "@@ -1,2 +1,2 @@ fn old()");
         assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn new()");
         assert_eq!(h.right_scope(), Some("fn new()"));
 
         // A header that had no scope text still gains the new one.
-        let h = hunk_with("@@ -1,2 +1,2 @@", None, Some("fn new()"));
+        let h = hunk_with(None, Some("fn new()"));
         assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn new()");
     }
 
     #[test]
-    fn right_header_falls_back_to_the_header_verbatim() {
+    fn right_header_without_a_new_scope_is_the_header() {
         // No new-side scope: the old header stands, scope and all.
-        let h = hunk_with("@@ -1,2 +1,2 @@ fn old()", Some("fn old()"), None);
+        let h = hunk_with(Some("fn old()"), None);
         assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn old()");
+        assert_eq!(h.right_header(), h.header());
         assert_eq!(h.right_scope(), Some("fn old()"));
 
-        // A header with no closing `@@` has no range to keep, so it is not
-        // rewritten into something half-formed.
-        let h = hunk_with("@@ -1,2 +1,2", None, Some("fn new()"));
-        assert_eq!(h.right_header(), "@@ -1,2 +1,2");
-        let h = hunk_with("not a header", None, Some("fn new()"));
-        assert_eq!(h.right_header(), "not a header");
+        let h = hunk_with(None, None);
+        assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@");
     }
 
     #[test]

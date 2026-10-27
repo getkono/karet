@@ -294,14 +294,12 @@ fn build_group_hunk(
     // 0-based position (e.g. `-0,0`); otherwise the 1-based first line.
     let old_start = if old_count == 0 { o0 } else { o0 + 1 };
     let new_start = if new_count == 0 { n0 } else { n0 + 1 };
-    let header = format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@");
 
     Hunk {
         old_start,
         old_count,
         new_start,
         new_count,
-        header,
         scope: None,
         new_scope: None,
         lines,
@@ -417,7 +415,7 @@ mod tests {
             (h.old_start, h.old_count, h.new_start, h.new_count),
             (0, 0, 1, 3)
         );
-        assert_eq!(h.header, "@@ -0,0 +1,3 @@");
+        assert_eq!(h.header(), "@@ -0,0 +1,3 @@");
         assert!(h.lines.iter().all(|l| l.kind == LineKind::Add));
     }
 
@@ -442,7 +440,7 @@ mod tests {
         assert_eq!(f.status, FileStatus::Modified);
         assert_eq!(f.hunks.len(), 1);
         let h = &f.hunks[0];
-        assert_eq!(h.header, "@@ -1,5 +1,5 @@");
+        assert_eq!(h.header(), "@@ -1,5 +1,5 @@");
         let remove = h.lines.iter().find(|l| l.kind == LineKind::Remove);
         let add = h.lines.iter().find(|l| l.kind == LineKind::Add);
         assert_eq!(remove.and_then(|l| l.old_lineno), Some(2));
@@ -519,7 +517,7 @@ mod tests {
         diff_text(old, new, &opts)
             .hunks
             .into_iter()
-            .map(|h| h.header)
+            .map(|h| h.header())
             .collect()
     }
 
@@ -658,7 +656,7 @@ mod tests {
             },
         );
         assert_eq!(f.hunks.len(), 2);
-        let headers: Vec<&str> = f.hunks.iter().map(|h| h.header.as_str()).collect();
+        let headers: Vec<String> = f.hunks.iter().map(Hunk::header).collect();
         assert_eq!(headers, ["@@ -1,2 +1,2 @@", "@@ -7,2 +7,2 @@"]);
     }
 
