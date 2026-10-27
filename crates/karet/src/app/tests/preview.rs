@@ -53,7 +53,10 @@ fn word_wrap_resolves_against_the_tab_language() {
         ..Settings::default()
     };
     let rust = text_tab("main.rs", "fn main() {}");
-    let resolved = settings.editor.for_language(rust.language_id()).word_wrap();
+    let resolved = settings
+        .editor
+        .for_language(rust.config_file_type())
+        .word_wrap();
     assert!(rust.word_wrap(resolved));
 
     let mut python = text_tab("main.py", "print('hi')");
@@ -62,7 +65,7 @@ fn word_wrap_resolves_against_the_tab_language() {
     }
     let resolved = settings
         .editor
-        .for_language(python.language_id())
+        .for_language(python.config_file_type())
         .word_wrap();
     assert!(!python.word_wrap(resolved));
 }

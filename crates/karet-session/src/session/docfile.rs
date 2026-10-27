@@ -42,14 +42,14 @@ pub(super) fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), Docu
 
 pub(super) fn resolve_document_settings(
     path: &Path,
-    language: Option<&str>,
+    file_type: Option<karet_filetype::FileType>,
     settings: &crate::config::Settings,
 ) -> (DocumentSettings, Option<String>) {
     let (resolved, editorconfig_error) =
-        match crate::editorconfig::resolve(path, language, settings) {
+        match crate::editorconfig::resolve(path, file_type, settings) {
             Ok(resolved) => (resolved, None),
             Err(error) => (
-                crate::editorconfig::defaults(language, settings),
+                crate::editorconfig::defaults(file_type, settings),
                 Some(format!("EditorConfig: {error}")),
             ),
         };

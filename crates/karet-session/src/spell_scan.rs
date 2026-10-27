@@ -219,7 +219,7 @@ fn check_file(
     // file, or the panel checks against a locale the editor never uses — and a
     // path EditorConfig leaves without a supported locale is one the editor
     // never checks at all.
-    let Some(spelling_language) = spelling_language_for(path, language, job, state) else {
+    let Some(spelling_language) = spelling_language_for(path, job, state) else {
         return;
     };
     let ScanHost {
@@ -283,7 +283,6 @@ fn check_file(
 /// runs at all.
 fn spelling_language_for(
     path: &Path,
-    language: Option<&'static str>,
     job: &SpellScanJob,
     state: &mut ScanState,
 ) -> Option<SpellingLanguage> {
@@ -301,7 +300,8 @@ fn spelling_language_for(
     if !overridden {
         return Some(job.spelling_language);
     }
-    crate::editorconfig::resolve(path, language, &job.settings)
+    let file_type = karet_filetype::file_type_for_path(path);
+    crate::editorconfig::resolve(path, Some(file_type), &job.settings)
         .map_or(Some(job.spelling_language), |resolved| {
             resolved.spelling_language
         })

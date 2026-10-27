@@ -228,7 +228,12 @@ struct Document {
     path: PathBuf,
     /// Human-readable label published to presentation clients.
     language: Option<&'static str>,
-    /// Stable legacy-compatible key used for editor settings and server selection.
+    /// The registry file type the document was detected or opened as: what its
+    /// per-language editor settings resolve against
+    /// ([`Editor::for_language`](crate::config::schema::Editor::for_language)).
+    file_type: karet_filetype::FileType,
+    /// Stable legacy-compatible key used for server selection: always
+    /// `file_type.config_selector()`, set alongside it.
     language_selector: Option<&'static str>,
     /// Protocol identifier sent in `textDocument/didOpen`.
     lsp_language_id: Option<&'static str>,
@@ -642,7 +647,7 @@ fn update_syntax(
         // (a Markdown file saved as `.txt`) would otherwise linger on the snapshot.
         doc.syntax.clear(crate::highlight::indent_folds(
             settings,
-            doc.language_selector,
+            Some(doc.file_type),
             &doc.buffer,
         ));
         return true;
@@ -661,7 +666,7 @@ fn update_syntax(
         semantic: {
             let semantic = settings
                 .editor
-                .for_language(doc.language_selector)
+                .for_language(Some(doc.file_type))
                 .semantic_comments();
             semantic
                 .enabled()

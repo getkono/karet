@@ -37,20 +37,27 @@ impl Tab {
         })
     }
 
-    /// The language editor configuration resolves against, or `None` for a tab
-    /// with no label at all (the welcome tab).
+    /// The file type editor configuration resolves against
+    /// ([`Editor::for_language`](karet_session::config::schema::Editor::for_language)),
+    /// whose `config_selector` picks the `[language]` override: the same key
+    /// the session resolves the document's own settings with, so an override
+    /// such as `[toml]` reaches a `Cargo.lock` here as it does there.
     ///
-    /// A code tab answers with its file type's display name. Every other kind
-    /// answers with its [status label](Self::status_label), which is what it
-    /// has always resolved against; which keys config resolution should use
-    /// for them is #617's to settle, not this accessor's.
+    /// - A code tab answers with the file type it was opened as.
+    /// - A diff tab answers with its file's path-detected type: it shows that
+    ///   file's text, so a `[rust]` patch applies to a Rust diff.
+    /// - A Markdown preview answers with Markdown: it shows Markdown converted
+    ///   from its source (a DOCX, a notebook), never the source's own text.
+    /// - Every other kind (image, PDF, hex, logs, commit and graph views, …)
+    ///   shows no document text and answers `None`, the global settings.
     #[must_use]
-    pub(crate) fn language_id(&self) -> Option<&str> {
-        let language = match &self.kind {
-            TabKind::Code { file_type, .. } => code_language(*file_type),
-            _ => self.status_label(),
-        };
-        (!language.is_empty()).then_some(language)
+    pub(crate) fn config_file_type(&self) -> Option<FileType> {
+        match &self.kind {
+            TabKind::Code { file_type, .. } => Some(*file_type),
+            TabKind::Diff { path, .. } => Some(karet_filetype::file_type_for_path(path)),
+            TabKind::MarkdownPreview { .. } => karet_filetype::file_type_for_language("markdown"),
+            _ => None,
+        }
     }
 
     /// A short language/kind label for the status bar.
@@ -114,25 +121,53 @@ mod tests {
         let tab = Tab::open_as_text(Path::new("/x/a.rs"));
         assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
         assert_eq!(tab.status_label(), "Rust");
-        assert_eq!(tab.language_id(), Some("Rust"));
+        assert_eq!(
+            tab.config_file_type().and_then(|ft| ft.config_selector()),
+            Some("rust")
+        );
     }
 
     #[test]
     fn an_unrecognized_code_tab_is_plaintext() {
         let tab = Tab::open_as_text(Path::new("/x/notes.unknownext"));
         assert_eq!(tab.status_label(), "plaintext");
-        assert_eq!(tab.language_id(), Some("plaintext"));
+        let file_type = tab.config_file_type();
+        assert!(file_type.is_some_and(|ft| !ft.is_recognized()));
+        assert_eq!(file_type.and_then(|ft| ft.config_selector()), None);
     }
 
-    /// Non-code kinds keep resolving settings against their status label until
-    /// #617 decides otherwise; only the label-less welcome tab answers `None`.
+    /// A `Cargo.lock` tab is labelled by its display name but configured by its
+    /// selector. Falsified by resolving app settings against the label (#617).
     #[test]
-    fn non_code_tabs_resolve_against_their_label() {
+    fn a_cargo_lock_tab_configures_as_toml() {
+        let tab = Tab::open_as_text(Path::new("/x/Cargo.lock"));
+        assert_eq!(tab.status_label(), "Cargo lockfile");
+        assert_eq!(
+            tab.config_file_type().and_then(|ft| ft.config_selector()),
+            Some("toml")
+        );
+    }
+
+    /// A diff configures as its file and a Markdown preview as Markdown; kinds
+    /// that show no document text resolve to the global settings, whatever their
+    /// status label happens to spell.
+    #[test]
+    fn non_code_tabs_pick_an_explicit_config_file_type() {
+        let selector = |tab: &Tab| tab.config_file_type().and_then(|ft| ft.config_selector());
+        let diff = Tab::diff(
+            "Cargo.lock".to_owned(),
+            std::path::PathBuf::from("/x/Cargo.lock"),
+            super::super::Section::Working,
+            None,
+            super::super::ViewMode::Unified,
+        );
+        assert_eq!(selector(&diff), Some("toml"));
+        let preview = Tab::document_preview(std::path::PathBuf::from("/x/report.docx"), "# Hi");
+        assert_eq!(selector(&preview), Some("markdown"));
         let stash = Tab::stash_preview("stash@{0}", String::new());
         assert_eq!(stash.status_label(), "stash");
-        assert_eq!(stash.language_id(), Some("stash"));
-        assert_eq!(Tab::welcome().status_label(), "");
-        assert_eq!(Tab::welcome().language_id(), None);
+        assert_eq!(stash.config_file_type(), None);
+        assert_eq!(Tab::welcome().config_file_type(), None);
     }
 
     #[test]

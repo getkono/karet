@@ -160,3 +160,36 @@
         assert_eq!(std::fs::read(&file)?, b"x\n", "`utf-8` drops the file's BOM");
         Ok(())
     }
+
+    /// A `Cargo.lock` document resolves its settings under the `[toml]` override,
+    /// the selector its file type carries, not its display name. Falsified by
+    /// resolving the document's settings against `"Cargo lockfile"` (#617).
+    #[test]
+    fn a_cargo_lock_document_takes_the_toml_override() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("Cargo.lock");
+        std::fs::write(&file, "version = 4\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 4;
+        let selector = crate::config::schema::LanguageSelector::from_language("toml")
+            .ok_or("no toml selector")?;
+        settings.editor.language_overrides.insert(
+            selector,
+            crate::config::schema::EditorOverride {
+                tab_size: Some(2),
+                ..crate::config::schema::EditorOverride::default()
+            },
+        );
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let doc = session.store.docs.get(&doc).ok_or("opened document not stored")?;
+        assert_eq!(doc.file_type.name(), "Cargo lockfile");
+        assert_eq!(doc.language_selector, Some("toml"));
+        assert_eq!(doc.settings.indent_size, 2);
+        assert_eq!(doc.settings.tab_width, 2);
+        Ok(())
+    }

@@ -73,7 +73,7 @@ impl App {
         let graphical_cursor_requested = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .graphical_cursor()
                 == Some(true)
         });
@@ -87,7 +87,7 @@ impl App {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .completion()
                 .enabled()
         });

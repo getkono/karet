@@ -313,7 +313,7 @@ impl App {
         let word_wrap = tab.word_wrap(
             self.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .word_wrap(),
         );
         let left = self.drag_text_left(area);

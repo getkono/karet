@@ -869,17 +869,17 @@ impl Session {
     /// Re-resolve per-path behavior after an application or EditorConfig change.
     pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
         let settings = self.config.settings().clone();
-        let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
+        let inputs: Vec<(DocumentId, PathBuf, karet_filetype::FileType)> = docs
             .iter()
             .filter_map(|doc_id| {
                 self.store
                     .docs
                     .get(doc_id)
-                    .map(|doc| (*doc_id, doc.path.clone(), doc.language_selector))
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.file_type))
             })
             .collect();
-        for (doc_id, path, language) in inputs {
-            let (resolved, error) = resolve_document_settings(&path, language, &settings);
+        for (doc_id, path, file_type) in inputs {
+            let (resolved, error) = resolve_document_settings(&path, Some(file_type), &settings);
             let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
                 if doc.settings == resolved {
                     return false;

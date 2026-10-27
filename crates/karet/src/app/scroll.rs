@@ -47,7 +47,7 @@ impl App {
             tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab.language_id())
+                    .for_language(tab.config_file_type())
                     .word_wrap(),
             )
         });

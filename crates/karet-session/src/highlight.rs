@@ -87,17 +87,17 @@ pub(crate) struct HighlightResult {
 const INDENT_FOLD_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// The fold regions of a document no grammar parses, from its indentation,
-/// with tabs as wide as the tab size `settings` resolve for `language` (see
+/// with tabs as wide as the tab size `settings` resolve for `file_type` (see
 /// [`karet_syntax::fold_by_indent`]).
 pub(crate) fn indent_folds(
     settings: &crate::config::Settings,
-    language: Option<&'static str>,
+    file_type: Option<karet_filetype::FileType>,
     buffer: &TextBuffer,
 ) -> Arc<FoldRegions> {
     if buffer.len_bytes() > INDENT_FOLD_MAX_BYTES {
         return Arc::default();
     }
-    let tab_size = settings.editor.for_language(language).tab_size();
+    let tab_size = settings.editor.for_language(file_type).tab_size();
     let text = buffer.text_snapshot();
     Arc::new(karet_syntax::fold_by_indent(&text, u32::from(tab_size)))
 }

@@ -23,8 +23,10 @@ pub(super) struct DocumentLanguage {
     pub(super) lang_id: Option<LanguageId>,
     /// The display name (e.g. `"Rust"`).
     pub(super) name: Option<&'static str>,
-    /// The per-language configuration and server-routing selector.
-    pub(super) selector: Option<&'static str>,
+    /// The registry file type: per-language settings resolve against it, and its
+    /// [`config_selector`](karet_filetype::FileType::config_selector) routes the
+    /// document to a language server.
+    pub(super) file_type: karet_filetype::FileType,
     /// The protocol `languageId` announced to the language server.
     pub(super) lsp_id: Option<&'static str>,
 }
@@ -35,9 +37,14 @@ impl DocumentLanguage {
         Self {
             lang_id: language_id_from_path(path),
             name: language_name_for_path(path),
-            selector: language_selector_for_path(path),
+            file_type: karet_filetype::file_type_for_path(path),
             lsp_id: lsp_language_id_for_path(path),
         }
+    }
+
+    /// The per-language configuration and server-routing selector.
+    pub(super) fn selector(&self) -> Option<&'static str> {
+        self.file_type.config_selector()
     }
 
     /// The language an explicit `id` names (an LSP language id such as
@@ -53,7 +60,7 @@ impl DocumentLanguage {
                 .grammar()
                 .and_then(karet_treesitter::language_id_from_injection_name),
             name: Some(file_type.name()),
-            selector: file_type.config_selector(),
+            file_type,
             lsp_id: file_type.lsp_language_id(),
         }
     }
@@ -167,14 +174,16 @@ impl Session {
         };
         // An explicit id the registry knows overrides detection; anything else,
         // including an id it does not know, falls back to the path.
+        let detected = DocumentLanguage::resolve(&path, language);
         let DocumentLanguage {
             lang_id,
             name: language,
-            selector: language_selector,
+            file_type,
             lsp_id: lsp_language_id,
-        } = DocumentLanguage::resolve(&path, language);
+        } = detected;
+        let language_selector = detected.selector();
         let (document_settings, editorconfig_error) =
-            resolve_document_settings(&path, language_selector, self.config.settings());
+            resolve_document_settings(&path, Some(file_type), self.config.settings());
         apply_serialization_settings(&mut buffer, document_settings);
         if must_create {
             // No file, so no history of it to restore.
@@ -197,6 +206,7 @@ impl Session {
         let mut doc = Document {
             path: path.clone(),
             language,
+            file_type,
             language_selector,
             lsp_language_id,
             lang_id,
@@ -790,7 +800,8 @@ impl Session {
         let detected = DocumentLanguage::for_path(&path);
         doc.lang_id = detected.lang_id;
         doc.language = detected.name;
-        doc.language_selector = detected.selector;
+        doc.file_type = detected.file_type;
+        doc.language_selector = detected.selector();
         doc.lsp_language_id = detected.lsp_id;
         // A new language is served by another server, or none: the old one's
         // overlay does not describe it, and the version did not move, so

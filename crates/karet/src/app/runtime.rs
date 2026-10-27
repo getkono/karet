@@ -229,7 +229,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
-                .for_language(tab.language_id())
+                .for_language(tab.config_file_type())
                 .graphical_cursor()
                 == Some(true)
         });
