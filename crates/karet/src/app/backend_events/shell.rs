@@ -115,6 +115,12 @@ impl App {
             self.scm.repository_request = None;
             self.scm.repository_loading_since = None;
         }
+        if id.is_some() && id == self.pending_pull_requests {
+            self.pending_pull_requests = None;
+            self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
+            self.pull_request_items.clear();
+            self.pull_request_remote = None;
+        }
         if let Some(pending) = self.pending_blame.filter(|pending| Some(pending.0) == id) {
             self.pending_blame = None;
             self.failed_blame = Some((pending.1, pending.2, pending.3));

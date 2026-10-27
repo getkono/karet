@@ -121,7 +121,7 @@ fn a_failed_listing_retires_the_picker_and_reports_why() {
         Some(RequestId(2)),
         SessionEvent::GithubError {
             operation: GithubOperation::PullRequests,
-            message: "remote upstream is not hosted on github.com".to_string(),
+            message: "remote upstream is not hosted on GitHub".to_string(),
         },
     );
 
@@ -129,10 +129,19 @@ fn a_failed_listing_retires_the_picker_and_reports_why() {
     assert_eq!(app.pending_pull_requests, None);
     assert!(app.pull_request_items.is_empty());
     assert_eq!(app.pull_request_remote, None);
-    let message = last_message(&app).unwrap_or_default();
-    assert!(
-        message.contains("Could not load pull requests")
-            && message.contains("not hosted on github.com"),
-        "{message}"
+    // A Source Control error carrying the bare reason, as before the listing
+    // moved to the GitHub command.
+    let note = app
+        .notifications
+        .active()
+        .first()
+        .map(|note| (note.severity, note.kind, note.title.clone()));
+    assert_eq!(
+        note,
+        Some((
+            karet_core::Severity::Error,
+            NotificationKind::Vcs,
+            "remote upstream is not hosted on GitHub".to_string(),
+        ))
     );
 }

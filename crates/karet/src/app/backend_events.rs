@@ -556,10 +556,17 @@ impl App {
                     },
                 );
             },
+            // The branch picker is a Source Control surface, so its failure is
+            // a Source Control error with the bare reason, not a GitHub-view one.
+            SessionEvent::GithubError { message, .. } if self.answers_pull_request_picker(id) => {
+                self.on_notification(
+                    id,
+                    karet_core::Severity::Error,
+                    NotificationKind::Vcs,
+                    message,
+                );
+            },
             SessionEvent::GithubError { operation, message } => {
-                if self.answers_pull_request_picker(id) {
-                    self.cancel_pull_request_picker();
-                }
                 self.apply_github_error(id, operation, message);
             },
             SessionEvent::GraphReady { title, view, .. } => {

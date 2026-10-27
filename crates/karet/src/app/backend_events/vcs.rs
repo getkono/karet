@@ -274,15 +274,6 @@ impl App {
         }
     }
 
-    /// The picker's request failed: retire its "loading…" card and drop the
-    /// pages gathered so far. The failure itself is reported by the caller.
-    pub(super) fn cancel_pull_request_picker(&mut self) {
-        self.pending_pull_requests = None;
-        self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
-        self.pull_request_items.clear();
-        self.pull_request_remote = None;
-    }
-
     /// A page requested by the graph browser fills it; anything else is the
     /// sidebar log.
     pub(super) fn on_vcs_log(
