@@ -6,6 +6,7 @@ use crate::model::FileDiff;
 use crate::model::FileStatus;
 use crate::model::Hunk;
 use crate::model::LineKind;
+use crate::model::header_line;
 
 /// The `diff --git` header, the rename/copy/mode metadata git would have written,
 /// and the `---`/`+++` path lines for `file`.
@@ -136,20 +137,16 @@ fn line_shift(hunk: &Hunk) -> i64 {
 /// The `@@` line written for `hunk`, with `shift` as [`written_new_start`]
 /// takes it.
 ///
-/// This is the hunk's own header, unless [`written_new_start`] gives another
-/// new-side start. Any section text after the closing `@@` is kept.
+/// This is the hunk's own [`Hunk::header`], unless [`written_new_start`] gives
+/// another new-side start. The scope text after the closing `@@` is kept.
 fn hunk_header(hunk: &Hunk, shift: i64) -> String {
-    let Some(new_start) = written_new_start(hunk, shift) else {
-        return hunk.header.clone();
-    };
-    let section = hunk
-        .header
-        .strip_prefix("@@ ")
-        .and_then(|ranges| ranges.split_once(" @@"))
-        .map_or("", |(_, section)| section);
-    format!(
-        "@@ -{},{} +{new_start},{} @@{section}",
-        hunk.old_start, hunk.old_count, hunk.new_count
+    let new_start = written_new_start(hunk, shift).unwrap_or(hunk.new_start);
+    header_line(
+        hunk.old_start,
+        hunk.old_count,
+        new_start,
+        hunk.new_count,
+        hunk.scope.as_deref(),
     )
 }
 
@@ -349,7 +346,6 @@ mod tests {
                 old_count: 1,
                 new_start: 1,
                 new_count: 1,
-                header: "@@ -1,1 +1,1 @@".into(),
                 scope: None,
                 new_scope: None,
                 lines: vec![
@@ -714,7 +710,6 @@ mod tests {
     fn as_written(hunk: &Hunk, shift: i64) -> Hunk {
         let mut written = hunk.clone();
         if let Some(new_start) = written_new_start(hunk, shift) {
-            written.header = hunk_header(hunk, shift);
             written.new_start = new_start;
             let moved = i64::from(new_start) - i64::from(hunk.new_start);
             for line in &mut written.lines {
@@ -981,17 +976,17 @@ mod tests {
             .remove(0);
         hunk.lines[1].no_newline = true;
         // It also adds a line, so git places it by that line, which it names.
-        assert_eq!(hunk_header(&hunk, 0), hunk.header);
+        assert_eq!(hunk_header(&hunk, 0), "@@ -1,1 +1,1 @@");
+        assert_eq!(hunk_header(&hunk, 0), hunk.header());
         hunk.lines.truncate(1);
         hunk.lines[0].no_newline = true;
         hunk.new_count = 0;
         hunk.new_start = 0;
-        hunk.header = "@@ -1,1 +0,0 @@".into();
         // Nothing precedes the removal, so git's guess is already the line.
-        assert_eq!(hunk_header(&hunk, 0), hunk.header);
+        assert_eq!(hunk_header(&hunk, 0), "@@ -1,1 +0,0 @@");
         hunk.old_start = 2;
         hunk.new_start = 1;
-        hunk.header = "@@ -2,1 +1,0 @@ fn f".into();
+        hunk.scope = Some("fn f".into());
         // The section text after the ranges survives the renumbering.
         assert_eq!(hunk_header(&hunk, 0), "@@ -2,1 +2,0 @@ fn f");
         // Earlier hunks in the same patch move it by what they add or remove;
@@ -1000,7 +995,8 @@ mod tests {
         assert_eq!(hunk_header(&hunk, -1), "@@ -2,1 +0,0 @@ fn f");
         hunk.lines[0].no_newline = false;
         // A terminated line matches only its own text, so it is left alone.
-        assert_eq!(hunk_header(&hunk, 0), hunk.header);
+        assert_eq!(hunk_header(&hunk, 0), "@@ -2,1 +1,0 @@ fn f");
+        assert_eq!(hunk_header(&hunk, 0), hunk.header());
     }
 
     /// A file that still exists but went empty, or an empty file that gained

@@ -72,7 +72,7 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
         if let Some(scope) = &hunk.scope {
             lines.push(scope_line(scope, palette));
         }
-        lines.push(header_line(&hunk.header, palette));
+        lines.push(header_line(&hunk.header(), palette));
 
         let hl = &hunk.lines;
         let mut i = 0;
@@ -135,7 +135,7 @@ pub fn side_by_side_lines(
             left.push(scope_line(scope, palette));
             right.push(scope_line(hunk.right_scope().unwrap_or(scope), palette));
         }
-        left.push(header_line(&hunk.header, palette));
+        left.push(header_line(&hunk.header(), palette));
         right.push(header_line(&hunk.right_header(), palette));
 
         // `align_hunk` pairs removes with adds exactly as `PreparedDiff` paired
@@ -458,7 +458,7 @@ mod tests {
             let opening = hunk
                 .scope
                 .as_ref()
-                .map_or(hunk.header.clone(), |scope| format!("  {scope}"));
+                .map_or_else(|| hunk.header(), |scope| format!("  {scope}"));
             let row = unified_hunk_row(&prep, index);
             assert_eq!(
                 row.and_then(|row| unified_hunk_at_row(&prep, row)),
