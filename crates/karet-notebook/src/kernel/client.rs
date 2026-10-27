@@ -20,6 +20,7 @@ use super::KernelTransport;
 use super::control::CONTROL_TIMEOUT;
 use crate::Output;
 use crate::Source;
+use crate::StreamName;
 
 /// How long one cell may run before the client gives up waiting.
 const EXECUTE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -173,8 +174,8 @@ fn output_from(content: &JupyterMessageContent) -> Option<Output> {
     match content {
         JupyterMessageContent::StreamContent(stream) => Some(Output::Stream {
             name: match stream.name {
-                jupyter_protocol::messaging::Stdio::Stdout => "stdout".to_owned(),
-                jupyter_protocol::messaging::Stdio::Stderr => "stderr".to_owned(),
+                jupyter_protocol::messaging::Stdio::Stdout => StreamName::Stdout,
+                jupyter_protocol::messaging::Stdio::Stderr => StreamName::Stderr,
             },
             text: Source::Joined(stream.text.clone()),
             extra: Map::new(),
@@ -471,12 +472,12 @@ mod tests {
                 errored: false,
                 outputs: vec![
                     Output::Stream {
-                        name: "stdout".to_owned(),
+                        name: StreamName::Stdout,
                         text: Source::Joined("ran: x\n".to_owned()),
                         extra: Map::new(),
                     },
                     Output::Stream {
-                        name: "stderr".to_owned(),
+                        name: StreamName::Stderr,
                         text: Source::Joined("warn\n".to_owned()),
                         extra: Map::new(),
                     },
