@@ -323,6 +323,9 @@ pub enum GraphKind {
     /// The package-dependency graph of the workspace.
     Dependency,
     /// The usage/call graph of a symbol.
+    ///
+    /// Reserved; no producer yet. No [`Command`] requests it and the session never
+    /// emits a [`Event::GraphReady`] carrying it.
     Usage,
 }
 
