@@ -12,7 +12,19 @@
 //! reload keeps the pick while it leaves `workbench.colorTheme` alone, and
 //! drops it in favour of the setting once the setting itself changes.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::ConfigDiagnostic;
+use karet_theme::Theme;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::load_theme;
+use crate::overlay::Overlay;
+use crate::overlay::OverlayEvent;
 use crate::overlay::Picker;
 use crate::overlay::PickerKind;
 

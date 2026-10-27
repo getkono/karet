@@ -20,7 +20,12 @@
 #[cfg(feature = "terminal")]
 mod matcher;
 
-use super::*;
+use karet_core::NotificationKind;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::overlay::Overlay;
+use crate::overlay::OverlayEvent;
 use crate::overlay::Picker;
 use crate::overlay::PickerKind;
 
@@ -73,16 +78,26 @@ pub(crate) use running::TaskRuns;
 
 #[cfg(feature = "terminal")]
 mod running {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::Column;
     use alacritty_terminal::index::Line;
     use alacritty_terminal::term::Term;
     use alacritty_terminal::term::cell::Flags;
+    use karet_core::NotificationKind;
     use karet_session::config::schema::Task;
     use portable_pty::CommandBuilder;
 
     use super::matcher;
-    use super::*;
+    use crate::app::App;
+    use crate::app::notifications::Report;
+    use crate::tab::Tab;
+    use crate::tab::TabKind;
     use crate::terminal::TerminalId;
 
     /// The least time between two scans of a running task's output. Output

@@ -5,10 +5,17 @@
 //! Markdown tabs, builds the buffer edits, and repositions the caret.
 
 use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_editor::editing;
+use karet_session::DocumentCommand;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::is_markdown;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Whether the active tab edits a Markdown file.

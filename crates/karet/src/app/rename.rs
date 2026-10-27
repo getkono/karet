@@ -13,12 +13,30 @@
 //! typing), or closes the prompt with its reason when nothing there can be
 //! renamed.
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_session::AppliedWorkspaceEdit;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RenameTarget;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_text::TextBuffer;
 use karet_widgets::textfield::TextFieldState;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::canonical;
+use crate::app::util::rebase_path;
+use crate::app::util::retarget_tab_path;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::workspace;
 
 /// The open rename prompt.
 #[derive(Clone, Debug)]
@@ -343,6 +361,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

@@ -7,10 +7,24 @@
 //! selection's anchored line. A row below the last line shows no line, so a
 //! click there is an ordinary click below the text.
 
+use std::path::PathBuf;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use karet_core::DecorationKind;
 use karet_core::Selection;
 use karet_editor::GutterLane;
+use karet_editor::resolve_folds;
+use karet_session::DocumentId;
+use karet_text::words::line_span;
+use karet_widgets::PaneId;
+use ratatui::layout::Rect;
 
-use super::super::*;
+use crate::app::App;
+use crate::app::drag::DragGranularity;
+use crate::app::drag::EditorDrag;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// What a press on the gutter (or a fold's `⋯`) does, resolved before any of
 /// it is acted on.

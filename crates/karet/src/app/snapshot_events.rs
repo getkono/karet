@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::HashSet;
+use std::time::Instant;
+
+use karet_core::LineCol;
+use karet_session::DocSnapshot;
+use karet_session::DocumentId;
+
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Apply a document snapshot to the matching code tab(s): the snapshot is the

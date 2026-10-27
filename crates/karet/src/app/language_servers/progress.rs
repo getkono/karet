@@ -8,7 +8,10 @@
 //!
 //! The manager tab keeps its detailed per-provider table; this is additive.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_fileview::viewer::human_size;
+
+use crate::app::App;
 
 impl App {
     /// The notification tag every managed-operation card shares.

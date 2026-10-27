@@ -2,10 +2,33 @@
 //! routing keys, pastes and the mouse to the active one, and applying what the
 //! terminals' background threads report.
 
+use std::time::Duration;
+use std::time::Instant;
+
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::term::TermMode;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::NotificationKind;
+use karet_session::ViewId;
+use karet_widgets::PaneId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::rect_contains;
+use crate::command::Command;
+use crate::keymap;
+use crate::keymap::Context;
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::KeyChord;
+use crate::keymap::Resolved;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::terminal::MouseAction;
 use crate::terminal::MouseButtonKind;
 use crate::terminal::MouseReport;

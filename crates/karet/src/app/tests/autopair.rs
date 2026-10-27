@@ -6,7 +6,6 @@
 use karet_session::config::schema::AutoClosing;
 
 use super::harness::*;
-use crate::app::*;
 
 fn typed(c: char) -> Step {
     key(KeyCode::Char(c))

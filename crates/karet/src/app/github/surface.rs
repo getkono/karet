@@ -11,7 +11,24 @@
 
 use std::collections::HashSet;
 
-use super::*;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubRepository;
+use karet_session::GithubWorkflow;
+use karet_session::GithubWorkflowRun;
+use karet_session::RequestId;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::github::forms::GithubIssueForm;
+use crate::app::github::forms::GithubPullRequestForm;
+use crate::app::github::state::GithubDashboard;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubPullRequestView;
+use crate::app::github::state::GithubViewState;
+use crate::app::pending::Pending;
+use crate::app::util::rect_contains;
+use crate::keymap::Focus;
 
 /// The pages the GitHub view is showing, and which of them is in front.
 #[derive(Debug, Default)]

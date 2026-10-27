@@ -1,5 +1,6 @@
 use super::harness::*;
 use super::support::*;
+use crate::app::util::tab_at;
 use crate::app::*;
 
 #[test]

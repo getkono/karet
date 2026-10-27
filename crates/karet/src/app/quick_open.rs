@@ -12,15 +12,31 @@
 //! only the answer to the latest query is adopted: one to a query typed over
 //! since is dropped.
 
-use karet_core::WorkspaceSymbol;
-use karet_session::LSP_CHANGE_DEBOUNCE;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_core::WorkspaceSymbol;
+use karet_session::DocumentId;
+use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::state::CloseRequest;
 use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
 use crate::overlay::GO_TO_LINE_PREFIX;
 use crate::overlay::LineTarget;
+use crate::overlay::Overlay;
 use crate::overlay::QuickOpenMode;
 use crate::overlay::WORKSPACE_SYMBOL_PREFIX;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::workspace;
 
 /// Go to Symbol in Workspace's conversation with the backend: the query the
 /// open picker wants answered, when it goes out, and which answer to adopt.

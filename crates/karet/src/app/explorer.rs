@@ -1,4 +1,38 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_filetype::IconStyle;
+use karet_session::RequestId;
+use karet_session::VcsCommand;
+use karet_vcs::RepositorySummary;
+use karet_widgets::PendingEdit;
+use karet_widgets::Spinner;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::describe_paths;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::state::ContextMenu;
+use crate::app::state::ContextMenuAction;
+use crate::app::state::ContextMenuEntry;
+use crate::app::state::DictionaryTarget;
+use crate::app::state::ExplorerFileClipboard;
+use crate::app::state::ExplorerFileOp;
+use crate::app::util::copy_path_recursive;
+use crate::app::util::move_path;
+use crate::app::util::path_under;
+use crate::app::util::same_path;
+use crate::app::util::unique_child_path;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::remote;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The absolute explorer row index under the hover cursor, if the mouse is over

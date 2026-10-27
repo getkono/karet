@@ -13,12 +13,30 @@
 //! displacing a dialog declines it, and a server must not be able to cancel
 //! something the user was in the middle of deciding.
 
+use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerLogEntry;
+use karet_session::LanguageServerMessageId;
+use karet_session::LanguageServerStatus;
 use karet_session::LanguageServerWork;
 use karet_session::WorkPhase;
 use karet_session::WorkToken;
 
-use super::*;
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
 use crate::app::util::path_under;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The longest the status bar's work text runs before it is cut.
 const WORK_LABEL_CHARS: usize = 48;
@@ -346,6 +364,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn report(phase: WorkPhase, token: &str) -> LanguageServerWork {

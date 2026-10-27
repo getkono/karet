@@ -1,4 +1,5 @@
 use super::support::*;
+use crate::app::util::canonical;
 use crate::app::*;
 
 #[test]

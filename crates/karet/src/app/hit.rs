@@ -2,7 +2,21 @@
 //! regions, drag states, and per-pane frames. Rebuilt by the renderer every
 //! frame; the mouse handlers resolve events against them.
 
-use super::*;
+use std::path::PathBuf;
+
+use karet_core::NotificationId;
+use karet_widgets::DropZone;
+use karet_widgets::PaneDivider;
+use karet_widgets::PaneId;
+use karet_widgets::scroll::PaintedTracks;
+use karet_widgets::scroll::ScrollTrack;
+use ratatui::layout::Rect;
+
+#[cfg(test)]
+use crate::app::App;
+use crate::command::Command;
+use crate::keymap::SidebarPanel;
+use crate::view::View;
 
 /// A clickable tab region in the tab strip, recorded during the last render.
 #[derive(Clone, Copy)]
@@ -16,7 +30,6 @@ pub(crate) struct TabHit {
 }
 
 pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
-pub(crate) use karet_widgets::breadcrumbs::BreadcrumbTarget;
 
 /// A clickable changed-file row from a commit or compare view's last frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,6 +485,7 @@ pub(crate) struct ToastHit {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// A frame for `pane` whose editor and blame label sit at `x`.

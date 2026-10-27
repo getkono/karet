@@ -12,11 +12,27 @@
 //! leaves the panel and its expansion alone, so the next row is one keystroke
 //! (Ctrl+8, or the focus toggle) away.
 
+use std::path::Path;
+use std::path::PathBuf;
+
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
+use karet_session::RequestId;
 
 use super::pending::Pending;
-use super::*;
+use crate::app::App;
+use crate::app::language_servers::LanguageServerBadge;
+use crate::app::notifications::Report;
+use crate::app::state::SpellingChrome;
+use crate::app::util::rect_contains;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::tab::TabKind;
+use crate::workspace;
 
 /// How a hierarchy in `direction` is titled.
 fn direction_title(direction: HierarchyDirection) -> &'static str {

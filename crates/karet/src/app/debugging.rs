@@ -2,19 +2,32 @@
 //! event handling (state segment, stop-location jump, output buffering), with
 //! the [`Debugger`] state they act on and the Debug panel it renders.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use karet_core::DebugOutputCategory;
 use karet_core::DebugScope;
 use karet_core::DebugVariable;
 use karet_core::FrameId;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Severity;
 use karet_core::StackFrame;
 use karet_core::VariablesRef;
 use karet_session::Command as SessionCommand;
 use karet_session::DebugBreakpoint;
+use karet_session::DebugCommand;
 use karet_session::DebugSessionState;
+use karet_session::NotebookCommand;
+use karet_session::RequestId;
+use karet_widgets::ListSelection;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::DebugChrome;
+use crate::app::util::rect_contains;
 
 /// How many console lines the app buffers for the Debug panel.
 const DEBUG_OUTPUT_CAP: usize = 500;

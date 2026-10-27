@@ -5,7 +5,14 @@
 //! repository snapshot, refuse with a reason when it cannot answer, otherwise
 //! open the overlay that collects the choice.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::VcsAction;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::overlay::Overlay;
+use crate::overlay::TextPurpose;
 
 impl App {
     /// Open a combined local/remote branch picker.

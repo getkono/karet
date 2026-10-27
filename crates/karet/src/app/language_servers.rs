@@ -3,11 +3,35 @@ mod progress;
 mod prompts;
 mod work;
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_fileview::viewer::human_size;
+use karet_session::LanguageServerChange;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerRuntimeState;
+use karet_session::LanguageServerStatus;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::util::rect_contains;
+use crate::overlay::Overlay;
+use crate::overlay::TextPurpose;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServerPending;
 use crate::tab::LanguageServerPendingKind;
 use crate::tab::LanguageServersViewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// Lifecycle states retained independently of whether the manager tab is open.
 #[derive(Default)]

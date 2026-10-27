@@ -1,7 +1,34 @@
 //! VCS-domain backend-event handlers: status, operations, blame, logs, and
 //! the commit family. Called only from the [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+
+use karet_core::BlameAttribution;
+use karet_core::Decoration;
+use karet_core::NotificationKind;
+use karet_session::ChangeSummary;
+use karet_session::DocumentId;
+use karet_session::GithubCommand;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubVerification;
+use karet_session::PreparedChange;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_session::VcsOutcome;
+use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::CommitInput;
+use crate::app::state::LiveBlame;
+use crate::overlay::Overlay;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Adopt a fresh working-tree status, dropping every cache it invalidates.

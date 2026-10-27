@@ -1,4 +1,22 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::PendingRemoteAction;
+use crate::app::state::RemoteFacts;
+use crate::keymap::FocusTarget;
+use crate::keymap::Modal;
+use crate::overlay::DiffTarget;
+use crate::overlay::Overlay;
+use crate::remote;
+use crate::render::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::ui;
 
 impl App {
     /// Copy `text` to the clipboard, reporting the outcome either way.

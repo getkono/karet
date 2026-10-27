@@ -5,7 +5,11 @@
 //! [`GithubSurface`], so that is a property of the type rather than an invariant the
 //! tab system had to be policed into — which is what retired the pinned-tab guards.
 
-use super::*;
+use karet_session::GithubAuth;
+use karet_session::GithubRepository;
+
+use crate::app::App;
+use crate::app::github::state::GithubViewState;
 
 impl App {
     /// Install or update the GitHub surface for current eligibility.

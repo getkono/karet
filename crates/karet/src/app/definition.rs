@@ -12,11 +12,33 @@
 //! picker for several.
 
 use std::collections::HashMap;
+use std::path::Path;
 
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
 use karet_core::DocumentLink;
+use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_editor::resolve_folds;
+use karet_session::DocumentId;
+use karet_session::LocationKind;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::language_servers::LanguageServerBadge;
+use crate::app::notifications::Report;
+use crate::app::util::is_markdown;
+use crate::app::util::rect_contains;
+use crate::overlay::Overlay;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// How long a picker row's source-line preview may run before it is cut.
 const PREVIEW_CHARS: usize = 80;

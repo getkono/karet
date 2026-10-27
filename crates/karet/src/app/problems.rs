@@ -7,7 +7,25 @@
 //! whenever a document's diagnostic set is replaced or the document closes, so
 //! it can never show a diagnostic the editor has already dropped.
 
-use super::*;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::Diagnostic;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::SpellingChrome;
+use crate::app::util::rect_contains;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// The `source` the spell checker stamps on its diagnostics (mirrors
 /// `karet_session`'s private `SPELL_SOURCE`). Misspellings have a panel of
@@ -453,6 +471,7 @@ pub(crate) type ProblemsChrome = SpellingChrome;
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn diagnostic(line: u32, col: u32, severity: Severity, message: &str) -> Diagnostic {

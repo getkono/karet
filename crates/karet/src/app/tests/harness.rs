@@ -30,7 +30,7 @@ use std::time::Duration;
 use karet_core::CursorState;
 use karet_core::Selection;
 
-use super::support::*;
+pub(crate) use super::support::*;
 use crate::app::*;
 
 /// The terminal a rig renders into unless a case asks for another size.

@@ -2,7 +2,19 @@
 //! reloads, and the notification funnel. Called only from the
 //! [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::GithubCommand;
+use karet_session::LoadedConfig;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::tab_language;
+use crate::tab::TabKind;
 
 impl App {
     /// Keep live surfaces current after filesystem changes: nested-repository
@@ -165,6 +177,11 @@ impl App {
 /// [`App::on_config_changed`]'s side effects beyond applying the settings.
 #[cfg(test)]
 mod tests {
+    use karet_core::LineCol;
+    use karet_core::Severity;
+    use karet_fileview::image::GraphicsProtocol;
+    use karet_session::Event as SessionEvent;
+
     use crate::app::tests::support::app;
     use crate::app::tests::support::text_tab;
     use crate::app::*;

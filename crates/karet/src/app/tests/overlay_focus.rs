@@ -11,7 +11,7 @@ use karet_vcs::CommitOutputLine;
 use karet_vcs::OutputStream;
 
 use super::harness::*;
-use super::support::*;
+use crate::app::util::rect_contains;
 use crate::app::*;
 
 /// Type `text` key by key, as a user would.

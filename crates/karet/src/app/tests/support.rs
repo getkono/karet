@@ -1,8 +1,87 @@
+pub(crate) use std::collections::BTreeSet;
+pub(crate) use std::path::Path;
+
+// The shared test vocabulary: every sibling globs this module, so the types
+// its cases name without importing them are re-exported here, each from the
+// module that owns it, rather than leaking through `app.rs`.
+pub(crate) use crossterm::event::Event;
+pub(crate) use crossterm::event::KeyCode;
+pub(crate) use crossterm::event::KeyEvent;
+pub(crate) use crossterm::event::MouseButton;
+pub(crate) use karet_core::BlameAttribution;
+pub(crate) use karet_core::Change;
+pub(crate) use karet_core::Decoration;
+pub(crate) use karet_core::DecorationKind;
+pub(crate) use karet_core::Diagnostic;
+pub(crate) use karet_core::LineCol;
+pub(crate) use karet_core::Notification;
+pub(crate) use karet_core::NotificationId;
+pub(crate) use karet_core::Range;
+pub(crate) use karet_core::Severity;
+pub(crate) use karet_core::TextEdit;
+pub(crate) use karet_core::ThemeRole;
+pub(crate) use karet_editor::editing;
+pub(crate) use karet_filetype::FileKind;
+pub(crate) use karet_fileview::image::GraphicsProtocol;
+pub(crate) use karet_session::BackendError;
+pub(crate) use karet_session::ChangeSummary;
+pub(crate) use karet_session::Command as SessionCommand;
+pub(crate) use karet_session::DebugCommand;
+pub(crate) use karet_session::DocSnapshot;
+pub(crate) use karet_session::DocumentCommand;
+pub(crate) use karet_session::DocumentSettings;
+pub(crate) use karet_session::Event as SessionEvent;
+pub(crate) use karet_session::EventRx;
+pub(crate) use karet_session::GithubCommand;
 use karet_session::GithubIssue;
 use karet_session::GithubRepository;
-use karet_vcs::StatusKind;
+pub(crate) use karet_session::GithubVerification;
+pub(crate) use karet_session::LanguageServerChange;
+pub(crate) use karet_session::LanguageServerCommand;
+pub(crate) use karet_session::LanguageServerId;
+pub(crate) use karet_session::LanguageServerMessageId;
+pub(crate) use karet_session::LanguageServerPlanId;
+pub(crate) use karet_session::LanguageServerRuntimeState;
+pub(crate) use karet_session::LanguageServerStatus;
+pub(crate) use karet_session::LocationKind;
+pub(crate) use karet_session::LspCommand;
+pub(crate) use karet_session::PreparedChange;
+pub(crate) use karet_session::RangeSpec;
+pub(crate) use karet_session::RepositorySnapshot;
+pub(crate) use karet_session::SaveCause;
+pub(crate) use karet_session::SessionConfig;
+pub(crate) use karet_session::VcsCommand;
+pub(crate) use karet_session::VcsOutcome;
+pub(crate) use karet_session::config::schema::AutoSave;
+pub(crate) use karet_session::local;
+pub(crate) use karet_text::EditCause;
+pub(crate) use karet_text::TextBuffer;
+pub(crate) use karet_vcs::Commit;
+pub(crate) use karet_vcs::CommitDetail;
+pub(crate) use karet_vcs::StatusKind;
+pub(crate) use karet_widgets::DropZone;
+pub(crate) use karet_widgets::SplitDir;
+pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
+pub(crate) use karet_widgets::breadcrumbs::BreadcrumbTarget;
 
+pub(crate) use crate::app::confirm::ConfirmAction;
+pub(crate) use crate::app::hit::MarkdownLinkHit;
+pub(crate) use crate::app::hit::PaneFrame;
+pub(crate) use crate::app::hit::ScrollHit;
+pub(crate) use crate::app::state::ContextMenuAction;
+pub(crate) use crate::app::state::ContextMenuEntry;
+pub(crate) use crate::app::state::DictionaryTarget;
+pub(crate) use crate::app::state::SearchOption;
 use crate::app::*;
+pub(crate) use crate::keymap::EditorTab;
+pub(crate) use crate::keymap::FocusTarget;
+pub(crate) use crate::keymap::Modal;
+pub(crate) use crate::render::FileView;
+pub(crate) use crate::render::Section;
+pub(crate) use crate::tab::CommitFiles;
+pub(crate) use crate::tab::CommitViewState;
+pub(crate) use crate::tab::PagerState;
+pub(crate) use crate::tab::SearchField;
 
 pub(crate) fn change(path: &str, status: StatusKind) -> ChangeSummary {
     ChangeSummary {

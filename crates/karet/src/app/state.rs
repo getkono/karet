@@ -6,12 +6,42 @@
 //! `debugging`, `search`, `spelling`, `todos` — and the terminal probe itself
 //! is [`crate::term_caps`].
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use karet_core::BlameAttribution;
+use karet_core::Decoration;
+use karet_core::Diagnostic;
 use karet_core::InlayHint;
+use karet_core::Range;
+use karet_core::Symbol;
+use karet_core::ThemeRole;
 use karet_core::VirtualText;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::ChangeSummary;
+use karet_session::DocumentId;
+use karet_session::DocumentSettings;
+use karet_session::RepositorySnapshot;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::ViewId;
+use karet_vcs::Commit;
+use karet_widgets::ListSelection;
+use karet_widgets::PaneId;
+use karet_widgets::textarea::TextAreaState;
+use ratatui::layout::Rect;
 
 use super::inlay::HintRange;
 use super::inlay::PendingInlay;
-use super::*;
+use crate::app::DEFAULT_SCM_COMMITS_H;
+use crate::app::OUTLINE_WIDTH;
+use crate::app::pending::Pending;
+use crate::command::Command;
+use crate::remote;
+use crate::render::Section;
+use crate::tab::Tab;
 
 /// What the terminal was confirmed to support at startup. Capabilities are
 /// only ever *confirmed* (via handshakes), never assumed.

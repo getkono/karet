@@ -11,12 +11,21 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use karet_core::Change;
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::Range;
 use karet_core::Selection;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_text::EditCause;
+use karet_text::TextBuffer;
 
 use super::indent::SyntaxIndent;
-use super::*;
+use crate::app::App;
 use crate::clipboard::Copied;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// What one copy or cut takes from a code tab.
 struct Taken {
@@ -523,6 +532,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

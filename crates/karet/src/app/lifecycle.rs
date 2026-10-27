@@ -1,4 +1,34 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
+
+use crate::app::App;
+use crate::app::OPERATION_SHUTDOWN_TIMEOUT;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::OperationBlocker;
+use crate::app::state::PendingAutoSave;
+use crate::app::state::PendingSave;
+use crate::app::util::close_prompt_choices;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::Modal;
+use crate::tab::FindState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The most tab titles the close confirmation spells out before summarizing.
 const NAMED_TABS: usize = 6;

@@ -3,7 +3,15 @@
 //! streaming shape (`ScanWorkspaceTodos` → `TodoScanProgress`* →
 //! `TodoScanFinished`).
 
-use super::*;
+use karet_session::Command as SessionCommand;
+use karet_session::RequestId;
+use karet_session::WorkspaceCommand;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::util::rect_contains;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
 
 /// Keep at most this many codetags (see the Spelling panel's identical cap).
 pub(crate) const TODO_SCAN_RESULT_CAP: usize = 5_000;

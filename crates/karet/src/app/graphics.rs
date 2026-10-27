@@ -1,8 +1,19 @@
 //! Kitty image output and graphical caret state.
 
-use base64::Engine as _;
+use std::io;
+use std::io::Write;
+use std::time::Duration;
+use std::time::Instant;
 
-use super::*;
+use base64::Engine as _;
+use karet_editor::resolve_folds;
+use karet_fileview::image;
+use karet_fileview::image::GraphicsProtocol;
+
+use crate::app::App;
+use crate::app::GRAPHICS_CARET_BLINK_INTERVAL;
+use crate::keymap::Focus;
+use crate::tab::TabKind;
 
 /// The Kitty id of the image or PDF page an image tab shows: outside the 24 bits the
 /// markdown preview's images use, so deleting one never deletes the other.
@@ -220,6 +231,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

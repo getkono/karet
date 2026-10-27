@@ -8,12 +8,26 @@
 //! plain key nothing takes is dropped: Normal mode never types. Visual mode
 //! asks the grammar first, since its `u`, `U` and `~` are case operators.
 
+use std::sync::Arc;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Selection;
+use karet_editor::editing;
 use karet_session::config::schema::KeymapPreset;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::command::Command;
+use crate::keymap;
+use crate::keymap::Context;
 use crate::keymap::Editing;
+use crate::keymap::Focus;
+use crate::keymap::KeyChord;
+use crate::keymap::Resolved;
 use crate::keymap::vi::Clipboard as ViClipboard;
 use crate::keymap::vi::Effect;
 use crate::keymap::vi::Engine;
@@ -22,6 +36,9 @@ use crate::keymap::vi::Outcome;
 use crate::keymap::vi::Scroll;
 use crate::keymap::vi::Snapshot;
 use crate::keymap::vi::Typed;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// How deeply macros and `.` may replay into each other before the replay is
 /// abandoned (a macro that runs itself).

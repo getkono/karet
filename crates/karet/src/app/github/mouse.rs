@@ -1,6 +1,16 @@
 //! Mouse handling for the GitHub view's pages.
 
-use super::*;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+
+use crate::app::App;
+use crate::app::github::DASHBOARD_ROW_HEIGHT;
+use crate::app::github::state::GithubSection;
+use crate::app::github::state::GithubViewState;
+use crate::app::util::rect_contains;
+use crate::keymap::Focus;
 
 impl App {
     /// Handle a click or wheel gesture within the active GitHub dashboard table.

@@ -5,7 +5,6 @@
 //! Ctrl+Shift+E.
 
 use super::harness::*;
-use super::support::*;
 use crate::app::*;
 
 fn shift_tab() -> Step {

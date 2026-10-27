@@ -1,4 +1,29 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_filetype::FileKind;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_widgets::PaneId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::StoredPane;
+use crate::app::util::canonical;
+use crate::app::util::path_under;
+use crate::app::util::rebase_path;
+use crate::app::util::retarget_tab_path;
+use crate::keymap::Focus;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
+use crate::workspace;
 
 /// The activation history's hard ceiling. It only bounds memory in a very long
 /// session: entries this old are far past any "put me back where I was" reach, and

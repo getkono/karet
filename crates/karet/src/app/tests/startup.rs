@@ -1,4 +1,5 @@
 use super::support::*;
+use crate::app::util::load_theme;
 use crate::app::*;
 
 #[test]

@@ -4,8 +4,18 @@
 //! syntax-aware indentation a line break opens with, which Enter and a
 //! multi-line paste consult.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use karet_core::Range;
+use karet_editor::editing;
+use karet_text::EditCause;
+use karet_text::TextBuffer;
+
 use super::syntax_select::ParsedText;
-use super::*;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// One parse of a buffer, with the indent queries of its languages, answering
 /// what indentation a line break over a range of it opens with.

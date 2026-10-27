@@ -7,8 +7,14 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 
-use super::*;
+use karet_core::NotificationKind;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::TabKind;
 
 /// Seconds in ninety days.
 const EXPIRY_SECS: u64 = 90 * 24 * 60 * 60;
@@ -172,6 +178,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

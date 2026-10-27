@@ -5,7 +5,21 @@
 //! reshape or render a whole document rather than editing at a caret, and the
 //! preview is the only thing in that module that drives an external build.
 
-use super::super::*;
+use std::path::PathBuf;
+
+use karet_core::Diagnostic;
+use karet_core::NotificationKind;
+use karet_editor::editing;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::util::is_markdown;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::workspace;
 
 impl App {
     /// Reserve a preview immediately, then compile the active editable TeX document

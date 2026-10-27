@@ -21,7 +21,21 @@
 //! model and the painting, while resolving what a row *says* and what accepting
 //! it *does* stays here (see [`ui::confirm`](crate::ui::confirm)).
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerMessageId;
+use karet_session::LanguageServerPlanId;
+use karet_session::VcsAction;
+
+use crate::app::App;
+use crate::app::util::rect_contains;
+use crate::command::Command;
 
 /// What accepting one confirmation row does.
 ///
@@ -333,6 +347,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyModifiers;
+
     use super::*;
 
     #[test]

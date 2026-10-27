@@ -1,4 +1,27 @@
-use super::*;
+use std::path::Path;
+
+use karet_core::Change;
+use karet_core::Diagnostic;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::WorkspaceCommand;
+use karet_text::EditCause;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::ContextMenu;
+use crate::app::state::ContextMenuAction;
+use crate::app::state::ContextMenuEntry;
+use crate::app::state::DictionaryTarget;
+use crate::app::util::rect_contains;
+use crate::app::util::tab_language;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 const SPELLCHECK_SOURCE: &str = "karet-spell";
 
@@ -293,6 +316,7 @@ fn suggestions_from_message(message: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

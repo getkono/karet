@@ -1,6 +1,22 @@
 //! Pull-request-specific keyboard and mouse interaction.
 
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::github::state::GithubPullRequestEditor;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubViewState;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::util::rect_contains;
 
 impl App {
     pub(super) fn github_pull_request_key(&mut self, key: KeyEvent) -> bool {

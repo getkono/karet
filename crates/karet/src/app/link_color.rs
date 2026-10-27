@@ -15,13 +15,25 @@
 //! `ui::content::swatches`); the links answer the Ctrl/Cmd-hover underline
 //! and Ctrl/Cmd+click ([`App::server_link_at`], [`App::follow_document_link`]).
 
+use std::collections::HashMap;
+use std::time::Duration;
+use std::time::Instant;
+
 use karet_core::DocumentColor;
 use karet_core::DocumentLink;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_session::DocumentId;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
 
 use super::inlay::inlay_retry_delay;
 use super::inlay::shift_position;
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
 
 /// A held set, with the buffer version its ranges are positioned against.
 pub(crate) type Held<T> = HashMap<DocumentId, (u64, Vec<T>)>;

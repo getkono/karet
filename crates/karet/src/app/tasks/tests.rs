@@ -1,6 +1,9 @@
 //! Tasks end to end: the picker, a run in a terminal tab, its problems in the
 //! panel, and the transcript the matchers read.
 
+use std::time::Duration;
+use std::time::Instant;
+
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::vte::ansi::Processor;
 use karet_session::config::schema::BuiltinMatcher;
@@ -9,6 +12,9 @@ use karet_session::config::schema::Task;
 
 use super::*;
 use crate::app::tests::support::*;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::terminal::Emulator;
 use crate::terminal::TerminalEvent;
 use crate::terminal::TerminalEventKind;

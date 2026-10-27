@@ -1,4 +1,23 @@
-use super::*;
+use std::path::Path;
+
+use karet_core::NotificationKind;
+use karet_session::LspCommand;
+
+use crate::app::App;
+use crate::app::COMMIT_AUTOLOAD_THRESHOLD;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::util::canonical;
+use crate::app::util::path_under;
+use crate::app::util::row_in_rect;
+use crate::app::util::same_path;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::outline::OutlineRow;
+use crate::outline::OutlineTarget;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
 
 impl App {
     /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.

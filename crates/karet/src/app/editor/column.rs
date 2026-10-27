@@ -10,12 +10,19 @@
 //! happened to stop. Inlay hints are not counted, as they are not text.
 
 use karet_core::CursorState;
+use karet_core::LineCol;
 use karet_core::Selection;
 use karet_editor::cluster_bounds;
 use karet_editor::cluster_widths;
+use karet_editor::resolve_folds;
 use karet_session::ViewId;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 
-use super::super::*;
+use crate::app::App;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// A corner of a box selection: a buffer line and a display-cell column on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +359,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn chars(text: &str) -> Vec<char> {

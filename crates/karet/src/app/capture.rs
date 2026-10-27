@@ -7,15 +7,27 @@
 //! that a live session would show. The loop draws until the backend falls quiet (or
 //! a deadline passes), writes the final grid to stdout, and returns.
 
+use std::io;
+use std::io::Write;
+use std::time::Instant;
+
+use color_eyre::eyre::eyre;
+use karet_core::ThemeRole;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::EventRx;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_theme::Theme;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 
-use super::*;
+use crate::app::App;
 use crate::cli::CaptureSpec;
 use crate::color_depth::xterm_rgb;
+use crate::ui;
 
 /// Render `app` off-screen and write the settled frame to stdout as ANSI.
 ///

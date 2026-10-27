@@ -7,10 +7,13 @@
 //! provider read "no definition found" -- a claim about the symbol, when the
 //! truth is a fact about the provider the user can act on.
 
+use karet_core::NotificationKind;
 use karet_core::ServerFeature;
 use karet_session::LanguageServerId;
+use karet_session::RequestId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
 
 /// How a feature is named in a notice, as the user would ask for it.
 fn feature_label(feature: ServerFeature) -> &'static str {

@@ -2,7 +2,42 @@ pub(crate) mod aicommit;
 mod branches;
 pub(crate) mod commit_box;
 
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::NotificationKind;
+use karet_session::ChangeSummary;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentId;
+use karet_session::RangeSpec;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_vcs::Commit;
+
+use crate::app::App;
+use crate::app::GRAPH_LOG_PAGE;
+use crate::app::SCM_LOG_PAGE;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::describe_paths;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::state::CommitInput;
+use crate::app::state::LiveBlame;
+use crate::app::util::canonical;
+use crate::app::util::parse_rev_range;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::overlay::Overlay;
+use crate::render::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Refresh branch, remote, recovery, and stash facts without blocking the UI.

@@ -1,4 +1,43 @@
-use super::*;
+use std::io;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+
+use color_eyre::eyre::eyre;
+use crossterm::event;
+use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
+use crossterm::event::EnableMouseCapture;
+use crossterm::event::Event;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyboardEnhancementFlags;
+use crossterm::event::PushKeyboardEnhancementFlags;
+use crossterm::terminal::SetTitle;
+use karet_core::NotificationKind;
+use karet_fileview::image;
+use karet_session::Backend;
+use karet_session::EventRx;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_session::local;
+use ratatui::layout::Rect;
+use tokio::sync::mpsc;
+
+use crate::app::App;
+use crate::app::SIDEBAR_MIN_WIDTH;
+use crate::app::notifications::Report;
+use crate::app::state::TerminalCaps;
+use crate::app::util::KeyboardEnhancementGuard;
+use crate::app::util::tab_language;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::ui;
+use crate::view::View;
+use crate::workspace;
 
 /// The session configuration for `app` — shared by the interactive runtime and
 /// the capture harness so the two attach identically. `swap_dir` differs: the
@@ -570,6 +609,8 @@ mod prepare_frame_tests {
 
     use karet_core::FoldRegion;
     use karet_core::FoldRegions;
+    use karet_session::Command as SessionCommand;
+    use karet_session::VcsCommand;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -578,6 +619,7 @@ mod prepare_frame_tests {
     use crate::app::tests::support::RecordingBackend;
     use crate::app::tests::support::test_dir;
     use crate::app::tests::support::write_file;
+    use crate::tab::TabKind;
 
     /// Paint one frame of `app` without preparing it first.
     fn paint_only(app: &mut App, width: u16, height: u16) {

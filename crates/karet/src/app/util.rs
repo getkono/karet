@@ -1,4 +1,17 @@
-use super::*;
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::PopKeyboardEnhancementFlags;
+use karet_filetype::WrapMode;
+use karet_filetype::file_type_for_path;
+use karet_theme::Theme;
+use ratatui::layout::Rect;
+
+use crate::app::hit::TabHit;
+use crate::app::state::CloseRequest;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// Whether the screen point `(x, y)` lies inside `r`.
 pub(super) fn rect_contains(r: Rect, (x, y): (u16, u16)) -> bool {

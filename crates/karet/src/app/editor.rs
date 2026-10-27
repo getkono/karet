@@ -3,12 +3,42 @@ mod folding;
 mod gutter;
 mod render;
 
+use std::time::Instant;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use karet_core::Change;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_editor::EditorState;
 use karet_editor::Motion;
+use karet_editor::editing;
+use karet_editor::resolve_folds;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
 use karet_session::FormatRequest;
 use karet_session::FormatScope;
+use karet_session::LspCommand;
+use karet_text::EditCause;
+use karet_text::TextBuffer;
+use karet_text::words::class_run_at;
+use karet_text::words::line_span;
+use karet_widgets::PaneId;
 
-use super::*;
+use crate::app::App;
+use crate::app::MULTI_CLICK_INTERVAL;
+use crate::app::drag::DragGranularity;
+use crate::app::drag::EditorDrag;
+use crate::app::notifications::Report;
 use crate::app::scroll::adjust;
+use crate::app::state::PendingOpen;
+use crate::app::util::effective_word_wrap;
+use crate::app::util::rect_contains;
+use crate::app::util::tab_language;
+use crate::keymap::Focus;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// What a left click landed on, for multi-click counting: a press on another
 /// surface than the last one starts a new streak.
@@ -140,43 +170,6 @@ impl App {
                 }
             },
         }
-    }
-
-    /// Scroll the active code tab's in-editor Markdown preview and align the
-    /// source editor to the preview's nearest source anchor.
-    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
-        let current = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.markdown_preview.as_ref())
-            .map_or(0, |preview| usize::from(preview.scroll));
-        let next = (current as i64 + i64::from(delta)).max(0) as usize;
-        self.set_markdown_preview_scroll(next);
-    }
-
-    /// Put the in-editor Markdown preview's first visible wrapped line at `position`.
-    ///
-    /// The source pane follows, exactly as it does for the wheel: the two are kept in
-    /// sync through the preview's source anchors, so a dragged preview bar must not
-    /// leave the code beside it behind.
-    pub(super) fn set_markdown_preview_scroll(&mut self, position: usize) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        let TabKind::Code { buffer, .. } = &tab.kind else {
-            return;
-        };
-        let Some(preview) = tab.markdown_preview.as_mut() else {
-            return;
-        };
-        let max = preview.wrapped.lines.len().saturating_sub(1);
-        preview.scroll = u16::try_from(position.min(max)).unwrap_or(u16::MAX);
-        let source = preview
-            .wrapped
-            .source_line_for_wrapped(usize::from(preview.scroll));
-        let last = buffer.line_count().saturating_sub(1);
-        tab.editor
-            .scroll_to_line(u32::try_from(source.min(last)).unwrap_or(u32::MAX));
     }
 
     /// Jump to the top or bottom of the active tab.
