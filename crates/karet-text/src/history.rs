@@ -119,7 +119,7 @@ struct StepSnapshot {
 impl HistorySnapshot {
     /// The fingerprint of the text this history belongs to.
     #[must_use]
-    pub fn content_hash(&self) -> u64 {
+    pub(crate) fn content_hash(&self) -> u64 {
         self.content_hash
     }
 

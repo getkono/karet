@@ -58,8 +58,14 @@ pub fn content_fingerprint(bytes: &[u8]) -> u64 {
 #[non_exhaustive]
 pub enum TextError {
     /// An I/O error while reading or saving a buffer.
-    #[error("text i/o error: {0}")]
-    Io(String),
+    #[error("text i/o error: {message}")]
+    Io {
+        /// The kind of failure, so a caller can tell a missing file or a
+        /// permission problem from any other error.
+        kind: std::io::ErrorKind,
+        /// The operating system's description of the failure.
+        message: String,
+    },
     /// A coordinate fell outside the buffer.
     #[error("position out of bounds")]
     OutOfBounds,
@@ -77,6 +83,15 @@ pub enum TextError {
     /// taken from.
     #[error("undo history belongs to different content")]
     HistoryMismatch,
+}
+
+impl From<std::io::Error> for TextError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
 }
 
 /// A headless, editable text buffer backed by a rope.
@@ -143,7 +158,7 @@ impl TextBuffer {
     /// # Errors
     /// Returns [`TextError::Io`] if reading fails.
     pub fn from_reader<R: Read>(reader: R) -> Result<Self, TextError> {
-        let rope = ropey::Rope::from_reader(reader).map_err(|e| TextError::Io(e.to_string()))?;
+        let rope = ropey::Rope::from_reader(reader)?;
         let saved_text_hash = text_hash(&rope);
         Ok(Self {
             rope,

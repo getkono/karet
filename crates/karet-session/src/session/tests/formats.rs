@@ -175,21 +175,25 @@
                 cause: SaveCause::Manual,
             });
         let mut saved = false;
-        let mut failed = false;
+        let mut failure = None;
         while let Some((_, ev)) = events.try_recv() {
             match ev {
                 Event::Saved { .. } => saved = true,
                 Event::Notification {
                     severity: Severity::Error,
+                    message,
                     ..
-                } => failed = true,
+                } => failure = Some(message),
                 _ => {},
             }
         }
         assert!(!saved, "a malformed cbor buffer must not save");
+        let failure = failure.ok_or("the failure should surface as an error notification")?;
+        // The encode error keeps its parse position, rather than being reported
+        // as an I/O failure.
         assert!(
-            failed,
-            "the failure should surface as an error notification"
+            failure.contains("diagnostic notation parse error at line") && !failure.contains("i/o"),
+            "{failure}"
         );
         assert_eq!(std::fs::read(&path)?, bytes, "the file is untouched");
         Ok(())

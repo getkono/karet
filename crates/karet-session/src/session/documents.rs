@@ -662,7 +662,7 @@ impl Session {
                     );
                 }
             },
-            Some(Err(TextError::Conflict)) => {
+            Some(Err(SaveError::Text(TextError::Conflict))) => {
                 // The file changed on disk since it was last read — writing now would
                 // silently clobber someone else's change. Back up the in-memory edits
                 // (same as any other failed save) and let the client prompt the user,
@@ -723,7 +723,7 @@ impl Session {
                 self.publish(doc_id, None);
                 Ok(path)
             },
-            Some(Err(TextError::Conflict)) => Err(
+            Some(Err(SaveError::Text(TextError::Conflict))) => Err(
                 "LaTeX build cancelled: the source changed on disk; resolve the save conflict first"
                     .to_owned(),
             ),

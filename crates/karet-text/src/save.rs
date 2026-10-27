@@ -103,7 +103,7 @@ impl TextBuffer {
     }
 
     fn record_saved_bytes(&mut self, target: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
-        let meta = std::fs::metadata(target).map_err(|e| TextError::Io(e.to_string()))?;
+        let meta = std::fs::metadata(target).map_err(TextError::from)?;
         let state = SavedState {
             mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             size: meta.len(),
@@ -162,25 +162,22 @@ pub fn conflicts_with_disk(path: &Path, saved: &SavedState) -> Result<bool, Text
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(TextError::Io(e.to_string())),
+        Err(e) => return Err(e.into()),
     };
     if meta.len() == saved.size && meta.modified().is_ok_and(|m| m == saved.mtime) {
         return Ok(false);
     }
-    let bytes = std::fs::read(path).map_err(|e| TextError::Io(e.to_string()))?;
+    let bytes = std::fs::read(path).map_err(TextError::from)?;
     Ok(hash_bytes(&bytes) != saved.hash)
 }
 
 /// Write `bytes` to `target` crash-safely via a same-directory temp file + atomic
 /// rename, falling back to a direct write if the rename crosses a filesystem.
 fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError> {
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.write_all(bytes)
-        .map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.flush().map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.as_file()
-        .sync_all()
-        .map_err(|e| TextError::Io(e.to_string()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(TextError::from)?;
+    tmp.write_all(bytes).map_err(TextError::from)?;
+    tmp.flush().map_err(TextError::from)?;
+    tmp.as_file().sync_all().map_err(TextError::from)?;
     if let Ok(meta) = std::fs::metadata(target) {
         // Best-effort permission preservation (ignored on platforms without it).
         let _ = std::fs::set_permissions(tmp.path(), meta.permissions());
@@ -189,7 +186,7 @@ fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError
         Ok(_) => Ok(()),
         // EXDEV (cross-filesystem rename) or similar: direct write fallback. The
         // dropped `PersistError` cleans up the temp file.
-        Err(_) => std::fs::write(target, bytes).map_err(|e| TextError::Io(e.to_string())),
+        Err(_) => std::fs::write(target, bytes).map_err(TextError::from),
     }
 }
 
@@ -197,9 +194,10 @@ fn save_parent(path: &Path) -> Result<&Path, TextError> {
     match path.parent() {
         Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
         Some(parent) => Ok(parent),
-        None => Err(TextError::Io(
-            "save path has no parent directory".to_string(),
-        )),
+        None => Err(TextError::Io {
+            kind: std::io::ErrorKind::InvalidInput,
+            message: "save path has no parent directory".to_string(),
+        }),
     }
 }
 
@@ -207,16 +205,16 @@ fn save_parent(path: &Path) -> Result<&Path, TextError> {
 /// uses the platform's atomic no-replace primitive, so another creator always wins
 /// cleanly and its bytes remain untouched.
 fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError> {
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| TextError::Io(e.to_string()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(TextError::from)?;
     tmp.write_all(bytes)
         .and_then(|()| tmp.flush())
         .and_then(|()| tmp.as_file().sync_all())
-        .map_err(|e| TextError::Io(e.to_string()))?;
+        .map_err(TextError::from)?;
     tmp.persist_noclobber(target).map(|_| ()).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
             TextError::Conflict
         } else {
-            TextError::Io(error.error.to_string())
+            TextError::from(error.error)
         }
     })
 }
@@ -416,6 +414,28 @@ mod tests {
         buffer.save_new(&path)?;
         assert_eq!(std::fs::read_to_string(&path)?, "mine\n");
         assert_eq!(buffer.save_new(&path), Err(TextError::Conflict));
+        Ok(())
+    }
+
+    /// A save into a directory that does not exist fails with the I/O error's
+    /// kind intact rather than a bare message.
+    #[test]
+    fn saving_into_a_missing_directory_keeps_the_error_kind() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("no-such-dir").join("file.txt");
+        let mut buffer = TextBuffer::from_text("mine\n");
+
+        let result = buffer.save_new(&path);
+        assert!(
+            matches!(
+                &result,
+                Err(TextError::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
         Ok(())
     }
 
