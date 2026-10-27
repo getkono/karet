@@ -249,7 +249,7 @@ mod tests {
         sent: Vec<(KernelChannel, String)>,
     }
 
-    impl KernelTransport for FakeTransport {
+    impl crate::kernel::transport::sealed::Transport for FakeTransport {
         async fn send(
             &mut self,
             channel: KernelChannel,

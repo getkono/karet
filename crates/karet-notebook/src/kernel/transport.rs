@@ -6,10 +6,7 @@
 //! metadata | content | buffers…` — the signature covers exactly the four
 //! JSON frames.
 
-use std::future::Future;
-
 use hmac::Mac;
-use jupyter_protocol::ConnectionInfo;
 use jupyter_protocol::Header;
 use jupyter_protocol::JupyterMessage;
 use jupyter_protocol::messaging::JupyterMessageContent;
@@ -18,6 +15,7 @@ use zeromq::SocketRecv;
 use zeromq::SocketSend;
 use zeromq::ZmqMessage;
 
+use super::Connection;
 use super::KernelError;
 
 /// The delimiter separating routing identities from the signed payload.
@@ -36,21 +34,40 @@ pub enum KernelChannel {
     Iopub,
 }
 
-/// The transport seam: production is [`ZmqTransport`]; tests script an
-/// in-process fake. Implementations merge every inbound channel into one
-/// `recv` stream.
-pub trait KernelTransport: Send {
-    /// Send one message on `channel`.
-    fn send(
-        &mut self,
-        channel: KernelChannel,
-        message: JupyterMessage,
-    ) -> impl Future<Output = Result<(), KernelError>> + Send;
+/// The transport a [`KernelClient`](super::KernelClient) drives: production is
+/// [`ZmqTransport`]; this crate's tests script an in-process fake.
+///
+/// Sealed: its methods carry `jupyter-protocol` messages, which are not part of
+/// this crate's API, so they live on a supertrait no other crate can name or
+/// implement.
+pub trait KernelTransport: sealed::Transport {}
 
-    /// The next inbound message from any channel.
-    fn recv(
-        &mut self,
-    ) -> impl Future<Output = Result<(KernelChannel, JupyterMessage), KernelError>> + Send;
+impl<T: sealed::Transport> KernelTransport for T {}
+
+/// The unnameable half of [`KernelTransport`].
+pub(crate) mod sealed {
+    use std::future::Future;
+
+    use jupyter_protocol::JupyterMessage;
+
+    use super::KernelChannel;
+    use crate::kernel::KernelError;
+
+    /// The wire seam. Implementations merge every inbound channel into one
+    /// `recv` stream.
+    pub trait Transport: Send {
+        /// Send one message on `channel`.
+        fn send(
+            &mut self,
+            channel: KernelChannel,
+            message: JupyterMessage,
+        ) -> impl Future<Output = Result<(), KernelError>> + Send;
+
+        /// The next inbound message from any channel.
+        fn recv(
+            &mut self,
+        ) -> impl Future<Output = Result<(KernelChannel, JupyterMessage), KernelError>> + Send;
+    }
 }
 
 /// The production transport: DEALER shell/control, SUB iopub, all loopback.
@@ -62,11 +79,12 @@ pub struct ZmqTransport {
 }
 
 impl ZmqTransport {
-    /// Connect the three sockets to the endpoints in `info`.
+    /// Connect the three sockets to the endpoints in `connection`.
     ///
     /// # Errors
     /// Returns [`KernelError::Transport`] when a socket cannot connect.
-    pub async fn connect(info: &ConnectionInfo) -> Result<Self, KernelError> {
+    pub async fn connect(connection: &Connection) -> Result<Self, KernelError> {
+        let info = connection.info();
         let url = |port: u16| format!("tcp://{}:{port}", info.ip);
         let fail = |error: zeromq::ZmqError| KernelError::Transport(error.to_string());
         let mut shell = zeromq::DealerSocket::new();
@@ -88,7 +106,7 @@ impl ZmqTransport {
     }
 }
 
-impl KernelTransport for ZmqTransport {
+impl sealed::Transport for ZmqTransport {
     async fn send(
         &mut self,
         channel: KernelChannel,
@@ -238,8 +256,10 @@ fn sign<'a>(key: &str, frames: impl IntoIterator<Item = &'a [u8]>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use jupyter_protocol::ConnectionInfo;
     use jupyter_protocol::messaging::KernelInfoRequest;
 
+    use super::sealed::Transport as _;
     use super::*;
 
     #[test]
@@ -418,7 +438,7 @@ mod tests {
     /// The kernel side of a loopback session: ROUTER shell and control, PUB
     /// iopub, all bound to OS-assigned loopback ports.
     struct LoopbackKernel {
-        info: ConnectionInfo,
+        info: Connection,
         shell: zeromq::RouterSocket,
         control: zeromq::RouterSocket,
         _iopub: zeromq::PubSocket,
@@ -442,7 +462,7 @@ mod tests {
         let mut iopub = zeromq::PubSocket::new();
         let iopub_port = port(iopub.bind("tcp://127.0.0.1:0").await.map_err(fail)?)?;
         Ok(LoopbackKernel {
-            info: ConnectionInfo {
+            info: Connection::from_info(ConnectionInfo {
                 ip: "127.0.0.1".to_owned(),
                 transport: jupyter_protocol::connection_info::Transport::TCP,
                 shell_port,
@@ -453,7 +473,7 @@ mod tests {
                 key: KEY.to_owned(),
                 signature_scheme: "hmac-sha256".to_owned(),
                 kernel_name: None,
-            },
+            }),
             shell,
             control,
             _iopub: iopub,
