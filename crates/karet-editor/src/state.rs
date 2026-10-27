@@ -539,6 +539,26 @@ impl EditorState {
         caret_cell(area, buffer, folds, self, position)
     }
 
+    /// Every character of `line` drawn within `area`, as `(column, x, y)` in
+    /// column order: the cell [`screen_cell`](Self::screen_cell) reports for
+    /// each, worked out in one pass over the line.
+    ///
+    /// Characters scrolled off either edge, on rows below the viewport, or
+    /// hidden in a collapsed fold are left out, so the result is bounded by
+    /// the area rather than the line. Use it instead of one `screen_cell`
+    /// call per column when many columns of one line are wanted: each of
+    /// those re-measures the whole line.
+    #[must_use]
+    pub fn line_cells(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        line: u32,
+    ) -> Vec<(u32, u16, u16)> {
+        line_cells(area, buffer, folds, self, line)
+    }
+
     /// The screen cells the last render painted the
     /// [`VirtualText`](karet_core::VirtualText) at `index` of the slice given
     /// to [`Editor::virtual_text`](crate::Editor::virtual_text) in, clipped to the editor area; `None`

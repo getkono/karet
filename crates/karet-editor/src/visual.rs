@@ -848,6 +848,68 @@ pub(super) fn caret_cell(
     None
 }
 
+/// Every character of `line` drawn within `area` as `(column, x, y)`, in
+/// column order: [`caret_cell`] for each, from one measurement of the line
+/// and one walk of the viewport.
+pub(super) fn line_cells(
+    area: Rect,
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    state: &EditorState,
+    line: u32,
+) -> Vec<(u32, u16, u16)> {
+    let line_count = buffer.line_count() as u32;
+    let frame = &state.frame;
+    let gutter = gutter_width(line_count, frame.line_numbers, frame.change_lane);
+    let content_x = area.x.saturating_add(gutter);
+    let content_y = area.y.saturating_add(frame.sticky_height);
+    let content_height = area.height.saturating_sub(frame.sticky_height);
+    if line >= line_count || content_x >= area.right() || content_height == 0 {
+        return Vec::new();
+    }
+    let content_width = area.right().saturating_sub(content_x);
+    let layout = state.row_layout(u32::from(content_width.max(1)), frame.word_wrap);
+    let chars = line_chars(buffer, line);
+    // `display_col` of every column at once: what `offset_within_row`
+    // computes per call.
+    let cols = display_cols(&chars, frame.tab_width, layout.hints_on(line));
+    let mut ranges: Option<Vec<VisualRange>> = None;
+    let mut cells = Vec::new();
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, state.top_anchor());
+    for row in 0..content_height {
+        if anchor.line > line {
+            break;
+        }
+        if anchor.line == line {
+            let ranges =
+                ranges.get_or_insert_with(|| layout.text_rows(buffer, line, state.scroll_col()));
+            let range = anchor
+                .subrow
+                .checked_sub(layout.above(line))
+                .and_then(|index| ranges.get(index as usize));
+            if let Some(range) = range {
+                let origin = cols.get(range.start as usize).copied().unwrap_or(0);
+                let y = content_y.saturating_add(row);
+                for col in range.start..range.end.min(chars.len() as u32) {
+                    let at = cols.get(col as usize).copied().unwrap_or(origin);
+                    let rel = at.saturating_sub(origin).saturating_add(range.indent);
+                    if rel >= u32::from(content_width) {
+                        break;
+                    }
+                    let x = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
+                    cells.push((col, x, y));
+                }
+            }
+        }
+        let next = next_visual_anchor(buffer, folds, layout, anchor);
+        if next == anchor {
+            break;
+        }
+        anchor = next;
+    }
+    cells
+}
+
 /// The last line of the collapsed fold interior that hides `line`, when one
 /// does: with nested folds, the outermost one's end.
 fn hidden_until(folds: &[Fold], line: u32) -> Option<u32> {
