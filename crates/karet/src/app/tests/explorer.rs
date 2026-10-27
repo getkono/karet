@@ -574,6 +574,47 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The keyboard context menu opened while the sidebar is hidden lands on the
+/// selected row exactly where the sidebar shows it once painted, with and
+/// without Zen Mode's missing view switcher — not at the frame origin the
+/// hidden sidebar left behind.
+#[test]
+fn explorer_keyboard_context_menu_anchors_on_the_row_of_a_hidden_sidebar() {
+    for zen in [false, true] {
+        let dir = test_dir(if zen {
+            "context-hidden-zen"
+        } else {
+            "context-hidden"
+        });
+        write_file(&dir, "a.txt", b"a");
+        write_file(&dir, "b.txt", b"b");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        if zen {
+            app.dispatch(Command::ToggleZenMode);
+            assert!(app.modes.zen.is_some(), "zen mode is on");
+        }
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_visible = true;
+        select_explorer_path(&mut app, &dir.join("b.txt"));
+        let row = app.explorer.cursor() - app.explorer.offset();
+        let _ = frame(&mut app, 80, 24);
+        let shown = app.last_frame.sidebar_content_rect;
+        assert!(shown.width > 0, "the sidebar was painted");
+
+        app.sidebar_visible = false;
+        let _ = frame(&mut app, 80, 24);
+        assert_eq!(app.last_frame.sidebar_content_rect, Rect::default());
+        app.open_context_menu_for_selection();
+
+        let Some(menu) = app.context_menu.as_ref() else {
+            panic!("the menu opened");
+        };
+        let expected_y = shown.y + u16::try_from(row).unwrap_or(u16::MAX);
+        assert_eq!((menu.x, menu.y), (shown.x + 2, expected_y), "zen: {zen}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
     let dir = test_dir("context-skip-disabled");

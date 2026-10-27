@@ -553,15 +553,29 @@ impl App {
         self.focus = Focus::Sidebar;
         self.explorer.ensure_built(&self.root);
         let cursor = self.explorer.cursor();
-        let y = self.last_frame.sidebar_content_rect.y.saturating_add(
+        let (left, top) = self.explorer_content_origin();
+        let y = top.saturating_add(
             cursor
                 .saturating_sub(self.explorer.offset())
                 .try_into()
                 .unwrap_or(0),
         );
-        let x = self.last_frame.sidebar_content_rect.x.saturating_add(2);
+        let x = left.saturating_add(2);
         let row = (!self.explorer.rows().is_empty()).then_some(cursor);
         self.open_context_menu(x, y, row);
+    }
+
+    /// The cell the explorer tree's first row sits at: where the last frame
+    /// painted it, or, when that frame painted no sidebar, where the next frame
+    /// lays it out — column 0, below the view switcher (absent in Zen Mode) and
+    /// the sidebar's one-row header, as [`ui::draw`] places it.
+    fn explorer_content_origin(&self) -> (u16, u16) {
+        let painted = self.last_frame.sidebar_content_rect;
+        if painted.width > 0 && painted.height > 0 {
+            return (painted.x, painted.y);
+        }
+        let view_switcher = u16::from(self.modes.zen.is_none());
+        (0, view_switcher.saturating_add(1))
     }
 
     /// Open the pane context menu at `(x, y)` for the focused pane's active tab.
