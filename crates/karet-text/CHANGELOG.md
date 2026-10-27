@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `karet_text::words`: the grapheme-aware word model (`word_at`, `word_bounds`, `class_run_at`, `identifier_at`, `previous_word_boundary`, `next_word_boundary`, `line_span`, `cluster_bounds`), moved here from `karet-editor` so headless consumers share it
+- `TextBuffer::slice_range(Range)`: the text within a line/column range, read off the rope without copying the whole document
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-text-v0.7.0...karet-text-v0.7.1) - 2026-10-01
 
 ### Fixed

@@ -3921,6 +3921,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.19",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -14,6 +14,10 @@
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
 //! round-trips the detected encoding and is atomic, falling back to a direct
 //! overwrite only where the temp-file rename fails.
+//!
+//! The [`words`] module answers which columns a word, a double-click run, or a
+//! word motion spans, on grapheme-cluster boundaries, so every consumer of a
+//! buffer shares one word model.
 
 use std::io::Read;
 
@@ -27,6 +31,7 @@ mod lines;
 mod load;
 mod read;
 mod save;
+pub mod words;
 
 pub use apply::Applied;
 pub use history::EditContext;

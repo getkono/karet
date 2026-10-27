@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use karet_core::BytePos;
+use karet_core::Range;
 use karet_core::Span;
 
 use crate::TextBuffer;
@@ -28,6 +29,19 @@ impl TextBuffer {
             return None;
         }
         Some(self.rope.byte_slice(start..end).to_string())
+    }
+
+    /// The text within the line/column [`Range`] `range`, copying only that
+    /// range, line breaks included.
+    ///
+    /// Columns are `char` columns, each clamped to its line's content length as
+    /// [`line_col_to_byte`](Self::line_col_to_byte) clamps them. `None` when
+    /// either end lies past the last line or the range is reversed.
+    #[must_use]
+    pub fn slice_range(&self, range: Range) -> Option<String> {
+        let start = self.line_col_to_byte(range.start).ok()?;
+        let end = self.line_col_to_byte(range.end).ok()?;
+        self.slice(Span { start, end })
     }
 
     /// The byte offset of the first occurrence of `needle` lying wholly inside
@@ -245,6 +259,43 @@ mod tests {
         assert_eq!(b.slice(span(0, 99)), None, "past the end");
         assert_eq!(b.slice(span(2, 4)), None, "starts inside `é`");
         assert_eq!(b.slice(span(0, 2)), None, "ends inside `é`");
+    }
+
+    fn range(start: (u32, u32), end: (u32, u32)) -> Range {
+        Range {
+            start: karet_core::LineCol::new(start.0, start.1),
+            end: karet_core::LineCol::new(end.0, end.1),
+        }
+    }
+
+    #[test]
+    fn slice_range_slices_by_char_columns_across_lines() {
+        let b = TextBuffer::from_text("h\u{e9}llo\nw\u{f6}rld\n");
+        assert_eq!(
+            b.slice_range(range((0, 1), (1, 2))).as_deref(),
+            Some("\u{e9}llo\nw\u{f6}")
+        );
+        assert_eq!(b.slice_range(range((1, 1), (1, 1))).as_deref(), Some(""));
+        // A column past the line end clamps to it, short of the line break.
+        assert_eq!(b.slice_range(range((0, 3), (0, 99))).as_deref(), Some("lo"));
+        // The empty line after the trailing break is addressable.
+        assert_eq!(b.slice_range(range((1, 4), (2, 0))).as_deref(), Some("d\n"));
+    }
+
+    #[test]
+    fn slice_range_is_none_for_an_unresolvable_range() {
+        let b = TextBuffer::from_text("ab\ncd");
+        assert_eq!(
+            b.slice_range(range((0, 0), (9, 0))),
+            None,
+            "end past the last line"
+        );
+        assert_eq!(
+            b.slice_range(range((9, 0), (9, 1))),
+            None,
+            "start past the last line"
+        );
+        assert_eq!(b.slice_range(range((1, 1), (0, 1))), None, "reversed");
     }
 
     #[test]
