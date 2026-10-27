@@ -184,6 +184,7 @@ pub(crate) fn frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    app.prepare_frame(Rect::new(0, 0, width, height));
     terminal
         .draw(|f| crate::ui::draw(f, app))
         .expect("draw the shell");

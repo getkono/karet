@@ -236,6 +236,7 @@ pub(crate) use problems::ProblemsChrome;
 pub(crate) use problems::ProblemsPanel;
 pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
+pub(crate) use runtime::clamp_sidebar_width;
 pub(crate) use runtime::run;
 pub(crate) use search::SearchPanel;
 pub(crate) use search::SearchPanelField;

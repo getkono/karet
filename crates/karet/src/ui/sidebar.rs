@@ -6,8 +6,9 @@ pub(super) mod search;
 use super::*;
 
 /// Draw the right-side outline panel: a header over the active tab's navigation
-/// outline (a depth-indented, selectable list). Records the content rect and syncs
-/// the selection length for keyboard navigation and mouse hit-testing.
+/// outline (a depth-indented, selectable list). Records the content rect for
+/// mouse hit-testing; the outline request and the selection's length are kept
+/// current by [`App::prepare_frame`].
 pub(super) fn draw_outline(
     f: &mut Frame,
     app: &mut App,
@@ -15,7 +16,6 @@ pub(super) fn draw_outline(
     area: Rect,
     hits: &mut ScrollHits,
 ) {
-    app.request_active_outline();
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
@@ -35,7 +35,6 @@ pub(super) fn draw_outline(
     );
 
     let entries = app.active_outline_rows();
-    app.outline.sel.set_len(entries.len());
     if entries.is_empty() {
         let pending = app.active_outline_loading();
         let label = if pending.is_some_and(crate::app::Pending::visible) {
@@ -125,7 +124,6 @@ pub(super) fn draw_sidebar(
                 app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
             let hover = app.hovered_explorer_row();
             let cut_paths = app.explorer_cut_paths().to_vec();
-            app.request_nested_repository_statuses();
             let repository_badges = app.nested_repository_badges(Instant::now());
             // The tree's rect is also its click target, so narrowing it here is what
             // makes a click on the track column fall outside the tree instead of

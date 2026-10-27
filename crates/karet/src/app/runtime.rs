@@ -60,6 +60,50 @@ pub(super) fn attach_backend(
     Ok((events, snaps))
 }
 
+/// The sidebar width a body `body_width` columns wide shows for a user-chosen
+/// `width`: it can grow to nearly the full width, but always leaves one column
+/// for the drag divider, and never narrows below [`SIDEBAR_MIN_WIDTH`] while the
+/// body has room for it.
+pub(crate) fn clamp_sidebar_width(width: u16, body_width: u16) -> u16 {
+    let max = body_width.saturating_sub(1).max(1);
+    width.clamp(SIDEBAR_MIN_WIDTH.min(max), max)
+}
+
+impl App {
+    /// Bring the model in line with the frame about to be painted into `area`.
+    ///
+    /// Everything a frame needs that is not painting runs here, so
+    /// [`ui::draw`] can only paint and record geometry: opening the folds that
+    /// hide a caret, asking the backend for the symbols the breadcrumb and
+    /// outline read and for the explorer's nested-repository badges, clamping
+    /// the stored sidebar width to the terminal (so a later drag starts from
+    /// what is shown after a resize), keeping the outline selection within its
+    /// rows, and dropping a maximised pane that lost focus. The interactive loop
+    /// and `--capture` both call it before every draw. Every request it makes is
+    /// asked once per document version or path, so a repaint asks nothing new.
+    pub(crate) fn prepare_frame(&mut self, area: Rect) {
+        self.unfold_around_carets();
+        // The breadcrumb names the symbols around the caret, so the active
+        // document's symbols are kept current whether or not the outline is open.
+        self.request_active_symbols();
+        if self.sidebar_visible && self.view.shows_sidebar() {
+            self.sidebar_width = clamp_sidebar_width(self.sidebar_width, area.width);
+            if self.sidebar_panel == SidebarPanel::Explorer {
+                self.request_nested_repository_statuses();
+            }
+        }
+        if self.view == View::Editor {
+            if self.outline.visible {
+                self.request_active_outline();
+                self.sync_outline_selection();
+            }
+            // A maximised pane that lost focus since it was maximised is dropped,
+            // so returning focus to it later does not maximise it again.
+            self.modes.maximized = self.maximized_pane();
+        }
+    }
+}
+
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
@@ -286,6 +330,7 @@ async fn event_loop(
         app.observe_navigation();
         if redraw {
             app.sync_preview_graphics();
+            app.prepare_frame(terminal.size()?.into());
             terminal.draw(|f| {
                 ui::draw(f, app);
                 crate::color_depth::fit_buffer(f.buffer_mut(), color_depth);
@@ -514,5 +559,121 @@ mod tests {
             "quit: 1 save(s) abandoned — /home/zoë/t.rs",
             "printable non-ASCII passes through untouched"
         );
+    }
+}
+
+/// [`App::prepare_frame`] owns a frame's requests and clamps, so painting a frame
+/// without it changes nothing a backend or the model can observe.
+#[cfg(test)]
+mod prepare_frame_tests {
+    use std::collections::BTreeSet;
+
+    use karet_core::FoldRegion;
+    use karet_core::FoldRegions;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::app::tests::harness::Rig;
+    use crate::app::tests::support::RecordingBackend;
+    use crate::app::tests::support::test_dir;
+    use crate::app::tests::support::write_file;
+
+    /// Paint one frame of `app` without preparing it first.
+    fn paint_only(app: &mut App, width: u16, height: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal.draw(|f| ui::draw(f, app)).expect("draw the shell");
+    }
+
+    /// Every command `backend` has been sent, oldest first.
+    fn sent(backend: &RecordingBackend) -> Vec<SessionCommand> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| sent.iter().map(|(_, command)| command.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_sidebar_clamp_leaves_a_divider_column_and_keeps_the_minimum_while_it_fits() {
+        // (stored width, body width) -> shown width
+        let cases = [
+            (30, 80, 30),
+            (200, 80, 79),
+            (4, 80, SIDEBAR_MIN_WIDTH),
+            (30, 10, 9),
+            (30, 1, 1),
+            (30, 0, 1),
+        ];
+        for (width, body, shown) in cases {
+            assert_eq!(
+                clamp_sidebar_width(width, body),
+                shown,
+                "width {width} in a {body}-column body"
+            );
+        }
+    }
+
+    #[test]
+    fn painting_sends_nothing_and_preparing_asks_for_the_explorers_nested_repositories() {
+        let dir = test_dir("prepare-frame-nested-status");
+        write_file(&dir, "nested/.git/config", b"[core]\n");
+        write_file(&dir, "nested/src/lib.rs", b"pub fn example() {}\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_visible = true;
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        paint_only(&mut app, 80, 24);
+        assert!(
+            sent(&backend).is_empty(),
+            "a paint sends the backend nothing"
+        );
+
+        app.prepare_frame(Rect::new(0, 0, 80, 24));
+        let nested: Vec<_> = sent(&backend)
+            .into_iter()
+            .filter_map(|command| match command {
+                SessionCommand::Vcs(VcsCommand::NestedRepositoryStatus { path }) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nested, vec![dir.join("nested")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stored_sidebar_width_is_clamped_by_preparing_not_by_painting() {
+        let mut app = crate::app::tests::support::app();
+        app.sidebar_visible = true;
+        app.sidebar_width = 200;
+
+        paint_only(&mut app, 80, 24);
+        assert_eq!(app.sidebar_width, 200, "a paint leaves the model alone");
+        assert_eq!(app.sidebar_rect.width, 79, "but shows the clamped width");
+
+        app.prepare_frame(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.sidebar_width, 79);
+    }
+
+    #[test]
+    fn a_fold_hiding_the_caret_is_opened_by_preparing_not_by_painting() {
+        let mut rig = Rig::new("top\nfn a() {\n    x\n|}\ntail");
+        let active = rig.app.active;
+        if let TabKind::Code { folds, folded, .. } = &mut rig.app.tabs[active].kind {
+            *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(1, 3)]);
+            folded.insert(1);
+        }
+        let folded = |app: &App| match &app.tabs[app.active].kind {
+            TabKind::Code { folded, .. } => folded.clone(),
+            _ => BTreeSet::new(),
+        };
+
+        paint_only(&mut rig.app, 80, 24);
+        assert_eq!(folded(&rig.app), BTreeSet::from([1]));
+
+        rig.app.prepare_frame(Rect::new(0, 0, 80, 24));
+        assert_eq!(folded(&rig.app), BTreeSet::new());
     }
 }

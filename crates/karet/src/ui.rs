@@ -105,11 +105,11 @@ use crate::app::LanguageServerBadgeSummary;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
 use crate::app::Pending;
-use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
+use crate::app::clamp_sidebar_width;
 use crate::app::is_markdown;
 pub(crate) use crate::app::relative_time;
 use crate::command::Command;
@@ -163,12 +163,11 @@ use crate::tab::TabKind;
 use crate::tab::ViewMode;
 
 /// Draw one frame of the shell.
+///
+/// Paints and records geometry only. The requests, fold openings and model
+/// clamps a frame depends on run beforehand in [`App::prepare_frame`], so
+/// drawing sends the backend nothing.
 pub fn draw(f: &mut Frame, app: &mut App) {
-    app.unfold_around_carets();
-    // The breadcrumb names the symbols around the caret, so the active document's
-    // symbols are kept current whether or not the outline is open. Asked once per
-    // buffer version: a version already cached or in flight asks nothing.
-    app.request_active_symbols();
     let theme = app.theme.clone();
     let area = f.area();
     // Collected into a local and handed over at the end rather than cleared on `app`
@@ -200,13 +199,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let body = rows[1];
 
     let sidebar = if app.sidebar_visible && app.view.shows_sidebar() {
-        // Responsive clamp: the sidebar can grow to nearly the full width, but always
-        // leaves one column for the drag divider. The stored width is written back so
-        // a subsequent drag starts from what's actually shown after a terminal resize.
-        let max = body.width.saturating_sub(1).max(1);
-        let lo = SIDEBAR_MIN_WIDTH.min(max);
-        let width = app.sidebar_width.clamp(lo, max);
-        app.sidebar_width = width;
+        // Responsive clamp: `App::prepare_frame` already stored the clamped width;
+        // clamping again here keeps a frame drawn without it inside the body.
+        let width = clamp_sidebar_width(app.sidebar_width, body.width);
         let cols = Layout::horizontal([
             Constraint::Length(width),
             Constraint::Length(1),

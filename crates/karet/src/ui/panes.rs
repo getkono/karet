@@ -30,10 +30,9 @@ pub(super) fn draw_panes(
     clear_pane_render_state(app);
     let focused = app.focus_pane();
     // A maximised pane takes the whole area alone, with no dividers to drag. One
-    // that lost focus since it was maximised is dropped here, so returning focus
-    // to it later does not maximise it again.
-    app.modes.maximized = app.maximized_pane();
-    let maximized = app.modes.maximized.is_some();
+    // that lost focus since it was maximised is dropped by `App::prepare_frame`;
+    // reading it through `maximized_pane` keeps this frame right without it.
+    let maximized = app.maximized_pane().is_some();
     let tiles = if maximized {
         vec![(focused, area)]
     } else {
