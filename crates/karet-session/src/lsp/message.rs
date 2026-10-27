@@ -1,6 +1,7 @@
 //! The vocabulary spoken between the session actor and its server tasks.
 //!
-//! [`ServerCmd`] travels down to one per-language task; [`LspUpdate`] travels
+//! [`ServerCmd`] travels down to the task serving one slot (a provider at a
+//! repository root, see [`SlotKey`](super::SlotKey)); [`LspUpdate`] travels
 //! back. Both are plain data on purpose: the task owns the `LspClient` and the
 //! protocol, while position conversion (LSP UTF-16 ↔ buffer UTF-32) and event
 //! emission happen on the actor, where the buffer lives.
@@ -48,7 +49,7 @@ use crate::api::LanguageServerRuntimeState;
 use crate::api::LocationKind;
 use crate::api::RequestId;
 
-/// A command for one per-language server task.
+/// A command for the server task serving one slot.
 pub(crate) enum ServerCmd {
     /// Forward `textDocument/didOpen`.
     DidOpen {

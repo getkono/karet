@@ -70,7 +70,7 @@ pub(super) struct ServerTask {
     pub(super) primary: bool,
 }
 
-/// The per-language server task: serialize document sync and requests, restart
+/// The server task for one slot: serialize document sync and requests, restart
 /// closed processes with backoff, and replay the authoritative open-document set.
 pub(super) async fn server_task(task: ServerTask) {
     let ServerTask {

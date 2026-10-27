@@ -4,8 +4,7 @@
 //! karet against upstream, which is the only way to notice that a release asset
 //! was renamed, a publisher stopped attaching a digest, or an npm flag was
 //! removed. Those failures reach users as "the server just doesn't work" and are
-//! invisible to any offline suite -- the macOS and Windows Node key mismatch
-//! this branch fixes sat in the catalogue undetected for exactly that reason.
+//! invisible to any offline suite.
 //!
 //! It is `#[ignore]`d, which is the only mechanism `cargo test` honours by
 //! default, so `mise run verify` provably cannot reach the network. Run it

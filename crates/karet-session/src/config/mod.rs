@@ -471,10 +471,11 @@ mod tests {
         ));
     }
 
-    /// Guards the checked-in schema against drift: regenerate with
-    /// `cargo run -p karet --bin karet -- ...` is not needed — the schema is emitted
-    /// by this crate, so if this fails, refresh `settings.schema.json` from
-    /// [`json_schema`]. Skipped when the file is absent (e.g. isolated crate checkout).
+    /// Guards the checked-in schema against drift. If this fails, regenerate
+    /// `settings.schema.json` from [`json_schema`] by running, at the repository root,
+    /// `cargo run -p karet-session --features schema --example settings-schema >
+    /// settings.schema.json`. Skipped when the file is absent (e.g. isolated crate
+    /// checkout).
     #[cfg(feature = "schema")]
     #[test]
     fn checked_in_schema_is_current() {
