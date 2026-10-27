@@ -470,7 +470,7 @@ impl App {
         let TabKind::Code { buffer, .. } = &self.tabs.get(self.active)?.kind else {
             return None;
         };
-        let (start, end) = karet_editor::identifier_at(buffer, pos)?;
+        let (start, end) = karet_text::words::identifier_at(buffer, pos)?;
         Some((pos, Range { start, end }))
     }
 

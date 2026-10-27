@@ -506,7 +506,8 @@ impl Session {
             ),
             RenameAnswer::Span(karet_core::PrepareRename::Range { range, placeholder }) => {
                 let range = utf16_range_to_buffer(buffer, range);
-                let placeholder = placeholder.unwrap_or_else(|| text_in(buffer, range));
+                let placeholder =
+                    placeholder.unwrap_or_else(|| buffer.slice_range(range).unwrap_or_default());
                 (Some(RenameTarget { range, placeholder }), None)
             },
             RenameAnswer::Span(_) | RenameAnswer::Identifier => {
@@ -571,53 +572,15 @@ pub(super) fn refused(reason: &str) -> AppliedWorkspaceEdit {
     }
 }
 
-/// The text `range` covers in `buffer`.
-fn text_in(buffer: &TextBuffer, range: Range) -> String {
-    let (Ok(start), Ok(end)) = (
-        buffer.line_col_to_byte(range.start),
-        buffer.line_col_to_byte(range.end),
-    ) else {
-        return String::new();
-    };
-    buffer
-        .text()
-        .get(start.0..end.0)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-/// The identifier touching `position`, by the editor's own word rules: the one
-/// the caret is in, or the one it sits just after.
+/// The identifier touching `position`, by the editor's own word rules
+/// ([`karet_text::words::word_at`]): the one the caret is in, or the one it
+/// sits just after.
 fn identifier_at(buffer: &TextBuffer, position: LineCol) -> Option<RenameTarget> {
-    let line: Vec<char> = buffer.line(position.line as usize)?.chars().collect();
-    let at = (position.col as usize).min(line.len());
-    let is_word = |index: usize| {
-        line.get(index)
-            .copied()
-            .is_some_and(karet_core::is_word_char)
-    };
-    let anchor = if is_word(at) {
-        at
-    } else if at > 0 && is_word(at - 1) {
-        at - 1
-    } else {
-        return None;
-    };
-    let start = (0..=anchor)
-        .rev()
-        .take_while(|&index| is_word(index))
-        .last()?;
-    let end = (anchor..line.len())
-        .take_while(|&index| is_word(index))
-        .last()?
-        + 1;
-    let column = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+    let (start, end) = karet_text::words::word_at(buffer, position)?;
+    let range = Range { start, end };
     Some(RenameTarget {
-        range: Range {
-            start: LineCol::new(position.line, column(start)),
-            end: LineCol::new(position.line, column(end)),
-        },
-        placeholder: line.get(start..end)?.iter().collect(),
+        range,
+        placeholder: buffer.slice_range(range)?,
     })
 }
 

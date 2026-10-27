@@ -84,7 +84,7 @@ impl App {
         // being completed has not changed, only how much of it is typed.
         let anchor = match (trigger, &self.completion.popup) {
             (CompletionTrigger::Incomplete, Some(ui)) => ui.anchor,
-            _ => karet_editor::word_bounds(buffer, caret).0,
+            _ => karet_text::words::word_bounds(buffer, caret).0,
         };
         let id = backend.next_id();
         let command = LspCommand::Completion {

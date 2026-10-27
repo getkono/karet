@@ -56,25 +56,10 @@ pub(crate) struct PendingRename {
 /// The identifier the editor sees at `pos`, if the caret is on (or just past)
 /// one: its span and text.
 fn local_identifier(buffer: &TextBuffer, pos: LineCol) -> Option<(Range, String)> {
-    let line: Vec<char> = buffer.line(pos.line as usize)?.chars().collect();
-    let on_word = |col: u32| {
-        line.get(col as usize)
-            .copied()
-            .is_some_and(karet_core::is_word_char)
-    };
-    let at = if on_word(pos.col) {
-        pos
-    } else if pos.col > 0 && on_word(pos.col - 1) {
-        LineCol::new(pos.line, pos.col - 1)
-    } else {
-        return None;
-    };
-    let (start, end) = karet_editor::word_bounds(buffer, at);
-    let name: String = line
-        .get(start.col as usize..end.col as usize)?
-        .iter()
-        .collect();
-    (start.line == end.line && !name.is_empty()).then_some((Range { start, end }, name))
+    let (start, end) = karet_text::words::word_at(buffer, pos)?;
+    let range = Range { start, end };
+    let name = buffer.slice_range(range)?;
+    Some((range, name))
 }
 
 impl App {

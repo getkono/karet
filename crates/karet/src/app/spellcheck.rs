@@ -17,7 +17,6 @@ impl App {
         let TabKind::Code {
             doc: Some(doc),
             buffer,
-            text,
             ..
         } = &tab.kind
         else {
@@ -27,7 +26,7 @@ impl App {
             diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
                 && range_contains(diagnostic.range, position)
         })?;
-        spell_warning(*doc, buffer, text, diagnostic)
+        spell_warning(*doc, buffer, diagnostic)
     }
 
     /// Resolve a spell warning whose replacement span ends at `position`.
@@ -40,7 +39,6 @@ impl App {
         let TabKind::Code {
             doc: Some(active_doc),
             buffer,
-            text,
             ..
         } = &tab.kind
         else {
@@ -53,7 +51,7 @@ impl App {
             diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
                 && diagnostic.range.end == position
         })?;
-        spell_warning(doc, buffer, text, diagnostic)
+        spell_warning(doc, buffer, diagnostic)
     }
 
     /// Lead the right-click menu just opened at `(x, y)` with the spelling rows
@@ -265,13 +263,12 @@ impl App {
 fn spell_warning(
     doc: DocumentId,
     buffer: &karet_text::TextBuffer,
-    text: &str,
     diagnostic: &Diagnostic,
 ) -> Option<SpellWarning> {
     Some(SpellWarning {
         doc,
         range: diagnostic.range,
-        word: selection_text(buffer, text, diagnostic.range)?,
+        word: buffer.slice_range(diagnostic.range)?,
         suggestions: suggestions_from_message(&diagnostic.message),
     })
 }
