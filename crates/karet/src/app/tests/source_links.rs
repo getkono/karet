@@ -347,3 +347,43 @@ fn a_wrapped_source_link_links_every_row_it_occupies() {
     assert_eq!(linked_cells(&buffer, url), url.len());
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Open Link at Caret follows a language server's link the caret is on
+/// before reading the source, as Ctrl/Cmd+click does under the pointer.
+#[test]
+fn open_link_at_caret_prefers_a_server_link() {
+    use karet_core::DocumentLink;
+    use karet_core::Range;
+
+    const DOC: DocumentId = DocumentId(9);
+    let (mut app, root) = workspace_app(
+        "source-link-caret-server",
+        b"see [guide](docs/guide.md) now\n",
+    );
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DOC);
+    }
+    write_file(&root, "other.md", b"other");
+    let target = url::Url::from_file_path(root.join("other.md"))
+        .map(String::from)
+        .unwrap_or_default();
+    let version = app.buffer_version(DOC).unwrap_or_default();
+    let link = DocumentLink {
+        range: Range {
+            start: LineCol::new(0, 4),
+            end: LineCol::new(0, 26),
+        },
+        target: Some(target),
+        tooltip: None,
+        payload: None,
+    };
+    app.links_colors.links.insert(DOC, (version, vec![link]));
+
+    app.tabs[app.active].editor.place_caret(LineCol::new(0, 6));
+    app.dispatch(Command::OpenLinkAtCaret);
+    fill_reserved_tabs(&mut app);
+    let opened = std::fs::canonicalize(root.join("other.md")).ok();
+    assert_eq!(active_path(&app), opened);
+    let _ = std::fs::remove_dir_all(root);
+}

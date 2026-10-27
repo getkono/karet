@@ -414,9 +414,33 @@ impl App {
         links.into_iter().nth(index).map(|link| link.target)
     }
 
+    /// The language server's link under the primary caret of the active code
+    /// tab, with its document: only one the caret is on, so a source link the
+    /// caret is in is never passed over for a server link it merely ends
+    /// against.
+    fn server_link_at_caret(&self) -> Option<(DocumentId, DocumentLink)> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        self.server_link_at(*doc, buffer.version(), tab.editor.cursor())
+            .map(|link| (*doc, link.clone()))
+    }
+
     /// Open the link under the primary caret as Ctrl/Cmd+click on it would
-    /// (see [`Self::activate_link`]): the keyboard path for that gesture.
+    /// (see [`Self::activate_link`]): the keyboard path for that gesture. A
+    /// language server's link outranks one read from the source, as it does
+    /// under the pointer.
     pub(crate) fn open_link_at_caret(&mut self) {
+        if let Some((doc, link)) = self.server_link_at_caret() {
+            self.follow_document_link(doc, link);
+            return;
+        }
         let Some(target) = self.source_link_at_caret() else {
             self.notify(
                 Report::Refusal,
