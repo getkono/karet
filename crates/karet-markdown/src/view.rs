@@ -20,7 +20,7 @@ use crate::WrappedLine;
 
 /// Style one wrapped line with `theme`.
 #[must_use]
-pub fn line_to_ratatui(line: &WrappedLine, theme: &Theme) -> Line<'static> {
+pub(crate) fn line_to_ratatui(line: &WrappedLine, theme: &Theme) -> Line<'static> {
     let spans = line
         .spans
         .iter()
