@@ -303,9 +303,9 @@ impl App {
             requested += 1;
         }
 
-        if requested > 0 && clipboard.op == ExplorerFileOp::Cut {
-            self.explorer_clipboard = None;
-        }
+        // A cut clipboard is cleared by the first move that lands (see
+        // `explorer_mutate`), not here: every move can still fail, and the
+        // user then still holds what they cut and can paste it elsewhere.
         if let Some(message) = first_error {
             self.notify(Report::Failure, NotificationKind::Io, message);
         } else if requested == 0 && skipped > 0 {

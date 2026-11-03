@@ -159,6 +159,34 @@ fn explorer_cut_paste_moves_files_and_clears_clipboard() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The moves are only requested when the paste runs; a cut whose every move
+/// then fails is still the user's to paste elsewhere, so the clipboard stays.
+#[test]
+fn a_cut_paste_whose_moves_all_fail_keeps_the_clipboard() {
+    let dir = test_dir("cut-file-fails");
+    write_file(&dir, "move.txt", b"move");
+    let _ = std::fs::create_dir_all(dir.join("dst"));
+    let mut app = app_at(dir.clone());
+    app.sidebar_panel = SidebarPanel::Explorer;
+
+    select_explorer_path(&mut app, &dir.join("move.txt"));
+    build_explorer_from_disk(&mut app);
+    app.dispatch(Command::Cut);
+    select_explorer_path(&mut app, &dir.join("dst"));
+    app.dispatch(Command::Paste);
+    // The source vanishes before the backend gets to the move.
+    let _ = std::fs::remove_file(dir.join("move.txt"));
+    settle_mutations(&mut app);
+
+    assert!(!dir.join("dst/move.txt").exists());
+    assert!(
+        app.explorer_clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.op == crate::app::state::ExplorerFileOp::Cut)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn explorer_duplicate_file_uses_copy_suffix() {
     let dir = test_dir("duplicate-file");

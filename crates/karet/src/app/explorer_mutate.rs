@@ -17,6 +17,7 @@ use karet_widgets::PendingEdit;
 
 use super::App;
 use crate::app::notifications::Report;
+use crate::app::state::ExplorerFileOp;
 
 /// The notification tag a paste or duplicate's running count shares.
 const PASTE_TAG: &str = "explorer.paste";
@@ -191,6 +192,13 @@ impl App {
             },
             FollowUp::Pasted { moved, .. } => {
                 if let Some((from, to)) = moved {
+                    // The cut is spent once something it named has moved. A
+                    // clipboard cut since then names other paths and stays.
+                    if self.explorer_clipboard.as_ref().is_some_and(|clipboard| {
+                        clipboard.op == ExplorerFileOp::Cut && clipboard.paths.contains(&from)
+                    }) {
+                        self.explorer_clipboard = None;
+                    }
                     self.retarget_open_paths(&from, &to);
                 }
                 self.explorer_paste_done += 1;
