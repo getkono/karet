@@ -768,6 +768,9 @@ mod prepare_frame_tests {
             "a paint sends the backend nothing"
         );
 
+        // The tree lists what the backend has told it, so answer its listings
+        // first: the nested repository is discovered from a listed row.
+        crate::app::tests::support::build_explorer_from_disk(&mut app);
         app.prepare_frame(Rect::new(0, 0, 80, 24));
         let nested: Vec<_> = sent(&backend)
             .into_iter()

@@ -184,7 +184,8 @@ fn a_plain_quit_after_a_reopen_whose_save_failed_just_exits() {
 /// The explorer row for `name`, selected.
 fn select_tree_row(app: &mut App, dir: &Path, name: &str) {
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.explorer.ensure_built(dir);
+    assert_eq!(app.root, dir, "the tree lists the app's root");
+    build_explorer_from_disk(app);
     let row = app
         .explorer
         .rows()

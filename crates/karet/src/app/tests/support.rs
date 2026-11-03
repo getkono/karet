@@ -921,6 +921,27 @@ pub(crate) fn fill_reserved_tabs(app: &mut App) {
     }
 }
 
+/// Stand in for the backend's classification and byte reads on every tab
+/// reserved for content the app renders from raw bytes (an image, a PDF, a hex
+/// dump), for a test app whose backend never answers: read each file from disk
+/// and build the tab its bytes warrant, as the answering events do.
+pub(crate) fn fill_media_tabs(app: &mut App) {
+    for tab in app.all_tabs_mut() {
+        let path = match &tab.kind {
+            TabKind::Placeholder { path, .. } => path.clone(),
+            TabKind::Hex { path, bytes, .. } if bytes.is_empty() => path.clone(),
+            _ => continue,
+        };
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        let len = bytes.len() as u64;
+        let kind = karet_filetype::classify(&path, &bytes, len);
+        let mut filled = crate::tab::open::realize(&path, kind, bytes, len);
+        filled.view = tab.view;
+        filled.is_preview = tab.is_preview;
+        *tab = filled;
+    }
+}
+
 /// Answer the manager tab's outstanding inventory request, the way the session
 /// does.
 ///

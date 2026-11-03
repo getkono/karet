@@ -357,11 +357,17 @@ mod tests {
     /// the same tab a local one does.
     #[test]
     fn opening_reserves_by_name_without_touching_the_disk() {
-        let tab = Tab::open(Path::new("/elsewhere/blob.bin"));
-        assert!(matches!(tab.kind, TabKind::Hex { ref bytes, .. } if bytes.is_empty()));
-        assert!(needs_bytes(kind_from_path(Path::new(
-            "/elsewhere/blob.bin"
-        ))));
+        let tab = Tab::open(Path::new("/elsewhere/report.pdf"));
+        assert!(matches!(
+            tab.kind,
+            TabKind::Placeholder {
+                kind: FileKind::Pdf,
+                ..
+            }
+        ));
+        let hex = reserve(Path::new("/elsewhere/blob"), FileKind::Binary);
+        assert!(matches!(hex.kind, TabKind::Hex { ref bytes, .. } if bytes.is_empty()));
+        assert!(needs_bytes(FileKind::Binary));
         assert!(!needs_bytes(kind_from_path(Path::new("/elsewhere/a.rs"))));
     }
 
@@ -389,12 +395,12 @@ mod tests {
     }
 
     /// CBOR recognized by its content, not its name: the path alone reserves a
-    /// byte view, and the backend's classification re-reserves it as the CBOR
-    /// code tab its content warrants.
+    /// code tab, whose document the session sniffs and decodes as CBOR; a
+    /// classification that says CBOR reserves the same CBOR code tab.
     #[test]
-    fn cbor_sniffed_from_content_is_reserved_as_cbor_once_classified() {
+    fn cbor_sniffed_from_content_is_reserved_as_an_editable_document() {
         let file = Path::new("/elsewhere/payload");
-        assert!(!matches!(Tab::open(file).kind, TabKind::Code { .. }));
+        assert!(matches!(Tab::open(file).kind, TabKind::Code { .. }));
         let tab = reserve(file, FileKind::Cbor);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
         assert_eq!(tab.status_label(), "CBOR");
@@ -558,12 +564,12 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         ));
     }
 
+    /// A name that says nothing about binary content reserves a document: the
+    /// session answers `NotUtf8` for bytes that are not text, and the app turns
+    /// the tab into the hex view then.
     #[test]
-    fn opens_binary_as_hex_tab() {
-        let dir = temp_dir();
-        let file = dir.path.join("blob.bin");
-        let _ = std::fs::write(&file, [0u8, 1, 2, 3]);
-        let tab = Tab::open(&file);
-        assert!(matches!(tab.kind, TabKind::Hex { .. }));
+    fn an_opaque_name_reserves_a_document_for_the_session_to_judge() {
+        let tab = Tab::open(Path::new("/elsewhere/blob.bin"));
+        assert!(matches!(tab.kind, TabKind::Code { doc: None, .. }));
     }
 }

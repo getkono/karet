@@ -530,4 +530,79 @@ mod tests {
         assert!(!walked(Path::new("node_modules/x/index.js")));
         assert!(!walked(Path::new("src/.cache/x")));
     }
+
+    /// An index whose walks are the backend's, for a root on another machine.
+    fn remote_index() -> FileIndex {
+        let mut index = FileIndex::new(PathBuf::from("/remote/repo"));
+        index.walk_through_backend();
+        index
+    }
+
+    /// A remote workspace is walked by asking, once per walk due, and never
+    /// on a thread here: there is nothing on this disk to walk.
+    #[test]
+    fn a_backend_walk_is_requested_once_and_adopted_from_the_listing() {
+        let mut index = remote_index();
+        let mut rx = index.take_receiver().expect("receiver");
+        index.ensure_started();
+        assert!(
+            index.loading().is_some(),
+            "the first walk is a loading state"
+        );
+        assert_eq!(
+            index.take_walk_request(),
+            Some(PathBuf::from("/remote/repo"))
+        );
+        assert_eq!(index.take_walk_request(), None, "asked for once");
+        assert!(index.accept_listing(vec![
+            PathBuf::from("/remote/repo/src/b.rs"),
+            PathBuf::from("/remote/repo/a.rs"),
+        ]));
+        assert_eq!(displays(&index), ["a.rs", "src/b.rs"]);
+        assert!(index.loading().is_none());
+        assert!(rx.try_recv().is_err(), "no local walk ran");
+    }
+
+    /// A change this machine cannot probe: a path the list lacks asks for a
+    /// walk, and one it already lists does not.
+    #[test]
+    fn a_remote_change_walks_only_for_a_path_the_list_lacks() {
+        let mut index = remote_index();
+        index.ensure_started();
+        let _ = index.take_walk_request();
+        index.accept_listing(vec![PathBuf::from("/remote/repo/a.rs")]);
+
+        assert!(!index.on_fs_changed(&[PathBuf::from("/remote/repo/a.rs")]));
+        assert_eq!(index.take_walk_request(), None, "an edit walks nothing");
+
+        index.on_fs_changed(&[PathBuf::from("/remote/repo/new.rs")]);
+        assert_eq!(
+            index.take_walk_request(),
+            Some(PathBuf::from("/remote/repo")),
+            "a new path walks again"
+        );
+    }
+
+    /// The backend names its workspace on attach; the old root's list is gone
+    /// and the new one is walked at once when the old was already asked for.
+    #[test]
+    fn retargeting_drops_the_old_list_and_walks_the_new_root() {
+        let mut index = remote_index();
+        index.ensure_started();
+        let _ = index.take_walk_request();
+        index.accept_listing(vec![PathBuf::from("/remote/repo/a.rs")]);
+
+        index.retarget(PathBuf::from("/remote/other"));
+
+        assert!(displays(&index).is_empty());
+        assert_eq!(
+            index.take_walk_request(),
+            Some(PathBuf::from("/remote/other"))
+        );
+        // A late answer for the old root is not this root's list.
+        assert!(!index.accept(Scan {
+            root: PathBuf::from("/remote/repo"),
+            files: Vec::new(),
+        }));
+    }
 }
