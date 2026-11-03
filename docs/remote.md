@@ -74,10 +74,12 @@ additive rather than a rewrite: `crates/karet/src/ui/**` needed no changes.
 Three properties keep the steady state small:
 
 - **Highlights are viewport-scoped.** A view resolves them per rendered line, so
-  it reads spans only for the lines it shows: its window, and the sticky-scroll
+  it paints spans only for the lines it shows: its window, and the sticky-scroll
   headers of the blocks it is inside. `DocumentCommand::SetViewport` bounds them
   to the visible window plus a 200-line margin (and those headers, however far
-  above it they are). A scroll that stays inside the window last published
+  above it they are). Bracket matching reads further: up to 10,000 lines past
+  the view it asks whether a bracket sits in a string or comment, so the string
+  and comment spans that contain a bracket travel within that reach too. A scroll that stays inside the window last published
   republishes nothing, so an ordinary scroll needs no round trip at all, and
   `DocumentCommand::ClearViewport` withdraws a closed view's range. Only a
   client of a remote backend declares viewports; a local session keeps

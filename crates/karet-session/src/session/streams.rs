@@ -31,9 +31,11 @@ impl Session {
 
     /// The highlight spans a snapshot of `doc` should carry.
     ///
-    /// A view resolves highlights per rendered line, so it reads spans only for
+    /// A view paints highlights per rendered line, so it needs spans only for
     /// the lines it displays — its viewport, and the sticky-scroll headers of the
-    /// blocks it is inside, which can sit any distance above it. When a client
+    /// blocks it is inside, which can sit any distance above it — plus, within
+    /// bracket matching's reach, the string and comment spans that hide a
+    /// bracket. When a client
     /// has declared a viewport, narrowing to those lines is what keeps the
     /// answer to a keystroke about a screenful rather than a whole file's worth
     /// of spans — the difference between a usable and an unusable connection
@@ -101,6 +103,28 @@ fn narrow_highlights(
         .filter_map(|block| lines(block.header_start, block.header_end.min(first)))
         .flat_map(|header| highlights.spans_in(header).iter().copied())
         .collect();
+    // The editor's bracket matcher and depth colouring scan up to
+    // `BRACKET_REACH` lines past the lines on screen, and read the spans there
+    // to tell a bracket in a string or comment from one in code. Only the
+    // spans that hide a bracket change that answer, so only those travel.
+    if let Some(reach) = lines(
+        first.saturating_sub(BRACKET_REACH),
+        last.saturating_add(BRACKET_REACH),
+    ) {
+        spans.extend(
+            highlights
+                .spans_in(reach)
+                .iter()
+                .filter(|span| {
+                    (span.span.end <= window.start || span.span.start >= window.end)
+                        && hides_brackets(span.token)
+                        && buffer
+                            .slice(span.span)
+                            .is_some_and(|text| text.contains(['(', ')', '[', ']', '{', '}']))
+                })
+                .copied(),
+        );
+    }
     if spans.is_empty() {
         return highlights.spans_in(window).to_vec();
     }
@@ -109,6 +133,26 @@ fn narrow_highlights(
     spans.sort_by_key(|span| (span.span.start, span.span.end));
     spans.dedup();
     spans
+}
+
+/// How many lines past a view the editor's bracket matching reads highlights
+/// (`karet_editor`'s `SCAN_LINES`).
+const BRACKET_REACH: u32 = 10_000;
+
+/// Whether `token` marks text whose brackets are not code, as the editor's
+/// bracket matching reads it: strings and comments.
+fn hides_brackets(token: karet_core::TokenId) -> bool {
+    use karet_core::StandardToken;
+
+    [
+        StandardToken::String,
+        StandardToken::StringEscape,
+        StandardToken::Comment,
+        StandardToken::CommentDoc,
+        StandardToken::CommentMark,
+    ]
+    .iter()
+    .any(|hiding| hiding.id() == token)
 }
 
 #[cfg(test)]
@@ -185,5 +229,43 @@ mod tests {
         let narrowed = narrow_highlights(&highlights, &buffer, (400, 402), &blocks);
 
         assert_eq!(lines_of(&narrowed), vec![10, 11, 400, 401, 402]);
+    }
+
+    /// Bracket matching reads, up to `BRACKET_REACH` lines past the view,
+    /// whether a bracket sits in a string or comment. A comment hiding a
+    /// bracket within that reach travels with the window; one hiding none, and
+    /// one beyond the reach, do not.
+    #[test]
+    fn narrowing_keeps_the_spans_that_hide_brackets_within_reach() {
+        let beyond = 402 + BRACKET_REACH as usize + 50;
+        let text: String = (0..beyond + 1)
+            .map(|line| match line {
+                5 => "// (\n",
+                6 => "// x\n",
+                l if l == beyond => "// )\n",
+                _ => "fn x\n",
+            })
+            .collect();
+        let buffer = karet_text::TextBuffer::from_text(&text);
+        let comment = |line: usize| HighlightSpan {
+            span: Span::new(BytePos(line * 5), BytePos(line * 5 + 4)),
+            token: karet_core::StandardToken::Comment.id(),
+        };
+        let keyword = |line: usize| HighlightSpan {
+            span: Span::new(BytePos(line * 5), BytePos(line * 5 + 2)),
+            token: TokenId::KEYWORD,
+        };
+        let highlights = Highlights::from_sorted_spans(vec![
+            comment(5),
+            comment(6),
+            keyword(400),
+            keyword(401),
+            keyword(402),
+            comment(beyond),
+        ]);
+
+        let narrowed = narrow_highlights(&highlights, &buffer, (400, 402), &no_blocks());
+
+        assert_eq!(lines_of(&narrowed), vec![5, 400, 401, 402]);
     }
 }
