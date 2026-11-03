@@ -58,6 +58,7 @@ mod multi_caret_edit;
 mod multi_click;
 mod occurrences;
 mod open_fill;
+mod open_inflight;
 mod open_routing;
 mod open_seam;
 mod overlay_focus;

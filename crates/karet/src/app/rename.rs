@@ -336,6 +336,7 @@ impl App {
                     tab.retarget(&path);
                 }
             }
+            self.retarget_content_requests(from, to);
         }
         for (doc, path) in &applied.opened {
             let target = canonical(path);

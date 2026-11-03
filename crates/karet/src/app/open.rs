@@ -65,18 +65,20 @@ fn is_unregistered(tab: &crate::tab::Tab, path: &Path) -> bool {
 }
 
 /// Whether `tab` is still waiting for its content: a byte view with no bytes, a
-/// placeholder, a code tab with no document, or a conversion preview not yet
-/// answered. Only these are replaced when content or a verdict arrives; a tab
-/// already showing the file is left alone.
+/// placeholder, or a code tab or conversion preview still waiting on the size
+/// guard. Only these are replaced when content or a verdict arrives; a tab
+/// already showing the file is left alone, and so is a code tab or preview
+/// whose content is already asked for (an "open anyway" among them), since a
+/// verdict on the file says nothing it has not settled.
 fn is_reservation(tab: &crate::tab::Tab) -> bool {
     match &tab.kind {
         TabKind::Hex { bytes, .. } => bytes.is_empty(),
-        TabKind::Placeholder { .. }
-        | TabKind::Code { doc: None, .. }
+        TabKind::Placeholder { .. } => true,
+        TabKind::Code { doc: None, .. }
         | TabKind::MarkdownPreview {
             pending_since: Some(_),
             ..
-        } => true,
+        } => tab.size_unchecked,
         _ => false,
     }
 }
@@ -175,6 +177,57 @@ impl App {
         self.pending_bytes.retain(|_, pending| pending.path != path);
     }
 
+    /// Carry the content requests in flight under `from` to where a move put
+    /// them, once the tabs have been retargeted to `to`.
+    ///
+    /// The backend answers each request with the path it was asked about, which
+    /// no tab shows any more, so the answers are dropped; left at that, a tab
+    /// retargeted mid-read would wait for them for ever. They are forgotten and
+    /// asked again under the new path for any tab still waiting.
+    pub(super) fn retarget_content_requests(&mut self, from: &Path, to: &Path) {
+        let rebase = |path: &Path| crate::paths::rebase_path(path, from, to);
+        // A read keeps the renderer it was for: the classification behind it is
+        // already settled (and a not-UTF-8 fallback was never classified).
+        let mut reads: Vec<(PathBuf, FileKind)> = self
+            .pending_bytes
+            .values()
+            .filter_map(|pending| Some((rebase(&pending.path)?, pending.kind)))
+            .collect();
+        reads.dedup_by(|a, b| a.0 == b.0);
+        let mut classified: Vec<PathBuf> = self
+            .pending_classify
+            .values()
+            .filter_map(|path| rebase(path))
+            .collect();
+        classified.sort();
+        classified.dedup();
+        self.pending_classify
+            .retain(|_, path| rebase(path).is_none());
+        self.pending_bytes
+            .retain(|_, pending| rebase(&pending.path).is_none());
+        for (path, kind) in reads {
+            self.request_bytes(&path, kind, 0);
+        }
+        for path in classified {
+            if self.awaits_bytes(&path) {
+                self.request_content(&path);
+            }
+        }
+    }
+
+    /// Forget the guarded classifications in flight for `path`, for "open
+    /// anyway": their "too large" would otherwise put the placeholder back over
+    /// the tab the user chose to open. A tab in another pane still waiting on
+    /// the guard for the same path asked for one of them, so a fresh guarded
+    /// classification is sent for it; its answer replaces only tabs still
+    /// waiting, never the one opened anyway.
+    pub(super) fn forget_guarded_classifications(&mut self, path: &Path) {
+        self.pending_classify.retain(|_, pending| pending != path);
+        if self.any_tab(|tab| size_waiting(tab, path)) {
+            self.request_classification(path, false);
+        }
+    }
+
     /// Ask the backend what `path` really is, so a reserved tab can be corrected.
     ///
     /// Cheap and always worth sending: the answer either confirms the guess (and
@@ -228,18 +281,20 @@ impl App {
         // over it, or not what the name said after all, the tab becomes what
         // the bytes say.
         if self.any_tab(|tab| size_waiting(tab, path)) {
-            self.for_each_tab(|tab| {
-                if size_waiting(tab, path) {
-                    tab.size_unchecked = false;
-                }
-            });
             let converted = open::is_converted_kind(class.kind);
             if open::is_text_kind(class.kind)
                 || (converted && open::kind_from_path(path) == class.kind)
             {
+                self.for_each_tab(|tab| {
+                    if size_waiting(tab, path) {
+                        tab.size_unchecked = false;
+                    }
+                });
                 self.register_unregistered(path);
                 return;
             }
+            // Only the tabs still waiting on the guard are reservations among
+            // the code tabs and previews; one already opened (anyway) is not.
             self.replace_tab_for(path, || open::reserve(path, class.kind, class.len));
             if open::needs_bytes(class.kind) {
                 self.request_bytes(path, class.kind, 0);
