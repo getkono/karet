@@ -465,6 +465,25 @@ impl From<StartupPanelChoice> for StartupPanel {
 }
 
 impl Cli {
+    /// The first flag given that names a path on this machine (the positional
+    /// path, `--open`, `--preview`, `--split`, `--goto`, `--diff`), as the
+    /// user would recognise it; `None` when there is none.
+    ///
+    /// A client run cannot honour these: the workspace is on another machine.
+    #[must_use]
+    pub fn local_path_flag(&self) -> Option<&'static str> {
+        [
+            (self.path.is_some(), "a PATH argument"),
+            (!self.open.is_empty(), "--open"),
+            (self.preview.is_some(), "--preview"),
+            (!self.split.is_empty(), "--split"),
+            (self.goto.is_some(), "--goto"),
+            (!self.diff.is_empty(), "--diff"),
+        ]
+        .into_iter()
+        .find_map(|(given, flag)| given.then_some(flag))
+    }
+
     /// Resolve the `--capture*` flags into a [`CaptureSpec`], filling every unset
     /// flag from the `CAPTURE_DEFAULT_*` constants.
     ///
@@ -532,6 +551,25 @@ mod tests {
     fn doctor_defaults_to_off() -> Result<(), clap::Error> {
         let cli = Cli::try_parse_from(["karet"])?;
         assert!(!cli.doctor);
+        Ok(())
+    }
+
+    /// A client run refuses paths that would be read on the wrong machine, and
+    /// names the flag that gave one.
+    #[test]
+    fn local_path_flags_are_named_and_absent_without_any() -> Result<(), clap::Error> {
+        let bare = Cli::try_parse_from(["karet", "--client-exec", "ssh host karet --serve"])?;
+        assert_eq!(bare.local_path_flag(), None);
+
+        let cases: [(&[&str], &str); 4] = [
+            (&["karet", "notes.md"], "a PATH argument"),
+            (&["karet", "--open", "a.rs"], "--open"),
+            (&["karet", "--goto", "a.rs:3"], "--goto"),
+            (&["karet", "--diff", "a", "b"], "--diff"),
+        ];
+        for (args, flag) in cases {
+            assert_eq!(Cli::try_parse_from(args)?.local_path_flag(), Some(flag));
+        }
         Ok(())
     }
 

@@ -40,7 +40,6 @@
 //! The kmux side of this is tracked at
 //! <https://github.com/getkono/kmux/issues/201>.
 
-use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 
@@ -77,30 +76,41 @@ pub(crate) struct Channel {
 
 /// Ask kmux to host `karet --client` on the user's machine and forward a channel.
 ///
+/// The command ends at `--client` with no value: `--client` takes the socket the
+/// client connects to, and only kmux knows the client-side end of the channel
+/// it forwards, so revision 1 of the contract has kmux append that path as the
+/// final argument. The workspace is not passed at all; the backend announces
+/// its root when the client attaches.
+///
 /// `None` whenever a split is not available, which is the common case today and
 /// always a fine one.
-pub(crate) fn request_split(root: &Path) -> Option<Channel> {
+pub(crate) fn request_split() -> Option<Channel> {
     let pane = std::env::var(PANE).ok()?;
     if !declares_split_app(std::env::var(SPLIT_APP).ok().as_deref()) {
         tracing::debug!("kmux declares no split-app contract this build speaks; running locally");
         return None;
     }
-    let endpoint = run_kmux(&[
-        "split-app",
-        "--pane",
-        &pane,
-        "--protocol",
-        PROTOCOL,
-        "--",
-        "karet",
-        "--client",
-        &root.display().to_string(),
-    ])?;
+    let endpoint = run_kmux(&split_app_args(&pane))?;
     let endpoint = std::path::PathBuf::from(endpoint.trim());
     if endpoint.as_os_str().is_empty() {
         return None;
     }
     Some(Channel { endpoint })
+}
+
+/// The `kmux split-app` arguments for `pane`, ending at the `--client` flag
+/// whose socket kmux appends.
+fn split_app_args(pane: &str) -> Vec<&str> {
+    vec![
+        "split-app",
+        "--pane",
+        pane,
+        "--protocol",
+        PROTOCOL,
+        "--",
+        "karet",
+        "--client",
+    ]
 }
 
 /// Whether `declared` names a split-app contract revision this build speaks.
@@ -198,6 +208,17 @@ mod tests {
             return; // running inside a real kmux pane; nothing to assert
         }
 
-        assert!(request_split(Path::new("/tmp")).is_none());
+        assert!(request_split().is_none());
+    }
+
+    /// `--client` takes a socket path. The hosted command must leave its value
+    /// to kmux, which alone knows the client-side end of the channel; a
+    /// workspace path there would have the client connect to a directory.
+    #[test]
+    fn the_hosted_client_command_leaves_its_socket_to_kmux() {
+        let args = split_app_args("pane-1");
+
+        assert_eq!(args.last(), Some(&"--client"));
+        assert_eq!(args.iter().filter(|arg| **arg == "--client").count(), 1);
     }
 }

@@ -89,7 +89,22 @@ fn main() -> color_eyre::Result<()> {
     // Decide the process's shape before anything is built. A backend draws no
     // editor and needs no tabs, and while it runs nothing but the protocol may
     // reach stdout — so this cannot wait until after the startup flags.
-    let mode = split::resolve(&cli, &root);
+    let mode = split::resolve(&cli);
+    let client = matches!(
+        mode,
+        split::Mode::ClientSocket(_) | split::Mode::ClientExec(_)
+    );
+    // A client renders a workspace on another machine, so a path given here
+    // names nothing there: it would be resolved and read against this
+    // machine's working directory and then sent to the backend. Refuse it
+    // before the terminal is taken, rather than open the wrong file.
+    if client && let Some(flag) = cli.local_path_flag() {
+        eprintln!(
+            "karet: {flag} names a file on this machine, but the workspace is on the \
+             backend's; open files from the editor once it attaches"
+        );
+        std::process::exit(2);
+    }
 
     // Load the layered JSONC configuration for this workspace (project/user/system,
     // over sane defaults). Diagnostics are handed to the app to surface as startup
@@ -210,6 +225,9 @@ fn main() -> color_eyre::Result<()> {
     } else if let Some(preview) = cli.preview.as_ref() {
         app.open_initial_preview(&resolve_under_root(&root, preview));
     } else if cli.open.is_empty()
+        // A client's working directory is not the workspace, so a README found
+        // here is this machine's, not the project's.
+        && !client
         && let Some(readme) = startup_readme(&root)
     {
         app.open_initial_preview(&readme);

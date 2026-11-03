@@ -22,7 +22,6 @@
 //! That last case is the important one: every path here degrades to today's
 //! behaviour rather than failing. A split is an optimization, never a requirement.
 
-use std::path::Path;
 use std::path::PathBuf;
 
 pub(crate) mod client;
@@ -71,7 +70,7 @@ pub(crate) fn serve_config(
 /// Decide how to run, given the flags and the surrounding environment.
 ///
 /// Explicit flags win, then a multiplexer that can host a client, then local.
-pub(crate) fn resolve(cli: &crate::cli::Cli, root: &Path) -> Mode {
+pub(crate) fn resolve(cli: &crate::cli::Cli) -> Mode {
     if cli.serve {
         return Mode::Serve;
     }
@@ -89,7 +88,7 @@ pub(crate) fn resolve(cli: &crate::cli::Cli, root: &Path) -> Mode {
     if cli.capture || cli.doctor || cli.seam_query.is_some() {
         return Mode::Local;
     }
-    match kmux::request_split(root) {
+    match kmux::request_split() {
         Some(channel) => Mode::Forwarded(channel),
         None => Mode::Local,
     }
