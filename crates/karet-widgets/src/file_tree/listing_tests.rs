@@ -172,6 +172,35 @@ fn a_new_tree_shows_hidden_entries_and_respects_gitignore() {
     assert!(state.respect_gitignore());
 }
 
+/// A folder a fresh listing of its parent no longer holds is gone: what the
+/// tree held beneath it, and its expansion, go with it, so a folder of the
+/// same name made later is read afresh and opens closed.
+#[test]
+fn a_folder_its_parent_no_longer_lists_is_forgotten_with_its_expansion() {
+    let mut state = FileTreeState::new();
+    state.supply(PathBuf::from("/w"), vec![dir("/w/gone"), dir("/w/kept")]);
+    state.supply(PathBuf::from("/w/gone"), vec![file("/w/gone/old.rs")]);
+    state.supply(PathBuf::from("/w/kept"), vec![file("/w/kept/k.rs")]);
+    state.expand(Path::new("/w/gone"));
+    state.expand(Path::new("/w/kept"));
+
+    state.supply(PathBuf::from("/w"), vec![dir("/w/kept")]);
+
+    assert!(!state.has_listing(Path::new("/w/gone")));
+    assert!(state.has_listing(Path::new("/w/kept")));
+    state.supply(PathBuf::from("/w"), vec![dir("/w/gone"), dir("/w/kept")]);
+    state.ensure_built(Path::new("/w"));
+    assert_eq!(
+        row_paths(&state),
+        vec![
+            PathBuf::from("/w/gone"),
+            PathBuf::from("/w/kept"),
+            PathBuf::from("/w/kept/k.rs"),
+        ],
+        "the recreated folder is closed and the kept one still open"
+    );
+}
+
 /// An inline create is answered by a later listing, and the rebuilds drawn
 /// before it cannot find the new row; the cursor lands on it once a listing
 /// shows it, rather than staying wherever it clamped meanwhile.

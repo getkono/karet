@@ -712,8 +712,27 @@ impl FileTreeState {
     /// Marks the tree for rebuild, so the rows appear on the next frame. A
     /// listing that replaces an earlier one simply wins: the newest answer is
     /// always the truest.
+    ///
+    /// A subdirectory the new listing no longer holds as a directory is gone:
+    /// the listings held beneath it, and its expansion, are dropped, so a
+    /// folder of the same name created later is read afresh and opens closed
+    /// rather than showing the deleted one's children.
     pub fn supply(&mut self, dir: PathBuf, mut children: Vec<DirEntry>) {
         karet_core::sort_entries(&mut children);
+        let present: BTreeSet<&Path> = children
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.path.as_path())
+            .collect();
+        let gone = |path: &Path| {
+            path.strip_prefix(&dir)
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .is_some_and(|child| !present.contains(dir.join(child).as_path()))
+        };
+        self.listings.retain(|path, _| !gone(path));
+        self.expanded.retain(|path| !gone(path));
+        self.stale.retain(|path| !gone(path));
         self.missing.remove(&dir);
         self.listings.insert(dir, children);
         self.needs_rebuild = true;

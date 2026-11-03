@@ -621,7 +621,10 @@ fn keep_path(
             return is_interesting_git_meta(rel);
         }
     }
-    roots.iter().any(|root| path_is_within(path, root)) && !is_ignored(path)
+    // An ignored directory's own appearance or removal is surfaced -- the
+    // directory holding it lists one entry more or fewer -- but nothing inside
+    // it is.
+    roots.iter().any(|root| path_is_within(path, root)) && !path.parent().is_some_and(is_ignored)
 }
 
 /// Compare paths through the nearest existing ancestor as well as lexically. On
