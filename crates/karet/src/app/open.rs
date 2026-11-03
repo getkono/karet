@@ -158,6 +158,16 @@ impl App {
         self.request_classification(path, false);
     }
 
+    /// Abandon every classification and read in flight for `path`, so the next
+    /// [`request_content`](Self::request_content) starts from the beginning
+    /// rather than leaving a request about the file as it used to be to finish.
+    /// Their answers arrive for requests this shell has forgotten and are
+    /// dropped.
+    pub(super) fn forget_content_requests(&mut self, path: &Path) {
+        self.pending_classify.retain(|_, pending| pending != path);
+        self.pending_bytes.retain(|_, pending| pending.path != path);
+    }
+
     /// Ask the backend what `path` really is, so a reserved tab can be corrected.
     ///
     /// Cheap and always worth sending: the answer either confirms the guess (and

@@ -267,6 +267,53 @@ fn a_guarded_verdict_landing_after_open_anyway_keeps_the_opened_tab() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A rebuild rewrites the PDF while a read of the previous one may still be
+/// streaming. That read is abandoned and the new preview reads the file from the
+/// start, rather than being left to finish with the old and new bytes spliced.
+#[test]
+fn a_latex_rebuild_restarts_a_read_of_the_previous_pdf() {
+    let dir = test_dir("latex-rebuild-read");
+    write_file(&dir, "main.pdf", b"%PDF-1.7 rebuilt");
+    let pdf = dir.join("main.pdf");
+    let (backend, mut app) = local_app(&dir);
+    app.push_tab(text_tab("main.tex", "x"));
+    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+        *doc = Some(DocumentId(14));
+    }
+    app.dispatch(Command::LatexBuildPreview);
+    let request = app.latex_previews.keys().next().copied();
+    let stale = RequestId(9_999);
+    app.pending_bytes.insert(
+        stale,
+        crate::app::open::PendingBytes {
+            path: pdf.clone(),
+            kind: FileKind::Pdf,
+            bytes: b"%PDF-1.7 previous build, first chunk".to_vec(),
+        },
+    );
+
+    app.on_backend_event(
+        request,
+        SessionEvent::LatexBuildFinished {
+            doc: DocumentId(14),
+            root: PathBuf::from("main.tex"),
+            pdf: Some(pdf.clone()),
+            diagnostics: Vec::new(),
+            error: None,
+        },
+    );
+
+    assert!(!app.pending_bytes.contains_key(&stale));
+    let restarted = sent(&backend).into_iter().any(|(_, command)| {
+        matches!(
+            command,
+            SessionCommand::Workspace(WorkspaceCommand::ClassifyPath { path, .. }) if path == pdf
+        )
+    });
+    assert!(restarted, "the new preview asks for the file afresh");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A media reservation loads quietly: it carries the loading anchor rather than
 /// rendering as the placeholder an unreadable file settles at.
 #[cfg(feature = "images")]
