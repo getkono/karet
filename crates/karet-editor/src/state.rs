@@ -116,6 +116,9 @@ pub struct EditorState {
     /// measurements re-measure a line only after the buffer or geometry
     /// changed.
     pub(super) extents: ExtentCache,
+    /// Each soft-wrapped line's rows, so walking a long line's rows wraps it
+    /// once until the next edit or geometry change.
+    pub(super) wraps: WrapCache,
     /// The heads placed at the end of a wrapped row rather than the start of
     /// the next: that position is also where the next row starts, and these
     /// are drawn at the end of the row they were placed on. A pointer sets it
@@ -157,6 +160,7 @@ impl Default for EditorState {
             follow_col: None,
             last_longest_col: 0,
             extents: ExtentCache::default(),
+            wraps: WrapCache::default(),
             upstream: Vec::new(),
             goals: None,
             pointer_upstream: Cell::new(None),
@@ -357,6 +361,7 @@ impl EditorState {
             wrap,
             wrap_column: self.frame.wrap_column,
             wrapping_indent: self.frame.wrapping_indent,
+            wraps: &self.wraps,
         }
     }
 
@@ -547,7 +552,7 @@ impl EditorState {
     /// hidden in a collapsed fold are left out, so the result is bounded by
     /// the area rather than the line. Use it instead of one `screen_cell`
     /// call per column when many columns of one line are wanted: each of
-    /// those re-measures the whole line.
+    /// those re-measures the line up to its column.
     #[must_use]
     pub fn line_cells(
         &self,

@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use karet_core::HighlightSpan;
 use karet_core::LineCol;
 use karet_core::Range;
@@ -12,7 +16,10 @@ use karet_theme::Theme;
 use ratatui::style::Style;
 
 use super::hint::LineHints;
+use super::visual::Layout;
+use super::visual::VisualRange;
 use crate::Fold;
+use crate::WrappingIndent;
 use crate::cluster_widths;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
@@ -208,6 +215,105 @@ impl ExtentCache {
                 LineHints::default(),
             )
         })
+    }
+}
+
+/// What a [`WrapCache`] was measured against: the buffer content (its edit
+/// version, line count and byte length), the wrap width, the tab width and
+/// the continuation indent. A line's inline hints are checked per entry.
+type WrapKey = (u64, usize, usize, u32, u16, WrappingIndent);
+
+/// The most lines a [`WrapCache`] holds before it starts over, so scrolling
+/// through a long document does not keep every line's rows alive.
+const WRAP_CACHE_LINES: usize = 4096;
+
+/// One line's soft-wrapped rows, and the `(column, cells)` of the inline
+/// hints they were measured around.
+#[derive(Clone, Debug)]
+struct WrapEntry {
+    hints: Vec<(u32, u32)>,
+    rows: Arc<[VisualRange]>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WrapMemo {
+    key: Option<WrapKey>,
+    lines: HashMap<u32, WrapEntry>,
+    /// How many lines were wrapped rather than found, for tests that bound
+    /// the work a long line costs.
+    #[cfg(test)]
+    measured: u32,
+}
+
+/// Each soft-wrapped line's rows, measured once per buffer content, wrap
+/// geometry and set of hints on the line.
+///
+/// Painting, caret placement, hit-testing and vertical motion all walk the
+/// viewport a row at a time, and every step asks for the rows of the line it
+/// is on. Wrapping per step made a long wrapped line (minified code, a log
+/// line) cost its whole length per visible row and per call; remembered, a
+/// step costs a lookup until the next edit or geometry change. A `RefCell`
+/// because the walks are `&self`.
+#[derive(Clone, Debug, Default)]
+pub(super) struct WrapCache {
+    memo: RefCell<WrapMemo>,
+}
+
+impl WrapCache {
+    /// The rows of `line`, from the cache when they were measured against
+    /// the same content, geometry and hints; else wrapped by `wrap` and kept.
+    pub(super) fn rows(
+        &self,
+        buffer: &TextBuffer,
+        line: u32,
+        layout: Layout<'_>,
+        wrap: impl FnOnce() -> Vec<VisualRange>,
+    ) -> Arc<[VisualRange]> {
+        let hints = layout.hints_on(line);
+        // Re-entered only if `wrap` reached back here, which it does not;
+        // measuring uncached is still right if it ever did.
+        let Ok(mut memo) = self.memo.try_borrow_mut() else {
+            return wrap().into();
+        };
+        let key = (
+            buffer.version(),
+            buffer.line_count(),
+            buffer.len_bytes(),
+            layout.wrap_width(),
+            layout.tab_width,
+            layout.wrapping_indent,
+        );
+        if memo.key != Some(key) {
+            memo.key = Some(key);
+            memo.lines.clear();
+        }
+        if let Some(entry) = memo.lines.get(&line)
+            && entry.hints.iter().copied().eq(hints.cells())
+        {
+            return Arc::clone(&entry.rows);
+        }
+        #[cfg(test)]
+        {
+            memo.measured = memo.measured.saturating_add(1);
+        }
+        let rows: Arc<[VisualRange]> = wrap().into();
+        if memo.lines.len() >= WRAP_CACHE_LINES {
+            memo.lines.clear();
+        }
+        memo.lines.insert(
+            line,
+            WrapEntry {
+                hints: hints.cells().collect(),
+                rows: Arc::clone(&rows),
+            },
+        );
+        rows
+    }
+
+    /// How many lines this cache has wrapped rather than found.
+    #[cfg(test)]
+    pub(super) fn measured(&self) -> u32 {
+        self.memo.try_borrow().map_or(0, |memo| memo.measured)
     }
 }
 

@@ -654,6 +654,9 @@ impl StatefulWidget for Editor<'_> {
         // borrows them while the loop is still assigning scroll positions.
         let hint_index = HintIndex::new(self.virtual_text);
         let block_index = BlockIndex::new(self.virtual_lines);
+        // Taken out of `state` for the frame, which mutates `state` while
+        // `layout` is borrowed, and handed back once the rows are painted.
+        let wraps = std::mem::take(&mut state.wraps);
         let layout = Layout {
             width,
             tab_width: self.tab_width,
@@ -663,6 +666,7 @@ impl StatefulWidget for Editor<'_> {
             wrap: self.word_wrap,
             wrap_column,
             wrapping_indent: self.wrapping_indent,
+            wraps: &wraps,
         };
         state.clamp_scroll_to_frame(self.buffer, layout);
         let mut anchor =
@@ -901,6 +905,7 @@ impl StatefulWidget for Editor<'_> {
             }
             anchor = next;
         }
+        state.wraps = wraps;
         state.record_frame(FrameGeometry {
             height,
             content_width,

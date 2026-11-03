@@ -206,6 +206,145 @@ fn a_deep_continuation_of_a_wrapped_long_line_paints_its_slice() {
     assert_eq!(row(&target, 1), format!("   {}", &text[1_717..1_734]));
 }
 
+/// Renders `buffer` soft-wrapped into `area` with `hints`.
+fn render_wrapped(
+    buffer: &TextBuffer,
+    state: &mut EditorState,
+    area: Rect,
+    hints: &[VirtualText],
+) -> Buffer {
+    let mut target = Buffer::empty(area);
+    Editor::new(buffer)
+        .word_wrap(true)
+        .virtual_text(hints)
+        .render(area, &mut target, state);
+    target
+}
+
+#[test]
+fn a_wrapped_long_line_is_wrapped_once_however_often_its_rows_are_walked() {
+    // About 10 KB on one line, seventeen chars to a row: re-wrapping it per
+    // row walked, as every frame row, caret lookup and motion step once did,
+    // cost the whole line each time.
+    let text = alphabet(10_000);
+    let buffer = TextBuffer::from_text(&text);
+    let mut state = EditorState::new();
+    state.scroll_subrow = 300;
+    let area = Rect::new(0, 0, 20, 10);
+    let target = render_wrapped(&buffer, &mut state, area, &[]);
+    // Row 300 starts at char 5100.
+    assert_eq!(row(&target, 0), format!("   {}", &text[5_100..5_117]));
+    assert_eq!(row(&target, 9), format!("   {}", &text[5_253..5_270]));
+
+    for (offset, y) in [(0_u32, 0_u16), (39, 2), (152, 8), (169, 9)] {
+        let at = LineCol::new(0, 5_100 + offset);
+        let x = 3 + u16::try_from(offset % 17).unwrap_or(0);
+        assert_eq!(state.screen_cell(area, &buffer, &[], at), Some((x, y)));
+    }
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], LineCol::new(0, 9_000)),
+        None,
+        "below the viewport"
+    );
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], 8, 2),
+        LineCol::new(0, 5_139)
+    );
+    let cells = state.line_cells(area, &buffer, &[], 0);
+    assert_eq!(cells.len(), 170, "ten rows of seventeen");
+    assert_eq!(cells.first(), Some(&(5_100, 3, 0)));
+    state.set_caret(&buffer, LineCol::new(0, 5_140));
+    state.move_carets(&buffer, Motion::Down, false);
+    assert_eq!(state.cursor(), LineCol::new(0, 5_157));
+    render_wrapped(&buffer, &mut state, area, &[]);
+
+    assert_eq!(state.wraps.measured(), 1, "one wrap for every walk");
+}
+
+#[test]
+fn the_wrap_cache_measures_again_after_an_edit_or_a_new_hint() {
+    let mut buffer = TextBuffer::from_text(&alphabet(1_000));
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 20, 4);
+    render_wrapped(&buffer, &mut state, area, &[]);
+    assert_eq!(state.wraps.measured(), 1);
+
+    // A hint takes cells, so the rows move: the old wrap no longer holds.
+    let hints = [VirtualText::inline(0, 0, "12345", ThemeRole::InlayHint)];
+    let target = render_wrapped(&buffer, &mut state, area, &hints);
+    assert_eq!(state.wraps.measured(), 2);
+    assert_eq!(row(&target, 0), format!(" 1 12345{}", &alphabet(12)));
+    assert_eq!(row(&target, 1), format!("   {}", &alphabet(29)[12..]));
+
+    // So does an edit, even one that keeps the line's length.
+    let edit = TextEdit {
+        range: Range {
+            start: LineCol::new(0, 0),
+            end: LineCol::new(0, 3),
+        },
+        new_text: "xyz".to_string(),
+    };
+    assert!(
+        buffer
+            .apply_simple(&Change::new(buffer.version(), vec![edit]))
+            .is_ok()
+    );
+    let target = render_wrapped(&buffer, &mut state, area, &[]);
+    assert_eq!(state.wraps.measured(), 3);
+    assert_eq!(row(&target, 0), format!(" 1 xyz{}", &alphabet(17)[3..]));
+}
+
+#[test]
+fn the_wrap_cache_measures_again_at_a_new_width_tab_width_or_wrapping_indent() {
+    // A tab, then four-letter words: the tab width moves the first row's
+    // break, the wrapping indent the continuation rows', and the pane width
+    // both. Rows break after a row's last blank.
+    let buffer = TextBuffer::from_text("\taaaa bbbb cccc dddd eeee ffff gggg hhhh iiii");
+    let mut state = EditorState::new();
+    let mut render = |width: u16, tab: u16, indent: WrappingIndent| {
+        let area = Rect::new(0, 0, width, 2);
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .tab_width(tab)
+            .wrapping_indent(indent)
+            .render(area, &mut target, &mut state);
+        let rows = [0, 1].map(|y| row(&target, y).trim_end().to_string());
+        (rows, state.wraps.measured())
+    };
+
+    // Seventeen text cells: the tab takes four.
+    let (rows, measured) = render(20, 4, WrappingIndent::None);
+    assert_eq!(measured, 1);
+    assert_eq!(rows, [" 1     aaaa bbbb", "   cccc dddd eeee"]);
+
+    // A wider tab leaves the first row room for one word.
+    let (rows, measured) = render(20, 8, WrappingIndent::None);
+    assert_eq!(measured, 2);
+    assert_eq!(rows, [" 1         aaaa", "   bbbb cccc dddd"]);
+
+    // A pane resized to twenty-seven text cells wraps at the new width.
+    let (rows, measured) = render(30, 8, WrappingIndent::None);
+    assert_eq!(measured, 3);
+    assert_eq!(
+        rows,
+        [" 1         aaaa bbbb cccc", "   dddd eeee ffff gggg hhhh"]
+    );
+
+    // A wrapping indent gives the continuation row's first eight cells to
+    // the line's tab, so it holds one word fewer.
+    let (rows, measured) = render(30, 8, WrappingIndent::Same);
+    assert_eq!(measured, 4);
+    assert_eq!(
+        rows,
+        [" 1         aaaa bbbb cccc", "           dddd eeee ffff"]
+    );
+
+    // The same geometry again is found, not wrapped.
+    let (_, measured) = render(30, 8, WrappingIndent::Same);
+    assert_eq!(measured, 4);
+}
+
 #[test]
 fn the_extent_cache_follows_edits_and_geometry() {
     let mut buffer = TextBuffer::from_text("abc\n\tx\n");
