@@ -219,15 +219,15 @@ mod tests {
     /// A client that has never heard of a document has no replica to delta
     /// against, so the first thing it is told must be the whole text.
     #[test]
-    fn the_first_projection_of_a_document_carries_its_text() {
+    fn the_first_projection_of_a_document_carries_its_text() -> Result<(), &'static str> {
         let mut projection = Projection::default();
 
-        let update = projection.project(DOC, &snapshot(1, "alpha\n"));
+        let update = projection
+            .project(DOC, &snapshot(1, "alpha\n"))
+            .ok_or("a first sight is projected")?;
 
-        let Some(update) = update else {
-            return;
-        };
         assert_eq!(update.text, TextUpdate::Full("alpha\n".to_owned()));
+        Ok(())
     }
 
     /// The steady state. Producers that recomputed nothing share the same `Arc`s,
@@ -253,43 +253,43 @@ mod tests {
     /// The client typed this. Echoing the text back at it would double every
     /// keystroke's cost and, worse, fight its optimistic replica.
     #[test]
-    fn an_edit_the_client_made_is_not_echoed_back() {
+    fn an_edit_the_client_made_is_not_echoed_back() -> Result<(), &'static str> {
         let mut projection = Projection::default();
         let _ = projection.project(DOC, &snapshot(1, "alpha\n"));
         projection.client_reached(DOC, 2);
 
-        let update = projection.project(DOC, &snapshot(2, "omega\n"));
+        let update = projection
+            .project(DOC, &snapshot(2, "omega\n"))
+            .ok_or("the new version is confirmed")?;
 
-        let Some(update) = update else {
-            return;
-        };
         assert_eq!(update.text, TextUpdate::Unchanged);
         assert_eq!(update.version, 2);
+        Ok(())
     }
 
     /// An edit the client did not make — a format, a rename, an undo — has to
     /// reach it, and as an edit rather than a document.
     #[test]
-    fn a_backend_edit_is_sent_as_a_change_not_a_document() {
+    fn a_backend_edit_is_sent_as_a_change_not_a_document() -> Result<(), &'static str> {
         let mut projection = Projection::default();
         let _ = projection.project(DOC, &snapshot(1, "alpha\n"));
 
-        let update = projection.project(DOC, &snapshot(2, "omega\n"));
+        let update = projection
+            .project(DOC, &snapshot(2, "omega\n"))
+            .ok_or("a backend edit is projected")?;
 
-        let Some(update) = update else {
-            return;
-        };
         let TextUpdate::Change(change) = update.text else {
-            return;
+            return Err("a backend edit travels as a change");
         };
         assert_eq!(change.base_version, 1);
         assert_eq!(change.edits.len(), 1);
+        Ok(())
     }
 
     /// A save clears the unsaved marker while touching nothing else. It is
     /// precisely the update a naive "did anything change?" test would drop.
     #[test]
-    fn a_change_of_only_the_dirty_flag_is_still_sent() {
+    fn a_change_of_only_the_dirty_flag_is_still_sent() -> Result<(), &'static str> {
         let mut projection = Projection::default();
         let first = snapshot(1, "alpha\n");
         let _ = projection.project(
@@ -313,47 +313,48 @@ mod tests {
             },
         );
 
-        let Some(update) = update else {
-            return;
-        };
+        let update = update.ok_or("a cleared dirty flag is sent")?;
         assert!(!update.dirty);
+        Ok(())
     }
 
     /// The recovery path. After a client discards a diverged replica, the backend
     /// must stop deltaing against state the client no longer has.
     #[test]
-    fn forgetting_a_document_makes_the_next_projection_complete_again() {
+    fn forgetting_a_document_makes_the_next_projection_complete_again() -> Result<(), &'static str>
+    {
         let mut projection = Projection::default();
         let _ = projection.project(DOC, &snapshot(1, "alpha\n"));
         projection.client_reached(DOC, 1);
 
         projection.forget(DOC);
-        let update = projection.project(DOC, &snapshot(1, "alpha\n"));
+        let update = projection
+            .project(DOC, &snapshot(1, "alpha\n"))
+            .ok_or("a forgotten document is described again")?;
 
-        let Some(update) = update else {
-            return;
-        };
         assert_eq!(update.text, TextUpdate::Full("alpha\n".to_owned()));
+        Ok(())
     }
 
     /// A reattaching client that could not resume holds nothing, so everything it
     /// is told next must stand on its own.
     #[test]
-    fn resetting_makes_every_document_complete_again() {
+    fn resetting_makes_every_document_complete_again() -> Result<(), &'static str> {
         let mut projection = Projection::default();
         let _ = projection.project(DOC, &snapshot(1, "alpha\n"));
         let _ = projection.project(DocumentId(2), &snapshot(1, "beta\n"));
 
         projection.reset();
 
-        let Some(first) = projection.project(DOC, &snapshot(1, "alpha\n")) else {
-            return;
-        };
-        let Some(second) = projection.project(DocumentId(2), &snapshot(1, "beta\n")) else {
-            return;
-        };
+        let first = projection
+            .project(DOC, &snapshot(1, "alpha\n"))
+            .ok_or("the first document is described again")?;
+        let second = projection
+            .project(DocumentId(2), &snapshot(1, "beta\n"))
+            .ok_or("the second document is described again")?;
         assert!(matches!(first.text, TextUpdate::Full(_)));
         assert!(matches!(second.text, TextUpdate::Full(_)));
+        Ok(())
     }
 
     /// A version bump with identical text (a no-op edit, a re-save) is not worth an
