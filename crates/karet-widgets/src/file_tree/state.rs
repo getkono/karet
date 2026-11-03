@@ -90,6 +90,11 @@ pub struct FileTreeState {
     pub(super) edit_rect: Option<Rect>,
     selected_paths: BTreeSet<PathBuf>,
     cursor_path: Option<PathBuf>,
+    /// Where the cursor goes once a rebuild lists it: the entry an inline
+    /// create just asked for, which appears only when the embedder supplies the
+    /// listing the filesystem's answer prompted. Until then the rows the
+    /// cursor clamps among do not say where the user was.
+    landing: Option<PathBuf>,
     /// Directory listings the tree has been given, keyed by directory.
     ///
     /// The tree does not read directories; it renders the ones it has been told
@@ -122,6 +127,7 @@ impl Default for FileTreeState {
             edit_rect: None,
             selected_paths: BTreeSet::new(),
             cursor_path: None,
+            landing: None,
             listings: BTreeMap::new(),
             missing: BTreeSet::new(),
             stale: BTreeSet::new(),
@@ -312,6 +318,12 @@ impl FileTreeState {
 
     /// Rebuild the index-based selection from remembered path identities.
     fn restore_selection_paths(&mut self) {
+        if let Some(landing) = &self.landing
+            && self.rows.iter().any(|row| &row.path == landing)
+        {
+            self.cursor_path = self.landing.take();
+            self.selected_paths = self.cursor_path.iter().cloned().collect();
+        }
         let indices: Vec<usize> = self
             .rows
             .iter()
@@ -518,14 +530,14 @@ impl FileTreeState {
         if name.is_empty() {
             return None;
         }
+        let created = edit.parent.join(name);
         Some(match edit.kind {
-            EditKind::NewFile => PendingEdit::Create {
-                path: edit.parent.join(name),
-                folder: false,
-            },
-            EditKind::NewFolder => PendingEdit::Create {
-                path: edit.parent.join(name),
-                folder: true,
+            EditKind::NewFile | EditKind::NewFolder => {
+                self.landing = Some(created.clone());
+                PendingEdit::Create {
+                    path: created,
+                    folder: matches!(edit.kind, EditKind::NewFolder),
+                }
             },
             EditKind::Rename(old) => {
                 let to = old
@@ -541,6 +553,7 @@ impl FileTreeState {
     /// The app calls this when the filesystem rejects a create/rename after
     /// [`take_edit`](Self::take_edit) has already consumed the editor state.
     pub fn restore_edit(&mut self, pending: &PendingEdit) {
+        self.landing = None; // nothing was created to land on
         self.editing = match pending {
             PendingEdit::Create { path, folder } => path.parent().map(|parent| {
                 let buffer = file_label(path);

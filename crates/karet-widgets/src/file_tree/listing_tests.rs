@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use karet_core::DirEntry;
 
 use super::FileTreeState;
+use super::PendingEdit;
 
 fn file(path: &str) -> DirEntry {
     DirEntry {
@@ -169,4 +170,36 @@ fn a_new_tree_shows_hidden_entries_and_respects_gitignore() {
 
     assert!(state.show_hidden());
     assert!(state.respect_gitignore());
+}
+
+/// An inline create is answered by a later listing, and the rebuilds drawn
+/// before it cannot find the new row; the cursor lands on it once a listing
+/// shows it, rather than staying wherever it clamped meanwhile.
+#[test]
+fn a_created_entry_takes_the_cursor_once_listed() {
+    let mut state = FileTreeState::new();
+    state.supply(PathBuf::from("/w"), vec![file("/w/a.rs"), file("/w/b.rs")]);
+    state.rebuild(Path::new("/w"));
+    state.select_index(1);
+    state.begin_new(false);
+    state.edit_paste("c.rs");
+
+    let created = state.take_edit();
+    state.rebuild(Path::new("/w"));
+    assert_ne!(state.selected_path(), Some(Path::new("/w/c.rs")));
+    state.supply(
+        PathBuf::from("/w"),
+        vec![file("/w/a.rs"), file("/w/b.rs"), file("/w/c.rs")],
+    );
+    state.ensure_built(Path::new("/w"));
+
+    assert!(matches!(
+        created,
+        Some(PendingEdit::Create { folder: false, .. })
+    ));
+    assert_eq!(state.selected_path(), Some(Path::new("/w/c.rs")));
+    // Only once: a later rebuild leaves a cursor the user moved alone.
+    state.select_index(0);
+    state.rebuild(Path::new("/w"));
+    assert_eq!(state.selected_path(), Some(Path::new("/w/a.rs")));
 }

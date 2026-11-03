@@ -140,6 +140,43 @@ fn a_mutation_keeps_the_rows_and_the_cursor_until_the_listing_answers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A created entry takes the cursor once its listing arrives, though frames
+/// are drawn before it does: a New File right after a New Folder goes into the
+/// new folder, as it did when creating was synchronous.
+#[test]
+fn the_cursor_lands_on_a_created_entry_once_it_is_listed() {
+    let dir = test_dir("explorer-create-cursor");
+    write_file(&dir, "a.txt", b"a");
+    write_file(&dir, "b.txt", b"b");
+    let mut app = explorer_app(&dir);
+    select_explorer_path(&mut app, &dir.join("b.txt"));
+    let create = |app: &mut App, folder: bool, name: &str| {
+        app.explorer_begin_new(folder);
+        for c in name.chars() {
+            app.explorer.edit_push(c);
+        }
+        app.explorer_commit_edit();
+        settle_mutations(app);
+        // A frame before the listing answers cannot find the new row.
+        app.build_explorer();
+        build_explorer_from_disk(app);
+    };
+
+    create(&mut app, true, "made");
+    assert_eq!(
+        app.explorer.selected_path(),
+        Some(dir.join("made").as_path())
+    );
+    create(&mut app, false, "inner.txt");
+
+    assert!(dir.join("made/inner.txt").is_file());
+    assert_eq!(
+        app.explorer.selected_path(),
+        Some(dir.join("made/inner.txt").as_path())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A folder the change watcher says nothing about (an ignored `target/`, a
 /// hidden one) is read again when it is expanded, so reopening it shows what is
 /// there now rather than what was there when it was first listed.
