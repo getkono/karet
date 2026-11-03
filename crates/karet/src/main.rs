@@ -34,6 +34,7 @@ mod pending;
 mod preview_images;
 mod remote;
 mod seam_query;
+mod split;
 mod tab;
 mod term_caps;
 #[cfg(feature = "terminal")]
@@ -84,6 +85,26 @@ fn main() -> color_eyre::Result<()> {
 
     // Resolve the workspace root and an optional initial file.
     let (root, initial_file) = startup_target(path);
+
+    // Decide the process's shape before anything is built. A backend draws no
+    // editor and needs no tabs, and while it runs nothing but the protocol may
+    // reach stdout — so this cannot wait until after the startup flags.
+    let mode = split::resolve(&cli);
+    let client = matches!(
+        mode,
+        split::Mode::ClientSocket(_) | split::Mode::ClientExec(_)
+    );
+    // A client renders a workspace on another machine, so a path given here
+    // names nothing there: it would be resolved and read against this
+    // machine's working directory and then sent to the backend. Refuse it
+    // before the terminal is taken, rather than open the wrong file.
+    if client && let Some(flag) = cli.local_path_flag() {
+        eprintln!(
+            "karet: {flag} names a file on this machine, but the workspace is on the \
+             backend's; open files from the editor once it attaches"
+        );
+        std::process::exit(2);
+    }
 
     // Load the layered JSONC configuration for this workspace (project/user/system,
     // over sane defaults). Diagnostics are handed to the app to surface as startup
@@ -176,6 +197,18 @@ fn main() -> color_eyre::Result<()> {
         loaded_config.settings.workbench.startup_panel = panel.into();
     }
 
+    // A backend serves and exits; it never assembles a shell. The session
+    // configuration is the same one the local shell builds, so a served workspace
+    // and a local one behave identically.
+    if matches!(mode, split::Mode::Serve | split::Mode::Forwarded(_)) {
+        let config = split::serve_config(&root, &loaded_config, syntax);
+        return match mode {
+            split::Mode::Serve => split::serve::run_stdio(config),
+            split::Mode::Forwarded(channel) => split::serve::run_forwarded(config, &channel),
+            _ => Ok(()),
+        };
+    }
+
     // The Source-Control panel is populated by the session's `VcsStatus` event
     // (seeded on startup and refreshed on filesystem changes), so the shell starts
     // with an empty panel rather than computing status here.
@@ -192,6 +225,9 @@ fn main() -> color_eyre::Result<()> {
     } else if let Some(preview) = cli.preview.as_ref() {
         app.open_initial_preview(&resolve_under_root(&root, preview));
     } else if cli.open.is_empty()
+        // A client's working directory is not the workspace, so a README found
+        // here is this machine's, not the project's.
+        && !client
         && let Some(readme) = startup_readme(&root)
     {
         app.open_initial_preview(&readme);
@@ -234,9 +270,32 @@ fn main() -> color_eyre::Result<()> {
     app.startup_commands = startup_commands;
     // `--capture` acts like the other automation flags: render the shell off-screen,
     // write the frame to stdout, and return — never enter the alternate screen.
+    // A client resolves the presentation settings on this machine and keeps them:
+    // the backend's configuration will otherwise overwrite the theme and icon
+    // style with whatever suits a terminal nobody is looking at.
+    if matches!(
+        mode,
+        split::Mode::ClientSocket(_) | split::Mode::ClientExec(_)
+    ) {
+        app.adopt_local_presentation();
+    }
+    let source = match mode {
+        split::Mode::ClientSocket(socket) => {
+            split::client::source(split::client::Endpoint::Socket(socket))
+        },
+        split::Mode::ClientExec(command) => {
+            split::client::source(split::client::Endpoint::Exec(command))
+        },
+        // Handled above; a served session never reaches the shell.
+        split::Mode::Local | split::Mode::Serve | split::Mode::Forwarded(_) => {
+            app::runtime::Source::Local
+        },
+    };
+    // `--capture` acts like the other automation flags: render the shell off-screen,
+    // write the frame to stdout, and return — never enter the alternate screen.
     match capture {
         Some(spec) => app::capture(app, spec),
-        None => app::run(app),
+        None => app::run(app, source),
     }
 }
 

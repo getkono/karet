@@ -181,6 +181,18 @@ with a root per package. The same query language drives both the filter box and
 `--seam-query`, so a narrowing you reach by pressing keys and one a script asks for
 are the same string. See [`docs/seam.md`](docs/seam.md).
 
+**Split sessions.** Edit a workspace that lives on another machine without editing
+over the network. The session stays with the files; the editor draws where you are:
+
+```bash
+karet --client-exec "ssh dev-box karet --serve /srv/repo"
+```
+
+Typing, scrolling and repainting are answered locally, so a slow link costs freshness
+rather than responsiveness. karet ships no transport of its own — anything that
+connects two pipes will do, and `ssh` is better at authentication and encryption than
+an editor would be. See [`docs/remote.md`](docs/remote.md).
+
 **Documents and media.** Markdown preview to the side, re-rendering as you type with
 the two panes scroll-synced, mermaid diagrams drawn inline, and a curated HTML subset
 and local images rendered in place; Jupyter notebooks with

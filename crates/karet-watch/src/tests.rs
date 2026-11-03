@@ -50,6 +50,20 @@ fn convert_maps_kinds_and_filters_ignored() {
         .is_none()
     );
 
+    // An ignored directory itself appearing is surfaced, so the listing that
+    // holds it gains the entry; only what lies inside it is dropped.
+    let made = vec![PathBuf::from("/r/target")];
+    assert!(
+        convert(
+            EventKind::Create(CreateKind::Folder),
+            &made,
+            &roots,
+            &[],
+            &exact,
+        )
+        .is_some_and(|event| event.paths == made)
+    );
+
     // Access events are not changes.
     assert!(
         convert(

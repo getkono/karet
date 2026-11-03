@@ -123,7 +123,7 @@ impl App {
             } else {
                 self.root.join(path)
             };
-            let mut tab = Tab::open(&absolute);
+            let mut tab = self.open_tab(&absolute);
             if matches!(tab.kind, TabKind::Code { .. }) {
                 tab.title = format!("⚠ {}", tab.title);
                 tab.merge_conflict = Some(MergeConflictState::loading());

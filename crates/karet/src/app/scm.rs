@@ -410,7 +410,7 @@ impl App {
     pub(super) fn sidebar_select_extend(&mut self, delta: i32) {
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
-                self.explorer.ensure_built(&self.root);
+                self.build_explorer();
                 self.explorer.select_extend(delta);
             },
             SidebarPanel::SourceControl => self.scm.selection.extend_by(delta),
@@ -427,7 +427,7 @@ impl App {
     pub(super) fn sidebar_select_toggle(&mut self) {
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
-                self.explorer.ensure_built(&self.root);
+                self.build_explorer();
                 self.explorer.mark_toggle();
             },
             SidebarPanel::SourceControl => self.scm.selection.toggle_cursor(),
@@ -444,7 +444,7 @@ impl App {
     pub(super) fn sidebar_select_all(&mut self) {
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
-                self.explorer.ensure_built(&self.root);
+                self.build_explorer();
                 self.explorer.select_all();
             },
             SidebarPanel::SourceControl => self.scm.selection.select_all(),

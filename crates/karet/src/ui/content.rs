@@ -42,7 +42,12 @@ pub(super) fn draw_pane_content(
     let mut select_regions = Vec::new();
     let mut editor_rect = area;
     let mut markdown_preview_rect = Rect::default();
+    let reservation = super::reservation::notice(tab);
     match &mut tab.kind {
+        // A tab reserved for bytes that have not arrived.
+        _ if reservation.is_some() => {
+            super::reservation::draw(f, theme, area, reservation.flatten());
+        },
         TabKind::Welcome => draw_welcome(f, theme, area),
         #[cfg(feature = "terminal")]
         TabKind::Terminal(pane) => {

@@ -23,6 +23,7 @@ use karet_session::DocumentId;
 use karet_session::LSP_CHANGE_DEBOUNCE;
 use karet_session::LspCommand;
 use karet_session::RequestId;
+use karet_session::WorkspaceCommand;
 
 use crate::app::App;
 use crate::app::notifications::Report;
@@ -341,6 +342,33 @@ impl App {
     /// Follow filesystem changes into the file index.
     pub(super) fn file_index_fs_changed(&mut self, paths: &[PathBuf]) {
         if self.file_index.on_fs_changed(paths) {
+            self.refresh_quick_open();
+        }
+    }
+
+    /// Ask the backend for the walk the file index is owed, when it walks
+    /// through the backend (a workspace on another machine). Called every loop
+    /// turn; a walk due before a backend attached waits for one.
+    pub(crate) fn dispatch_file_index_walk(&mut self) {
+        if self.backend.is_none() {
+            return;
+        }
+        if self.file_index.take_walk_request().is_none() {
+            return;
+        }
+        // Uncapped, like a local walk: the backend streams nothing back but
+        // paths, and quick-open ranks whatever it is given.
+        self.file_list_req = self.send(WorkspaceCommand::ListFiles { limit: usize::MAX });
+    }
+
+    /// Adopt the backend's walk of the workspace (answers
+    /// [`dispatch_file_index_walk`](Self::dispatch_file_index_walk)).
+    pub(super) fn on_files_listed(&mut self, id: RequestId, files: Vec<PathBuf>) {
+        if self.file_list_req != Some(id) {
+            return; // a superseded walk; the one owed after it answers instead
+        }
+        self.file_list_req = None;
+        if self.file_index.accept_listing(files) {
             self.refresh_quick_open();
         }
     }
