@@ -207,8 +207,25 @@ async fn a_loopback_self_connect_is_recognised() -> TestResult {
 async fn a_discarded_self_connect_leaves_the_port_bindable() -> TestResult {
     // A normal close of a self-connection leaves its port in TIME_WAIT, and
     // the adapter's listener could not bind it before the connect deadline.
-    // The bind below also races concurrent tests for the freed port, but only
-    // for the few milliseconds the teardown takes.
+    // Once freed, the port is up for grabs: a concurrent process's connect can
+    // take it as its ephemeral source port and hold it past any bound here, so
+    // one port that stays taken proves nothing. Each attempt discards a fresh
+    // self-connect; a TIME_WAIT would hold every one of them, so a discard that
+    // left one behind still fails every attempt.
+    let mut last = None;
+    for _ in 0..5 {
+        match discarded_self_connect_port_rebinds().await {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(format!("no discarded self-connect's port was bindable: {last:?}").into())
+}
+
+/// Discards one fresh loopback self-connect and waits up to a second for its
+/// port to bind again, returning the last bind error if it never does.
+#[cfg(target_os = "linux")]
+async fn discarded_self_connect_port_rebinds() -> Result<(), std::io::Error> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
     let addr = socket.local_addr()?;
@@ -224,7 +241,7 @@ async fn a_discarded_self_connect_leaves_the_port_bindable() -> TestResult {
                 drop(listener);
                 return Ok(());
             },
-            Err(e) if std::time::Instant::now() >= deadline => return Err(e.into()),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
             Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
         }
     }
