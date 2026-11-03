@@ -22,8 +22,10 @@ pub(crate) enum PortOwner {
     /// Every listener on the port belongs to the adapter's process tree.
     Adapter,
     /// A listener on the port belongs to a process outside the adapter's
-    /// process tree (or to one whose sockets cannot be read, such as another
-    /// user's).
+    /// process tree. On Linux that includes a listener held by a process
+    /// whose sockets cannot be read, such as another user's; on macOS such a
+    /// listener is invisible, so a port only it holds reads as
+    /// [`PortOwner::Vacant`].
     Foreign,
     /// The socket table cannot be read here, so the owner is not known.
     Unknown,
