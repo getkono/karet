@@ -102,6 +102,9 @@ pub struct FileTreeState {
     /// [`supply`](Self::supply); each answer triggers another rebuild, so the
     /// tree converges one level at a time.
     missing: BTreeSet<PathBuf>,
+    /// Listed directories expanded since the embedder last asked: what it shows
+    /// may be out of date, and the moment it is opened is when to read it again.
+    stale: BTreeSet<PathBuf>,
 }
 
 impl Default for FileTreeState {
@@ -121,6 +124,7 @@ impl Default for FileTreeState {
             cursor_path: None,
             listings: BTreeMap::new(),
             missing: BTreeSet::new(),
+            stale: BTreeSet::new(),
         }
     }
 }
@@ -620,9 +624,17 @@ impl FileTreeState {
     }
 
     /// Expand directory `path`.
+    ///
+    /// A directory whose listing the tree already holds keeps showing it and is
+    /// reported by [`take_stale`](Self::take_stale), so the embedder reads it
+    /// again: nothing else reports a change inside a hidden or ignored
+    /// directory.
     pub fn expand(&mut self, path: &Path) {
         if self.expanded.insert(path.to_path_buf()) {
             self.needs_rebuild = true;
+            if self.listings.contains_key(path) {
+                self.stale.insert(path.to_path_buf());
+            }
         }
     }
 
@@ -702,6 +714,14 @@ impl FileTreeState {
     #[must_use]
     pub fn take_missing(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.missing).into_iter().collect()
+    }
+
+    /// Take the listed directories expanded since the last call, to be read
+    /// again; their current listings stay until each fresh
+    /// [`supply`](Self::supply) replaces one.
+    #[must_use]
+    pub fn take_stale(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.stale).into_iter().collect()
     }
 
     /// Record `dir` as still needed.
@@ -824,6 +844,10 @@ impl FileTreeState {
         let mut ignored = parent_ignored || first.ignored;
         // Descend while the current directory's *only* entry is another directory.
         let mut is_repository = first.is_repository;
+        // A directory expanded before its listing showed it to be the head of a
+        // chain is the chain's tip now: the expansion moves there, or the row
+        // the user opened collapses as soon as its contents arrive.
+        let mut carried = false;
         let children = loop {
             let entries = self.children_of(&tip);
             if is_repository {
@@ -831,6 +855,7 @@ impl FileTreeState {
             }
             match entries.as_slice() {
                 [child] if child.is_dir => {
+                    carried |= self.expanded.remove(&tip);
                     label.push('/');
                     label.push_str(&file_label(&child.path));
                     ignored = ignored || child.ignored;
@@ -840,6 +865,9 @@ impl FileTreeState {
                 _ => break entries,
             }
         };
+        if carried {
+            self.expanded.insert(tip.clone());
+        }
         let expanded = self.expanded.contains(&tip);
         rows.push(FileTreeRow {
             path: tip,

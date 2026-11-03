@@ -117,6 +117,50 @@ fn listed_dirs_names_every_held_listing_in_path_order() {
     );
 }
 
+/// Expanding a directory the tree already holds a listing for reports it stale,
+/// once, and keeps showing that listing meanwhile; one never listed is a miss,
+/// not stale.
+#[test]
+fn expanding_a_listed_directory_reports_it_stale_and_keeps_its_rows() {
+    let mut state = FileTreeState::new();
+    state.supply(PathBuf::from("/w"), vec![dir("/w/a"), dir("/w/b")]);
+    state.supply(PathBuf::from("/w/a"), vec![file("/w/a/x"), file("/w/a/y")]);
+
+    state.expand(Path::new("/w/a"));
+    state.expand(Path::new("/w/b"));
+    state.rebuild(Path::new("/w"));
+
+    assert_eq!(state.take_stale(), vec![PathBuf::from("/w/a")]);
+    assert!(state.take_stale().is_empty(), "taking drains them");
+    assert!(row_paths(&state).contains(&PathBuf::from("/w/a/x")));
+}
+
+/// A directory expanded before its listing showed it to be the head of a
+/// single-child chain stays expanded once the chain compacts to its tip.
+#[test]
+fn a_folder_expanded_before_its_chain_is_known_stays_expanded() {
+    let mut state = FileTreeState::new();
+    state.supply(PathBuf::from("/w"), vec![dir("/w/a"), file("/w/z")]);
+    state.expand(Path::new("/w/a"));
+    state.rebuild(Path::new("/w"));
+
+    state.supply(PathBuf::from("/w/a"), vec![dir("/w/a/b")]);
+    state.supply(PathBuf::from("/w/a/b"), vec![file("/w/a/b/f")]);
+    state.rebuild(Path::new("/w"));
+
+    let row = state
+        .rows()
+        .iter()
+        .find(|row| row.path == Path::new("/w/a/b"))
+        .map(|row| row.expanded);
+    assert_eq!(row, Some(true), "the compacted a/b row keeps the expansion");
+    assert!(row_paths(&state).contains(&PathBuf::from("/w/a/b/f")));
+
+    state.collapse(Path::new("/w/a/b"));
+    state.rebuild(Path::new("/w"));
+    assert!(!row_paths(&state).contains(&PathBuf::from("/w/a/b/f")));
+}
+
 /// A new tree lists hidden entries and flags gitignored ones; the embedder
 /// reads these to ask the lister for the same thing.
 #[test]
