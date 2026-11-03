@@ -85,7 +85,117 @@ pub(crate) fn extract(tree: &tree_sitter::Tree, query: &Query, text: &str) -> Ve
             }
         }
     }
+    if is_rustdoc_markdown(tree, text) {
+        add_rustdoc_doctests(tree, text, &mut out);
+    }
     out
+}
+
+/// Whether `tree` is the markdown layer of a Rust doc comment.
+///
+/// Rust's doc-comment injection hands markdown the comment's *content*, which starts
+/// immediately after the `///`, `//!`, `/**` or `/*!` marker, so a markdown tree whose
+/// first included range follows one of those markers is rustdoc. A markdown file
+/// parsed on its own includes the whole text from byte 0 and never qualifies.
+fn is_rustdoc_markdown(tree: &tree_sitter::Tree, text: &str) -> bool {
+    if crate::languages::RUST.is_none() || tree.language().name() != Some("markdown") {
+        return false;
+    }
+    let Some(first) = tree.included_ranges().first().map(|r| r.start_byte) else {
+        return false;
+    };
+    let before = text.get(..first).unwrap_or("");
+    ["///", "//!", "/**", "/*!"]
+        .iter()
+        .any(|marker| before.ends_with(marker))
+}
+
+/// Inject Rust into every fence rustdoc compiles as a doctest that the query did not
+/// already resolve.
+///
+/// Rustdoc treats a bare fence, and one whose info string holds only doctest
+/// attributes (` ```no_run `, ` ```should_panic,edition2021 `), as Rust. Markdown's
+/// own injections query resolves a fence by its first word, so it finds no grammar
+/// for those and would leave the doctest unhighlighted.
+fn add_rustdoc_doctests(tree: &tree_sitter::Tree, text: &str, out: &mut Vec<InjectionRegion>) {
+    let Some(rust) = crate::languages::RUST else {
+        return;
+    };
+    let mut fences = Vec::new();
+    collect_kind(tree.root_node(), "fenced_code_block", &mut fences);
+    for fence in fences {
+        let mut cursor = fence.walk();
+        let children: Vec<_> = fence.named_children(&mut cursor).collect();
+        let info = children
+            .iter()
+            .find(|c| c.kind() == "info_string")
+            .and_then(|c| c.utf8_text(text.as_bytes()).ok())
+            .unwrap_or("");
+        let Some(content) = children.iter().find(|c| c.kind() == "code_fence_content") else {
+            continue;
+        };
+        let (start, end) = (content.start_byte(), content.end_byte());
+        let already = out.iter().any(|r| {
+            r.ranges
+                .first()
+                .is_some_and(|s| s.start.0 >= start && s.start.0 < end)
+        });
+        if already || !rustdoc_fence_is_rust(info) {
+            continue;
+        }
+        let ranges = content_ranges(*content, false);
+        if !ranges.is_empty() {
+            out.push(InjectionRegion {
+                lang: rust,
+                ranges,
+                combined: false,
+            });
+        }
+    }
+}
+
+/// Every node of `kind` at or beneath `node`, in document order.
+fn collect_kind<'t>(node: tree_sitter::Node<'t>, kind: &str, out: &mut Vec<tree_sitter::Node<'t>>) {
+    if node.kind() == kind {
+        out.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_kind(child, kind, out);
+    }
+}
+
+/// Whether rustdoc compiles a fence with this info string as Rust: the string is
+/// empty, or every word in it (split on commas and whitespace, ignoring a `{…}`
+/// attribute block) is `rust` or a doctest attribute. A word naming another
+/// language (` ```text `, ` ```sh,no_run `) makes the fence not Rust.
+fn rustdoc_fence_is_rust(info: &str) -> bool {
+    let info = info.split('{').next().unwrap_or("");
+    info.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|word| !word.is_empty())
+        .all(is_rustdoc_word)
+}
+
+/// `rust`, or an attribute rustdoc reads from a doctest fence.
+fn is_rustdoc_word(word: &str) -> bool {
+    let word = word.to_ascii_lowercase();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    matches!(
+        word.as_str(),
+        "rust"
+            | "ignore"
+            | "no_run"
+            | "should_panic"
+            | "compile_fail"
+            | "test_harness"
+            | "standalone_crate"
+            | "allow_fail"
+    ) || word.strip_prefix("ignore-").is_some_and(|t| !t.is_empty())
+        || word.strip_prefix("edition").is_some_and(digits)
+        || word
+            .strip_prefix('e')
+            .is_some_and(|code| code.len() == 4 && digits(code))
 }
 
 /// The `#set!` directives attached to one injection pattern.
@@ -273,6 +383,105 @@ mod tests {
             1
         );
         Ok(())
+    }
+
+    /// How many Rust layers the doctest fence `info` yields inside a doc comment
+    /// written with `open` (and closed by `close` on the last line).
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    fn doctest_layers(
+        info: &str,
+        open: &str,
+        cont: &str,
+        close: &str,
+    ) -> Result<usize, crate::TsError> {
+        let rust =
+            language_id_from_injection_name("rust").ok_or(crate::TsError::UnknownLanguage)?;
+        let src =
+            format!("{open} ```{info}\n{cont} let y = 1;\n{cont} ```{close}\npub fn f() {{}}\n");
+        let tree = crate::LayeredParser::new().parse(rust, &src)?;
+        let (body, end) = (
+            src.find("let y").unwrap_or(0),
+            src.find("pub fn").unwrap_or(0),
+        );
+        Ok(tree
+            .children()
+            .iter()
+            .filter(|c| c.language() == rust && c.span().start.0 >= body && c.span().end.0 <= end)
+            .count())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn rustdoc_doctest_fences_are_rust() -> Result<(), crate::TsError> {
+        // Rustdoc compiles a bare fence, and one holding only doctest attributes, as
+        // Rust; a fence naming another language it leaves alone.
+        for info in [
+            "",
+            "rust,no_run",
+            "rust,compile_fail",
+            "rust,ignore",
+            "no_run",
+            "ignore",
+            "should_panic,edition2018",
+            "compile_fail,E0277",
+        ] {
+            for (open, cont, close) in [("///", "///", ""), ("//!", "//!", ""), ("/**", "", "\n*/")]
+            {
+                let got = doctest_layers(info, open, cont, close)?;
+                assert_eq!(got, 1, "{open} ```{info}");
+            }
+        }
+        for info in ["text", "sh,no_run"] {
+            assert_eq!(doctest_layers(info, "///", "///", "")?, 0, "```{info}");
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn a_bare_fence_in_a_markdown_file_stays_plain() -> Result<(), crate::TsError> {
+        // The rustdoc default belongs to doc comments only.
+        let lang =
+            |name| language_id_from_injection_name(name).ok_or(crate::TsError::UnknownLanguage);
+        let (md, rust) = (lang("markdown")?, lang("rust")?);
+        let src = "```\nlet y = 1;\n```\n\n```no_run\nlet z = 2;\n```\n";
+        let tree = crate::LayeredParser::new().parse(md, src)?;
+        assert!(!tree.children().iter().any(|c| c.language() == rust));
+        Ok(())
+    }
+
+    #[test]
+    fn rustdoc_fences_without_another_language_are_rust() {
+        for info in [
+            "",
+            "rust",
+            "no_run",
+            "ignore",
+            "should_panic,edition2018",
+            "rust,compile_fail,E0277",
+            "compile_fail E0599",
+            "ignore-wasm32",
+            "edition2024 {.example}",
+            "  Rust , NO_RUN ",
+        ] {
+            assert!(rustdoc_fence_is_rust(info), "{info:?}");
+        }
+    }
+
+    #[test]
+    fn rustdoc_fences_naming_another_language_are_not_rust() {
+        for info in [
+            "text",
+            "sh",
+            "sh,no_run",
+            "toml",
+            "edition",
+            "ignore-",
+            "E12",
+            "rusty",
+        ] {
+            assert!(!rustdoc_fence_is_rust(info), "{info:?}");
+        }
     }
 
     #[test]
