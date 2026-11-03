@@ -231,6 +231,42 @@ fn opening_anyway_classifies_with_the_guard_waived() {
     assert!(waived);
 }
 
+/// The placeholder's own classification, asked with the guard on when it
+/// registered, can answer after "open anyway". Its "too large" must not put the
+/// placeholder back over the file the user chose to open.
+#[test]
+fn a_guarded_verdict_landing_after_open_anyway_keeps_the_opened_tab() {
+    let dir = test_dir("open-anyway-late-verdict");
+    write_file(&dir, "big.txt", b"small on disk, large by its verdict\n");
+    let path = dir.join("big.txt");
+    let (backend, mut app) = local_app(&dir);
+    let len = karet_filetype::SIZE_GUARD + 1;
+    app.push_tab(crate::tab::open::reserve(&path, FileKind::TooLarge { len }));
+    app.register_open_tabs();
+    let classify = requests(&backend, is_classify);
+    assert_eq!(classify.len(), 1, "the placeholder asks what it is");
+
+    app.open_active_anyway();
+    app.on_backend_event(
+        Some(classify[0]),
+        SessionEvent::PathClassified {
+            path: path.clone(),
+            result: Ok(PathClass {
+                kind: FileKind::TooLarge { len },
+                len,
+                head: Vec::new(),
+            }),
+        },
+    );
+
+    assert!(
+        matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
+        "the opened tab stays: {:?}",
+        app.tabs[app.active].status_label()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A media reservation loads quietly: it carries the loading anchor rather than
 /// rendering as the placeholder an unreadable file settles at.
 #[cfg(feature = "images")]

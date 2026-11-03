@@ -190,6 +190,11 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
+        // A classification already in flight was asked with the guard on — the
+        // placeholder's own, sent when it registered. Its answer is "too large"
+        // again, and landing after this it would put the placeholder back over
+        // the tab the user just opened. Forgetting it drops that answer.
+        self.pending_classify.retain(|_, pending| *pending != path);
         let mut tab = self.open_tab_ignoring_size(&path);
         tab.view = self.alloc_view();
         // Only a tab the client fills from raw bytes is classified; a document
