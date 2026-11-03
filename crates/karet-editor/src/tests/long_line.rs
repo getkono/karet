@@ -295,6 +295,57 @@ fn the_wrap_cache_measures_again_after_an_edit_or_a_new_hint() {
 }
 
 #[test]
+fn the_wrap_cache_measures_again_at_a_new_width_tab_width_or_wrapping_indent() {
+    // A tab, then four-letter words: the tab width moves the first row's
+    // break, the wrapping indent the continuation rows', and the pane width
+    // both. Rows break after a row's last blank.
+    let buffer = TextBuffer::from_text("\taaaa bbbb cccc dddd eeee ffff gggg hhhh iiii");
+    let mut state = EditorState::new();
+    let mut render = |width: u16, tab: u16, indent: WrappingIndent| {
+        let area = Rect::new(0, 0, width, 2);
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .tab_width(tab)
+            .wrapping_indent(indent)
+            .render(area, &mut target, &mut state);
+        let rows = [0, 1].map(|y| row(&target, y).trim_end().to_string());
+        (rows, state.wraps.measured())
+    };
+
+    // Seventeen text cells: the tab takes four.
+    let (rows, measured) = render(20, 4, WrappingIndent::None);
+    assert_eq!(measured, 1);
+    assert_eq!(rows, [" 1     aaaa bbbb", "   cccc dddd eeee"]);
+
+    // A wider tab leaves the first row room for one word.
+    let (rows, measured) = render(20, 8, WrappingIndent::None);
+    assert_eq!(measured, 2);
+    assert_eq!(rows, [" 1         aaaa", "   bbbb cccc dddd"]);
+
+    // A pane resized to twenty-seven text cells wraps at the new width.
+    let (rows, measured) = render(30, 8, WrappingIndent::None);
+    assert_eq!(measured, 3);
+    assert_eq!(
+        rows,
+        [" 1         aaaa bbbb cccc", "   dddd eeee ffff gggg hhhh"]
+    );
+
+    // A wrapping indent gives the continuation row's first eight cells to
+    // the line's tab, so it holds one word fewer.
+    let (rows, measured) = render(30, 8, WrappingIndent::Same);
+    assert_eq!(measured, 4);
+    assert_eq!(
+        rows,
+        [" 1         aaaa bbbb cccc", "           dddd eeee ffff"]
+    );
+
+    // The same geometry again is found, not wrapped.
+    let (_, measured) = render(30, 8, WrappingIndent::Same);
+    assert_eq!(measured, 4);
+}
+
+#[test]
 fn the_extent_cache_follows_edits_and_geometry() {
     let mut buffer = TextBuffer::from_text("abc\n\tx\n");
     let mut cache = ExtentCache::default();
