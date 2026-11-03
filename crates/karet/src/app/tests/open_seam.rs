@@ -70,6 +70,7 @@ fn remote_app() -> (Arc<RecordingBackend>, App) {
         false,
     );
     app.backend = Some(backend.clone());
+    app.workspace_remote = true;
     (backend, app)
 }
 
@@ -502,6 +503,66 @@ fn scrolling_reports_the_new_viewport() {
         .filter_map(|(_, command)| viewport_first_line(command))
         .collect();
     assert_eq!(reports, vec![0, 400]);
+}
+
+/// A co-located session hands over whole-document highlights for free, so a
+/// local app declares no viewport and a long jump is never painted uncoloured.
+#[test]
+fn a_local_workspace_reports_no_viewport() -> Result<(), &'static str> {
+    let (backend, mut app) = remote_app();
+    app.workspace_remote = false;
+    app.open_path(&PathBuf::from("/not/on/this/machine/main.rs"));
+    app.register_open_tabs();
+    let open = find_request(&backend, is_open).ok_or("the open was sent")?;
+    app.on_backend_event(
+        Some(open),
+        SessionEvent::Opened {
+            doc: DocumentId(1),
+            version: 1,
+        },
+    );
+
+    app.report_viewports();
+
+    assert!(
+        sent(&backend)
+            .iter()
+            .all(|(_, command)| viewport_first_line(command).is_none())
+    );
+    Ok(())
+}
+
+/// A closed view's range must be withdrawn, or it keeps widening the window of
+/// a document another view still shows.
+#[test]
+fn a_closed_view_withdraws_its_viewport() -> Result<(), &'static str> {
+    let (backend, mut app) = remote_app();
+    app.open_path(&PathBuf::from("/not/on/this/machine/main.rs"));
+    app.register_open_tabs();
+    let open = find_request(&backend, is_open).ok_or("the open was sent")?;
+    app.on_backend_event(
+        Some(open),
+        SessionEvent::Opened {
+            doc: DocumentId(1),
+            version: 1,
+        },
+    );
+    app.report_viewports();
+    let view = app.tabs[app.active].view;
+
+    app.tabs.clear();
+    app.report_viewports();
+
+    assert!(
+        find_request(&backend, |command| matches!(
+            command,
+            SessionCommand::Document(DocumentCommand::ClearViewport { doc, view: cleared })
+                if *doc == DocumentId(1) && *cleared == view
+        ))
+        .is_some()
+    );
+    assert!(app.reported_viewports.is_empty());
+    Ok(())
 }
 
 /// The workspace's configuration describes the code — indentation, linters,

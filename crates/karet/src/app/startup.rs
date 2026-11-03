@@ -253,6 +253,7 @@ impl App {
             pending_listings: HashMap::new(),
             presentation: None,
             reported_viewports: HashMap::new(),
+            workspace_remote: false,
             pending_reveal: None,
             pending_mutations: HashMap::new(),
             explorer_delete_done: 0,
@@ -300,8 +301,6 @@ impl App {
         self
     }
 
-    /// Apply a configuration snapshot. Live reload deliberately leaves the startup
-    /// panel alone; it is a startup action rather than persistent UI state.
     /// Keep this machine's presentation settings across a backend's configuration.
     ///
     /// Called when the workspace is somewhere else. A local session never needs
@@ -313,6 +312,17 @@ impl App {
         });
     }
 
+    /// Run against a workspace at the other end of a connection: quick-open
+    /// walks through the backend (a walk of a local path would list this
+    /// machine), and views report their viewports so highlights cross the
+    /// connection a screenful at a time.
+    pub(crate) fn mark_workspace_remote(&mut self) {
+        self.workspace_remote = true;
+        self.file_index.walk_through_backend();
+    }
+
+    /// Apply a configuration snapshot. Live reload deliberately leaves the startup
+    /// panel alone; it is a startup action rather than persistent UI state.
     pub(super) fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
         use karet_session::config::schema::StartupPanel;
 

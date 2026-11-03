@@ -20,6 +20,7 @@ use crossterm::terminal::SetTitle;
 use karet_core::NotificationKind;
 use karet_fileview::image;
 use karet_session::Backend;
+use karet_session::BackendError;
 use karet_session::EventRx;
 use karet_session::SessionConfig;
 use karet_session::SnapshotRx;
@@ -235,7 +236,7 @@ pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
     // A remote workspace is not on this disk: its file list comes from the
     // backend, never from a walk of a path that only means something there.
     if matches!(source, Source::Remote(_)) {
-        app.file_index.walk_through_backend();
+        app.mark_workspace_remote();
     }
     // Walk now, so the list is ready by the first Go to File.
     app.file_index.ensure_started();
@@ -425,6 +426,8 @@ async fn event_loop(
     // output arriving faster than its frame cap: that output waits for the
     // scheduled terminal frame (`next_wake`) instead.
     let mut redraw = true;
+    let mut events_open = true;
+    let mut snaps_open = true;
     loop {
         // Backend events (a definition answer, a debugger stop) move the caret
         // too; one look per frame records them for Go Back.
@@ -473,11 +476,26 @@ async fn event_loop(
                 Some(event) => handle_terminal_event(app, event),
                 None => app.should_quit = true,
             },
-            event = events.recv() => if let Some((id, ev)) = event {
-                app.on_backend_event(id, ev);
+            // A closed stream answers `None` at once and forever, so it is parked
+            // rather than polled: a dropped remote connection would otherwise spin
+            // this loop at full CPU. The user hears once that the backend is gone.
+            event = events.recv(), if events_open => match event {
+                Some((id, ev)) => app.on_backend_event(id, ev),
+                None => {
+                    events_open = false;
+                    if snaps_open {
+                        app.notify_backend_error(BackendError::Closed);
+                    }
+                },
             },
-            snap = snaps.recv() => if let Some((doc, snap)) = snap {
-                app.on_snapshot(doc, &snap);
+            snap = snaps.recv(), if snaps_open => match snap {
+                Some((doc, snap)) => app.on_snapshot(doc, &snap),
+                None => {
+                    snaps_open = false;
+                    if events_open {
+                        app.notify_backend_error(BackendError::Closed);
+                    }
+                },
             },
             image = recv_decoded(&mut decoded_images) => accept_decoded(app, image),
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {

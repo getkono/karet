@@ -619,7 +619,10 @@ pub struct App {
     presentation: Option<PresentationSettings>,
     /// The line range last reported for each view, so an unmoved viewport is not
     /// re-sent on every frame.
-    reported_viewports: HashMap<ViewId, (u32, u32)>,
+    reported_viewports: HashMap<ViewId, (DocumentId, u32, u32)>,
+    /// Whether the workspace lives at the other end of a connection. Only then
+    /// is it worth narrowing highlights to what each view displays.
+    workspace_remote: bool,
     /// A path to select in the explorer once the tree has a row for it. Revealing
     /// a deep path needs a listing per level, and those arrive one at a time.
     pending_reveal: Option<PathBuf>,

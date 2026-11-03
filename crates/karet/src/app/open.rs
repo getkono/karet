@@ -229,8 +229,17 @@ impl App {
     ///
     /// Called after each frame, because the visible range is only known once the
     /// editor has been laid out. Sends only what changed: a viewport that has not
-    /// moved is a message that says nothing.
+    /// moved is a message that says nothing. A view that closed, or now shows
+    /// another document, has its old range withdrawn, so it stops widening the
+    /// window of a document another view still shows.
+    ///
+    /// Only a remote workspace reports: a co-located session hands over the
+    /// whole document's highlights at no cost, and narrowing them would only
+    /// paint a long jump uncoloured for a frame.
     pub(super) fn report_viewports(&mut self) {
+        if !self.workspace_remote {
+            return;
+        }
         let mut seen: Vec<(ViewId, DocumentId, u32, u32)> = Vec::new();
         for tab in self.all_tabs_mut() {
             let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
@@ -239,12 +248,26 @@ impl App {
             let visible = tab.editor.viewport();
             seen.push((tab.view, *doc, visible.start.line, visible.end.line));
         }
+        let withdrawn: Vec<(ViewId, DocumentId)> = self
+            .reported_viewports
+            .iter()
+            .filter(|(view, (doc, ..))| {
+                !seen
+                    .iter()
+                    .any(|(shown, showing, ..)| shown == *view && showing == doc)
+            })
+            .map(|(view, (doc, ..))| (*view, *doc))
+            .collect();
+        for (view, doc) in withdrawn {
+            self.reported_viewports.remove(&view);
+            self.send_command(DocumentCommand::ClearViewport { doc, view });
+        }
         for (view, doc, first_line, last_line) in seen {
-            if self.reported_viewports.get(&view) == Some(&(first_line, last_line)) {
+            if self.reported_viewports.get(&view) == Some(&(doc, first_line, last_line)) {
                 continue;
             }
             self.reported_viewports
-                .insert(view, (first_line, last_line));
+                .insert(view, (doc, first_line, last_line));
             self.send_command(DocumentCommand::SetViewport {
                 doc,
                 view,
