@@ -29,6 +29,7 @@ mod edit_requests;
 mod editor_drag;
 mod editor_mouse;
 mod explorer;
+mod explorer_backend;
 mod external_edits;
 mod find_bar;
 mod folding;

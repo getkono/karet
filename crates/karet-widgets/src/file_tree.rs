@@ -26,6 +26,8 @@ mod view;
 #[cfg(test)]
 mod edit_tests;
 #[cfg(test)]
+mod listing_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeSet;

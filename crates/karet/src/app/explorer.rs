@@ -149,6 +149,7 @@ impl App {
     /// refresh that drops every cached row and re-reads the filesystem.
     pub(super) fn explorer_refresh(&mut self) {
         self.rebuild_explorer();
+        self.refresh_listings();
         self.nested_repository_status.clear();
         let pending: Vec<RequestId> = self.nested_repository_pending.keys().copied().collect();
         self.nested_repository_pending.clear();
@@ -248,13 +249,7 @@ impl App {
             return;
         };
         let dest_dir = self.explorer_paste_destination();
-        let mut taken: BTreeSet<PathBuf> = self
-            .explorer
-            .rows()
-            .iter()
-            .filter(|row| row.path.parent() == Some(dest_dir.as_path()))
-            .map(|row| row.path.clone())
-            .collect();
+        let mut taken = self.names_known_taken();
 
         let mut skipped = 0usize;
         let mut requested = 0usize;
@@ -297,7 +292,14 @@ impl App {
                 },
             };
             let moved = (clipboard.op == ExplorerFileOp::Cut).then(|| (source.clone(), target));
-            self.mutate_path(mutation, FollowUp::Pasted { moved });
+            self.mutate_path(
+                mutation,
+                FollowUp::Pasted {
+                    moved,
+                    taken: taken.clone(),
+                    attempts: 0,
+                },
+            );
             requested += 1;
         }
 
@@ -354,12 +356,7 @@ impl App {
             );
             return;
         }
-        let known: BTreeSet<PathBuf> = self
-            .explorer
-            .rows()
-            .iter()
-            .map(|row| row.path.clone())
-            .collect();
+        let mut taken = self.names_known_taken();
         // Reset before submitting, matching paste: the running count belongs to
         // this batch, not the one before it.
         self.explorer_paste_done = 0;
@@ -367,15 +364,47 @@ impl App {
             let Some(parent) = source.parent() else {
                 continue;
             };
-            let target = unique_child_path(parent, &source, &known);
+            let target = unique_child_path(parent, &source, &taken);
+            taken.insert(target.clone());
             self.mutate_path(
                 PathMutation::Copy {
                     from: source.clone(),
                     to: target,
                 },
-                FollowUp::Pasted { moved: None },
+                FollowUp::Pasted {
+                    moved: None,
+                    taken: taken.clone(),
+                    attempts: 0,
+                },
             );
         }
+    }
+
+    /// The paths a paste or duplicate already knows are taken: every row the
+    /// explorer shows, and every destination a mutation still in flight is
+    /// about to create.
+    ///
+    /// Only a first guess. A collapsed folder, a hidden or unlisted name, or a
+    /// file created outside the editor is not in it; the backend refuses those,
+    /// and the paste then tries the next free name (see `explorer_mutate`).
+    fn names_known_taken(&self) -> BTreeSet<PathBuf> {
+        let in_flight = self
+            .pending_mutations
+            .values()
+            .filter_map(|pending| match &pending.mutation {
+                PathMutation::Copy { to, .. } | PathMutation::Rename { to, .. } => Some(to),
+                PathMutation::CreateFile { path } | PathMutation::CreateDirectory { path } => {
+                    Some(path)
+                },
+                _ => None,
+            })
+            .cloned();
+        self.explorer
+            .rows()
+            .iter()
+            .map(|row| row.path.clone())
+            .chain(in_flight)
+            .collect()
     }
 
     /// Copy selected explorer paths to the system clipboard.
@@ -564,7 +593,7 @@ fn repository_summary_label(summary: RepositorySummary, icons: IconStyle) -> Str
 /// filesystem would say — the files may be on another machine. A name the tree has
 /// not heard of can still collide, and the backend refuses to clobber rather than
 /// overwrite, so the worst case is a reported failure instead of lost data.
-fn unique_child_path(dir: &Path, source: &Path, taken: &BTreeSet<PathBuf>) -> PathBuf {
+pub(super) fn unique_child_path(dir: &Path, source: &Path, taken: &BTreeSet<PathBuf>) -> PathBuf {
     let name = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

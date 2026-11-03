@@ -740,6 +740,17 @@ impl FileTreeState {
         self.listings.contains_key(dir)
     }
 
+    /// Every directory whose listing the tree holds, in path order.
+    ///
+    /// For a refresh that re-reads them all while the tree keeps showing the
+    /// current listings: each fresh [`supply`](Self::supply) replaces one.
+    #[must_use]
+    pub fn listed_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.listings.keys().cloned().collect();
+        dirs.sort();
+        dirs
+    }
+
     /// Rebuild the visible rows for `root` if the root changed or the tree is dirty.
     pub fn ensure_built(&mut self, root: &Path) {
         if self.needs_rebuild || self.root != root {

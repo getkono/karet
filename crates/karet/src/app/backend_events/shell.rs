@@ -23,6 +23,9 @@ impl App {
         // No extra debouncing needed here — the watcher already debounces at
         // the source, and the result cap keeps a search re-run cheap.
         self.invalidate_nested_repository_statuses(paths);
+        // The explorer holds listings rather than reading the disk each build,
+        // so a change made outside the editor shows only once it is asked again.
+        self.refresh_changed_listings(paths);
         self.file_index_fs_changed(paths);
         if !self.search.query.is_empty() {
             self.run_global_search();

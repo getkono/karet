@@ -367,6 +367,55 @@ impl App {
         self.finish_reveal();
     }
 
+    /// Read every directory the tree has listed again, keeping what it shows
+    /// until each fresh answer replaces it, so nothing blanks on the way.
+    ///
+    /// The tree holds listings rather than reading the disk on each build, so a
+    /// file created or deleted outside the editor (a checkout, a build, a shell)
+    /// shows only once its directory is asked about again.
+    pub(super) fn refresh_listings(&mut self) {
+        let dirs = self.explorer.listed_dirs();
+        self.refetch_listings(dirs);
+    }
+
+    /// Read again whichever directories touched by `changed` the tree has
+    /// listed: a changed path's parent gains or loses an entry, and a changed
+    /// directory may have new children.
+    pub(super) fn refresh_changed_listings(&mut self, changed: &[PathBuf]) {
+        let mut dirs: Vec<PathBuf> = changed
+            .iter()
+            .flat_map(|path| [Some(path.as_path()), path.parent()])
+            .flatten()
+            .filter(|dir| self.explorer.has_listing(dir))
+            .map(Path::to_path_buf)
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        self.refetch_listings(dirs);
+    }
+
+    /// Request `dirs` again even when a request is already in flight: that
+    /// answer may have been read before the change that prompted this one, and
+    /// the later answer, arriving later, wins.
+    fn refetch_listings(&mut self, dirs: Vec<PathBuf>) {
+        let (show_hidden, respect_gitignore) = (
+            self.explorer.show_hidden(),
+            self.explorer.respect_gitignore(),
+        );
+        for path in dirs {
+            match self.send(WorkspaceCommand::ReadDirectory {
+                path: path.clone(),
+                show_hidden,
+                respect_gitignore,
+            }) {
+                Some(id) => {
+                    self.pending_listings.insert(id, path);
+                },
+                None => self.explorer.mark_missing(path),
+            }
+        }
+    }
+
     /// Forget the listings for `dirs`, so the tree fetches them again.
     pub(super) fn invalidate_listings(&mut self, dirs: &[PathBuf]) {
         for dir in dirs {

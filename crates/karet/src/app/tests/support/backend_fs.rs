@@ -171,7 +171,7 @@ fn list_dir(dir: &Path, show_hidden: bool, respect_gitignore: bool) -> Vec<karet
             .map(|entry| {
                 let path = entry.path().to_path_buf();
                 let is_symlink = entry.path_is_symlink();
-                let is_dir = path.is_dir();
+                let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
                 (path, is_dir, is_symlink)
             })
             .collect()

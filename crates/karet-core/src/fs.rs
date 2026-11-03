@@ -17,7 +17,8 @@ use std::path::PathBuf;
 pub struct DirEntry {
     /// The child's full path.
     pub path: PathBuf,
-    /// Whether it is a directory (following symlinks).
+    /// Whether the entry itself is a directory. A symbolic link to a directory
+    /// is not one: it is listed as a link and never expanded through.
     pub is_dir: bool,
     /// Whether the path itself is a symbolic link.
     pub is_symlink: bool,

@@ -5,6 +5,7 @@
 //! so the answer arrives later — which is the only real change: what to do with a
 //! success or a failure is unchanged, it just runs when the backend says so.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use karet_core::NotificationKind;
@@ -55,8 +56,18 @@ pub(super) enum FollowUp {
     Pasted {
         /// Set when the paste was a move, so open tabs follow it.
         moved: Option<(PathBuf, PathBuf)>,
+        /// The names known taken when the destination was chosen. A refusal
+        /// adds the refused one and picks the next free name from these.
+        taken: BTreeSet<PathBuf>,
+        /// How many refused names this item has already moved past.
+        attempts: usize,
     },
 }
+
+/// How many names a paste tries before reporting the clash: enough for any
+/// real run of `name copy N`, few enough that a backend refusing everything
+/// cannot loop.
+const PASTE_ATTEMPTS: usize = 64;
 
 /// A mutation in flight.
 pub(super) struct PendingMutation {
@@ -64,6 +75,64 @@ pub(super) struct PendingMutation {
     pub(super) mutation: PathMutation,
     /// What to do with the answer.
     pub(super) follow_up: FollowUp,
+}
+
+/// The same paste aimed at the next free name, when the backend refused the
+/// last one because something already holds it; otherwise the follow-up to
+/// report the failure with.
+///
+/// The explorer guesses free names from what it has listed, and it cannot have
+/// listed everything: a collapsed folder, a hidden name, a file created a moment
+/// ago elsewhere. The backend refuses to clobber, so a refusal is the answer
+/// to the guess, and the paste moves on to `name copy`, `name copy 2`, ….
+fn retry_paste(pending: PendingMutation, message: &str) -> Result<PendingMutation, FollowUp> {
+    let FollowUp::Pasted {
+        moved,
+        mut taken,
+        attempts,
+    } = pending.follow_up
+    else {
+        return Err(pending.follow_up);
+    };
+    let give_up = |moved, taken| {
+        Err(FollowUp::Pasted {
+            moved,
+            taken,
+            attempts,
+        })
+    };
+    let (from, to) = match &pending.mutation {
+        PathMutation::Copy { from, to } | PathMutation::Rename { from, to } => (from, to),
+        _ => return give_up(moved, taken),
+    };
+    let Some(dir) = to.parent() else {
+        return give_up(moved, taken);
+    };
+    if !message.ends_with("already exists") || attempts >= PASTE_ATTEMPTS {
+        return give_up(moved, taken);
+    }
+    taken.insert(to.clone());
+    let next = super::explorer::unique_child_path(dir, from, &taken);
+    taken.insert(next.clone());
+    let mutation = match &pending.mutation {
+        PathMutation::Rename { .. } => PathMutation::Rename {
+            from: from.clone(),
+            to: next.clone(),
+        },
+        _ => PathMutation::Copy {
+            from: from.clone(),
+            to: next.clone(),
+        },
+    };
+    let moved = moved.map(|(source, _)| (source, next));
+    Ok(PendingMutation {
+        mutation,
+        follow_up: FollowUp::Pasted {
+            moved,
+            taken,
+            attempts: attempts + 1,
+        },
+    })
 }
 
 impl App {
@@ -93,7 +162,10 @@ impl App {
         self.invalidate_listings(&pending.mutation.dirty_parents());
         match result {
             Ok(()) => self.on_mutation_succeeded(pending.follow_up),
-            Err(message) => self.on_mutation_failed(pending.follow_up, &message),
+            Err(message) => match retry_paste(pending, &message) {
+                Ok(retry) => self.mutate_path(retry.mutation, retry.follow_up),
+                Err(follow_up) => self.on_mutation_failed(follow_up, &message),
+            },
         }
         self.send_command(VcsCommand::Refresh);
     }
@@ -115,7 +187,7 @@ impl App {
                     Some(DELETE_TAG.to_owned()),
                 );
             },
-            FollowUp::Pasted { moved } => {
+            FollowUp::Pasted { moved, .. } => {
                 if let Some((from, to)) = moved {
                     self.retarget_open_paths(&from, &to);
                 }
