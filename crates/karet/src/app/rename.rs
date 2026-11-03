@@ -348,6 +348,12 @@ impl App {
                 if !matches!(tab.kind, TabKind::Code { .. }) {
                     tab = Tab::open_as_text(path);
                 }
+                // The backend already holds this document as text, so the size
+                // guard has nothing to settle: a remote reservation waiting on
+                // a classification would register no reference before the
+                // backend's is released below, closing the document and
+                // discarding the edit.
+                tab.size_unchecked = false;
                 tab.view = self.alloc_view();
                 self.tabs.push(tab);
                 self.register_doc(self.tabs.len() - 1);
