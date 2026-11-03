@@ -153,6 +153,48 @@ async fn a_live_adapter_whose_port_is_always_taken_never_connects() -> TestResul
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_port_taken_between_the_check_and_the_connect_drops_the_connection() -> TestResult {
+    // The owner reads as the adapter before the connect and as another
+    // process after it: the listener checked closed and a foreign one took
+    // the port in between, so the connect reached the foreign listener. The
+    // launch must report the loss, never hand that connection back, and
+    // close it. The adapter stays up throughout, so no exit gives it away.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let mut command = tokio::process::Command::new("sh");
+    command.args(["-c", "exec cat >/dev/null"]);
+    let mut asked = Vec::new();
+    let got = DapClient::spawn_tcp_judged(command, port, |at, root| {
+        asked.push((at, root));
+        if asked.len() == 1 {
+            PortOwner::Adapter
+        } else {
+            PortOwner::Foreign
+        }
+    })
+    .await?;
+    assert!(
+        matches!(&got, TcpLaunch::Lost(why) if *why == foreign(port)),
+        "the launch kept a connection to a foreign listener"
+    );
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(
+        asked.iter().all(|&(at, root)| at == port && root.is_some()),
+        "{asked:?}"
+    );
+    let (mut accepted, _) = listener.accept().await?;
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut accepted, &mut buf),
+    )
+    .await?;
+    assert_eq!(read?, 0, "the foreign listener's connection was not closed");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn an_adapter_that_loses_its_port_every_time_is_a_launch_error() -> TestResult {
     // Every launch finds a foreign listener on its port and an adapter that
     // exits: after the bounded attempts the launch fails clearly, and never
