@@ -10,10 +10,14 @@ use karet_core::DirEntry;
 
 use super::*;
 
+/// What every test returns: a missing setup or answer fails the test through `?`
+/// (the workspace lint floor bans `expect` in tests too).
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 /// A scratch tree with `files` written into it.
 ///
-/// Returns `None` rather than failing the run when the platform cannot provide a
-/// temporary directory; the workspace lint floor bans `expect` in tests too.
+/// `None` when the platform cannot provide one; callers turn that into a test
+/// failure with `.ok_or(..)?`, as they do every other `None` helper answer.
 fn tree(files: &[(&str, &[u8])]) -> Option<tempfile::TempDir> {
     let dir = tempfile::tempdir().ok()?;
     for (name, bytes) in files {
@@ -82,108 +86,92 @@ fn mutate(mutation: PathMutation) -> Option<(PathMutation, Result<(), String>)> 
 }
 
 #[test]
-fn a_text_file_classifies_as_text_with_its_length_and_head() {
-    let Some(dir) = tree(&[("main.rs", b"fn main() {}\n")]) else {
-        return;
-    };
+fn a_text_file_classifies_as_text_with_its_length_and_head() -> TestResult {
+    let dir = tree(&[("main.rs", b"fn main() {}\n")]).ok_or("a scratch tree")?;
 
-    let Some(Ok(class)) = classify_path(&dir.path().join("main.rs"), false) else {
-        return;
-    };
+    let class =
+        classify_path(&dir.path().join("main.rs"), false).ok_or("a classification answer")??;
 
     assert_eq!(class.kind, karet_filetype::FileKind::Text);
     assert_eq!(class.len, 13);
     assert_eq!(class.head, b"fn main() {}\n");
+    Ok(())
 }
 
 /// Classification is defined over whatever leading bytes exist. An empty file
 /// must classify rather than error, or opening a freshly created file fails.
 #[test]
-fn an_empty_file_still_classifies() {
-    let Some(dir) = tree(&[("new.txt", b"")]) else {
-        return;
-    };
+fn an_empty_file_still_classifies() -> TestResult {
+    let dir = tree(&[("new.txt", b"")]).ok_or("a scratch tree")?;
 
-    let Some(Ok(class)) = classify_path(&dir.path().join("new.txt"), false) else {
-        return;
-    };
+    let class =
+        classify_path(&dir.path().join("new.txt"), false).ok_or("a classification answer")??;
 
     assert_eq!(class.len, 0);
     assert!(class.head.is_empty());
+    Ok(())
 }
 
 #[test]
-fn classifying_a_missing_path_reports_why() {
-    let Some(dir) = tree(&[]) else {
-        return;
-    };
+fn classifying_a_missing_path_reports_why() -> TestResult {
+    let dir = tree(&[]).ok_or("a scratch tree")?;
 
-    let Some(result) = classify_path(&dir.path().join("absent.rs"), false) else {
-        return;
-    };
+    let result =
+        classify_path(&dir.path().join("absent.rs"), false).ok_or("a classification answer")?;
 
     assert!(result.is_err());
+    Ok(())
 }
 
 #[test]
-fn reading_bytes_answers_a_chunk_that_knows_the_total_length() {
-    let Some(dir) = tree(&[("data.bin", &[0, 1, 2, 3, 4, 5, 6, 7])]) else {
-        return;
-    };
+fn reading_bytes_answers_a_chunk_that_knows_the_total_length() -> TestResult {
+    let dir = tree(&[("data.bin", &[0, 1, 2, 3, 4, 5, 6, 7])]).ok_or("a scratch tree")?;
 
-    let Some(Ok(chunk)) = read_bytes(&dir.path().join("data.bin"), 2, 3) else {
-        return;
-    };
+    let chunk = read_bytes(&dir.path().join("data.bin"), 2, 3).ok_or("a read answer")??;
 
     assert_eq!(chunk.offset, 2);
     assert_eq!(chunk.bytes, vec![2, 3, 4]);
     assert_eq!(chunk.total_len, 8);
     assert!(!chunk.is_final());
+    Ok(())
 }
 
 /// A client walking a file to its end asks for one range past it. That must
 /// terminate the read, not error — otherwise the last chunk never arrives.
 #[test]
-fn reading_past_the_end_answers_an_empty_final_chunk() {
-    let Some(dir) = tree(&[("data.bin", &[0, 1, 2, 3])]) else {
-        return;
-    };
+fn reading_past_the_end_answers_an_empty_final_chunk() -> TestResult {
+    let dir = tree(&[("data.bin", &[0, 1, 2, 3])]).ok_or("a scratch tree")?;
 
-    let Some(Ok(chunk)) = read_bytes(&dir.path().join("data.bin"), 4, 16) else {
-        return;
-    };
+    let chunk = read_bytes(&dir.path().join("data.bin"), 4, 16).ok_or("a read answer")??;
 
     assert!(chunk.bytes.is_empty());
     assert!(chunk.is_final());
+    Ok(())
 }
 
 /// The chunk cap keeps a large PDF from monopolizing the stream ahead of an
 /// interactive edit, so an oversized request must be clamped, not honored.
 #[test]
-fn a_read_larger_than_the_chunk_cap_is_clamped() {
+fn a_read_larger_than_the_chunk_cap_is_clamped() -> TestResult {
     let big = vec![7_u8; (MAX_CHUNK as usize) + 4096];
-    let Some(dir) = tree(&[("big.bin", &big)]) else {
-        return;
-    };
+    let dir = tree(&[("big.bin", &big)]).ok_or("a scratch tree")?;
 
-    let Some(Ok(chunk)) = read_bytes(&dir.path().join("big.bin"), 0, u64::MAX) else {
-        return;
-    };
+    let chunk = read_bytes(&dir.path().join("big.bin"), 0, u64::MAX).ok_or("a read answer")??;
 
     assert_eq!(chunk.bytes.len() as u64, MAX_CHUNK);
     assert!(!chunk.is_final());
+    Ok(())
 }
 
 #[test]
-fn listing_the_workspace_reports_paths_and_whether_it_was_cut_short() {
-    let Some(dir) = tree(&[
+fn listing_the_workspace_reports_paths_and_whether_it_was_cut_short() -> TestResult {
+    let dir = tree(&[
         ("a.rs", b"x"),
         ("b.rs", b"x"),
         ("c.rs", b"x"),
         ("target/generated.rs", b"x"),
-    ]) else {
-        return;
-    };
+    ])
+    .ok_or("a scratch tree")?;
 
     let (_, event) = answer(FsJob::ListFiles {
         id: RequestId(1),
@@ -192,7 +180,7 @@ fn listing_the_workspace_reports_paths_and_whether_it_was_cut_short() {
     });
 
     let Event::FilesListed { files, truncated } = event else {
-        return;
+        return Err("a workspace listing answers FilesListed".into());
     };
     let names: Vec<String> = files
         .iter()
@@ -203,13 +191,12 @@ fn listing_the_workspace_reports_paths_and_whether_it_was_cut_short() {
         !truncated,
         "the pruned target/ must not count toward the cap"
     );
+    Ok(())
 }
 
 #[test]
-fn a_truncated_workspace_listing_says_so() {
-    let Some(dir) = tree(&[("a.rs", b"x"), ("b.rs", b"x"), ("c.rs", b"x")]) else {
-        return;
-    };
+fn a_truncated_workspace_listing_says_so() -> TestResult {
+    let dir = tree(&[("a.rs", b"x"), ("b.rs", b"x"), ("c.rs", b"x")]).ok_or("a scratch tree")?;
 
     let (_, event) = answer(FsJob::ListFiles {
         id: RequestId(1),
@@ -218,45 +205,41 @@ fn a_truncated_workspace_listing_says_so() {
     });
 
     let Event::FilesListed { files, truncated } = event else {
-        return;
+        return Err("a workspace listing answers FilesListed".into());
     };
     assert_eq!(files.len(), 2);
     assert!(truncated);
+    Ok(())
 }
 
 #[test]
-fn a_directory_listing_puts_directories_first_and_excludes_dot_git() {
-    let Some(dir) = tree(&[
+fn a_directory_listing_puts_directories_first_and_excludes_dot_git() -> TestResult {
+    let dir = tree(&[
         ("zeta.rs", b"x"),
         ("alpha.rs", b"x"),
         ("src/lib.rs", b"x"),
         (".git/HEAD", b"ref: refs/heads/master\n"),
-    ]) else {
-        return;
-    };
+    ])
+    .ok_or("a scratch tree")?;
 
-    let Some(Ok(entries)) = list_dir(dir.path(), true, false) else {
-        return;
-    };
+    let entries = list_dir(dir.path(), true, false).ok_or("a listing answer")??;
 
     assert_eq!(labels(&entries), ["src", "alpha.rs", "zeta.rs"]);
+    Ok(())
 }
 
 /// Ignored entries are flagged, never filtered: a user must still see the
 /// `target/` directory their build produced, dimmed rather than absent.
 #[test]
-fn gitignored_entries_are_listed_and_flagged() {
-    let Some(dir) = tree(&[
+fn gitignored_entries_are_listed_and_flagged() -> TestResult {
+    let dir = tree(&[
         (".gitignore", b"ignored.rs\n"),
         ("kept.rs", b"x"),
         ("ignored.rs", b"x"),
-    ]) else {
-        return;
-    };
+    ])
+    .ok_or("a scratch tree")?;
 
-    let Some(Ok(entries)) = list_dir(dir.path(), true, true) else {
-        return;
-    };
+    let entries = list_dir(dir.path(), true, true).ok_or("a listing answer")??;
 
     let flagged: Vec<(String, bool)> = entries
         .iter()
@@ -270,103 +253,87 @@ fn gitignored_entries_are_listed_and_flagged() {
         flagged.contains(&("kept.rs".to_owned(), false)),
         "{flagged:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn hidden_entries_are_omitted_unless_asked_for() {
-    let Some(dir) = tree(&[(".env", b"SECRET=1"), ("main.rs", b"x")]) else {
-        return;
-    };
+fn hidden_entries_are_omitted_unless_asked_for() -> TestResult {
+    let dir = tree(&[(".env", b"SECRET=1"), ("main.rs", b"x")]).ok_or("a scratch tree")?;
 
-    let (Some(Ok(hidden)), Some(Ok(shown))) = (
-        list_dir(dir.path(), false, false),
-        list_dir(dir.path(), true, false),
-    ) else {
-        return;
-    };
+    let hidden = list_dir(dir.path(), false, false).ok_or("a listing answer")??;
+    let shown = list_dir(dir.path(), true, false).ok_or("a listing answer")??;
 
     assert_eq!(labels(&hidden), ["main.rs"]);
     assert!(labels(&shown).contains(&".env".to_owned()), "{shown:?}");
+    Ok(())
 }
 
 #[test]
-fn listing_a_file_rather_than_a_directory_reports_why() {
-    let Some(dir) = tree(&[("main.rs", b"x")]) else {
-        return;
-    };
+fn listing_a_file_rather_than_a_directory_reports_why() -> TestResult {
+    let dir = tree(&[("main.rs", b"x")]).ok_or("a scratch tree")?;
 
-    let Some(result) = list_dir(&dir.path().join("main.rs"), false, false) else {
-        return;
-    };
+    let result = list_dir(&dir.path().join("main.rs"), false, false).ok_or("a listing answer")?;
 
     assert!(result.is_err());
+    Ok(())
 }
 
 #[test]
-fn creating_a_file_makes_it_and_its_parents() {
-    let Some(dir) = tree(&[]) else {
-        return;
-    };
+fn creating_a_file_makes_it_and_its_parents() -> TestResult {
+    let dir = tree(&[]).ok_or("a scratch tree")?;
     let path = dir.path().join("deep/nested/new.rs");
 
-    let Some((echoed, result)) = mutate(PathMutation::CreateFile { path: path.clone() }) else {
-        return;
-    };
+    let (echoed, result) =
+        mutate(PathMutation::CreateFile { path: path.clone() }).ok_or("a mutation answer")?;
 
     assert_eq!(result, Ok(()));
     assert!(path.is_file());
     assert_eq!(echoed.target(), &path);
+    Ok(())
 }
 
 /// "New file" must never truncate something the user forgot about.
 #[test]
-fn creating_a_file_that_exists_refuses_rather_than_truncating() {
-    let Some(dir) = tree(&[("keep.rs", b"important")]) else {
-        return;
-    };
+fn creating_a_file_that_exists_refuses_rather_than_truncating() -> TestResult {
+    let dir = tree(&[("keep.rs", b"important")]).ok_or("a scratch tree")?;
     let path = dir.path().join("keep.rs");
 
-    let Some((_, result)) = mutate(PathMutation::CreateFile { path: path.clone() }) else {
-        return;
-    };
+    let (_, result) =
+        mutate(PathMutation::CreateFile { path: path.clone() }).ok_or("a mutation answer")?;
 
     assert!(result.is_err());
     assert_eq!(std::fs::read(&path).ok(), Some(b"important".to_vec()));
+    Ok(())
 }
 
 /// `fs::rename` overwrites on Unix. The explorer must not.
 #[test]
-fn renaming_onto_an_existing_path_refuses() {
-    let Some(dir) = tree(&[("from.rs", b"source"), ("to.rs", b"destination")]) else {
-        return;
-    };
+fn renaming_onto_an_existing_path_refuses() -> TestResult {
+    let dir = tree(&[("from.rs", b"source"), ("to.rs", b"destination")]).ok_or("a scratch tree")?;
 
-    let Some((_, result)) = mutate(PathMutation::Rename {
+    let (_, result) = mutate(PathMutation::Rename {
         from: dir.path().join("from.rs"),
         to: dir.path().join("to.rs"),
-    }) else {
-        return;
-    };
+    })
+    .ok_or("a mutation answer")?;
 
     assert!(result.is_err());
     assert_eq!(
         std::fs::read(dir.path().join("to.rs")).ok(),
         Some(b"destination".to_vec())
     );
+    Ok(())
 }
 
 #[test]
-fn renaming_moves_the_file() {
-    let Some(dir) = tree(&[("from.rs", b"source")]) else {
-        return;
-    };
+fn renaming_moves_the_file() -> TestResult {
+    let dir = tree(&[("from.rs", b"source")]).ok_or("a scratch tree")?;
 
-    let Some((_, result)) = mutate(PathMutation::Rename {
+    let (_, result) = mutate(PathMutation::Rename {
         from: dir.path().join("from.rs"),
         to: dir.path().join("moved/to.rs"),
-    }) else {
-        return;
-    };
+    })
+    .ok_or("a mutation answer")?;
 
     assert_eq!(result, Ok(()));
     assert!(!dir.path().join("from.rs").exists());
@@ -374,20 +341,18 @@ fn renaming_moves_the_file() {
         std::fs::read(dir.path().join("moved/to.rs")).ok(),
         Some(b"source".to_vec())
     );
+    Ok(())
 }
 
 #[test]
-fn copying_a_directory_copies_everything_under_it() {
-    let Some(dir) = tree(&[("src/a.rs", b"a"), ("src/deep/b.rs", b"b")]) else {
-        return;
-    };
+fn copying_a_directory_copies_everything_under_it() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a"), ("src/deep/b.rs", b"b")]).ok_or("a scratch tree")?;
 
-    let Some((_, result)) = mutate(PathMutation::Copy {
+    let (_, result) = mutate(PathMutation::Copy {
         from: dir.path().join("src"),
         to: dir.path().join("copy"),
-    }) else {
-        return;
-    };
+    })
+    .ok_or("a mutation answer")?;
 
     assert_eq!(result, Ok(()));
     assert_eq!(
@@ -398,40 +363,34 @@ fn copying_a_directory_copies_everything_under_it() {
         std::fs::read(dir.path().join("copy/deep/b.rs")).ok(),
         Some(b"b".to_vec())
     );
+    Ok(())
 }
 
 #[test]
-fn deleting_removes_a_directory_and_its_contents() {
-    let Some(dir) = tree(&[("gone/a.rs", b"a"), ("gone/deep/b.rs", b"b")]) else {
-        return;
-    };
+fn deleting_removes_a_directory_and_its_contents() -> TestResult {
+    let dir = tree(&[("gone/a.rs", b"a"), ("gone/deep/b.rs", b"b")]).ok_or("a scratch tree")?;
 
-    let Some((_, result)) = mutate(PathMutation::Delete {
+    let (_, result) = mutate(PathMutation::Delete {
         path: dir.path().join("gone"),
-    }) else {
-        return;
-    };
+    })
+    .ok_or("a mutation answer")?;
 
     assert_eq!(result, Ok(()));
     assert!(!dir.path().join("gone").exists());
+    Ok(())
 }
 
 /// Deleting a link to a directory must remove the link, never the directory it
 /// points at — the difference between tidying up and losing work.
 #[cfg(unix)]
 #[test]
-fn deleting_a_symlink_to_a_directory_leaves_the_target() {
-    let Some(dir) = tree(&[("real/keep.rs", b"keep")]) else {
-        return;
-    };
+fn deleting_a_symlink_to_a_directory_leaves_the_target() -> TestResult {
+    let dir = tree(&[("real/keep.rs", b"keep")]).ok_or("a scratch tree")?;
     let link = dir.path().join("link");
-    if std::os::unix::fs::symlink(dir.path().join("real"), &link).is_err() {
-        return;
-    }
+    std::os::unix::fs::symlink(dir.path().join("real"), &link)?;
 
-    let Some((_, result)) = mutate(PathMutation::Delete { path: link.clone() }) else {
-        return;
-    };
+    let (_, result) =
+        mutate(PathMutation::Delete { path: link.clone() }).ok_or("a mutation answer")?;
 
     assert_eq!(result, Ok(()));
     assert!(!link.exists());
@@ -439,21 +398,20 @@ fn deleting_a_symlink_to_a_directory_leaves_the_target() {
         std::fs::read(dir.path().join("real/keep.rs")).ok(),
         Some(b"keep".to_vec())
     );
+    Ok(())
 }
 
 #[test]
-fn deleting_a_missing_path_reports_why() {
-    let Some(dir) = tree(&[]) else {
-        return;
-    };
+fn deleting_a_missing_path_reports_why() -> TestResult {
+    let dir = tree(&[]).ok_or("a scratch tree")?;
 
-    let Some((_, result)) = mutate(PathMutation::Delete {
+    let (_, result) = mutate(PathMutation::Delete {
         path: dir.path().join("absent.rs"),
-    }) else {
-        return;
-    };
+    })
+    .ok_or("a mutation answer")?;
 
     assert!(result.is_err());
+    Ok(())
 }
 
 /// Confirming F2 without changing the name renames a path onto itself. That is

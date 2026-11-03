@@ -59,6 +59,9 @@ fn workspace(files: &[(&str, &[u8])]) -> Option<(tempfile::TempDir, LocalBackend
     Some((dir, local_session(session, None), events))
 }
 
+/// What every test returns: a missing setup or answer fails it through `?`.
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 /// Open `path` in `session` and return the id the `Opened` event announced.
 ///
 /// The document id is minted by the session, so a test that needs one has to
@@ -80,10 +83,9 @@ fn open_document(session: &mut Session, events: &mut EventRx, path: PathBuf) -> 
 }
 
 #[tokio::test]
-async fn classifying_a_path_answers_the_submitting_request() {
-    let Some((dir, backend, mut events)) = workspace(&[("main.rs", b"fn main() {}\n")]) else {
-        return;
-    };
+async fn classifying_a_path_answers_the_submitting_request() -> TestResult {
+    let (dir, backend, mut events) =
+        workspace(&[("main.rs", b"fn main() {}\n")]).ok_or("a scratch workspace")?;
 
     let event = answer(
         &backend,
@@ -96,19 +98,19 @@ async fn classifying_a_path_answers_the_submitting_request() {
     .await;
 
     let Some(Event::PathClassified { result, .. }) = event else {
-        return;
+        return Err(format!("expected PathClassified, got {event:?}").into());
     };
     assert_eq!(
         result.ok().map(|class| class.kind),
         Some(karet_filetype::FileKind::Text)
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn reading_bytes_answers_with_a_chunk() {
-    let Some((dir, backend, mut events)) = workspace(&[("data.bin", &[1, 2, 3, 4])]) else {
-        return;
-    };
+async fn reading_bytes_answers_with_a_chunk() -> TestResult {
+    let (dir, backend, mut events) =
+        workspace(&[("data.bin", &[1, 2, 3, 4])]).ok_or("a scratch workspace")?;
 
     let event = answer(
         &backend,
@@ -122,20 +124,18 @@ async fn reading_bytes_answers_with_a_chunk() {
     .await;
 
     let Some(Event::FileBytes { result, .. }) = event else {
-        return;
+        return Err(format!("expected FileBytes, got {event:?}").into());
     };
-    let Ok(chunk) = result else {
-        return;
-    };
+    let chunk = result?;
     assert_eq!(chunk.bytes, vec![1, 2, 3, 4]);
     assert!(chunk.is_final());
+    Ok(())
 }
 
 #[tokio::test]
-async fn listing_files_walks_the_session_root_without_being_told_it() {
-    let Some((_dir, backend, mut events)) = workspace(&[("a.rs", b"x"), ("b.rs", b"x")]) else {
-        return;
-    };
+async fn listing_files_walks_the_session_root_without_being_told_it() -> TestResult {
+    let (_dir, backend, mut events) =
+        workspace(&[("a.rs", b"x"), ("b.rs", b"x")]).ok_or("a scratch workspace")?;
 
     let event = answer(
         &backend,
@@ -145,16 +145,17 @@ async fn listing_files_walks_the_session_root_without_being_told_it() {
     .await;
 
     let Some(Event::FilesListed { files, truncated }) = event else {
-        return;
+        return Err(format!("expected FilesListed, got {event:?}").into());
     };
     assert_eq!(files.len(), 2);
     assert!(!truncated);
+    Ok(())
 }
 
 /// A session with no root cannot walk anything, but a client still has an
 /// outstanding request. It must be answered — emptily — rather than dropped.
 #[tokio::test]
-async fn listing_files_without_a_root_still_answers() {
+async fn listing_files_without_a_root_still_answers() -> TestResult {
     let (session, mut events, _snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
 
@@ -166,18 +167,17 @@ async fn listing_files_without_a_root_still_answers() {
     .await;
 
     let Some(Event::FilesListed { files, truncated }) = event else {
-        return;
+        return Err(format!("expected FilesListed, got {event:?}").into());
     };
     assert!(files.is_empty());
     assert!(!truncated);
+    Ok(())
 }
 
 #[tokio::test]
-async fn reading_a_directory_answers_with_its_children() {
-    let Some((dir, backend, mut events)) = workspace(&[("src/lib.rs", b"x"), ("top.rs", b"x")])
-    else {
-        return;
-    };
+async fn reading_a_directory_answers_with_its_children() -> TestResult {
+    let (dir, backend, mut events) =
+        workspace(&[("src/lib.rs", b"x"), ("top.rs", b"x")]).ok_or("a scratch workspace")?;
 
     let event = answer(
         &backend,
@@ -191,25 +191,22 @@ async fn reading_a_directory_answers_with_its_children() {
     .await;
 
     let Some(Event::DirectoryListed { result, .. }) = event else {
-        return;
+        return Err(format!("expected DirectoryListed, got {event:?}").into());
     };
-    let Ok(entries) = result else {
-        return;
-    };
+    let entries = result?;
     let labels: Vec<String> = entries
         .iter()
         .map(|entry| entry.label().to_owned())
         .collect();
     assert_eq!(labels, ["src", "top.rs"]);
+    Ok(())
 }
 
 /// The mutation rides back on the answer so a client can refresh the right
 /// directories without keeping its own request-to-path map.
 #[tokio::test]
-async fn a_mutation_is_echoed_back_with_its_result() {
-    let Some((dir, backend, mut events)) = workspace(&[]) else {
-        return;
-    };
+async fn a_mutation_is_echoed_back_with_its_result() -> TestResult {
+    let (dir, backend, mut events) = workspace(&[]).ok_or("a scratch workspace")?;
     let path = dir.path().join("created.rs");
 
     let event = answer(
@@ -222,18 +219,17 @@ async fn a_mutation_is_echoed_back_with_its_result() {
     .await;
 
     let Some(Event::PathMutated { mutation, result }) = event else {
-        return;
+        return Err(format!("expected PathMutated, got {event:?}").into());
     };
     assert_eq!(result, Ok(()));
     assert_eq!(mutation.target(), &path);
     assert!(path.is_file());
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_failed_mutation_reports_why_rather_than_going_silent() {
-    let Some((dir, backend, mut events)) = workspace(&[]) else {
-        return;
-    };
+async fn a_failed_mutation_reports_why_rather_than_going_silent() -> TestResult {
+    let (dir, backend, mut events) = workspace(&[]).ok_or("a scratch workspace")?;
 
     let event = answer(
         &backend,
@@ -247,18 +243,17 @@ async fn a_failed_mutation_reports_why_rather_than_going_silent() {
     .await;
 
     let Some(Event::PathMutated { result, .. }) = event else {
-        return;
+        return Err(format!("expected PathMutated, got {event:?}").into());
     };
     assert!(result.is_err());
+    Ok(())
 }
 
 /// `SetViewport` is fire-and-forget: it must not answer, and above all must not
 /// wedge a session when it names a document that was never opened.
 #[tokio::test]
-async fn setting_a_viewport_for_an_unknown_document_is_harmless() {
-    let Some((_dir, backend, mut events)) = workspace(&[("a.rs", b"x")]) else {
-        return;
-    };
+async fn setting_a_viewport_for_an_unknown_document_is_harmless() -> TestResult {
+    let (_dir, backend, mut events) = workspace(&[("a.rs", b"x")]).ok_or("a scratch workspace")?;
     let id = backend.next_id();
     assert!(
         backend
@@ -287,6 +282,7 @@ async fn setting_a_viewport_for_an_unknown_document_is_harmless() {
         matches!(event, Some(Event::FilesListed { .. })),
         "{event:?}"
     );
+    Ok(())
 }
 
 /// View state is opaque durability, not interpretation: whatever bytes a client
@@ -336,18 +332,12 @@ fn an_undeclared_viewport_means_whole_document_highlights() {
 /// Two views of one document scroll independently; the backend must cover the
 /// union, or whichever view lost the race renders unhighlighted.
 #[test]
-fn two_views_of_one_document_widen_the_range_to_their_union() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn two_views_of_one_document_widen_the_range_to_their_union() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path: PathBuf = dir.path().join("wide.rs");
-    if std::fs::write(&path, "fn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n")?;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
 
     session.handle(
         RequestId(2),
@@ -373,23 +363,18 @@ fn two_views_of_one_document_widen_the_range_to_their_union() {
         session.viewport_lines(doc),
         Some((1_000 - margin, 2_040 + margin))
     );
+    Ok(())
 }
 
 /// A viewport at the top of a file would underflow its margin. Saturating is the
 /// difference between "start at line 0" and a panic.
 #[test]
-fn a_viewport_at_the_top_of_a_file_clamps_its_margin() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn a_viewport_at_the_top_of_a_file_clamps_its_margin() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("top.rs");
-    if std::fs::write(&path, "fn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n")?;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
 
     session.handle(
         RequestId(2),
@@ -402,24 +387,19 @@ fn a_viewport_at_the_top_of_a_file_clamps_its_margin() {
     );
 
     assert_eq!(session.viewport_lines(doc).map(|lines| lines.0), Some(0));
+    Ok(())
 }
 
 /// Declaring a viewport must republish: the spans the client holds were scoped to
 /// the *previous* window, so without a fresh snapshot the newly revealed lines
 /// stay unhighlighted until something else happens to touch the document.
 #[test]
-fn declaring_a_new_viewport_republishes_the_document() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn declaring_a_new_viewport_republishes_the_document() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("scroll.rs");
-    if std::fs::write(&path, "fn main() {}\n".repeat(500)).is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n".repeat(500))?;
     let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
     while snaps.try_recv().is_some() {}
 
     session.handle(
@@ -436,24 +416,19 @@ fn declaring_a_new_viewport_republishes_the_document() {
         snaps.try_recv().is_some(),
         "a new viewport should publish a snapshot scoped to it"
     );
+    Ok(())
 }
 
 /// A client sends its viewport on every scroll, and most scrolls land inside the
 /// margin already covered. Republishing each time would spend a frame — and, on a
 /// connection, a payload — to say nothing new.
 #[test]
-fn re_declaring_an_unchanged_viewport_does_not_republish() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn re_declaring_an_unchanged_viewport_does_not_republish() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("scroll.rs");
-    if std::fs::write(&path, "fn main() {}\n".repeat(500)).is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n".repeat(500))?;
     let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
     let viewport = DocumentCommand::SetViewport {
         doc,
         view: ViewId(1),
@@ -466,23 +441,18 @@ fn re_declaring_an_unchanged_viewport_does_not_republish() {
     session.handle(RequestId(3), viewport);
 
     assert!(snaps.try_recv().is_none());
+    Ok(())
 }
 
 /// A viewport reversed by a drag-select upward must still describe a range, not an
 /// empty one — otherwise selecting backwards blanks the highlighting.
 #[test]
-fn a_reversed_viewport_is_normalized_rather_than_empty() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn a_reversed_viewport_is_normalized_rather_than_empty() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("reversed.rs");
-    if std::fs::write(&path, "fn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n")?;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
 
     session.handle(
         RequestId(2),
@@ -499,23 +469,18 @@ fn a_reversed_viewport_is_normalized_rather_than_empty() {
         session.viewport_lines(doc),
         Some((400 - margin, 900 + margin))
     );
+    Ok(())
 }
 
 /// Closing a document must drop its viewports, or the next document to reuse that
 /// id inherits a window nobody declared for it.
 #[test]
-fn closing_a_document_forgets_its_viewport() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn closing_a_document_forgets_its_viewport() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("closed.rs");
-    if std::fs::write(&path, "fn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn main() {}\n")?;
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-    let Some(doc) = open_document(&mut session, &mut events, path) else {
-        return;
-    };
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
     session.handle(
         RequestId(2),
         DocumentCommand::SetViewport {
@@ -530,6 +495,7 @@ fn closing_a_document_forgets_its_viewport() {
     session.handle(RequestId(3), DocumentCommand::Close { doc });
 
     assert_eq!(session.viewport_lines(doc), None);
+    Ok(())
 }
 
 /// A closed view must stop widening the window: the document stays open while
