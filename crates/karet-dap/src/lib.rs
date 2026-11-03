@@ -26,6 +26,7 @@
 //! surfaced as [`DebugEvent::BreakpointChanged`].
 
 mod conn;
+mod port_owner;
 mod types;
 
 use std::path::Path;
@@ -42,6 +43,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::port_owner::PortOwner;
 pub use crate::types::Breakpoint;
 pub use crate::types::Capabilities;
 pub use crate::types::DebugEvent;
@@ -57,13 +59,14 @@ const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The delay between TCP connection attempts while the adapter boots.
 const TCP_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// How long a spawn-then-TCP adapter must outlive the connect before the
-/// connection is trusted. Another process can take the chosen port between
-/// the pick and the adapter's bind; the client then reaches that process,
-/// and the adapter, failing to bind, exits. An exit inside this window marks
-/// the connection as foreign.
+/// connection is trusted, where the socket table cannot say who listens on
+/// the port (see [`port_owner`]). Another process can take the chosen port
+/// between the pick and the adapter's bind; the client then reaches that
+/// process, and the adapter, failing to bind, exits. An exit inside this
+/// window marks the connection as foreign.
 const TCP_SETTLE: Duration = Duration::from_millis(250);
 /// How many spawn-then-TCP launches, each on a freshly chosen port, run
-/// before an adapter that keeps exiting is a launch error.
+/// before an adapter that keeps losing its port is a launch error.
 const TCP_LAUNCH_ATTEMPTS: usize = 3;
 
 /// Errors produced by the DAP client.
@@ -162,8 +165,9 @@ impl DapClient {
     /// `Command::new(&spec.command).args(&spec.args)`.
     ///
     /// # Errors
-    /// Returns [`DapError::Launch`] if the process cannot start or (under
-    /// [`DapTransport::Tcp`]) its socket never accepts.
+    /// Returns [`DapError::Launch`] if no free port is available, the process
+    /// cannot start, or (under [`DapTransport::Tcp`]) its socket never
+    /// accepts or the adapter loses its port on every attempt.
     pub async fn spawn(spec: &DapSpec) -> Result<Self, DapError> {
         Self::spawn_with(spec, |spec| {
             let mut command = tokio::process::Command::new(&spec.command);
@@ -190,17 +194,21 @@ impl DapClient {
     /// stall the adapter, and the process is killed when the client drops.
     ///
     /// The TCP port is chosen free but not held, so another process can take
-    /// it before the adapter binds it. An adapter that exits before the
-    /// connect, or within a short settle window after it, is taken to have
-    /// lost its port: any connection made is dropped as foreign, and the
-    /// adapter is relaunched on a fresh port (`prepare` then runs again), a
-    /// bounded number of times.
+    /// it before the adapter binds it. On Linux the client connects only once
+    /// the kernel's socket table places every listener on the port inside the
+    /// adapter's process tree; a listener anywhere else means the port is
+    /// lost, and the client never connects to it. Where the socket table
+    /// cannot be read, an adapter that exits before the connect, or within a
+    /// short settle window after it, is taken to have lost its port, and any
+    /// connection made is dropped as foreign. Either way the adapter is killed
+    /// and relaunched on a fresh port (`prepare` then runs again), a bounded
+    /// number of times.
     ///
     /// # Errors
     /// Propagates the error `prepare` returns. Returns [`DapError::Launch`]
     /// if no free port is available, the process cannot start, or (under
-    /// [`DapTransport::Tcp`]) its socket never accepts or the adapter exits
-    /// before serving it on every attempt.
+    /// [`DapTransport::Tcp`]) its socket never accepts or the adapter loses
+    /// its port on every attempt.
     pub async fn spawn_with<F>(spec: &DapSpec, mut prepare: F) -> Result<Self, DapError>
     where
         F: FnMut(&DapSpec) -> Result<tokio::process::Command, DapError>,
@@ -208,7 +216,7 @@ impl DapClient {
         match spec.transport {
             DapTransport::Stdio => Self::spawn_stdio(prepare(spec)?),
             DapTransport::Tcp => {
-                let mut last_exit = String::new();
+                let mut last_loss = String::new();
                 for _ in 0..TCP_LAUNCH_ATTEMPTS {
                     let port =
                         free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
@@ -218,15 +226,15 @@ impl DapClient {
                     };
                     match Self::spawn_tcp(prepare(&resolved)?, port).await? {
                         TcpLaunch::Connected(client) => return Ok(*client),
-                        TcpLaunch::Exited(why) => {
-                            tracing::debug!(port, %why, "debug adapter exited before serving its port; relaunching");
-                            last_exit = why;
+                        TcpLaunch::Lost(why) => {
+                            tracing::debug!(port, %why, "debug adapter lost its port; relaunching");
+                            last_loss = why;
                         },
                     }
                 }
                 Err(DapError::Launch(format!(
-                    "the adapter exited before serving its port on all {TCP_LAUNCH_ATTEMPTS} \
-                     attempts (another process may have taken the port; last exit: {last_exit})"
+                    "the adapter could not serve its port on any of {TCP_LAUNCH_ATTEMPTS} \
+                     attempts (another process may have taken it; last: {last_loss})"
                 )))
             },
         }
@@ -254,9 +262,12 @@ impl DapClient {
     /// Launch `command`, whose child listens on `port` (already substituted
     /// into its arguments), then connect with retries while it boots.
     ///
-    /// Reports [`TcpLaunch::Exited`] when the child exits before the connect
-    /// or within [`TCP_SETTLE`] after it; any connection made is then to a
-    /// process that took the port first, and is dropped.
+    /// Connects only while [`port_owner::owner`] places the port's listeners
+    /// in the child's process tree, or cannot tell. Reports
+    /// [`TcpLaunch::Lost`] when a listener there belongs to another process,
+    /// when the child exits before the connect, or, where the owner cannot be
+    /// told, when it exits within [`TCP_SETTLE`] after it. Any connection made
+    /// is then dropped, and the child killed.
     async fn spawn_tcp(
         mut command: tokio::process::Command,
         port: u16,
@@ -272,14 +283,32 @@ impl DapClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| DapError::Launch(e.to_string()))?;
+        let ready = |child: &mut tokio::process::Child| {
+            if let Some(why) = exit_of(child) {
+                return Readiness::Lost(format!("exited ({why})"));
+            }
+            match port_owner::owner(port, child.id()) {
+                PortOwner::Vacant => Readiness::NotYet,
+                PortOwner::Adapter | PortOwner::Unknown => Readiness::Try,
+                PortOwner::Foreign => Readiness::Lost(foreign(port)),
+            }
+        };
         let stream =
-            match connect_with_retries(port, TCP_CONNECT_TIMEOUT, || exit_of(&mut child)).await? {
+            match connect_with_retries(port, TCP_CONNECT_TIMEOUT, || ready(&mut child)).await? {
                 TcpConnect::Connected(stream) => stream,
-                TcpConnect::Exited(why) => return Ok(TcpLaunch::Exited(why)),
+                TcpConnect::Lost(why) => return Ok(TcpLaunch::Lost(why)),
             };
-        if let Some(why) = exited_within(&mut child, TCP_SETTLE).await {
-            drop(stream);
-            return Ok(TcpLaunch::Exited(why));
+        // Checked again past the connect: the listener checked could have
+        // closed and another taken the port before it. A vacant port is the
+        // adapter's listener closed after accepting this one connection.
+        match port_owner::owner(port, child.id()) {
+            PortOwner::Adapter | PortOwner::Vacant => {},
+            PortOwner::Foreign => return Ok(TcpLaunch::Lost(foreign(port))),
+            PortOwner::Unknown => {
+                if let Some(why) = exited_within(&mut child, TCP_SETTLE).await {
+                    return Ok(TcpLaunch::Lost(format!("exited ({why})")));
+                }
+            },
         }
         let (read, write) = stream.into_split();
         Ok(TcpLaunch::Connected(Box::new(Self {
@@ -684,20 +713,35 @@ fn free_port() -> std::io::Result<u16> {
 
 /// The outcome of one spawn-then-TCP launch.
 enum TcpLaunch {
-    /// The adapter served its port and outlived the settle window.
+    /// The adapter served its port.
     Connected(Box<DapClient>),
-    /// The adapter exited before serving its port (described by the payload),
-    /// most likely because another process took the port first.
-    Exited(String),
+    /// The adapter lost its port (described by the payload), most likely
+    /// because another process took it first.
+    Lost(String),
+}
+
+/// Whether [`connect_with_retries`] may connect now.
+enum Readiness {
+    /// The adapter lost its port (described by the payload): stop.
+    Lost(String),
+    /// Nothing listens on the port yet: wait and ask again.
+    NotYet,
+    /// Connect.
+    Try,
+}
+
+/// Describe `port` as held by a process other than the adapter.
+fn foreign(port: u16) -> String {
+    format!("port {port} is held by another process")
 }
 
 /// The outcome of [`connect_with_retries`].
 enum TcpConnect {
     /// A connection to a listener on the port.
     Connected(tokio::net::TcpStream),
-    /// The adapter exited (described by the payload) before any connect
-    /// succeeded.
-    Exited(String),
+    /// The adapter lost its port (described by the payload) before any
+    /// connect succeeded.
+    Lost(String),
 }
 
 /// The exit status of `child` if it has exited, described for an error. A
@@ -728,10 +772,11 @@ async fn exited_within(child: &mut tokio::process::Child, window: Duration) -> O
 /// Connect to the adapter's socket, retrying while it boots, for at most
 /// `timeout` (a parameter so tests can exercise the deadline quickly).
 ///
-/// `exited` is asked before every attempt whether the adapter has exited; once
-/// it has, nothing will ever listen for it on `port`, so the retries stop with
-/// [`TcpConnect::Exited`] rather than wait out the deadline or reach whatever
-/// else took the port.
+/// `ready` is asked before every attempt whether to connect. Once the adapter
+/// has lost its port nothing will ever listen for it there, so the retries
+/// stop with [`TcpConnect::Lost`] rather than wait out the deadline or reach
+/// whatever else took the port; while nothing listens yet, the attempt is
+/// skipped like a refusal.
 ///
 /// A connection to itself is dropped and retried like a refusal: while the
 /// adapter has not bound its port yet, a loopback connect can pick that very
@@ -740,22 +785,26 @@ async fn exited_within(child: &mut tokio::process::Child, window: Duration) -> O
 async fn connect_with_retries(
     port: u16,
     timeout: Duration,
-    mut exited: impl FnMut() -> Option<String>,
+    mut ready: impl FnMut() -> Readiness,
 ) -> Result<TcpConnect, DapError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if let Some(why) = exited() {
-            return Ok(TcpConnect::Exited(why));
-        }
-        let attempt = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
-            Ok(stream) if is_self_connect(&stream) => {
-                discard_self_connect(stream);
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "connected to itself (nothing listening yet)",
-                ))
+        let attempt = match ready() {
+            Readiness::Lost(why) => return Ok(TcpConnect::Lost(why)),
+            Readiness::NotYet => Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "nothing listening yet",
+            )),
+            Readiness::Try => match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) if is_self_connect(&stream) => {
+                    discard_self_connect(stream);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "connected to itself (nothing listening yet)",
+                    ))
+                },
+                other => other,
             },
-            other => other,
         };
         match attempt {
             Ok(stream) => return Ok(TcpConnect::Connected(stream)),
