@@ -39,14 +39,15 @@ impl Tab {
     /// Returns immediately with an empty tab of the right shape; the content
     /// follows from the backend, which also corrects the guess when the bytes
     /// disagree with the name or the file is over the
-    /// [size guard](karet_filetype::SIZE_GUARD). A text tab is marked
-    /// [`size_unchecked`](Self::size_unchecked), so its document is opened only
-    /// once the file is known to be under the guard.
+    /// [size guard](karet_filetype::SIZE_GUARD). A text tab, and a DOCX or
+    /// notebook preview, is marked [`size_unchecked`](Self::size_unchecked): the
+    /// backend reads the whole file to load or convert it, so that is asked for
+    /// only once the file is known to be under the guard.
     #[must_use]
     pub fn open(path: &Path) -> Self {
         let kind = kind_from_path(path);
         let mut tab = reserve(path, kind);
-        tab.size_unchecked = is_text_kind(kind);
+        tab.size_unchecked = is_text_kind(kind) || is_converted_kind(kind);
         tab
     }
 
@@ -83,8 +84,23 @@ pub(crate) fn kind_from_path(path: &Path) -> FileKind {
 }
 
 /// Reserve the tab `kind` calls for, with no content in it yet.
+///
+/// A tab the client fills from raw bytes (a hex view, an image or PDF still
+/// being read) carries [`fill_since`](Tab::fill_since): it renders blank, then a
+/// muted loading line past the shared reveal delay, rather than as the
+/// placeholder an unreadable file settles at. A placeholder nothing will fill
+/// (a too-large verdict, a kind this build cannot render) is already the
+/// answer, so it is not loading.
 #[must_use]
 pub(crate) fn reserve(path: &Path, kind: FileKind) -> Tab {
+    let mut tab = reserve_kind(path, kind);
+    if needs_bytes(kind) {
+        tab.fill_since = Some(Pending::start());
+    }
+    tab
+}
+
+fn reserve_kind(path: &Path, kind: FileKind) -> Tab {
     match kind {
         // The session loads and decodes the text once the document registers;
         // the tab is reserved empty and fills from the first snapshot. Invalid
@@ -157,6 +173,19 @@ pub(crate) fn realize(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> 
 #[must_use]
 pub(crate) fn is_text_kind(kind: FileKind) -> bool {
     matches!(kind, FileKind::Text | FileKind::Markdown | FileKind::Cbor)
+}
+
+/// Whether `kind` reserves a preview the backend fills by converting the file
+/// (`DocumentCommand::Convert`) in this build.
+#[must_use]
+pub(crate) fn is_converted_kind(kind: FileKind) -> bool {
+    match kind {
+        #[cfg(feature = "docx")]
+        FileKind::Docx => true,
+        #[cfg(feature = "notebook")]
+        FileKind::Notebook => true,
+        _ => false,
+    }
 }
 
 /// Whether a tab of this kind needs the file's bytes fetched from the backend.

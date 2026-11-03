@@ -45,7 +45,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = Tab::open(path);
+        let tab = self.open_tab(path);
         self.push_tab(tab);
     }
 
@@ -80,7 +80,7 @@ impl App {
             }
             return;
         }
-        let mut tab = Tab::open(path);
+        let mut tab = self.open_tab(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -190,14 +190,17 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = Tab::open_ignoring_size(&path);
+        let mut tab = self.open_tab_ignoring_size(&path);
         tab.view = self.alloc_view();
+        // Only a tab the client fills from raw bytes is classified; a document
+        // or a conversion is asked for when the tab registers.
+        let reads_bytes = matches!(tab.kind, TabKind::Hex { .. } | TabKind::Placeholder { .. });
         self.tabs[self.active] = tab;
         self.keyboard.focus_editor();
         // Asked before registering: the reserved tab's own classification would
         // apply the size guard again, and finding this one in flight it asks
         // for nothing more.
-        if !crate::tab::open::is_text_kind(crate::tab::open::kind_from_path(&path)) {
+        if reads_bytes {
             self.request_classification(&path, true);
         }
         self.register_doc(self.active);

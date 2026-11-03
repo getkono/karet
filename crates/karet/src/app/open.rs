@@ -35,20 +35,66 @@ use crate::tab::open;
 /// few round trips as the backend is willing to answer in.
 const CHUNK: u64 = 1024 * 1024;
 
-/// Whether `tab` is a code tab on `path` whose document waits on the size guard.
+/// How many leading bytes a co-located open reads to classify a file: the same
+/// sample the backend's classification reads.
+const HEAD_BYTES: u64 = 8 * 1024;
+
+/// Whether `tab` is a code tab with no document, or a conversion preview not yet
+/// requested, on `path` — a tab whose content waits on the size guard.
 fn size_waiting(tab: &crate::tab::Tab, path: &Path) -> bool {
-    tab.size_unchecked && matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if p == path)
+    tab.size_unchecked && is_unregistered(tab, path)
+}
+
+/// Whether `tab` is on `path` and has not asked the backend for its content yet:
+/// a code tab with no document, or a DOCX or notebook preview still pending.
+fn is_unregistered(tab: &crate::tab::Tab, path: &Path) -> bool {
+    match &tab.kind {
+        TabKind::Code {
+            path: p, doc: None, ..
+        } => p == path,
+        TabKind::MarkdownPreview {
+            path: p,
+            pending_since: Some(_),
+            ..
+        } => p == path,
+        _ => false,
+    }
 }
 
 /// Whether `tab` is still waiting for its content: a byte view with no bytes, a
-/// placeholder, or a code tab with no document. Only these are replaced when
-/// content or a verdict arrives; a tab already showing the file is left alone.
+/// placeholder, a code tab with no document, or a conversion preview not yet
+/// answered. Only these are replaced when content or a verdict arrives; a tab
+/// already showing the file is left alone.
 fn is_reservation(tab: &crate::tab::Tab) -> bool {
     match &tab.kind {
         TabKind::Hex { bytes, .. } => bytes.is_empty(),
-        TabKind::Placeholder { .. } | TabKind::Code { doc: None, .. } => true,
+        TabKind::Placeholder { .. }
+        | TabKind::Code { doc: None, .. }
+        | TabKind::MarkdownPreview {
+            pending_since: Some(_),
+            ..
+        } => true,
         _ => false,
     }
+}
+
+/// The leading bytes and length of a file on this machine's disk, as a
+/// co-located open classifies it; empty and zero for anything that is not a
+/// regular file (a file not created yet opens empty, and a FIFO is never opened).
+fn local_head(path: &Path) -> (Vec<u8>, u64) {
+    use std::io::Read;
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return (Vec::new(), 0);
+    };
+    if !metadata.is_file() {
+        return (Vec::new(), 0);
+    }
+    let mut head = Vec::new();
+    if let Ok(file) = std::fs::File::open(path) {
+        let _ = file.take(HEAD_BYTES).read_to_end(&mut head);
+    }
+    (head, metadata.len())
 }
 
 /// A file being fetched a chunk at a time.
@@ -62,6 +108,36 @@ pub(super) struct PendingBytes {
 }
 
 impl App {
+    /// Reserve the tab `path` should open in.
+    ///
+    /// A co-located workspace routes on the file's content, since its disk is
+    /// right here: a stat and an 8 KiB read settle a name that lies (an
+    /// extensionless PNG or PDF, an ELF binary, text full of NULs) and the size
+    /// guard before the tab exists, as a co-located open always did. A remote
+    /// workspace routes on the name and is corrected when the backend's
+    /// classification answers.
+    pub(super) fn open_tab(&self, path: &Path) -> crate::tab::Tab {
+        if self.workspace_remote {
+            return crate::tab::Tab::open(path);
+        }
+        let (head, len) = local_head(path);
+        let mut tab = open::reserve(path, karet_filetype::classify(path, &head, len));
+        tab.size_unchecked = false; // settled by the stat above
+        tab
+    }
+
+    /// [`open_tab`](Self::open_tab) for the "open anyway" override: the size
+    /// guard is waived, so a large file opens as what its content says it is.
+    pub(super) fn open_tab_ignoring_size(&self, path: &Path) -> crate::tab::Tab {
+        if self.workspace_remote {
+            return crate::tab::Tab::open_ignoring_size(path);
+        }
+        let (head, _) = local_head(path);
+        let mut tab = open::reserve(path, karet_filetype::classify_ignoring_size(path, &head));
+        tab.size_unchecked = false;
+        tab
+    }
+
     /// Fetch the content of a tab reserved for raw bytes.
     ///
     /// Idempotent: attaching a backend re-walks every open tab, and a user can
@@ -110,38 +186,48 @@ impl App {
         if expected != path {
             return;
         }
-        let Ok(class) = result else {
-            // A text tab waiting on the size guard opens anyway: the session
-            // decides what an unreadable path is (a file not yet created opens
-            // empty, anything else reports why), and nothing over the guard
-            // can be read without a classification succeeding first.
-            if self.any_tab(|tab| size_waiting(tab, path)) {
-                self.for_each_tab(|tab| {
-                    if size_waiting(tab, path) {
-                        tab.size_unchecked = false;
-                    }
-                });
-                self.register_unregistered(path);
-            }
-            // Otherwise the reserved tab already renders as a placeholder, which
-            // is the honest thing to show for a file that cannot be read.
-            return;
+        let class = match result {
+            Ok(class) => class,
+            Err(error) => {
+                // A tab waiting on the size guard opens anyway: the session
+                // decides what an unreadable path is (a file not yet created
+                // opens empty, anything else reports why), and nothing over the
+                // guard can be read without a classification succeeding first.
+                if self.any_tab(|tab| size_waiting(tab, path)) {
+                    self.for_each_tab(|tab| {
+                        if size_waiting(tab, path) {
+                            tab.size_unchecked = false;
+                        }
+                    });
+                    self.register_unregistered(path);
+                }
+                // A tab reserved for bytes says why it will never get them,
+                // rather than staying an empty view.
+                self.fail_byte_reservations(path, &error);
+                return;
+            },
         };
-        // A text tab waiting on the size guard: under it, the document opens;
-        // over it, or not text after all, the tab becomes what the bytes say.
+        // A tab waiting on the size guard: under it, its content is asked for;
+        // over it, or not what the name said after all, the tab becomes what
+        // the bytes say.
         if self.any_tab(|tab| size_waiting(tab, path)) {
             self.for_each_tab(|tab| {
                 if size_waiting(tab, path) {
                     tab.size_unchecked = false;
                 }
             });
-            if open::is_text_kind(class.kind) {
+            let converted = open::is_converted_kind(class.kind);
+            if open::is_text_kind(class.kind)
+                || (converted && open::kind_from_path(path) == class.kind)
+            {
                 self.register_unregistered(path);
                 return;
             }
             self.replace_tab_for(path, || open::reserve(path, class.kind));
             if open::needs_bytes(class.kind) {
                 self.request_bytes(path, class.kind, 0);
+            } else if converted {
+                self.register_unregistered(path);
             }
             return;
         }
@@ -202,9 +288,7 @@ impl App {
         let waiting = |tabs: &[crate::tab::Tab]| -> Vec<usize> {
             tabs.iter()
                 .enumerate()
-                .filter(|(_, tab)| {
-                    matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if p == path)
-                })
+                .filter(|(_, tab)| is_unregistered(tab, path))
                 .map(|(idx, _)| idx)
                 .collect()
         };
@@ -239,18 +323,22 @@ impl App {
     /// Fetch `path`'s bytes for the hex view a text open fell back to, unless
     /// they are already on the way.
     pub(super) fn request_fallback_bytes(&mut self, path: &Path) {
-        if self
-            .pending_bytes
-            .values()
-            .any(|pending| pending.path == path)
-        {
-            return;
-        }
         self.request_bytes(path, FileKind::Binary, 0);
     }
 
-    /// Request the next chunk of `path`.
+    /// Start reading `path` from `offset`, for a tab still reserved for it.
+    ///
+    /// One read per path at a time: a verdict arriving while a read is already
+    /// streaming (a reopen, a classification answered late) leaves it to
+    /// finish, rather than starting a second stream from the beginning.
     pub(super) fn request_bytes(&mut self, path: &Path, kind: FileKind, offset: u64) {
+        let streaming = self
+            .pending_bytes
+            .values()
+            .any(|pending| pending.path == path);
+        if streaming || !self.awaits_bytes(path) {
+            return;
+        }
         let Some(id) = self.send(WorkspaceCommand::ReadFileBytes {
             path: path.to_path_buf(),
             offset,
@@ -258,20 +346,37 @@ impl App {
         }) else {
             return;
         };
-        let bytes = self
-            .pending_bytes
-            .values()
-            .find(|pending| pending.path == path)
-            .map(|pending| pending.bytes.clone())
-            .unwrap_or_default();
         self.pending_bytes.insert(
             id,
             PendingBytes {
                 path: path.to_path_buf(),
                 kind,
-                bytes,
+                bytes: Vec::new(),
             },
         );
+    }
+
+    /// Whether any tab, in any pane, is still reserved for `path`'s content.
+    fn awaits_bytes(&self, path: &Path) -> bool {
+        self.any_tab(|tab| {
+            !tab.is_diff() && tab.path().is_some_and(|open| open == path) && is_reservation(tab)
+        })
+    }
+
+    /// Mark every tab reserved for `path`'s bytes as failed with `error`, so it
+    /// says why rather than staying an empty view.
+    fn fail_byte_reservations(&mut self, path: &Path, error: &str) {
+        self.for_each_tab(|tab| {
+            let reserved = match &tab.kind {
+                TabKind::Hex { path: p, bytes, .. } => p == path && bytes.is_empty(),
+                TabKind::Placeholder { path: p, .. } => p == path && tab.fill_since.is_some(),
+                _ => false,
+            };
+            if reserved {
+                tab.fill_since = None;
+                tab.fill_error = Some(error.to_owned());
+            }
+        });
     }
 
     /// Accumulate a chunk, and build the tab once the file is complete.
@@ -284,11 +389,19 @@ impl App {
         let Some(mut pending) = self.pending_bytes.remove(&id) else {
             return;
         };
-        let Ok(chunk) = result else {
-            // The reserved placeholder is already the right thing to show.
-            return;
-        };
         if pending.path != path {
+            return;
+        }
+        let chunk = match result {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                self.fail_byte_reservations(path, &error);
+                return;
+            },
+        };
+        // Every tab waiting for this file closed, or was replaced, while it was
+        // being read: stop rather than read the rest for nobody.
+        if !self.awaits_bytes(path) {
             return;
         }
         pending.bytes.extend_from_slice(&chunk.bytes);
@@ -448,18 +561,29 @@ impl App {
             self.explorer.show_hidden(),
             self.explorer.respect_gitignore(),
         );
-        for path in self.explorer.take_missing() {
+        let wanted = self.explorer.take_missing();
+        // A listed directory just expanded is read again too: the tree serves
+        // listings it holds, and nothing reports a change inside a hidden or
+        // ignored directory (`target/`, `node_modules/`), so looking at one is
+        // the moment to bring it up to date. Its rows stay until the answer.
+        let stale = self.explorer.take_stale();
+        for path in stale {
             if self.pending_listings.values().any(|open| *open == path) {
                 continue;
             }
-            let Some(id) = self.send(WorkspaceCommand::ReadDirectory {
-                path: path.clone(),
-                show_hidden,
-                respect_gitignore,
-            }) else {
-                // No backend attached yet. Put the miss back rather than dropping
-                // it: the tree must keep reporting itself incomplete, or anything
-                // waiting on this level concludes it arrived empty.
+            if let Some(id) = self.send_listing(&path, show_hidden, respect_gitignore) {
+                self.pending_listings.insert(id, path);
+            }
+        }
+        for path in wanted {
+            if self.pending_listings.values().any(|open| *open == path) {
+                continue;
+            }
+            let Some(id) = self.send_listing(&path, show_hidden, respect_gitignore) else {
+                // No backend attached yet, or it has closed. Put the miss back
+                // rather than dropping it: the tree must keep reporting itself
+                // incomplete, or anything waiting on this level concludes it
+                // arrived empty.
                 self.explorer.mark_missing(path);
                 continue;
             };
@@ -526,11 +650,7 @@ impl App {
             self.explorer.respect_gitignore(),
         );
         for path in dirs {
-            match self.send(WorkspaceCommand::ReadDirectory {
-                path: path.clone(),
-                show_hidden,
-                respect_gitignore,
-            }) {
+            match self.send_listing(&path, show_hidden, respect_gitignore) {
                 Some(id) => {
                     self.pending_listings.insert(id, path);
                 },
@@ -539,11 +659,45 @@ impl App {
         }
     }
 
-    /// Forget the listings for `dirs`, so the tree fetches them again.
-    pub(super) fn invalidate_listings(&mut self, dirs: &[PathBuf]) {
-        for dir in dirs {
-            self.explorer.invalidate(dir);
-        }
-        self.build_explorer();
+    /// Ask for one directory listing, without reporting a send that fails.
+    ///
+    /// The tree asks again on every build until a listing arrives, so a closed
+    /// backend would otherwise raise a failure notification each frame. That
+    /// failure is reported once, when the backend's streams close.
+    fn send_listing(
+        &self,
+        path: &Path,
+        show_hidden: bool,
+        respect_gitignore: bool,
+    ) -> Option<RequestId> {
+        let backend = self.backend.as_ref()?;
+        let id = backend.next_id();
+        let command = WorkspaceCommand::ReadDirectory {
+            path: path.to_path_buf(),
+            show_hidden,
+            respect_gitignore,
+        };
+        backend.send(id, command.into()).ok().map(|()| id)
+    }
+
+    /// Read again the listed directories a filesystem mutation touched, keeping
+    /// their rows (and the cursor on them) until each answer replaces them.
+    ///
+    /// Each end's parent is read where the tree lists it; where it does not —
+    /// a path created under folders that did not exist yet — its nearest listed
+    /// ancestor is, which is where the first new folder appears.
+    pub(super) fn refresh_mutated_listings(&mut self, dirs: &[PathBuf]) {
+        let mut listed: Vec<PathBuf> = dirs
+            .iter()
+            .filter_map(|dir| {
+                dir.ancestors()
+                    .take_while(|ancestor| ancestor.starts_with(&self.root))
+                    .find(|ancestor| self.explorer.has_listing(ancestor))
+                    .map(Path::to_path_buf)
+            })
+            .collect();
+        listed.sort();
+        listed.dedup();
+        self.refetch_listings(listed);
     }
 }

@@ -74,14 +74,18 @@ additive rather than a rewrite: `crates/karet/src/ui/**` needed no changes.
 Three properties keep the steady state small:
 
 - **Highlights are viewport-scoped.** A view resolves them per rendered line, so
-  spans outside it are never read. `DocumentCommand::SetViewport` bounds them to
-  the visible window plus a 200-line margin, so an ordinary scroll needs no round
-  trip at all, and `DocumentCommand::ClearViewport` withdraws a closed view's
-  range. Only a client of a remote backend declares viewports; a local session
-  keeps whole-document highlights, which cost it nothing to share.
+  it reads spans only for the lines it shows: its window, and the sticky-scroll
+  headers of the blocks it is inside. `DocumentCommand::SetViewport` bounds them
+  to the visible window plus a 200-line margin (and those headers, however far
+  above it they are). A scroll that stays inside the window last published
+  republishes nothing, so an ordinary scroll needs no round trip at all, and
+  `DocumentCommand::ClearViewport` withdraws a closed view's range. Only a
+  client of a remote backend declares viewports; a local session keeps
+  whole-document highlights, which cost it nothing to share.
 - **Only differences travel.** The `Arc`s in a snapshot are the session's own, so
-  pointer identity settles "unchanged" without comparing spans. A keystroke's
-  update carries a highlight slice and little else.
+  pointer identity settles "unchanged" without comparing spans; a narrowed
+  highlight slice keeps its `Arc` across republishes while its spans are the
+  same. A keystroke's update carries a highlight slice and little else.
 - **The client's own edits are never echoed back.** The backend tracks which
   versions the client produced, so text is sent only when the *backend* moved it —
   a format-on-save, an LSP rename, a reload, an undo. When it did, one edit is
@@ -99,7 +103,9 @@ client has. When that happens the client discards it and asks for the document
 again (`ClientFrame::Resync`); the backend forgets what it believed the client had
 and describes it from scratch. Divergence is recoverable by design — an early
 version was not, and a document that diverged stayed blank for the rest of the
-session.
+session. Until that description arrives the client holds no replica, and an
+update carrying no full text — one in flight when the replica was discarded — is
+dropped rather than applied to nothing.
 
 ## Who owns what
 
@@ -167,7 +173,13 @@ turn, always attaches as fresh (sequence 0).
 A frame is capped at 64 MiB of uncompressed body, the same quantity on both ends.
 An event too large for one frame is skipped rather than ending the connection;
 when it answered a request, an error notification takes its place on that request
-id.
+id. A command too large for one frame is answered the same way by the client,
+and an edit refused so asks for its document again, since the client's own text
+already holds it.
+
+Each end writes its frames from a queue beside its read loop, never from inside
+it, so a large frame written each way at once — a big paste against a file
+chunk — cannot leave both ends waiting for the other to read.
 
 ## Multiplexer integration
 
@@ -214,9 +226,12 @@ kmux declares its revision, `--client-exec` is the way to run a split session.
   `--split`, `--goto` and `--diff` name files on the machine they are typed on,
   which is not the workspace's, so a client refuses them before taking the
   terminal. Open files from the editor once it attaches.
-- **A client gives a backend 30 seconds to greet.** One that never does ends the
-  client with an error, printed with the last lines the `--client-exec` command
-  wrote to stderr (which is captured, not drawn over the editor).
+- **A client connects before it takes the terminal.** A `--client-exec` command
+  that asks the user something — an `ssh` password, a host key, a second factor
+  — asks on the plain terminal, and is not cut off. A backend that never greets
+  is ended with Ctrl+C. A handshake that fails is reported with the last lines
+  the command wrote to stderr (captured throughout, so nothing it writes later
+  is drawn over the editor).
 - **Path canonicalization is lexical on a client.** `fs::canonicalize` cannot
   resolve a path that is not on this machine, so tab de-duplication compares
   lexically. Two spellings of one file that differ only through a symlink would

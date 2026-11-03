@@ -235,11 +235,21 @@ pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
     app.recent.touch_workspace(&root);
     // A remote workspace is not on this disk: its file list comes from the
     // backend, never from a walk of a path that only means something there.
-    if matches!(source, Source::Remote(_)) {
+    let local = matches!(source, Source::Local);
+    if !local {
         app.mark_workspace_remote();
     }
     // Walk now, so the list is ready by the first Go to File.
     app.file_index.ensure_started();
+    // Connected before the editor takes the terminal: the command that carries
+    // the connection may need the user first — an `ssh` password, a host key to
+    // accept, a second factor — and it asks on the terminal, which is readable
+    // and answerable only while it is still the plain one. Ctrl+C still ends a
+    // backend that never greets, so the wait needs no bound of its own.
+    let remote = match source {
+        Source::Local => None,
+        Source::Remote(open) => Some(runtime.block_on(open())?),
+    };
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -287,7 +297,7 @@ pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
     // reads or writes it: `--capture` and tests never touch the user's state.
     // A layout saved here names paths on this machine, so a remote workspace
     // neither restores nor saves one.
-    let layout_dir = karet_session::default_swap_dir().filter(|_| matches!(source, Source::Local));
+    let layout_dir = karet_session::default_swap_dir().filter(|_| local);
 
     let result = runtime.block_on(async {
         // Restored before the backend attaches, so attaching registers every
@@ -295,12 +305,9 @@ pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
         if let Some(dir) = &layout_dir {
             app.restore_workspace_layout(dir);
         }
-        let (events, snaps) = match source {
-            Source::Local => attach_backend(&mut app, config)?,
-            Source::Remote(open) => {
-                let (backend, snaps) = open().await?;
-                attach(&mut app, backend, snaps)?
-            },
+        let (events, snaps) = match remote {
+            None => attach_backend(&mut app, config)?,
+            Some((backend, snaps)) => attach(&mut app, backend, snaps)?,
         };
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings

@@ -441,7 +441,7 @@ impl App {
             self.open_path(path);
             return;
         }
-        let mut tab = Tab::open(path);
+        let mut tab = self.open_tab(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);

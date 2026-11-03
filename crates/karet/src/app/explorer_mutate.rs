@@ -158,8 +158,10 @@ impl App {
             return;
         };
         // The listings for both ends of the mutation are stale either way: a
-        // failure can still have created a parent directory on the way.
-        self.invalidate_listings(&pending.mutation.dirty_parents());
+        // failure can still have created a parent directory on the way. They
+        // are read again rather than forgotten, so the rows — and the cursor on
+        // them — stay until each answer replaces them.
+        self.refresh_mutated_listings(&pending.mutation.dirty_parents());
         match result {
             Ok(()) => self.on_mutation_succeeded(pending.follow_up),
             Err(message) => match retry_paste(pending, &message) {

@@ -74,7 +74,7 @@ impl App {
             && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
         {
             if let Some(pdf) = pdf {
-                let mut tab = Tab::open(&pdf);
+                let mut tab = self.open_tab(&pdf);
                 tab.view = view;
                 self.tabs[index] = tab;
                 // The tab is only a reservation: asking for its content is what

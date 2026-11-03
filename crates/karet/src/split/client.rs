@@ -140,9 +140,11 @@ fn spawn(command: &str) -> color_eyre::Result<tokio::process::Child> {
         .arg(command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        // Captured rather than inherited: the terminal is in raw mode under the
-        // editor's frame by now. An `ssh` refusing a host key is still reported,
-        // in the handshake error printed once the terminal is restored.
+        // Captured rather than inherited: once connected, the terminal is in raw
+        // mode under the editor's frame, and a warning written there would paint
+        // over it. Prompts are unaffected — `ssh` asks for a password or a host
+        // key on the terminal itself, before the editor takes it — and an `ssh`
+        // refusing to connect is still reported, in the handshake error.
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
@@ -158,24 +160,12 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     // A fresh client has seen nothing, so it resumes from sequence zero and the
-    // backend describes every open document from scratch. Bounded: a backend
-    // that never greets would otherwise leave a blank screen nothing can quit,
-    // because input is not read until the handshake returns.
-    let (backend, snapshots) = tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        karet_session::remote::connect(reader, writer, 0),
-    )
-    .await
-    .map_err(|_| {
-        eyre!(
-            "karet backend handshake: no greeting within {}s",
-            HANDSHAKE_TIMEOUT.as_secs()
-        )
-    })?
-    .map_err(|error| eyre!("karet backend handshake: {error}"))?;
+    // backend describes every open document from scratch. Unbounded: the
+    // handshake runs before the editor takes the terminal (see `app::runtime::
+    // run`), so a command still asking the user something — a password, a host
+    // key — is not cut off, and Ctrl+C ends a backend that never greets.
+    let (backend, snapshots) = karet_session::remote::connect(reader, writer, 0)
+        .await
+        .map_err(|error| eyre!("karet backend handshake: {error}"))?;
     Ok((Arc::new(backend), snapshots))
 }
-
-/// How long a backend has to greet before the client gives up on it. Long
-/// enough for an `ssh` connection to a slow host to come up and start karet.
-const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

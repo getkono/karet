@@ -344,7 +344,7 @@ impl App {
                     && tab.path().is_some_and(|p| canonical(p) == target)
             });
             if !shown {
-                let mut tab = Tab::open(path);
+                let mut tab = self.open_tab(path);
                 if !matches!(tab.kind, TabKind::Code { .. }) {
                     tab = Tab::open_as_text(path);
                 }

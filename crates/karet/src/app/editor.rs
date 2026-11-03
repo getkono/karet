@@ -766,6 +766,13 @@ impl App {
                 {
                     return; // already requested (attach re-walks every tab)
                 }
+                // The backend reads the whole file to convert it, so the size
+                // guard settles first, as it does for a text document.
+                if self.tabs.get(idx).is_some_and(|tab| tab.size_unchecked)
+                    && !self.check_size_guard(idx, &path)
+                {
+                    return;
+                }
                 if let Some(request) = self.send(DocumentCommand::Convert { path }) {
                     self.pending_conversions.insert(request, view);
                 }
