@@ -511,3 +511,173 @@ fn a_symlink_to_a_directory_is_listed_as_a_link_not_a_directory()
     assert!(!link.is_dir);
     Ok(())
 }
+
+/// A copy, like a rename, never clobbers: the explorer picks a free name, and a
+/// client that did not is told rather than losing the file there.
+#[test]
+fn copying_onto_an_existing_path_refuses() -> TestResult {
+    let dir = tree(&[("a.rs", b"a"), ("b.rs", b"b")]).ok_or("a scratch tree")?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("a.rs"),
+        to: dir.path().join("b.rs"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(dir.path().join("b.rs"))?, b"b".to_vec());
+    Ok(())
+}
+
+#[test]
+fn copying_a_file_copies_its_bytes_and_keeps_the_source() -> TestResult {
+    let dir = tree(&[("a.rs", b"alpha")]).ok_or("a scratch tree")?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("a.rs"),
+        to: dir.path().join("sub/a copy.rs"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        std::fs::read(dir.path().join("sub/a copy.rs"))?,
+        b"alpha".to_vec()
+    );
+    assert_eq!(std::fs::read(dir.path().join("a.rs"))?, b"alpha".to_vec());
+    Ok(())
+}
+
+/// A destination spelled through `..` is inside the source once resolved, and
+/// the copy is refused just as the plain spelling is.
+#[test]
+fn copying_a_directory_into_itself_through_dot_dot_refuses() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a"), ("other/keep", b"")]).ok_or("a scratch tree")?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("other/../src/copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert!(!dir.path().join("src/copy").exists());
+    Ok(())
+}
+
+/// A destination reached through a link into the source is inside it too.
+#[cfg(unix)]
+#[test]
+fn copying_a_directory_into_itself_through_a_link_refuses() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a")]).ok_or("a scratch tree")?;
+    std::os::unix::fs::symlink(dir.path().join("src"), dir.path().join("alias"))?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("alias/copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert!(!dir.path().join("src/copy").exists());
+    Ok(())
+}
+
+/// A link to a directory inside a copied tree is copied as a link. Followed, a
+/// link to an ancestor nests copies until the path limit.
+#[cfg(unix)]
+#[test]
+fn copying_a_tree_keeps_a_directory_link_as_a_link() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a")]).ok_or("a scratch tree")?;
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("src/up"))?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    let link = dir.path().join("copy/up");
+    assert!(link.symlink_metadata()?.is_symlink());
+    assert_eq!(std::fs::read_link(&link)?, dir.path());
+    Ok(())
+}
+
+/// A hard link shares its source's inode but is another name: renaming onto it
+/// is a clash. `fs::rename` between two links of one file succeeds by doing
+/// nothing, which would leave the source in place while reporting a move.
+#[cfg(unix)]
+#[test]
+fn renaming_onto_a_hard_link_of_the_source_refuses() -> TestResult {
+    let dir = tree(&[("a.rs", b"a")]).ok_or("a scratch tree")?;
+    std::fs::hard_link(dir.path().join("a.rs"), dir.path().join("b.rs"))?;
+
+    let (_, result) = mutate(PathMutation::Rename {
+        from: dir.path().join("a.rs"),
+        to: dir.path().join("b.rs"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert!(dir.path().join("a.rs").exists());
+    Ok(())
+}
+
+/// What a case-insensitive filesystem presents for a case-only rename — one
+/// inode under two spellings — is one entry. A hard link stands in for it on a
+/// case-sensitive filesystem, which is what lets this run everywhere.
+#[cfg(unix)]
+#[test]
+fn one_inode_under_a_case_only_spelling_is_the_same_entry() -> TestResult {
+    let dir = tree(&[("readme.md", b"text")]).ok_or("a scratch tree")?;
+    let (lower, upper) = (dir.path().join("readme.md"), dir.path().join("README.md"));
+    if upper.symlink_metadata().is_err() {
+        std::fs::hard_link(&lower, &upper)?;
+    }
+    std::fs::hard_link(&lower, dir.path().join("other.md"))?;
+
+    assert!(super::mutate::same_entry(&lower, &upper));
+    assert!(!super::mutate::same_entry(
+        &lower,
+        &dir.path().join("other.md")
+    ));
+    Ok(())
+}
+
+/// A FIFO in the workspace, made with the platform's `mkfifo`; `None` where
+/// there is none to make one with.
+#[cfg(unix)]
+fn fifo(dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    let path = dir.join(name);
+    let made = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .ok()?;
+    made.success().then_some(path)
+}
+
+/// Opening a FIFO blocks until a writer appears, which would hold the one
+/// serial worker — and every listing and mutation queued behind it — for ever.
+/// Classifying, reading and copying one each refuse instead.
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_rather_than_opened() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a")]).ok_or("a scratch tree")?;
+    let Some(pipe) = fifo(&dir.path().join("src"), "pipe") else {
+        return Ok(()); // no `mkfifo` here: nothing to provoke
+    };
+
+    let classified = classify_path(&pipe, false).ok_or("a classification answer")?;
+    let read = read_bytes(&pipe, 0, 16).ok_or("a read answer")?;
+    let (_, copied) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(classified.is_err());
+    assert!(read.is_err());
+    assert!(copied.is_err());
+    Ok(())
+}

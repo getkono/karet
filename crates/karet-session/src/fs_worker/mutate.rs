@@ -72,12 +72,20 @@ pub(super) fn move_by_copy(from: &Path, to: &Path) -> Result<(), String> {
     delete(from)
 }
 
-/// Whether `from` and `to` name one filesystem entry (a case-only rename on a
-/// case-insensitive filesystem).
+/// Whether `from` and `to` name one filesystem entry under two spellings (a
+/// case-only rename on a case-insensitive filesystem).
+///
+/// The same inode alone is not enough: two hard links share one, and
+/// `fs::rename` between them succeeds by doing nothing, leaving the source in
+/// place while the explorer believes it moved. A destination that is another
+/// link to the source is a clash like any other.
 #[cfg(unix)]
-fn same_entry(from: &Path, to: &Path) -> bool {
+pub(super) fn same_entry(from: &Path, to: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
+    if !from.as_os_str().eq_ignore_ascii_case(to.as_os_str()) {
+        return false;
+    }
     match (from.symlink_metadata(), to.symlink_metadata()) {
         (Ok(from), Ok(to)) => from.dev() == to.dev() && from.ino() == to.ino(),
         _ => false,
@@ -88,7 +96,7 @@ fn same_entry(from: &Path, to: &Path) -> bool {
 /// two paths differing only in ASCII case are taken as one, which is what a
 /// case-insensitive filesystem makes them.
 #[cfg(not(unix))]
-fn same_entry(from: &Path, to: &Path) -> bool {
+pub(super) fn same_entry(from: &Path, to: &Path) -> bool {
     from.as_os_str().eq_ignore_ascii_case(to.as_os_str())
 }
 
@@ -106,7 +114,10 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 /// mutation, and a directory copied into its own subtree recurses until the path
 /// limit, filling the disk on the way.
 fn copy_into_new(from: &Path, to: &Path) -> Result<(), String> {
-    if from.is_dir() && inside(from, to) {
+    // A link is copied as a link (see `copy_recursive`), so only a real
+    // directory can recurse into its own copy.
+    let real_dir = from.symlink_metadata().is_ok_and(|entry| entry.is_dir());
+    if real_dir && inside(from, to) {
         return Err(format!(
             "cannot copy {} into itself ({})",
             from.display(),
@@ -137,11 +148,23 @@ fn inside(dir: &Path, path: &Path) -> bool {
 
 /// Copy `from` to `to`, recursing through directories.
 ///
-/// Symlinks are copied by content, not recreated as links: an explorer copy that
-/// produced a link pointing outside the destination would surprise, and a link
-/// into the copied tree would still point at the original.
+/// A link to a file is copied by content, not recreated as a link: an explorer
+/// copy that produced a link pointing outside the destination would surprise,
+/// and a link into the copied tree would still point at the original.
+///
+/// A link to a directory is recreated as a link and never followed, as the
+/// explorer lists it (`karet_core::DirEntry::is_dir`). Following one copies
+/// whatever it reaches: a link to an ancestor nests copies until the path limit,
+/// and a link to `/` copies the filesystem.
+///
+/// Anything else that is not a regular file — a FIFO, a socket, a device — is
+/// refused: copying a FIFO blocks the worker until a writer appears.
 fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
-    if from.is_dir() {
+    let entry = from.symlink_metadata().map_err(|error| error.to_string())?;
+    if entry.is_symlink() && from.is_dir() {
+        return copy_link(from, to);
+    }
+    if entry.is_dir() {
         std::fs::create_dir_all(to).map_err(|error| error.to_string())?;
         for entry in std::fs::read_dir(from).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
@@ -149,9 +172,28 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
         }
         return Ok(());
     }
+    let followed = std::fs::metadata(from).map_err(|error| error.to_string())?;
+    if !followed.is_file() {
+        return Err(format!("{} is not a regular file", from.display()));
+    }
     std::fs::copy(from, to)
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+/// Recreate the link `from` at `to`, pointing where it points.
+fn copy_link(from: &Path, to: &Path) -> Result<(), String> {
+    let target = std::fs::read_link(from).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, to);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&target, to);
+    #[cfg(not(any(unix, windows)))]
+    let made: std::io::Result<()> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("cannot recreate the link to {}", target.display()),
+    ));
+    made.map_err(|error| error.to_string())
 }
 
 /// Delete a path, recursively for a directory.

@@ -155,9 +155,7 @@ fn answer(job: FsJob) -> (RequestId, Event) {
 
 /// Classify `path` from its leading bytes and length.
 fn classify(path: &Path, ignore_size: bool) -> Result<PathClass, String> {
-    let len = std::fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .len();
+    let len = regular_file_len(path)?;
     let head = read_head(path)?;
     let kind = if ignore_size {
         karet_filetype::classify_ignoring_size(path, &head)
@@ -165,6 +163,19 @@ fn classify(path: &Path, ignore_size: bool) -> Result<PathClass, String> {
         karet_filetype::classify(path, &head, len)
     };
     Ok(PathClass { kind, len, head })
+}
+
+/// The length of `path`, refusing anything but a regular file (through links).
+///
+/// Opening a FIFO blocks until a writer appears, and a device can stream for
+/// ever; either would hold the one serial worker, stalling every listing, walk
+/// and mutation queued behind it. Neither has bytes a view could show.
+fn regular_file_len(path: &Path) -> Result<u64, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    Ok(metadata.len())
 }
 
 /// Read at most [`HEAD_BYTES`] from the start of `path`.
@@ -188,9 +199,7 @@ fn read_chunk(path: &Path, offset: u64, len: u64) -> Result<FileChunk, String> {
     use std::io::Read;
     use std::io::Seek;
 
-    let total_len = std::fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .len();
+    let total_len = regular_file_len(path)?;
     let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     // Seeking past the end is legal and yields no bytes, which reads as a final
     // chunk — the right answer for a client that asked one range too many.
