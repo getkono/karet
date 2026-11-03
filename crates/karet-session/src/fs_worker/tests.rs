@@ -455,3 +455,101 @@ fn deleting_a_missing_path_reports_why() {
 
     assert!(result.is_err());
 }
+
+/// Confirming F2 without changing the name renames a path onto itself. That is
+/// a no-op, not a clash with an existing file.
+#[test]
+fn renaming_a_path_onto_itself_succeeds_and_keeps_it() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tree(&[("same.rs", b"keep")]).ok_or("a scratch tree")?;
+    let path = dir.path().join("same.rs");
+
+    let (_, result) = mutate(PathMutation::Rename {
+        from: path.clone(),
+        to: path.clone(),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(std::fs::read(&path)?, b"keep".to_vec());
+    Ok(())
+}
+
+/// A case-only rename on a case-insensitive filesystem finds the "destination"
+/// already there, because it is the source. Probed rather than assumed: on a
+/// case-sensitive filesystem the two spellings are two paths and there is
+/// nothing to show.
+#[test]
+fn a_case_only_rename_is_not_refused_as_a_clash() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tree(&[("readme.md", b"text")]).ok_or("a scratch tree")?;
+    let from = dir.path().join("readme.md");
+    let to = dir.path().join("README.md");
+    if to.symlink_metadata().is_err() {
+        return Ok(()); // case-sensitive: the rename is an ordinary one
+    }
+
+    let (_, result) = mutate(PathMutation::Rename {
+        from,
+        to: to.clone(),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    let names: Vec<_> = std::fs::read_dir(dir.path())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("README.md")]);
+    Ok(())
+}
+
+/// Any client can send a copy, so the backend itself must refuse a directory
+/// copied into its own subtree: that recursion runs until the path limit.
+#[test]
+fn copying_a_directory_into_itself_refuses() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tree(&[("src/a.rs", b"a")]).ok_or("a scratch tree")?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("src/nested/copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert!(!dir.path().join("src/nested").exists());
+    Ok(())
+}
+
+/// The cross-device fallback: what a rename across a mount point does instead.
+#[test]
+fn moving_by_copy_then_delete_moves_a_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tree(&[("src/a.rs", b"a"), ("src/deep/b.rs", b"b")]).ok_or("a scratch tree")?;
+    let from = dir.path().join("src");
+    let to = dir.path().join("moved");
+
+    super::mutate::move_by_copy(&from, &to)?;
+
+    assert!(!from.exists());
+    assert_eq!(std::fs::read(to.join("deep/b.rs"))?, b"b".to_vec());
+    Ok(())
+}
+
+/// A link to a directory is listed as a link, not as a directory: expanding it
+/// would chain-compact through it, and a link to an ancestor would drive an
+/// endless run of nested listings.
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_a_directory_is_listed_as_a_link_not_a_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tree(&[("real/keep.rs", b"keep")]).ok_or("a scratch tree")?;
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("up"))?;
+
+    let entries = list_dir(dir.path(), false, false).ok_or("a listing answer")??;
+
+    let link = entries
+        .iter()
+        .find(|entry| entry.label() == "up")
+        .ok_or("the link is listed")?;
+    assert!(link.is_symlink);
+    assert!(!link.is_dir);
+    Ok(())
+}

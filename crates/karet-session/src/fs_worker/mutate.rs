@@ -42,14 +42,54 @@ fn create_file(path: &Path) -> Result<(), String> {
 /// `fs::rename` overwrites on Unix. The explorer's rename and drag-move must not,
 /// so the destination is checked first. The check races, but it turns the common
 /// mistake into an error instead of silent data loss.
+///
+/// A destination that is the source itself is not a clash: an unchanged F2
+/// rename is a no-op, and a case-only rename on a case-insensitive filesystem
+/// names the same entry under a new spelling, which `fs::rename` performs.
+///
+/// Across a mount point `fs::rename` cannot move anything, so the entry is
+/// copied and the source deleted instead, as a drag between volumes expects.
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
-    if to.symlink_metadata().is_ok() {
+    if from == to {
+        return Ok(());
+    }
+    if to.symlink_metadata().is_ok() && !same_entry(from, to) {
         return Err(format!("{} already exists", to.display()));
     }
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    std::fs::rename(from, to).map_err(|error| error.to_string())
+    match std::fs::rename(from, to) {
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => move_by_copy(from, to),
+        result => result.map_err(|error| error.to_string()),
+    }
+}
+
+/// Move `from` to `to` by copying it and deleting the source: the only move
+/// there is across a mount point.
+pub(super) fn move_by_copy(from: &Path, to: &Path) -> Result<(), String> {
+    copy_into_new(from, to)?;
+    delete(from)
+}
+
+/// Whether `from` and `to` name one filesystem entry (a case-only rename on a
+/// case-insensitive filesystem).
+#[cfg(unix)]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match (from.symlink_metadata(), to.symlink_metadata()) {
+        (Ok(from), Ok(to)) => from.dev() == to.dev() && from.ino() == to.ino(),
+        _ => false,
+    }
+}
+
+/// Whether `from` and `to` name one filesystem entry. Without inode identity,
+/// two paths differing only in ASCII case are taken as one, which is what a
+/// case-insensitive filesystem makes them.
+#[cfg(not(unix))]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    from.as_os_str().eq_ignore_ascii_case(to.as_os_str())
 }
 
 /// Copy a file, or a directory and everything under it.
@@ -57,10 +97,42 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));
     }
+    copy_into_new(from, to)
+}
+
+/// Copy `from` to the absent `to`, refusing to copy a directory into itself.
+///
+/// The presentation layer checks this too, but any client can send the
+/// mutation, and a directory copied into its own subtree recurses until the path
+/// limit, filling the disk on the way.
+fn copy_into_new(from: &Path, to: &Path) -> Result<(), String> {
+    if from.is_dir() && inside(from, to) {
+        return Err(format!(
+            "cannot copy {} into itself ({})",
+            from.display(),
+            to.display()
+        ));
+    }
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     copy_recursive(from, to)
+}
+
+/// Whether `path` is `dir` or lies under it, judged both as written and with
+/// links resolved (a destination reached through a link into `dir` counts).
+fn inside(dir: &Path, path: &Path) -> bool {
+    if path.starts_with(dir) {
+        return true;
+    }
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    // The destination does not exist yet; its nearest existing ancestor says
+    // where it will be.
+    path.ancestors()
+        .find_map(|ancestor| ancestor.canonicalize().ok())
+        .is_some_and(|resolved| resolved.starts_with(&dir))
 }
 
 /// Copy `from` to `to`, recursing through directories.

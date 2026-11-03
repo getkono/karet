@@ -85,9 +85,10 @@ fn immediate(dir: &Path, show_hidden: bool, git_ignore: bool) -> Vec<(PathBuf, b
         .map(|entry| {
             let path = entry.path().to_path_buf();
             let is_symlink = entry.path_is_symlink();
-            // `file_type` on a symlink describes the link; a link to a directory
-            // should expand like one, so resolve through it.
-            let is_dir = path.is_dir();
+            // The entry's own type, never the link target's: a link to a
+            // directory is shown as a link rather than expanded, so a link to an
+            // ancestor cannot drive an endless chain of nested listings.
+            let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
             (path, is_dir, is_symlink)
         })
         .collect()
