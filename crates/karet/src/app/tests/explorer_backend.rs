@@ -301,3 +301,123 @@ fn pasting_twice_before_the_first_lands_makes_two_copies() {
     assert!(dir.join("a copy 2.txt").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A multi-item paste reports on one card, its count rewritten as each item
+/// lands, rather than one card per item.
+#[test]
+fn a_paste_of_several_items_counts_them_on_one_card() {
+    let dir = test_dir("explorer-paste-count");
+    write_file(&dir, "a.txt", b"a");
+    write_file(&dir, "b.txt", b"b");
+    write_file(&dir, "dst/keep", b"");
+    let mut app = explorer_app(&dir);
+    select_explorer_path(&mut app, &dir.join("a.txt"));
+    let b = app
+        .explorer
+        .rows()
+        .iter()
+        .position(|row| row.path == dir.join("b.txt"))
+        .expect("b.txt is listed");
+    app.explorer.extend_visible(b);
+    app.dispatch(Command::Copy);
+    select_explorer_path(&mut app, &dir.join("dst"));
+    let before = app.notifications.active().len();
+
+    app.dispatch(Command::Paste);
+    settle_mutations(&mut app);
+
+    assert_eq!(last_message(&app).as_deref(), Some("pasted 2 item(s)"));
+    assert_eq!(app.notifications.active().len(), before + 1, "one card");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cut spent by a move that lands late leaves a clipboard cut since then
+/// alone: it names other paths, and the user has not pasted it yet.
+#[test]
+fn a_late_move_leaves_a_newer_cut_in_the_clipboard() {
+    let dir = test_dir("explorer-cut-newer");
+    write_file(&dir, "a.txt", b"a");
+    write_file(&dir, "b.txt", b"b");
+    write_file(&dir, "dst/keep", b"");
+    let mut app = explorer_app(&dir);
+    select_explorer_path(&mut app, &dir.join("a.txt"));
+    app.dispatch(Command::Cut);
+    select_explorer_path(&mut app, &dir.join("dst"));
+    app.dispatch(Command::Paste);
+    select_explorer_path(&mut app, &dir.join("b.txt"));
+    app.dispatch(Command::Cut);
+
+    settle_mutations(&mut app);
+
+    assert!(dir.join("dst/a.txt").exists());
+    assert!(app.explorer_clipboard.as_ref().is_some_and(|clipboard| {
+        clipboard.op == crate::app::state::ExplorerFileOp::Cut
+            && clipboard.paths == vec![dir.join("b.txt")]
+    }));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two re-reads of one directory in flight both stay asked; the one answered
+/// last is what the tree shows, whichever request it answers.
+#[test]
+fn of_two_rereads_in_flight_the_later_answer_wins() {
+    let dir = test_dir("explorer-two-rereads");
+    write_file(&dir, "a.txt", b"a");
+    let mut app = explorer_app(&dir);
+    let changed = |app: &mut App| {
+        app.on_backend_event(
+            None,
+            SessionEvent::FsChanged {
+                paths: vec![dir.join("new.txt")],
+            },
+        );
+    };
+    changed(&mut app);
+    changed(&mut app);
+    let asked: Vec<RequestId> = app
+        .pending_listings
+        .iter()
+        .filter(|(_, listed)| **listed == dir)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(asked.len(), 2, "the second change asks again");
+    let entry = |name: &str| karet_core::DirEntry {
+        path: dir.join(name),
+        is_dir: false,
+        is_symlink: false,
+        ignored: false,
+        is_repository: false,
+    };
+
+    for (id, names) in asked.iter().zip([vec!["a.txt"], vec!["a.txt", "new.txt"]]) {
+        app.on_backend_event(
+            Some(*id),
+            SessionEvent::DirectoryListed {
+                path: dir.clone(),
+                result: Ok(names.iter().map(|name| entry(name)).collect()),
+            },
+        );
+    }
+    app.build_explorer();
+
+    assert!(shows(&app, &dir.join("new.txt")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A mutation under a folder the tree never listed re-reads the nearest
+/// ancestor it did list, where the change first becomes visible.
+#[test]
+fn a_mutation_under_an_unlisted_folder_rereads_its_nearest_listed_ancestor() {
+    let dir = test_dir("explorer-nearest-listed");
+    write_file(&dir, "sub/deep/x.txt", b"x");
+    write_file(&dir, "sub/y.txt", b"y");
+    let mut app = explorer_app(&dir);
+    assert!(!app.explorer.has_listing(&dir.join("sub/deep")));
+    assert!(app.explorer.has_listing(&dir.join("sub")));
+
+    app.refresh_mutated_listings(&[dir.join("sub/deep/new")]);
+
+    let reread: Vec<&PathBuf> = app.pending_listings.values().collect();
+    assert_eq!(reread, vec![&dir.join("sub")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

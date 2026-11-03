@@ -561,9 +561,11 @@ mod tests {
         let bare = Cli::try_parse_from(["karet", "--client-exec", "ssh host karet --serve"])?;
         assert_eq!(bare.local_path_flag(), None);
 
-        let cases: [(&[&str], &str); 4] = [
+        let cases: [(&[&str], &str); 6] = [
             (&["karet", "notes.md"], "a PATH argument"),
             (&["karet", "--open", "a.rs"], "--open"),
+            (&["karet", "--preview", "a.rs"], "--preview"),
+            (&["karet", "--split", "a.rs"], "--split"),
             (&["karet", "--goto", "a.rs:3"], "--goto"),
             (&["karet", "--diff", "a", "b"], "--diff"),
         ];
