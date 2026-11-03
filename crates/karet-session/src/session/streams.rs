@@ -31,44 +31,84 @@ impl Session {
 
     /// The highlight spans a snapshot of `doc` should carry.
     ///
-    /// A view resolves highlights per rendered line, so spans outside what a
-    /// client is displaying are never read. When a client has declared a
-    /// viewport, narrowing to it is what keeps the answer to a keystroke about a
-    /// screenful rather than a whole file's worth of spans — the difference
-    /// between a usable and an unusable connection once the two are not on the
-    /// same machine.
+    /// A view resolves highlights per rendered line, so it reads spans only for
+    /// the lines it displays — its viewport, and the sticky-scroll headers of the
+    /// blocks it is inside, which can sit any distance above it. When a client
+    /// has declared a viewport, narrowing to those lines is what keeps the
+    /// answer to a keystroke about a screenful rather than a whole file's worth
+    /// of spans — the difference between a usable and an unusable connection
+    /// once the two are not on the same machine.
+    ///
+    /// The narrowed slice keeps its `Arc` while its spans are unchanged, so a
+    /// republish for anything else (a save, a diagnostic, a scroll inside the
+    /// window) does not look like new highlights to a connection that compares
+    /// pointers.
     ///
     /// With no viewport declared the whole set is shared as-is, at no cost:
     /// that is the local default, and the `Arc` clone is free.
     fn viewport_highlights(&self, doc_id: DocumentId, doc: &Document) -> Arc<Highlights> {
         let highlights = doc.display_highlights();
-        let Some(lines) = self.viewport_lines(doc_id) else {
+        let mut windows = self
+            .highlight_windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(window) = windows.get_mut(&doc_id) else {
             return highlights;
         };
-        narrow_highlights(highlights, &doc.buffer, lines)
+        let spans = narrow_highlights(
+            &highlights,
+            &doc.buffer,
+            window.lines,
+            doc.syntax.semantic_blocks(),
+        );
+        if let Some(previous) = &window.narrowed
+            && previous.all() == spans.as_slice()
+        {
+            return Arc::clone(previous);
+        }
+        let narrowed = Arc::new(Highlights::from_sorted_spans(spans));
+        window.narrowed = Some(Arc::clone(&narrowed));
+        narrowed
     }
 }
 
-/// `highlights` cut down to the spans that touch `first..=last` of `buffer`.
+/// The spans of `highlights` a view of `first..=last` of `buffer` can read: those
+/// touching the window, and those on the header lines of every block in
+/// `blocks` that opens above the window and is still open inside it, since
+/// sticky scroll paints those headers however far above the window they are.
 fn narrow_highlights(
-    highlights: Arc<Highlights>,
+    highlights: &Highlights,
     buffer: &karet_text::TextBuffer,
     (first, last): (u32, u32),
-) -> Arc<Highlights> {
+    blocks: &karet_core::SemanticBlocks,
+) -> Vec<karet_core::HighlightSpan> {
     let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(u32::MAX);
     // A viewport can outrun the buffer when an edit shortened the document
     // before the client's next scroll; clamping is what keeps that a
     // no-highlight frame instead of an empty one.
-    let Some(start) = buffer.line_to_byte_range(first.min(last_line) as usize) else {
-        return highlights;
+    let lines = |from: u32, to: u32| {
+        let start = buffer.line_to_byte_range(from.min(last_line) as usize)?;
+        let end = buffer.line_to_byte_range(to.min(last_line) as usize)?;
+        Some(karet_core::Span::new(start.start, end.end))
     };
-    let Some(end) = buffer.line_to_byte_range(last.min(last_line) as usize) else {
-        return highlights;
+    let Some(window) = lines(first, last) else {
+        return highlights.all().to_vec();
     };
-    let span = karet_core::Span::new(start.start, end.end);
-    Arc::new(Highlights::from_sorted_spans(
-        highlights.spans_in(span).to_vec(),
-    ))
+    let mut spans: Vec<karet_core::HighlightSpan> = blocks
+        .blocks()
+        .iter()
+        .filter(|block| block.header_start < first && block.scope_end >= first)
+        .filter_map(|block| lines(block.header_start, block.header_end.min(first)))
+        .flat_map(|header| highlights.spans_in(header).iter().copied())
+        .collect();
+    if spans.is_empty() {
+        return highlights.spans_in(window).to_vec();
+    }
+    spans.extend_from_slice(highlights.spans_in(window));
+    // Headers nest and can touch the window, so one span can be read twice.
+    spans.sort_by_key(|span| (span.span.start, span.span.end));
+    spans.dedup();
+    spans
 }
 
 #[cfg(test)]
@@ -93,12 +133,12 @@ mod tests {
         (buffer, Arc::new(Highlights::from_sorted_spans(spans)))
     }
 
-    fn lines_of(highlights: &Highlights) -> Vec<usize> {
-        highlights
-            .all()
-            .iter()
-            .map(|span| span.span.start.0 / 5)
-            .collect()
+    fn lines_of(spans: &[HighlightSpan]) -> Vec<usize> {
+        spans.iter().map(|span| span.span.start.0 / 5).collect()
+    }
+
+    fn no_blocks() -> karet_core::SemanticBlocks {
+        karet_core::SemanticBlocks::new(Vec::new())
     }
 
     /// The headline property of a viewport: only spans on the declared lines
@@ -107,7 +147,7 @@ mod tests {
     fn narrowing_keeps_only_the_spans_on_the_declared_lines() {
         let (buffer, highlights) = one_span_per_line(1_000);
 
-        let narrowed = narrow_highlights(highlights, &buffer, (400, 402));
+        let narrowed = narrow_highlights(&highlights, &buffer, (400, 402), &no_blocks());
 
         assert_eq!(lines_of(&narrowed), vec![400, 401, 402]);
     }
@@ -118,8 +158,32 @@ mod tests {
     fn a_viewport_past_the_end_clamps_to_the_last_line() {
         let (buffer, highlights) = one_span_per_line(10);
 
-        let narrowed = narrow_highlights(highlights, &buffer, (8, 5_000));
+        let narrowed = narrow_highlights(&highlights, &buffer, (8, 5_000), &no_blocks());
 
         assert_eq!(lines_of(&narrowed), vec![8, 9]);
+    }
+
+    /// Sticky scroll paints the header of every block the view is inside, however
+    /// far above the window it opened; its spans travel with the window, while a
+    /// block that closed before the window contributes nothing.
+    #[test]
+    fn narrowing_keeps_the_headers_of_blocks_open_into_the_window() {
+        let (buffer, highlights) = one_span_per_line(1_000);
+        let blocks = karet_core::SemanticBlocks::new(vec![
+            karet_core::SemanticBlock {
+                header_start: 10,
+                header_end: 11,
+                scope_end: 900,
+            },
+            karet_core::SemanticBlock {
+                header_start: 20,
+                header_end: 20,
+                scope_end: 30,
+            },
+        ]);
+
+        let narrowed = narrow_highlights(&highlights, &buffer, (400, 402), &blocks);
+
+        assert_eq!(lines_of(&narrowed), vec![10, 11, 400, 401, 402]);
     }
 }

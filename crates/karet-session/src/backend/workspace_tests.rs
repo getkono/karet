@@ -390,32 +390,138 @@ fn a_viewport_at_the_top_of_a_file_clamps_its_margin() -> TestResult {
     Ok(())
 }
 
-/// Declaring a viewport must republish: the spans the client holds were scoped to
-/// the *previous* window, so without a fresh snapshot the newly revealed lines
-/// stay unhighlighted until something else happens to touch the document.
-#[test]
-fn declaring_a_new_viewport_republishes_the_document() -> TestResult {
+/// Declaring a viewport must republish, scoped to it: the spans the client holds
+/// were scoped to the *previous* window, so without a fresh snapshot the newly
+/// revealed lines stay unhighlighted until something else touches the document,
+/// and a snapshot that still carried the whole file would save nothing.
+#[tokio::test]
+async fn declaring_a_new_viewport_republishes_the_document_scoped_to_it() -> TestResult {
+    const LINE: &str = "fn main() {}\n";
+    let line_of = |span: &karet_core::HighlightSpan| span.span.start.0 / LINE.len();
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("scroll.rs");
-    std::fs::write(&path, "fn main() {}\n".repeat(500))?;
-    let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
-    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
-    while snaps.try_recv().is_some() {}
+    std::fs::write(&path, LINE.repeat(2_000))?;
+    let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        DocumentCommand::Open {
+            path,
+            language: None,
+        }
+        .into(),
+    )?;
+    // Whole-document highlights first, so the narrowing has something to cut.
+    let doc = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some((doc, snap)) = snaps.recv().await {
+            if snap
+                .highlights
+                .all()
+                .iter()
+                .any(|span| line_of(span) > 1_900)
+            {
+                return Some(doc);
+            }
+        }
+        None
+    })
+    .await?
+    .ok_or("the document was highlighted")?;
 
-    session.handle(
-        RequestId(2),
+    backend.send(
+        backend.next_id(),
         DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
-            first_line: 0,
-            last_line: 40,
-        },
-    );
+            first_line: 1_000,
+            last_line: 1_040,
+        }
+        .into(),
+    )?;
 
+    let margin = crate::session::VIEWPORT_MARGIN as usize;
+    let (_, scoped) = tokio::time::timeout(Duration::from_secs(10), snaps.recv())
+        .await?
+        .ok_or("a snapshot for the new viewport")?;
+    let lines: Vec<usize> = scoped.highlights.all().iter().map(line_of).collect();
     assert!(
-        snaps.try_recv().is_some(),
-        "a new viewport should publish a snapshot scoped to it"
+        lines.contains(&1_000),
+        "the viewport's own lines are highlighted"
     );
+    assert!(
+        lines
+            .iter()
+            .all(|line| (1_000 - margin..=1_040 + margin).contains(line)),
+        "only the padded window travels"
+    );
+    Ok(())
+}
+
+/// A client sends its viewport on every scroll. One that stays inside the margin
+/// already published must not republish: a fresh snapshot would carry a fresh
+/// highlight slice, which a connection resends whole.
+#[test]
+fn a_scroll_inside_the_published_margin_does_not_republish() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("scroll.rs");
+    std::fs::write(&path, "fn main() {}\n".repeat(2_000))?;
+    let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
+    let viewport = |first_line: u32| DocumentCommand::SetViewport {
+        doc,
+        view: ViewId(1),
+        first_line,
+        last_line: first_line + 40,
+    };
+    session.handle(RequestId(2), viewport(1_000));
+    while snaps.try_recv().is_some() {}
+    let window = session.highlight_window(doc);
+
+    session.handle(RequestId(3), viewport(1_150));
+
+    assert!(snaps.try_recv().is_none(), "a scroll inside the margin");
+    assert_eq!(session.highlight_window(doc), window);
+
+    session.handle(RequestId(4), viewport(1_300));
+
+    assert!(snaps.try_recv().is_some(), "a scroll past the margin");
+    let margin = crate::session::VIEWPORT_MARGIN;
+    assert_eq!(
+        session.highlight_window(doc),
+        Some((1_300 - margin, 1_340 + margin))
+    );
+    Ok(())
+}
+
+/// A republish whose narrowed spans did not change keeps the slice's `Arc`, which
+/// is what lets a connection comparing pointers send nothing for it.
+#[test]
+fn an_unchanged_highlight_slice_keeps_its_arc_across_republishes() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("scroll.rs");
+    std::fs::write(&path, "fn main() {}\n".repeat(20))?;
+    let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
+    while snaps.try_recv().is_some() {}
+    for (id, view, first_line) in [(2, ViewId(1), 0), (3, ViewId(2), 5_000)] {
+        session.handle(
+            RequestId(id),
+            DocumentCommand::SetViewport {
+                doc,
+                view,
+                first_line,
+                last_line: first_line + 40,
+            },
+        );
+    }
+
+    let (_, first) = snaps.try_recv().ok_or("the first viewport's snapshot")?;
+    let (_, second) = snaps.try_recv().ok_or("the widened window's snapshot")?;
+
+    assert!(std::sync::Arc::ptr_eq(
+        &first.highlights,
+        &second.highlights
+    ));
     Ok(())
 }
 

@@ -145,6 +145,16 @@ use crate::spell::SpellResult;
 /// `Ctrl+D`.
 pub(crate) const VIEWPORT_MARGIN: u32 = 200;
 
+/// The highlight window of one document whose views declared a viewport.
+struct HighlightWindow {
+    /// The padded line range spans are narrowed to. Kept until a view reaches
+    /// outside it, so a scroll within the margin republishes nothing.
+    lines: (u32, u32),
+    /// The slice last published, reused while its spans are unchanged so the
+    /// snapshot keeps the same `Arc` and a connection sends nothing for it.
+    narrowed: Option<Arc<Highlights>>,
+}
+
 /// Configuration for a session, started from it by [`crate::local`].
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
@@ -372,6 +382,10 @@ pub(crate) struct Session {
     /// `(document, view)`. Bounds a document's highlight spans to what a
     /// client can actually see; empty until a client declares one.
     viewports: HashMap<(DocumentId, ViewId), (u32, u32)>,
+    /// The window each document's highlights are narrowed to, and the slice last
+    /// published for it. Behind a lock only because publishing borrows the
+    /// session immutably; the actor is its one user.
+    highlight_windows: std::sync::Mutex<HashMap<DocumentId, HighlightWindow>>,
     /// The client's opaque view state, held so a reattaching client can
     /// restore tabs and panes its own process did not outlive. Never
     /// interpreted here.

@@ -49,12 +49,32 @@ impl Session {
             return;
         }
         let (first, last) = (first_line.min(last_line), first_line.max(last_line));
-        let previous = self.viewports.insert((doc, view), (first, last));
-        // Re-publish only on a real move: the client sends its viewport on every
-        // scroll, and most scrolls land inside the margin already sent.
-        if previous != Some((first, last)) {
-            self.publish(doc, None);
+        self.viewports.insert((doc, view), (first, last));
+        let Some((first, last)) = self.declared_lines(doc) else {
+            return;
+        };
+        // Re-publish only when a view reaches outside the window last published:
+        // the client sends its viewport on every scroll, and most scrolls land
+        // inside the margin it already holds spans for.
+        let windows = self
+            .highlight_windows
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if windows
+            .get(&doc)
+            .is_some_and(|window| window.lines.0 <= first && last <= window.lines.1)
+        {
+            return;
         }
+        let lines = pad_viewport(first, last);
+        windows
+            .entry(doc)
+            .and_modify(|window| window.lines = lines)
+            .or_insert(HighlightWindow {
+                lines,
+                narrowed: None,
+            });
+        self.publish(doc, None);
     }
 
     /// Forget the range `view` declared for `doc`, once that view closed.
@@ -63,9 +83,26 @@ impl Session {
     /// the document to close: a closed view's stale range would keep widening
     /// the window every other view is highlighted within.
     pub(super) fn clear_viewport(&mut self, doc: DocumentId, view: ViewId) {
-        if self.viewports.remove(&(doc, view)).is_some() {
-            self.publish(doc, None);
+        if self.viewports.remove(&(doc, view)).is_none() {
+            return;
         }
+        let declared = self.declared_lines(doc);
+        let windows = self
+            .highlight_windows
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match declared {
+            Some((first, last)) => {
+                if let Some(window) = windows.get_mut(&doc) {
+                    window.lines = pad_viewport(first, last);
+                }
+            },
+            // The last view went: whole-document highlights again.
+            None => {
+                windows.remove(&doc);
+            },
+        }
+        self.publish(doc, None);
     }
 
     /// The widest line range any view of `doc` is displaying, padded by
@@ -74,7 +111,25 @@ impl Session {
     /// `None` when no view has declared one — a client that never sends a
     /// viewport gets whole-document highlights, which is what local mode wants
     /// and what keeps the command optional.
+    #[cfg(test)]
     pub(crate) fn viewport_lines(&self, doc: DocumentId) -> Option<(u32, u32)> {
+        let (first, last) = self.declared_lines(doc)?;
+        Some(pad_viewport(first, last))
+    }
+
+    /// The line window `doc`'s highlights are narrowed to: the padded viewport
+    /// last published, which a scroll inside it leaves in place.
+    #[cfg(test)]
+    pub(crate) fn highlight_window(&self, doc: DocumentId) -> Option<(u32, u32)> {
+        self.highlight_windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&doc)
+            .map(|window| window.lines)
+    }
+
+    /// The widest line range any view of `doc` is displaying, unpadded.
+    fn declared_lines(&self, doc: DocumentId) -> Option<(u32, u32)> {
         let mut bounds: Option<(u32, u32)> = None;
         for ((viewed, _), (first, last)) in &self.viewports {
             if *viewed != doc {
@@ -85,16 +140,16 @@ impl Session {
                 None => (*first, *last),
             });
         }
-        let (first, last) = bounds?;
-        Some((
-            first.saturating_sub(VIEWPORT_MARGIN),
-            last.saturating_add(VIEWPORT_MARGIN),
-        ))
+        bounds
     }
 
     /// Drop the viewports a closed document leaves behind.
     pub(crate) fn forget_viewports(&mut self, doc: DocumentId) {
         self.viewports.retain(|(viewed, _), _| *viewed != doc);
+        self.highlight_windows
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&doc);
     }
 
     /// The view state a client checkpointed, for a later attach to restore.
@@ -106,4 +161,12 @@ impl Session {
     pub(crate) fn view_state(&self) -> &[u8] {
         &self.view_state
     }
+}
+
+/// A declared line range widened by [`VIEWPORT_MARGIN`] on each side.
+fn pad_viewport(first: u32, last: u32) -> (u32, u32) {
+    (
+        first.saturating_sub(VIEWPORT_MARGIN),
+        last.saturating_add(VIEWPORT_MARGIN),
+    )
 }

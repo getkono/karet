@@ -128,6 +128,7 @@ impl Session {
             search_worker,
             fs_worker,
             viewports: HashMap::new(),
+            highlight_windows: std::sync::Mutex::default(),
             view_state: Vec::new(),
             seam_worker,
             spell_scan_worker,
