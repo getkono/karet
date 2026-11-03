@@ -107,6 +107,18 @@ session. Until that description arrives the client holds no replica, and an
 update carrying no full text — one in flight when the replica was discarded — is
 dropped rather than applied to nothing.
 
+The backend can also refuse a keystroke: it moved the document (an undo, a
+format, a reload) before the edit arrived. The client numbers its optimistic
+edits with the document's own counter, so a second keystroke stacked on the
+refused one can name exactly the version the backend's move produced, while
+describing text the backend never held. Two rules keep such an edit out. The
+backend forwards one client edit to the session at a time, so a stacked edit is
+never applied before the backend knows whether the one beneath it was. And each
+command reports `seen`, the newest event the client had received: after a
+refusal, an edit of that document sent before the complete re-description is
+dropped. The keystroke is lost; the re-description puts the tab back on the
+backend's text.
+
 ## Who owns what
 
 | | Backend | Client |
