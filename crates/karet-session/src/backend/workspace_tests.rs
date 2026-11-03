@@ -635,5 +635,19 @@ fn clearing_a_view_narrows_the_range_to_the_views_left() -> Result<(), Box<dyn s
 
     let margin = crate::session::VIEWPORT_MARGIN;
     assert_eq!(session.viewport_lines(doc), Some((0, 40 + margin)));
+    // The published window is re-padded to the view left, not kept as wide as
+    // the closed one made it.
+    assert_eq!(session.highlight_window(doc), Some((0, 40 + margin)));
+
+    // With the last view gone the document is highlighted whole again.
+    session.handle(
+        RequestId(4),
+        DocumentCommand::ClearViewport {
+            doc,
+            view: ViewId(1),
+        },
+    );
+    assert_eq!(session.viewport_lines(doc), None);
+    assert_eq!(session.highlight_window(doc), None);
     Ok(())
 }
