@@ -74,9 +74,11 @@ additive rather than a rewrite: `crates/karet/src/ui/**` needed no changes.
 Three properties keep the steady state small:
 
 - **Highlights are viewport-scoped.** A view resolves them per rendered line, so
-  spans outside it are never read. `Command::SetViewport` bounds them to the
-  visible window plus a 200-line margin, so an ordinary scroll needs no round trip
-  at all.
+  spans outside it are never read. `DocumentCommand::SetViewport` bounds them to
+  the visible window plus a 200-line margin, so an ordinary scroll needs no round
+  trip at all, and `DocumentCommand::ClearViewport` withdraws a closed view's
+  range. Only a client of a remote backend declares viewports; a local session
+  keeps whole-document highlights, which cost it nothing to share.
 - **Only differences travel.** The `Arc`s in a snapshot are the session's own, so
   pointer identity settles "unchanged" without comparing spans. A keystroke's
   update carries a highlight slice and little else.
@@ -195,11 +197,12 @@ support, a refusal, a timeout. The fallback is exactly the editor the user would
 otherwise have had, so none of them is worth an error message.
 
 The multiplexer side is tracked at
-[getkono/kmux#201](https://github.com/getkono/kmux/issues/201). Two things are
-still open there and are deliberately not guessed at in karet: how the hosted
-client is told which endpoint to connect to, and how a pane's startup flags (the
-file to open, `--goto`, `--command`) reach it. Until both are settled and kmux
-declares its revision, `--client-exec` is the way to run a split session.
+[getkono/kmux#201](https://github.com/getkono/kmux/issues/201). karet's request
+ends the hosted command at a bare `--client`, whose value is the socket to
+connect to: only kmux knows the client-side end of the channel it forwards, so
+revision 1 has kmux append that path. How a pane's startup flags (the file to
+open, `--goto`, `--command`) reach the hosted client is still open there. Until
+kmux declares its revision, `--client-exec` is the way to run a split session.
 
 ## Known gaps
 
@@ -207,6 +210,13 @@ declares its revision, `--client-exec` is the way to run a split session.
   workspace state — but a review begun on one machine is not visible from another.
 - **`--seam-query` and `--capture` are local-only.** Both are one-shot answers
   with nobody watching a screen, so a split would make nothing faster.
+- **A client takes no startup paths.** A PATH argument, `--open`, `--preview`,
+  `--split`, `--goto` and `--diff` name files on the machine they are typed on,
+  which is not the workspace's, so a client refuses them before taking the
+  terminal. Open files from the editor once it attaches.
+- **A client gives a backend 30 seconds to greet.** One that never does ends the
+  client with an error, printed with the last lines the `--client-exec` command
+  wrote to stderr (which is captured, not drawn over the editor).
 - **Path canonicalization is lexical on a client.** `fs::canonicalize` cannot
   resolve a path that is not on this machine, so tab de-duplication compares
   lexically. Two spellings of one file that differ only through a symlink would
