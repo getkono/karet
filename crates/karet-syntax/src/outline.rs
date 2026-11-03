@@ -82,8 +82,14 @@ impl OutlineExtractor {
         }
 
         let mut candidates = root_candidates;
+        let markdown: Vec<(&SyntaxTree, Vec<Span>)> = tree
+            .children()
+            .iter()
+            .filter(|layer| Some(layer.language()) == karet_treesitter::languages::MARKDOWN)
+            .map(|layer| (layer, layer.included_ranges()))
+            .collect();
         for layer in tree.children() {
-            if !inside_markdown(tree, layer) {
+            if !inside_markdown(&markdown, layer) {
                 candidates.extend(self.candidates(layer, text));
             }
         }
@@ -162,10 +168,20 @@ impl OutlineExtractor {
 /// Whether `layer` sits inside a markdown layer: a code example in a doc comment
 /// (or any other embedded markdown), whose declarations illustrate code rather than
 /// declare it. The same rule a markdown root applies to its own fenced examples.
-fn inside_markdown(tree: &LayeredTree, layer: &SyntaxTree) -> bool {
-    tree.layers_at(layer.span().start).into_iter().any(|outer| {
-        !std::ptr::eq(outer, layer)
-            && Some(outer.language()) == karet_treesitter::languages::MARKDOWN
+///
+/// `markdown` holds each markdown layer with its included ranges, collected once per
+/// document: each range list is ascending and disjoint, so a binary search tests the
+/// layer's start, and the whole pass stays linear in the layer count.
+fn inside_markdown(markdown: &[(&SyntaxTree, Vec<Span>)], layer: &SyntaxTree) -> bool {
+    let start = layer.span().start;
+    markdown.iter().any(|(outer, ranges)| {
+        !std::ptr::eq(*outer, layer) && {
+            let after = ranges.partition_point(|range| range.start <= start);
+            after
+                .checked_sub(1)
+                .and_then(|index| ranges.get(index))
+                .is_some_and(|range| start < range.end)
+        }
     })
 }
 

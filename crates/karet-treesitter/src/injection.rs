@@ -382,6 +382,42 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn included_ranges_leave_out_the_gaps_a_span_covers() -> Result<(), crate::TsError> {
+        // Two doc comments combine into one markdown layer whose span runs over the
+        // code between them; its included ranges must not.
+        let lang =
+            |name| language_id_from_injection_name(name).ok_or(crate::TsError::UnknownLanguage);
+        let (rust, md) = (lang("rust")?, lang("markdown")?);
+        let src = "/// a\nfn f() {}\n/// b\nfn g() {}\n";
+        let tree = crate::LayeredParser::new().parse(rust, src)?;
+        let root = tree.root().included_ranges();
+        assert_eq!(root.len(), 1);
+        assert!(root.iter().all(|r| r.start.0 == 0 && r.end.0 >= src.len()));
+        let layer = tree
+            .children()
+            .iter()
+            .find(|c| c.language() == md)
+            .ok_or(crate::TsError::UnknownLanguage)?;
+        let ranges = layer.included_ranges();
+        let texts: Vec<_> = ranges
+            .iter()
+            .filter_map(|r| src.get(r.start.0..r.end.0))
+            .collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts.iter().all(|t| !t.contains("fn")), "{texts:?}");
+        assert!(
+            ranges
+                .iter()
+                .zip(ranges.iter().skip(1))
+                .all(|(a, b)| a.end <= b.start)
+        );
+        let gap = src.find("fn f").unwrap_or_default();
+        assert!(layer.span().start.0 <= gap && gap < layer.span().end.0);
+        Ok(())
+    }
+
     #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
     #[test]
     fn languages_at_reaches_a_fenced_code_block_and_inline_prose() -> Result<(), crate::TsError> {

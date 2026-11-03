@@ -215,6 +215,22 @@ impl SyntaxTree {
         }
     }
 
+    /// The byte ranges this tree was parsed over, in document coordinates, ascending
+    /// and disjoint. An injected layer covers only these, not its whole
+    /// [`span`](Self::span); a tree parsed over the whole text has one range
+    /// covering everything.
+    #[must_use]
+    pub fn included_ranges(&self) -> Vec<Span> {
+        self.tree
+            .included_ranges()
+            .iter()
+            .map(|range| Span {
+                start: BytePos(range.start_byte),
+                end: BytePos(range.end_byte),
+            })
+            .collect()
+    }
+
     /// The named node at `byte` followed by its named ancestors, innermost first.
     ///
     /// The returned descriptors contain only stable, neutral data; no tree-sitter
