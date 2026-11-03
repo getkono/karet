@@ -618,16 +618,22 @@ async fn spawn_with_tcp_retries_until_the_adapter_listens_and_holds_stdin_open()
     // its stdin, as a supervisor wrapper does: it exits on EOF, so it is still
     // running after the handshake only if the client holds stdin open.
     for _ in 0..8 {
-        if let Some(seen) = tcp_launch_scenario().await? {
+        if let Some((seen, ports)) = tcp_launch_scenario(false).await? {
             assert_eq!(seen, ["initialize", "disconnect"]);
+            assert_eq!(ports.len(), 1, "relaunched a live adapter: {ports:?}");
             return Ok(());
         }
     }
     Err("every port spawn_with picked was taken before it could be claimed".into())
 }
 
-/// One run of the slow-booting TCP adapter scenario, or `None` when the port
+/// One run of the slow-booting TCP adapter scenario: the commands the adapter
+/// saw and every port `prepare` was handed, or `None` when a port
 /// `spawn_with` picked was taken before `prepare` could claim it.
+///
+/// With `foreign_first`, the first launch loses its port: `prepare` binds a
+/// foreign listener on it and returns a child that exits at once, as an
+/// adapter that cannot bind does. Only the relaunch gets the real adapter.
 ///
 /// `free_port` drops its listener, so until something binds the port again a
 /// concurrent socket can take it: a listener the client would then connect to
@@ -638,8 +644,9 @@ async fn spawn_with_tcp_retries_until_the_adapter_listens_and_holds_stdin_open()
 /// socket 300ms later. Only the instant between the pick and the claim is
 /// left; a bind that loses it reruns the scenario on a fresh port.
 #[cfg(unix)]
-async fn tcp_launch_scenario()
--> Result<Option<Vec<String>>, Box<dyn std::error::Error + Send + Sync>> {
+async fn tcp_launch_scenario(
+    foreign_first: bool,
+) -> Result<Option<(Vec<String>, Vec<u16>)>, Box<dyn std::error::Error + Send + Sync>> {
     let (socket_tx, socket_rx) = tokio::sync::oneshot::channel::<tokio::net::TcpSocket>();
     let adapter = tokio::spawn(async move {
         let socket = socket_rx.await.map_err(std::io::Error::other)?;
@@ -656,22 +663,34 @@ async fn tcp_launch_scenario()
         args: vec!["--port".to_owned(), "${port}".to_owned()],
         transport: DapTransport::Tcp,
     };
+    let mut socket_tx = Some(socket_tx);
     let mut taken = false;
+    let mut ports = Vec::new();
+    let mut foreign = None;
     let launched = DapClient::spawn_with(&spec, |spec| {
         let port: u16 = spec.args[1]
             .parse()
             .map_err(|e| DapError::Launch(format!("unsubstituted port: {e}")))?;
+        ports.push(port);
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let addr_in_use = |e: std::io::Error, taken: &mut bool| {
+            *taken = e.kind() == std::io::ErrorKind::AddrInUse;
+            DapError::Launch(format!("port {port}: {e}"))
+        };
+        if foreign_first && foreign.is_none() {
+            // The foreign process wins the port; the adapter cannot bind it.
+            foreign =
+                Some(std::net::TcpListener::bind(at).map_err(|e| addr_in_use(e, &mut taken))?);
+            let mut command = tokio::process::Command::new(&spec.command);
+            command.args(["-c", "exit 3"]);
+            return Ok(command);
+        }
         let socket =
             tokio::net::TcpSocket::new_v4().map_err(|e| DapError::Launch(e.to_string()))?;
-        match socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], port))) {
-            Ok(()) => {},
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                taken = true;
-                return Err(DapError::Launch(format!("port {port} taken: {e}")));
-            },
-            Err(e) => return Err(DapError::Launch(e.to_string())),
+        socket.bind(at).map_err(|e| addr_in_use(e, &mut taken))?;
+        if let Some(tx) = socket_tx.take() {
+            let _ = tx.send(socket);
         }
-        let _ = socket_tx.send(socket);
         let mut command = tokio::process::Command::new(&spec.command);
         command
             .args(["-c", "exec cat >/dev/null", "sh"])
@@ -689,7 +708,8 @@ async fn tcp_launch_scenario()
     assert!(child.try_wait()?.is_none(), "stdin reached EOF early");
     client.disconnect(false).await?;
     let seen = tokio::time::timeout(Duration::from_secs(5), adapter).await???;
-    Ok(Some(seen))
+    drop(foreign);
+    Ok(Some((seen, ports)))
 }
 
 #[test]
