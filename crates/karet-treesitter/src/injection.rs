@@ -141,13 +141,22 @@ fn is_rustdoc_markdown(tree: &tree_sitter::Tree, text: &str) -> bool {
 /// own injections query resolves a fence by its first word, so it finds no grammar
 /// for those and would leave the doctest unhighlighted. Rustdoc also compiles an
 /// indented code block as Rust, and markdown's query never injects one at all.
+///
+/// Rustdoc strips a doc comment's shared indentation before markdown reads it, so
+/// `///     x` after `/// Text.` is indented 4 columns to rustdoc, not 5. The markdown
+/// layer sees the unstripped text, and an indented block counts as a doctest only
+/// when it sits 4 columns beyond its doc comment's shared indentation.
 fn add_rustdoc_doctests(tree: &tree_sitter::Tree, text: &str, out: &mut Vec<InjectionRegion>) {
     let Some(rust) = crate::languages::RUST else {
         return;
     };
+    let included = tree.included_ranges();
     let mut indented = Vec::new();
     collect_kind(tree.root_node(), "indented_code_block", &mut indented);
     for block in indented {
+        if !is_rustdoc_indented_block(&included, text, block.start_byte()) {
+            continue;
+        }
         let ranges = content_ranges(block, false);
         if !ranges.is_empty() {
             out.push(InjectionRegion {
@@ -188,6 +197,77 @@ fn add_rustdoc_doctests(tree: &tree_sitter::Tree, text: &str, out: &mut Vec<Inje
             });
         }
     }
+}
+
+/// Whether the indented code block starting at byte `start` of a rustdoc markdown
+/// layer (whose included ranges are `included`) is still indented 4 columns once
+/// rustdoc strips its doc comment's shared indentation.
+fn is_rustdoc_indented_block(included: &[tree_sitter::Range], text: &str, start: usize) -> bool {
+    // The block's first line: the first included byte at or after `start` (a node can
+    // begin in the host text between two ranges), back to its line's start.
+    let Some(index) = included.iter().position(|r| start < r.end_byte) else {
+        return false;
+    };
+    let range_start = included.get(index).map_or(start, |r| r.start_byte);
+    let byte = start.max(range_start);
+    let line_start = text
+        .get(range_start..byte)
+        .and_then(|s| s.rfind('\n'))
+        .map_or(range_start, |nl| range_start + nl + 1);
+    let line = text.get(line_start..).unwrap_or("");
+    let shared = doc_comment_of(included, text, index)
+        .filter_map(|r| text.get(r.start_byte..r.end_byte))
+        .flat_map(str::lines)
+        .filter(|l| !l.trim().is_empty())
+        .map(leading_indent)
+        .min()
+        .unwrap_or(0);
+    // Rustdoc removes `shared` whitespace characters; markdown then measures the rest
+    // in columns, a tab advancing to the next multiple of 4.
+    let mut column = 0;
+    for c in line.chars().skip(shared) {
+        match c {
+            ' ' => column += 1,
+            '\t' => column += 4 - column % 4,
+            _ => break,
+        }
+    }
+    column >= 4
+}
+
+/// The included ranges of the one doc comment `included[index]` belongs to.
+///
+/// A rustdoc markdown layer combines every doc comment of the file, but rustdoc
+/// strips indentation per item: `///` (or `//!`) lines separated by nothing but
+/// whitespace are one comment, and anything else between two ranges — code, a
+/// block comment's `*/` — ends it.
+fn doc_comment_of<'r>(
+    included: &'r [tree_sitter::Range],
+    text: &str,
+    index: usize,
+) -> impl Iterator<Item = &'r tree_sitter::Range> {
+    let joined = |i: usize| {
+        let (Some(a), Some(b)) = (included.get(i), included.get(i + 1)) else {
+            return false;
+        };
+        let marker = text.get(a.end_byte..b.start_byte).unwrap_or("").trim();
+        marker == "///" || marker == "//!"
+    };
+    let first = (0..index)
+        .rev()
+        .take_while(|&i| joined(i))
+        .last()
+        .unwrap_or(index);
+    let last = (index..included.len())
+        .take_while(|&i| joined(i))
+        .last()
+        .map_or(index, |i| i + 1);
+    included.get(first..=last).unwrap_or(&[]).iter()
+}
+
+/// The number of leading space and tab characters of `line`, as rustdoc counts them.
+fn leading_indent(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
 }
 
 /// Every node of `kind` at or beneath `node`, in document order.
@@ -508,6 +588,59 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// Whether the text at `needle` in the Rust source `src` lies in a Rust doctest.
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    fn is_doctest(src: &str, needle: &str) -> Result<bool, crate::TsError> {
+        let rust =
+            language_id_from_injection_name("rust").ok_or(crate::TsError::UnknownLanguage)?;
+        let tree = crate::LayeredParser::new().parse(rust, src)?;
+        let at = BytePos(src.find(needle).ok_or(crate::TsError::UnknownLanguage)?);
+        let langs = tree.languages_at(at);
+        Ok(langs.len() > 2 && langs.first() == Some(&rust))
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn rustdoc_indented_blocks_are_measured_past_the_shared_indent() -> Result<(), crate::TsError> {
+        // Rustdoc strips the 1-space indent every line shares, leaving `x` indented 3
+        // columns: a paragraph, though markdown alone sees 4 and a code block.
+        let src = "/// Text.\n///\n///    let x = 1;\npub fn f() {}\n";
+        assert!(!is_doctest(src, "let x")?, "{src}");
+        // With no shared indent, the same 4 columns are a doctest.
+        let src = "///Text.\n///\n///    let x = 1;\npub fn f() {}\n";
+        assert!(is_doctest(src, "let x")?, "{src}");
+        // A tab reaches column 4 past the shared indent too.
+        let src = "/// Text.\n///\n/// \tlet x = 1;\npub fn f() {}\n";
+        assert!(is_doctest(src, "let x")?, "{src}");
+        // A `///` line indented in the source continues the same doc comment.
+        let src = "/// Text.\n///\n    ///    let x = 1;\npub fn f() {}\n";
+        assert!(!is_doctest(src, "let x")?, "{src}");
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
+    fn rustdoc_shared_indent_is_per_doc_comment() -> Result<(), crate::TsError> {
+        // One markdown layer spans every doc comment in the file, but each item's
+        // comment has its own shared indent: `f`'s is 0, `g`'s is 1.
+        let src = "///Text.\n///\n///    let x = 1;\npub fn f() {}\n\n\
+                   /// Text.\n///\n///    let y = 2;\npub fn g() {}\n";
+        assert!(is_doctest(src, "let x")?, "{src}");
+        assert!(!is_doctest(src, "let y")?, "{src}");
+        let src = "/// Text.\n///\n///    let y = 2;\npub fn g() {}\n\n\
+                   ///Text.\n///\n///    let x = 1;\npub fn f() {}\n";
+        assert!(is_doctest(src, "let x")?, "{src}");
+        assert!(!is_doctest(src, "let y")?, "{src}");
+        Ok(())
+    }
+
+    #[test]
+    fn leading_indent_counts_spaces_and_tabs_as_one_each() {
+        assert_eq!(leading_indent("  \t x"), 4);
+        assert_eq!(leading_indent("x  "), 0);
+        assert_eq!(leading_indent(""), 0);
     }
 
     #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
