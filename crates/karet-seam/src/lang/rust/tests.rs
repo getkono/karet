@@ -33,6 +33,7 @@ fn index(source: &str) -> Option<SeamIndex> {
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent: None,
         children: Vec::new(),
@@ -43,7 +44,11 @@ fn index(source: &str) -> Option<SeamIndex> {
         provisional: false,
     });
     let mut pool = ParserPool::new();
-    extract_file(&mut index, &mut pool, root_id, file, language, source).ok()?;
+    let outcome = extract_file(&mut index, &mut pool, root_id, file, language, source).ok()?;
+    // The real pipeline, not a shortcut past it: an `impl` block's members do not live
+    // where they were written, and a suite that skipped the regroup pass would be
+    // asserting a tree the app never sees.
+    crate::regroup::apply(&mut index, outcome.ownership);
     index.recompute_rollups();
     Some(index)
 }
@@ -130,7 +135,7 @@ unsafe extern "C" {}
     assert_eq!(kind("pkg::E"), Some(NodeKind::Type));
     assert_eq!(kind("pkg::E::V"), Some(NodeKind::Member));
     assert_eq!(kind("pkg::T"), Some(NodeKind::Interface));
-    assert_eq!(kind("pkg::{impl T for S}"), Some(NodeKind::Implementation));
+    assert_eq!(kind("pkg::S::{impl T}"), Some(NodeKind::Implementation));
     assert_eq!(kind("pkg::f"), Some(NodeKind::Function));
     assert_eq!(kind("pkg::K"), Some(NodeKind::Constant));
     assert_eq!(kind("pkg::ST"), Some(NodeKind::Constant));
@@ -148,7 +153,7 @@ fn a_method_is_a_member_but_a_free_function_is_not() {
         Some(NodeKind::Function)
     );
     assert_eq!(
-        at(&index, "pkg::{impl S}::method").map(|n| n.kind),
+        at(&index, "pkg::S::method").map(|n| n.kind),
         Some(NodeKind::Member)
     );
 }
@@ -159,11 +164,11 @@ fn identical_impl_blocks_get_stable_ordinals() {
     else {
         return;
     };
-    // The first keeps its bare name; the second takes a 1-based ordinal.
-    assert!(at(&index, "pkg::{impl S}").is_some());
-    assert!(at(&index, "pkg::{impl S}#2").is_some());
-    assert!(at(&index, "pkg::{impl S}::a").is_some());
-    assert!(at(&index, "pkg::{impl S}#2::b").is_some());
+    // Both blocks dissolve into the type, so their members become siblings — which is
+    // what they always were to a reader. Neither block survives as a level.
+    assert!(at(&index, "pkg::S::a").is_some());
+    assert!(at(&index, "pkg::S::b").is_some());
+    assert!(at(&index, "pkg::{impl S}").is_none());
 }
 
 #[test]
@@ -247,16 +252,14 @@ impl<X: Clone> T for X {}
         return;
     };
     assert!(subtypes(&index, "pkg::T", Lens::Substitution).contains(&"trait".to_owned()));
+    assert!(subtypes(&index, "pkg::S::{impl T}", Lens::Substitution).contains(&"impl".to_owned()));
+    // The self type *is* a type parameter of the block, so it covers every such type —
+    // and has no local type to sit beneath, so it sits beneath the trait.
     assert!(
-        subtypes(&index, "pkg::{impl T for S}", Lens::Substitution).contains(&"impl".to_owned())
-    );
-    assert!(subtypes(&index, "pkg::{impl S}", Lens::Substitution).contains(&"impl".to_owned()));
-    // The self type *is* a type parameter of the block, so it covers every such type.
-    assert!(
-        subtypes(&index, "pkg::{impl T for X}", Lens::Substitution)
+        subtypes(&index, "pkg::T::{impl for X}", Lens::Substitution)
             .contains(&"blanket-impl".to_owned()),
         "got {:?}",
-        subtypes(&index, "pkg::{impl T for X}", Lens::Substitution)
+        subtypes(&index, "pkg::T::{impl for X}", Lens::Substitution)
     );
 }
 
@@ -424,8 +427,7 @@ fn only_a_top_level_main_is_an_entry_point() {
     };
     assert!(subtypes(&index, "pkg::main", Lens::Boundary).contains(&"entry-point".to_owned()));
     assert!(
-        !subtypes(&index, "pkg::{impl S}::main", Lens::Boundary)
-            .contains(&"entry-point".to_owned()),
+        !subtypes(&index, "pkg::S::main", Lens::Boundary).contains(&"entry-point".to_owned()),
         "a method named main is an ordinary member"
     );
 }
@@ -552,4 +554,261 @@ fn the_mapping_declares_what_its_semantic_tier_can_resolve() {
     use crate::lang::SeamLanguage;
     let capabilities = super::Rust.semantic_capabilities();
     assert!(capabilities.contains(&crate::edge::EdgeKind::Implements));
+}
+
+// --- the declaration head ---------------------------------------------------
+
+#[test]
+fn a_wrapped_signature_is_all_head() -> TestResult {
+    // The whole reason the head is a range rather than a line count: this signature is
+    // four lines, and a preview that shows two of them has shown nothing useful.
+    let source = "\
+pub fn render(
+    widget: &Widget,
+    area: Rect,
+) -> Result<(), Error> {
+    Ok(())
+}
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::render").ok_or("no render")?;
+    assert_eq!(node.location.header.start.line, 0);
+    // Through the line the body opens on, not the line the name sits on.
+    assert_eq!(node.location.header.end.line, 3);
+    assert_eq!(node.location.range.end.line, 5);
+    Ok(())
+}
+
+#[test]
+fn a_construct_with_no_body_is_all_head() -> TestResult {
+    let Some(index) = index("pub const LIMIT: usize = 20_000;\n") else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::LIMIT").ok_or("no LIMIT")?;
+    assert_eq!(node.location.header, node.location.range);
+    Ok(())
+}
+
+#[test]
+fn a_type_and_an_impl_both_cut_at_their_brace() -> TestResult {
+    let source = "\
+pub struct Widget<T>
+where
+    T: Clone,
+{
+    pub id: u32,
+}
+
+impl<T: Clone> Render for Widget<T> {
+    fn render(&self) {}
+}
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    // Through the `where` clause, but not the brace sitting alone on line 3: a line
+    // holding nothing but the body's opening is not part of the declaration.
+    assert_eq!(widget.location.header.end.line, 2);
+    let block = at(&index, "pkg::Widget::{impl Render}").ok_or("no impl")?;
+    assert_eq!(block.location.header.start.line, 7);
+    assert_eq!(block.location.header.end.line, 7);
+    Ok(())
+}
+
+// --- where members end up ---------------------------------------------------
+
+#[test]
+fn an_inherent_impl_dissolves_into_the_type_it_belongs_to() -> TestResult {
+    let Some(index) = index("struct Widget { id: u32 }\nimpl Widget { fn render(&self) {} }")
+    else {
+        return Ok(());
+    };
+    // A field written inside the type and a method written beside it are both members of
+    // `Widget`, which is what a reader was looking for all along.
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    let children: Vec<&str> = widget
+        .children
+        .iter()
+        .filter_map(|id| index.node(*id))
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(children, ["id", "render"]);
+    assert_eq!(
+        at(&index, "pkg::Widget::render").map(|n| n.kind),
+        Some(NodeKind::Member)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_trait_impl_stays_a_level_under_the_type_and_drops_the_redundant_half() -> TestResult {
+    let Some(index) = index(
+        r"
+trait Render {}
+struct Widget;
+impl Render for Widget { fn go(&self) {} }
+",
+    ) else {
+        return Ok(());
+    };
+    // `impl Render for Widget` under `Widget` repeats what the reader can already see.
+    let block = at(&index, "pkg::Widget::{impl Render}").ok_or("no impl")?;
+    assert_eq!(block.kind, NodeKind::Implementation);
+    assert_eq!(block.name, "impl Render");
+    assert!(at(&index, "pkg::Widget::{impl Render}::go").is_some());
+    Ok(())
+}
+
+#[test]
+fn an_impl_for_a_foreign_type_sits_under_the_trait_instead() -> TestResult {
+    let Some(index) = index("trait Render {}\nimpl Render for String { fn go(&self) {} }") else {
+        return Ok(());
+    };
+    // Nothing in this package declares `String`, so the trait is the only thing here the
+    // block is about — and it is where a reader looks for its implementors.
+    let block = at(&index, "pkg::Render::{impl for String}").ok_or("no impl")?;
+    assert_eq!(block.name, "impl for String");
+    assert!(at(&index, "pkg::Render::{impl for String}::go").is_some());
+    Ok(())
+}
+
+#[test]
+fn a_blanket_impl_sits_under_its_trait() -> TestResult {
+    let Some(index) = index("trait Render {}\nimpl<T: Clone> Render for T { fn go(&self) {} }")
+    else {
+        return Ok(());
+    };
+    // The self type *is* a type parameter, so there is no type to sit beneath.
+    assert!(at(&index, "pkg::Render::{impl for T}").is_some());
+    Ok(())
+}
+
+#[test]
+fn an_impl_for_something_nothing_here_declares_stays_where_it_was_written() -> TestResult {
+    let Some(index) = index("impl std::fmt::Display for Vec<u8> { fn go(&self) {} }") else {
+        return Ok(());
+    };
+    // Neither end resolves inside the package. Inventing a home for it would be worse
+    // than leaving it where the author put it.
+    assert!(at(&index, "pkg::{impl std::fmt::Display for Vec<u8>}").is_some());
+    Ok(())
+}
+
+#[test]
+fn a_reference_or_generic_self_type_still_finds_its_type() -> TestResult {
+    let Some(index) = index(
+        r"
+trait Render {}
+struct Widget<T> { id: T }
+impl<T> Render for &Widget<T> { fn go(&self) {} }
+",
+    ) else {
+        return Ok(());
+    };
+    assert!(at(&index, "pkg::Widget::{impl Render}::go").is_some());
+    Ok(())
+}
+
+#[test]
+fn an_impl_in_another_module_reaches_the_type_it_names() -> TestResult {
+    let Some(index) = index(
+        r"
+mod model { pub struct Widget; }
+mod behaviour { impl crate::model::Widget { pub fn render(&self) {} } }
+",
+    ) else {
+        return Ok(());
+    };
+    // Written two modules away, and still a member of `Widget`.
+    assert!(at(&index, "pkg::model::Widget::render").is_some());
+    Ok(())
+}
+
+#[test]
+fn a_config_gated_inherent_impl_keeps_its_level() -> TestResult {
+    let Some(index) = index(
+        r#"
+struct Widget;
+impl Widget { fn always(&self) {} }
+#[cfg(unix)]
+impl Widget { fn only_on_unix(&self) {} }
+"#,
+    ) else {
+        return Ok(());
+    };
+    // Dissolving this one would put `only_on_unix` beside `always` as though both always
+    // existed. The gate decides whether those members exist at all, and the type cannot
+    // carry that fact, so the block stays to carry it.
+    assert!(at(&index, "pkg::Widget::always").is_some());
+    let gated = at(&index, "pkg::Widget::{impl Widget}").ok_or("no gated block")?;
+    assert_eq!(gated.kind, NodeKind::Implementation);
+    assert!(
+        subtypes(&index, "pkg::Widget::{impl Widget}", Lens::Variation).contains(&"cfg".to_owned())
+    );
+    assert!(at(&index, "pkg::Widget::{impl Widget}::only_on_unix").is_some());
+    Ok(())
+}
+
+#[test]
+fn two_trait_impls_on_one_type_each_keep_their_own_level() -> TestResult {
+    let Some(index) = index(
+        r"
+trait Draw {}
+trait Save {}
+struct Widget;
+impl Draw for Widget { fn draw(&self) {} }
+impl Save for Widget { fn save(&self) {} }
+",
+    ) else {
+        return Ok(());
+    };
+    // Two traits with a same-named method would collide if the levels were flattened.
+    assert!(at(&index, "pkg::Widget::{impl Draw}::draw").is_some());
+    assert!(at(&index, "pkg::Widget::{impl Save}::save").is_some());
+    Ok(())
+}
+
+#[test]
+fn members_arrive_under_the_type_in_source_order() -> TestResult {
+    let Some(index) = index(
+        r"
+struct Widget { id: u32 }
+impl Widget { fn first(&self) {} }
+impl Widget { fn second(&self) {} }
+",
+    ) else {
+        return Ok(());
+    };
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    let names: Vec<&str> = widget
+        .children
+        .iter()
+        .filter_map(|id| index.node(*id))
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(names, ["id", "first", "second"]);
+    Ok(())
+}
+
+#[test]
+fn a_types_rollups_now_count_the_members_written_beside_it() -> TestResult {
+    let Some(index) = index(
+        r"
+struct Widget;
+impl Widget {
+    pub fn shown(&self) {}
+    pub fn also(&self) {}
+}
+",
+    ) else {
+        return Ok(());
+    };
+    // The point of the whole change, in one number: asking `Widget` how much api surface
+    // it has used to answer zero.
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    assert_eq!(widget.rollups.get(Lens::Api), 3);
+    Ok(())
 }

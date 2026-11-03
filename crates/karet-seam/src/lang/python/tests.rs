@@ -31,6 +31,7 @@ fn index(source: &str) -> Option<SeamIndex> {
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent: None,
         children: Vec::new(),
@@ -41,9 +42,38 @@ fn index(source: &str) -> Option<SeamIndex> {
         provisional: false,
     });
     let mut pool = ParserPool::new();
-    extract_file(&mut index, &mut pool, root_id, file, language, source).ok()?;
+    let outcome = extract_file(&mut index, &mut pool, root_id, file, language, source).ok()?;
+    // Run the same pipeline the app runs, including the regroup pass. Python reports no
+    // ownership so the pass is inert — and that being inert is a claim worth testing
+    // rather than one worth arranging to be true by skipping the step.
+    crate::regroup::apply(&mut index, outcome.ownership);
     index.recompute_rollups();
     Some(index)
+}
+
+/// The ownership hints one snippet produces, for the conformance checks below.
+fn hints(source: &str) -> Vec<(crate::id::SeamId, Vec<crate::lang::Owner>)> {
+    let Some(language) = super::language_id() else {
+        return Vec::new();
+    };
+    let mut index = SeamIndex::new();
+    let root: SeamPath = "pkg".parse().unwrap_or_default();
+    let root_id = index.intern(root);
+    let file = index.intern_file(Path::new("pkg/__init__.py"));
+    let mut pool = ParserPool::new();
+    extract_file(&mut index, &mut pool, root_id, file, language, source)
+        .map(|outcome| outcome.ownership)
+        .unwrap_or_default()
+}
+
+/// Every path in the index, sorted, for whole-shape assertions.
+fn paths(index: &SeamIndex) -> Vec<String> {
+    let mut out: Vec<String> = index
+        .nodes()
+        .filter_map(|node| index.path(node.id).map(ToString::to_string))
+        .collect();
+    out.sort();
+    out
 }
 
 fn at<'a>(index: &'a SeamIndex, path: &str) -> Option<&'a Node> {
@@ -355,5 +385,155 @@ fn the_query_language_needed_no_change_to_serve_a_second_language() -> TestResul
 
     let protocol = crate::query::parse("substitution:protocol").map_err(|e| e.to_string())?;
     assert_eq!(crate::query::evaluate(&protocol, &index).len(), 1);
+    Ok(())
+}
+
+// --- the declaration head ---------------------------------------------------
+
+#[test]
+fn a_wrapped_signature_is_all_head() -> TestResult {
+    let source = "\
+def render(
+    widget,
+    area,
+):
+    return None
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::render").ok_or("no render")?;
+    assert_eq!(node.location.header.start.line, 0);
+    // Python opens its body with the newline after the colon, so the head runs through
+    // the `):` line — exactly the rows a reader needs.
+    assert_eq!(node.location.header.end.line, 3);
+    assert_eq!(node.location.range.end.line, 4);
+    Ok(())
+}
+
+#[test]
+fn a_class_head_stops_at_its_bases() -> TestResult {
+    let source = "\
+class Widget(Base):
+    def render(self):
+        return None
+";
+    let Some(index) = index(source) else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    assert_eq!(node.location.header.end.line, 0);
+    Ok(())
+}
+
+#[test]
+fn an_assignment_is_all_head() -> TestResult {
+    let Some(index) = index("LIMIT = 20000\n") else {
+        return Ok(());
+    };
+    let node = at(&index, "pkg::LIMIT").ok_or("no LIMIT")?;
+    assert_eq!(node.location.header, node.location.range);
+    Ok(())
+}
+
+// --- where members end up ---------------------------------------------------
+
+/// Every construct Python can nest, in one snippet.
+const NESTED: &str = r#"
+LIMIT = 10
+
+class Widget:
+    id: int = 0
+
+    def render(self):
+        return None
+
+    @property
+    def area(self):
+        return 0
+
+    class Inner:
+        def deep(self):
+            return None
+
+def free():
+    def nested():
+        return 1
+    return nested
+"#;
+
+#[test]
+fn python_reports_no_ownership_because_it_has_none_to_report() {
+    // The claim the neutral hook makes about Python: nothing here is written away from
+    // what it belongs to, so there is nothing for the regroup pass to resolve. If a
+    // future mapping ever needs it — a monkey-patched method, say — this fails first.
+    assert!(hints(NESTED).is_empty());
+}
+
+#[test]
+fn regrouping_a_python_file_changes_nothing() {
+    let Some(index) = index(NESTED) else {
+        return;
+    };
+    // A method is written inside its class, a nested class inside its outer one, and a
+    // nested function inside its function. Containment from syntax is already the truth.
+    assert_eq!(
+        paths(&index),
+        [
+            "pkg",
+            "pkg::LIMIT",
+            "pkg::Widget",
+            "pkg::Widget::Inner",
+            "pkg::Widget::Inner::deep",
+            "pkg::Widget::area",
+            "pkg::Widget::id",
+            "pkg::Widget::render",
+            "pkg::free",
+            "pkg::free::nested",
+        ]
+    );
+}
+
+#[test]
+fn a_class_owns_its_members_directly() -> TestResult {
+    let Some(index) = index(NESTED) else {
+        return Ok(());
+    };
+    let widget = at(&index, "pkg::Widget").ok_or("no Widget")?;
+    let names: Vec<&str> = widget
+        .children
+        .iter()
+        .filter_map(|id| index.node(*id))
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(names, ["id", "render", "area", "Inner"]);
+    Ok(())
+}
+
+#[test]
+fn a_protocol_and_the_class_satisfying_it_each_keep_their_own_members() -> TestResult {
+    // Python's nearest thing to a trait implementation: structural, with no syntax
+    // binding the two. There is no block to regroup, and inventing an edge between them
+    // would be claiming a relation the structural tier cannot see.
+    let Some(index) = index(
+        r"
+from typing import Protocol
+
+class Renderable(Protocol):
+    def render(self) -> None: ...
+
+class Impl:
+    def render(self) -> None:
+        return None
+",
+    ) else {
+        return Ok(());
+    };
+    assert_eq!(
+        at(&index, "pkg::Renderable").map(|n| n.kind),
+        Some(NodeKind::Interface)
+    );
+    assert!(at(&index, "pkg::Renderable::render").is_some());
+    assert!(at(&index, "pkg::Impl::render").is_some());
     Ok(())
 }

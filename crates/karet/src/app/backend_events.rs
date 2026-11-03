@@ -2,58 +2,28 @@ mod documents;
 mod shell;
 mod vcs;
 
-use super::*;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::DocumentId;
+use karet_session::Event as SessionEvent;
+use karet_session::LoadedConfig;
+use karet_session::RequestId;
+use karet_session::SwapInfo;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::confirm::describe_paths;
+use crate::app::language_servers::LanguageServerQuestion;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
-    /// The soonest the event loop should wake for time-based UI: notification expiry,
-    /// save-spinner animation, graphical-caret blink, delayed loading states, or an
-    /// expiring hover reveal.
-    /// `None` when the loop can park on its event sources alone.
-    pub(super) fn next_wake(&self) -> Option<Duration> {
-        let now = Instant::now();
-        let notif = self.notifications.next_deadline(now);
-        let spinner = (!self.pending_saves.is_empty()).then_some(Spinner::FRAME_INTERVAL);
-        let auto_save = self
-            .auto_save_pending
-            .iter()
-            .filter(|(doc, _)| !self.pending_saves.values().any(|save| save.doc == **doc))
-            .filter_map(|(_, pending)| pending.deadline)
-            .map(|deadline| deadline.saturating_duration_since(now))
-            .min();
-        let caret = self.graphics_caret_next_wake(now);
-        let loading = self
-            .pendings()
-            .into_iter()
-            .filter_map(|pending| pending.wake(now))
-            .min();
-        let nested_repositories = self.nested_repository_next_wake(now);
-        let operation = self
-            .operation_blocker
-            .as_ref()
-            .map(|blocker| blocker.deadline.saturating_duration_since(now));
-        // Wake to repaint (hiding the tooltip) when the commit-badge reveal expires.
-        let reveal = match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Commit {
-                explain_since: Some(since),
-                ..
-            }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
-            _ => None,
-        };
-        [
-            notif,
-            spinner,
-            auto_save,
-            caret,
-            loading,
-            nested_repositories,
-            operation,
-            reveal,
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-    }
-
     /// Handle a backend event: correlate opens to tabs, surface save/progress status.
     pub(super) fn on_backend_event(&mut self, id: Option<RequestId>, event: SessionEvent) {
         self.on_backend_event_inner(id, event);
@@ -71,29 +41,59 @@ impl App {
         }
         // A save's answering event clears its tab spinner. During "save all & quit",
         // only successful Saved responses may let the quit continue; a refused or
-        // failed save keeps the app open with the dirty buffer intact.
-        let mut save_failed = false;
+        // failed save keeps the app open with the dirty buffer intact. Which
+        // document failed is part of the answer: a parked close owes writes only
+        // for the documents it would drop.
+        let mut failed_save: Option<DocumentId> = None;
         if let Some(req) = id
             && let Some(pending) = self.pending_saves.remove(&req)
         {
             let doc = pending.doc;
-            save_failed = !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc);
+            if !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc) {
+                failed_save = Some(doc);
+            }
             for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                     tab.saving_since = None;
                 }
             }
         }
-        if save_failed && let Some(request) = self.saving_close.take() {
+        // Cancel the parked close only for a write *it* would drop. A save deferred
+        // on a formatter answers seconds later and for any document, so a global
+        // "some save failed" read let document A's failure cancel the close of an
+        // unrelated tab B whose own save had already landed. This is the mirror of
+        // `saves_at_risk`, which scopes the *park* the same way.
+        if let Some(doc) = failed_save
+            && let Some(request) = self.saving_close
+            && self.fully_dropped_docs(request).contains(&doc)
+        {
+            self.saving_close = None;
             let verb = if matches!(request, CloseRequest::Quit) {
                 "quit"
             } else {
                 "close"
             };
-            self.status = Some(format!("{verb} cancelled: save failed"));
+            // The batch is over, so retire its progress card here: unrelated saves
+            // may still be in flight, and the blanket retirement below only fires
+            // once *nothing* is pending.
+            self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+            // Untagged, so retiring the batch's own card cannot take the reason the
+            // batch was abandoned down with it.
+            self.notify(
+                Report::Failure,
+                NotificationKind::Io,
+                format!("{verb} cancelled: save failed"),
+            );
         }
-        if save_failed && self.vcs_after_save.take().is_some() {
-            self.status = Some("branch switch cancelled: save failed".to_string());
+        // The branch switch stays scoped to every save: it rewrites the whole
+        // worktree, so any unwritten buffer is a buffer it would clobber -- there is
+        // no subset of documents it can be said not to own.
+        if failed_save.is_some() && self.vcs_after_save.take().is_some() {
+            self.notify(
+                Report::Failure,
+                NotificationKind::Io,
+                "branch switch cancelled: save failed",
+            );
         }
         match event {
             SessionEvent::Opened { doc, .. } => self.on_opened(id, doc),
@@ -138,14 +138,87 @@ impl App {
                 }
             },
             SessionEvent::Symbols { doc, symbols } => self.on_symbols(doc, symbols),
+            SessionEvent::WorkspaceSymbols { symbols } => self.on_workspace_symbols(id, &symbols),
             SessionEvent::Completions {
                 doc,
                 version,
                 items,
-            } => self.on_completions(id, doc, version, items),
+                incomplete,
+                options,
+            } => self.on_completions(id, doc, version, (items, incomplete, options)),
+            SessionEvent::CompletionResolved { doc, resolved } => {
+                self.on_completion_resolved(id, doc, resolved);
+            },
+            SessionEvent::InlayHints {
+                doc,
+                version,
+                hints,
+            } => self.on_inlay_hints(id, doc, version, hints),
+            SessionEvent::InlineCompletions {
+                doc, server, items, ..
+            } => self.on_inline_completions(id, doc, server, items),
+            SessionEvent::LanguageServerAccount { server, outcome } => {
+                self.on_language_server_account(&server, outcome);
+            },
+            SessionEvent::InlayHintsFailed { doc, version } => {
+                self.on_inlay_hints_failed(id, doc, version);
+            },
+            SessionEvent::CodeLenses {
+                doc,
+                version,
+                lenses,
+            } => self.on_code_lenses(id, doc, version, lenses),
+            SessionEvent::CodeLensesFailed { doc, version } => {
+                self.on_code_lenses_failed(id, doc, version);
+            },
+            SessionEvent::LinksAndColors {
+                doc,
+                version,
+                links,
+                colors,
+            } => self.on_links_and_colors(id, doc, version, (links, colors)),
+            SessionEvent::DocumentLinkResolved { doc, result } => {
+                self.on_document_link_resolved(id, doc, result);
+            },
+            SessionEvent::InlayHintResolved { doc, hint } => {
+                self.on_inlay_hint_resolved(id, doc, hint);
+            },
+            // The server said its hints went stale somewhere the buffer
+            // version cannot see -- an edit in another file. Every document
+            // is re-asked rather than only the ones it serves: only visible
+            // ones are, and the answer from a server that did not change is
+            // the same set, arriving in place of itself.
+            SessionEvent::InlayHintsRefresh { .. } => self.invalidate_inlay_coverage(),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
+            SessionEvent::SelectionRanges { doc, chains, .. } => {
+                self.on_selection_ranges(id, doc, chains);
+            },
+            SessionEvent::LinkedEditingRanges { doc, ranges, .. } => {
+                self.on_linked_editing_ranges(id, doc, ranges);
+            },
+            SessionEvent::OnTypeFormatting {
+                doc,
+                version,
+                edits,
+                triggers,
+            } => self.on_type_formatting(id, (doc, version), edits, triggers),
+            SessionEvent::DocumentHighlights {
+                doc,
+                version,
+                highlights,
+            } => self.on_document_highlights(id, doc, version, highlights),
+            SessionEvent::SignatureHelp { doc, help, options } => {
+                self.on_signature_help(id, doc, help, options);
+            },
+            SessionEvent::FeatureUnsupported { server, feature } => {
+                self.on_feature_unsupported(id, server, feature);
+            },
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
-            SessionEvent::DebugState { state, detail } => self.on_debug_state(state, detail),
+            SessionEvent::DebugState {
+                state,
+                severity,
+                detail,
+            } => self.on_debug_state(state, severity, detail),
             SessionEvent::DebugStopped {
                 reason,
                 thread: _,
@@ -164,8 +237,28 @@ impl App {
                 variables,
             } => self.on_debug_variables(id, reference, variables),
             SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
-            SessionEvent::NotebookKernelStatus { text, .. } => {
-                self.status = Some(format!("notebook: {text}"));
+            SessionEvent::NotebookKernelStatus { severity, text, .. } => {
+                let tier = Report::from_severity(severity);
+                // Two feeds, two tags. Progress shares one so a thirty-cell run
+                // rewrites a single card instead of stacking thirty; anything
+                // that waits to be dismissed gets the other, so the next tick
+                // cannot erase it and a re-run that keeps raising still collapses
+                // to one card. The split is on whether the card expires, not on
+                // the tier, because an alert is persistent too.
+                let ends_the_run = tier.timeout().is_none();
+                let tag = if ends_the_run {
+                    // The run is over; a "running cell 3/4" left beside it is stale.
+                    self.notifications.dismiss_tagged(Self::NOTEBOOK_KERNEL_TAG);
+                    Self::NOTEBOOK_KERNEL_FAILURE_TAG
+                } else {
+                    Self::NOTEBOOK_KERNEL_TAG
+                };
+                self.notify_tagged(
+                    tier,
+                    NotificationKind::System,
+                    format!("notebook: {text}"),
+                    Some(tag.to_string()),
+                );
             },
             SessionEvent::NotebookCellDone { .. } => {},
             SessionEvent::ManifestHints {
@@ -174,13 +267,51 @@ impl App {
                 hints,
             } => {
                 self.docs.manifest_hints.insert(doc, (version, hints));
+                // The hints landing is the answer to an explicit re-check, so its
+                // card goes with them. Unconditional: hints also arrive unasked
+                // for, and dismissing a tag nobody raised is a no-op.
+                self.notifications.dismiss_tagged(Self::DEPS_CHECK_TAG);
             },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
-            SessionEvent::LanguageServerInstallRequired { server } => {
-                self.prompt_language_server_install(server);
+            SessionEvent::Locations { kind, locations } => {
+                self.on_locations(id, Some(kind), locations);
+            },
+            SessionEvent::Hierarchy { items, .. } => self.on_hierarchy(id, items),
+            SessionEvent::RenamePrepared {
+                doc,
+                target,
+                reason,
+                ..
+            } => self.on_rename_prepared(id, doc, target, reason),
+            SessionEvent::WorkspaceEdit { applied } => self.on_workspace_edit(id, applied),
+            SessionEvent::CodeActions {
+                doc,
+                version,
+                actions,
+                reason,
+            } => self.on_code_actions(id, doc, version, actions, reason),
+            SessionEvent::LanguageServerInstallRequired {
+                server,
+                language,
+                enabled,
+            } => {
+                self.prompt_language_server_install(server, &language, enabled);
+            },
+            // No notification. karet cannot install these, so the old toast could
+            // only tell the user to get the executable onto `PATH` themselves --
+            // advice that named a condition rather than offering a way out of it,
+            // and interrupted them to do it. The badge now carries the condition,
+            // and clicking it opens the manager, whose row for this provider names
+            // the SDK or toolchain required and the executable karet looked for.
+            // All this event does is make the badge show up promptly.
+            SessionEvent::LanguageServerManualInstallRequired { .. } => {
+                self.refresh_language_server_inventory();
             },
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);
+            },
+            SessionEvent::LanguageServerInventoryStale => {
+                self.language_server_inventory_stale();
             },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
                 self.prompt_language_server_updates(id, plan, changes);
@@ -203,29 +334,52 @@ impl App {
                 server,
                 cleanup_pending,
             } => self.finish_language_server_remove(id, server, cleanup_pending),
+            SessionEvent::LanguageServerWork { work } => self.on_language_server_work(work),
+            SessionEvent::LanguageServerMessageRequest {
+                request,
+                server,
+                severity,
+                message,
+                actions,
+            } => self.on_language_server_question(LanguageServerQuestion {
+                request,
+                server,
+                severity,
+                message,
+                actions,
+            }),
+            SessionEvent::LanguageServerLog { server, entries } => {
+                self.on_language_server_log(&server, entries);
+            },
             SessionEvent::LanguageServerRuntimeChanged {
                 server,
                 root,
                 state,
                 error,
-            } => self.update_language_server_runtime(server, root, state, error),
+            } => {
+                self.update_language_server_runtime(server, root, state, error);
+                // A provider that has just come up can answer things it could
+                // not a moment ago. Anything already answered *because no
+                // server was running* is not a real answer, and without this
+                // the empty set returned during startup would be cached as
+                // authoritative and never re-asked.
+                self.invalidate_inlay_coverage();
+                self.invalidate_code_lens_coverage();
+                self.invalidate_link_color_coverage();
+            },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);
                 self.on_saved(doc);
             },
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::Io,
-                    "reloaded from disk",
-                );
+                self.notify(Report::Outcome, NotificationKind::Io, "reloaded from disk");
             },
-            // A persistent warning: a transient status hint would vanish on the next
-            // keystroke, but an unsaved-vs-disk conflict must not be missed.
+            // An alert, not a refusal: nothing the user just did caused it, and an
+            // unsaved-vs-disk conflict must wait to be read rather than expire.
             SessionEvent::ExternalConflict { .. } => {
                 self.notify(
-                    Severity::Warning,
+                    Report::Alert,
                     NotificationKind::Io,
                     "file changed on disk — you have unsaved changes",
                 );
@@ -233,7 +387,19 @@ impl App {
             SessionEvent::NotUtf8 { path } => self.on_not_utf8(id, path),
             SessionEvent::FsChanged { paths } => self.on_fs_changed(&paths),
             SessionEvent::ConfigChanged { report } => self.on_config_changed(*report),
-            SessionEvent::Progress { message, .. } => self.status = Some(message),
+            // A saved `keymap.jsonc` (user or project): the session's watcher has
+            // already debounced the save, so reload the whole merged keymap now.
+            SessionEvent::KeymapChanged { .. } => self.reload_keymap(),
+            // Language-server chatter (jdtls-style `language/status` during a long
+            // first import). Tagged so successive ticks rewrite one card instead of
+            // stacking, and on the self-expiring `Activity` tier because the stream
+            // just stops — there is no event that says the import finished.
+            SessionEvent::Progress { message, .. } => self.notify_tagged(
+                Report::Activity,
+                NotificationKind::Lsp,
+                message,
+                Some(Self::LSP_STATUS_TAG.to_string()),
+            ),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
             SessionEvent::Notification {
@@ -269,11 +435,9 @@ impl App {
                 line,
                 attribution,
             } => self.on_blame_result(id, doc, version, line, attribution),
-            SessionEvent::PullRequests {
-                remote,
-                items,
-                next_page,
-            } => self.on_pull_requests(id, remote, items, next_page),
+            SessionEvent::LineChanges { doc, markers, .. } => {
+                self.on_line_changes(id, doc, markers);
+            },
             SessionEvent::VcsLog {
                 skip,
                 commits,
@@ -289,9 +453,17 @@ impl App {
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
+            SessionEvent::CommitOutput { lines } => self.on_commit_output(lines),
             SessionEvent::Committed { oid } => self.on_committed(&oid),
+            SessionEvent::CommitCancelled => self.commit_console_cancelled(),
             SessionEvent::CommitMessageGenerated { message } => {
-                self.on_commit_message_generated(message);
+                self.on_commit_message_generated(id, message);
+            },
+            SessionEvent::CommitMessageFailed { message } => {
+                self.on_commit_message_failed(id, message);
+            },
+            SessionEvent::AiCommitAvailability { status } => {
+                self.on_ai_commit_availability(*status);
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             SessionEvent::CommitDetailReady { detail } => self.on_commit_detail_ready(id, detail),
@@ -303,7 +475,7 @@ impl App {
                 head_label,
                 merge_base,
                 changes,
-            } => self.open_compare_tab(base_label, head_label, merge_base, changes),
+            } => self.on_range_ready(id, base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
                 self.on_commit_verification(id, &hash, status);
             },
@@ -311,6 +483,9 @@ impl App {
                 self.apply_github_availability(repository, auth);
             },
             SessionEvent::GithubIssues { page } => self.apply_github_issues(id, page),
+            SessionEvent::GithubPullRequests { page } if self.answers_pull_request_picker(id) => {
+                self.on_pull_requests(page);
+            },
             SessionEvent::GithubPullRequests { page } => {
                 self.apply_github_pull_requests(id, page);
             },
@@ -343,26 +518,66 @@ impl App {
                     },
                 );
             },
+            // The branch picker is a Source Control surface, so its failure is
+            // a Source Control error with the bare reason, not a GitHub-view one.
+            SessionEvent::GithubError { message, .. } if self.answers_pull_request_picker(id) => {
+                self.on_notification(
+                    id,
+                    karet_core::Severity::Error,
+                    NotificationKind::Vcs,
+                    message,
+                );
+            },
             SessionEvent::GithubError { operation, message } => {
                 self.apply_github_error(id, operation, message);
             },
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();
                 self.push_tab(Tab::graph(title, view));
-                self.status = Some(format!("dependency graph: {count} package(s)"));
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    format!("dependency graph: {count} package(s)"),
+                );
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             SessionEvent::SeamIndexed { summary, nodes } => {
                 self.on_seam_indexed(id, summary, nodes);
             },
+            SessionEvent::SeamPackageIndexed {
+                order,
+                root,
+                nodes,
+                unresolved_modules,
+            } => self.on_seam_package_indexed(id, order, &root, nodes, unresolved_modules),
+            SessionEvent::SeamIndexFinished {
+                summary,
+                parsed,
+                files,
+            } => self.on_seam_index_finished(id, summary, parsed, files),
             SessionEvent::SeamIndexFailed { message } => self.on_seam_index_failed(id, message),
             SessionEvent::SeamQueryResult { nodes, error, .. } => {
                 self.on_seam_query_result(id, nodes, error);
             },
-            SessionEvent::SeamNodeDetail { node, edges } => {
-                self.on_seam_node_detail(id, node, edges);
+            SessionEvent::SeamNodeDetail {
+                node,
+                edges,
+                preview,
+            } => {
+                self.on_seam_node_detail(id, node, edges, preview);
             },
-            SessionEvent::SearchResults { hits } => self.apply_search_results(hits),
+            SessionEvent::SearchProgress {
+                hits,
+                files_scanned,
+                matches_found,
+            } => self.search_progress(id, hits, files_scanned, matches_found),
+            SessionEvent::SearchFinished {
+                files_scanned,
+                matches_found,
+                truncated,
+                cancelled: _,
+                error,
+            } => self.search_finished(id, files_scanned, matches_found, truncated, error),
             SessionEvent::SpellingScanProgress {
                 hits,
                 files_scanned,
@@ -392,38 +607,66 @@ impl App {
             SessionEvent::DocumentConverted { path, markdown } => {
                 self.apply_document_converted(id, &path, markdown);
             },
+            SessionEvent::MarkdownLintFixed { fixed, .. } => self.markdown_lint_fixed(fixed),
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },
             SessionEvent::ProjectSettingsCreationRequired { word, path } => {
-                self.overlay = Some(Overlay::text(
-                    format!("Type create to add “{word}” and create {}", path.display()),
-                    TextPurpose::ConfirmCreateProjectSettings { word, path },
-                ));
+                self.confirm_action(
+                    format!("Add “{word}” to the project dictionary?"),
+                    format!(
+                        "This workspace has no settings file yet. Accepting the \
+                         word creates {} to hold it, which is checked in alongside \
+                         the project.",
+                        path.display()
+                    ),
+                    "Cancel",
+                    "Create the file",
+                    ConfirmAction::CreateProjectDictionary { word, path },
+                );
             },
             SessionEvent::SearchReplaced {
                 files_changed,
                 replacements,
-            } => {
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::System,
-                    format!("replaced {replacements} occurrence(s) in {files_changed} file(s)"),
-                );
-                // Refresh so the (now empty, unless the replacement re-matches)
-                // results reflect the edited files.
-                self.run_global_search();
-            },
-            // Events answering commands this client never sends (hover, workspace
-            // symbols, rename, format-on-save) fall through here until the
-            // corresponding UI exists.
+                failures,
+                error,
+            } => self.search_replaced(files_changed, replacements, &failures, error),
+            // Events answering commands this client never sends fall through
+            // here until the corresponding UI exists.
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.
-        if self.saving_close.is_some()
-            && self.pending_saves.is_empty()
-            && let Some(request) = self.saving_close.take()
+        // Either way the batch is over once nothing is pending, so its card goes —
+        // the failure arms above already replaced it with their reason.
+        if self.pending_saves.is_empty() {
+            self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+        }
+        // Release on the same set the park counted: the writes this request would
+        // drop. Waiting on `pending_saves` globally held a tab close hostage to a
+        // save for a document it never touches — a document whose formatter can
+        // keep it in flight for seconds.
+        if let Some(request) = self.saving_close
+            && self.saves_at_risk(request) == 0
         {
+            self.saving_close = None;
+            // One card carries this tag, so a parked close's card replaced the
+            // branch switch's if both were waiting. Retiring it here on the close
+            // alone would leave the switch -- which rewrites the whole worktree --
+            // running with no indicator at all, so restate what is still parked
+            // rather than dismissing what is still true.
+            if self.vcs_after_save.is_some() {
+                self.notify_progress(
+                    NotificationKind::Vcs,
+                    Self::SAVE_BATCH_TAG.to_string(),
+                    format!(
+                        "saving {} editor(s) before switching…",
+                        self.pending_saves.len()
+                    ),
+                    None,
+                );
+            } else {
+                self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+            }
             self.execute_close(request);
         }
         if self.pending_saves.is_empty()
@@ -436,7 +679,11 @@ impl App {
 
     pub(super) fn open_loaded_config(&mut self, report: LoadedConfig) {
         self.push_tab(Tab::loaded_config(report));
-        self.status = Some("loaded settings opened".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            "loaded settings opened",
+        );
     }
 
     /// Arm the startup crash-recovery prompt for `swaps` left by a previous session.
@@ -445,16 +692,82 @@ impl App {
             return;
         }
         let conflicts = swaps.iter().filter(|s| s.conflict).count();
-        let suffix = if conflicts > 0 {
-            format!(" ({conflicts} changed on disk)")
-        } else {
-            String::new()
-        };
-        self.status = Some(format!(
-            "recovered {} unsaved file(s) from a previous session{suffix} — \
-             press r to recover, d to discard, any other key to dismiss",
-            swaps.len()
+        let files: Vec<PathBuf> = swaps.iter().map(|s| s.original.clone()).collect();
+        let mut body = format!(
+            "A previous session ended with unsaved changes to {}. Recovering \
+             reopens each file with those changes; discarding deletes the backups.",
+            describe_paths(&files, &self.root)
+        );
+        if conflicts > 0 {
+            // The conflict is the whole reason this decision is not obvious: the
+            // user has two versions and recovering silently drops one of them.
+            body.push_str(&format!(
+                " {conflicts} of them changed on disk since, so recovering those \
+                 replaces the newer on-disk content."
+            ));
+        }
+        // Open first, arm second — see `guarded_close`: opening declines the dialog
+        // it replaces, and a decline is what clears these parked fields.
+        self.confirm(ConfirmDialog::new(
+            "Recover unsaved changes from a previous session?",
+            body,
+            vec![
+                ConfirmChoice::custom("Decide later", Command::DismissSwaps),
+                ConfirmChoice::custom("Recover them", Command::RecoverSwaps),
+                ConfirmChoice::custom("Discard the backups", Command::DiscardSwaps),
+            ],
         ));
         self.pending_swaps = Some(swaps);
+    }
+
+    /// Report a finished replace-all, then refresh the results so they reflect
+    /// the edited files (now empty, unless the replacement re-matches).
+    ///
+    /// A replace that stopped on an error, or left files it could not write, is
+    /// a failure the user must see: a bare count would read as complete.
+    fn search_replaced(
+        &mut self,
+        files_changed: usize,
+        replacements: usize,
+        failures: &[karet_search::WriteFailure],
+        error: Option<String>,
+    ) {
+        let done = format!("replaced {replacements} occurrence(s) in {files_changed} file(s)");
+        if let Some(error) = error {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::System,
+                format!("replace stopped: {error}"),
+                done,
+            );
+        } else if failures.is_empty() {
+            self.notify(Report::Outcome, NotificationKind::System, done);
+        } else {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::Io,
+                format!("{done}; {} file(s) could not be written", failures.len()),
+                self.write_failure_lines(failures),
+            );
+        }
+        self.run_global_search();
+    }
+
+    /// One `path: reason` line per unwritten file, root-relative, capped so a
+    /// read-only tree cannot fill the screen.
+    fn write_failure_lines(&self, failures: &[karet_search::WriteFailure]) -> String {
+        const SHOWN: usize = 5;
+        let mut lines: Vec<String> = failures
+            .iter()
+            .take(SHOWN)
+            .map(|f| {
+                let path = f.path.strip_prefix(&self.root).unwrap_or(&f.path);
+                format!("{}: {}", path.display(), f.error)
+            })
+            .collect();
+        if failures.len() > SHOWN {
+            lines.push(format!("…and {} more", failures.len() - SHOWN));
+        }
+        lines.join("\n")
     }
 }

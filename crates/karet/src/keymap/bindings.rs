@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::View;
 
 /// The single source of truth for key bindings. Within a [`Layer`] the first
 /// matching binding wins (and [`hint_for`] returns the first binding for a command,
@@ -10,10 +11,18 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('q'), Command::Quit),
     b(Global, true,  false, false, Char('c'), Command::Copy),
     b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
+    b(Global, true,  false, false, Char('r'), Command::OpenRecentWorkspace),
     b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
     // F1 is a terminal-safe alternate for the command palette: some emulators
     // capture Ctrl+Shift+P before it reaches the app (see the app README).
     b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
+    // The integrated terminal (VS Code parity): Ctrl+` shows the most recent
+    // terminal (starting one when none is open) or, from a terminal, goes back to
+    // the editor; Ctrl+Shift+` always starts another. A shifted backtick arrives
+    // as `~` on terminals that report the shifted character.
+    b(Global, true,  false, false, Char('`'), Command::ToggleTerminal),
+    b(Global, true,  true,  false, Char('`'), Command::NewTerminal),
+    b(Global, true,  true,  false, Char('~'), Command::NewTerminal),
 
     // Debugger run controls (VS Code parity). Explorer keeps its F5 refresh:
     // its layer outranks Global while the explorer has focus.
@@ -27,7 +36,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
-    b(Global, true,  true,  false, Char('o'), Command::ToggleOutline),
+    // Ctrl+Shift+O is Go to Symbol in Editor (VS Code parity); the outline
+    // panel it used to toggle moved to the `Ctrl+K` chord family below.
+    b(Global, true,  true,  false, Char('o'), Command::GoToSymbolInEditor),
+    // Ctrl+T is Go to Symbol in Workspace (VS Code parity); Ctrl+Shift+T stays
+    // Reopen Closed Tab.
+    b(Global, true,  false, false, Char('t'), Command::GoToSymbolInWorkspace),
+    // Ctrl+G is Go to Line (VS Code parity). The find bar and the commit
+    // message field keep their own Ctrl+G: their layers outrank Global.
+    b(Global, true,  false, false, Char('g'), Command::GoToLine),
     b(Global, true,  false, false, Char('w'), Command::CloseTab),
     b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
@@ -35,7 +52,29 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('4'), Command::SelectPanel(SidebarPanel::Spelling)),
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
+    b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    b(Global, true,  false, false, Char('8'), Command::SelectPanel(SidebarPanel::Hierarchy)),
+    // Next / previous problem in the active file (VS Code parity). Global, so the
+    // walk also works from the Problems panel, which hands focus to the editor.
+    b(Global, false, false, false, F(8),      Command::NextProblem),
+    b(Global, false, true,  false, F(8),      Command::PrevProblem),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
+    // Zed / VS Code "focus explorer" parity, and the editor's own focus key: the
+    // editor layer claims Tab for indentation.
+    b(Global, true,  true,  false, Char('e'), Command::ToggleFocus),
+
+    // The top-level view switcher. A `Ctrl+K` chord rather than `Ctrl+Shift+<digit>`:
+    // terminals report a shifted digit as its shifted *character* (`!`, `@`, `#`), which
+    // varies by keyboard layout, so a shift-digit chord is not portable. The digits
+    // mirror `Ctrl+1..6` one level up.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('o'))], Command::ToggleOutline),
+    // Screen-reclaiming modes for small terminals. `Ctrl+K Z` is VS Code's Zen
+    // Mode; its maximise chord, `Ctrl+K Ctrl+M`, is the editor's Show Diagnostic
+    // here, so the pane maximises on the plain-letter `Ctrl+K M`.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('z'))], Command::ToggleZenMode),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('m'))], Command::ToggleMaximizePane),
 
     // Tab navigation & reordering (global).
     b(Global, true,  false, false, Tab,       Command::NextTab),
@@ -66,11 +105,18 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
     // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
-    // Ctrl+Alt+Up/Down in the editor layer.
+    // Ctrl+Alt+Up/Down in the editor layer. In the text editor the same chords
+    // are box selection (VS Code parity), so there the palette resizes.
     b(Global, true, true, true, Left,  Command::ResizePaneLeft),
-    // Go Back lives in the Global layer: a jump can leave focus in the sidebar,
-    // and the way back should still work from there.
+    // Go Back/Forward live in the Global layer: a jump can leave focus in the
+    // sidebar, and the way back should still work from there. Ctrl+Alt is listed
+    // first because it works everywhere; VS Code's Alt+arrow works wherever the
+    // focused layer leaves it free, which the editor does not: there Alt+arrow
+    // is the portable word motion (#141).
     b(Global, true, false, true, Left, Command::JumpBack),
+    b(Global, true, false, true, Right, Command::JumpForward),
+    b(Global, false, false, true, Left, Command::JumpBack),
+    b(Global, false, false, true, Right, Command::JumpForward),
     b(Global, true, true, true, Right, Command::ResizePaneRight),
     b(Global, true, true, true, Up,    Command::ResizePaneUp),
     b(Global, true, true, true, Down,  Command::ResizePaneDown),
@@ -113,6 +159,23 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Explorer inline name editor (new file/folder or rename).
     b(ExplorerEdit, false, false, false, Esc,   Command::ExplorerEditCancel),
     b(ExplorerEdit, false, false, false, Enter, Command::ExplorerEditSubmit),
+    b(ExplorerEdit, true,  false, false, Char('c'), Command::Copy),
+    b(ExplorerEdit, true,  false, false, Char('x'), Command::Cut),
+    b(ExplorerEdit, true,  false, false, Char('v'), Command::Paste),
+
+    // Problems panel (sidebar focus, Problems active). Listed before the generic
+    // sidebar bindings so its keys win.
+    b(Problems, false, false, false, Char('/'), Command::ProblemsFilter),
+    b(Problems, false, false, false, Char('s'), Command::ProblemsCycleSeverity),
+    // Problems panel: editing the text filter. Enter keeps the filter, Esc drops it.
+    b(ProblemsFilter, false, false, false, Enter, Command::ProblemsFilterAccept),
+    b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
+    b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
+
+    // Hierarchy panel. Right and `l` grow the tree, where the shared sidebar verbs
+    // would open the row; Enter still opens it, and Left/`h` collapse or climb.
+    b(Hierarchy, false, false, false, Right,     Command::HierarchyExpand),
+    b(Hierarchy, false, false, false, Char('l'), Command::HierarchyExpand),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.
@@ -159,8 +222,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Up,        Command::SelectUp),
     b(Editor, false, true,  false, Left,      Command::SelectLeft),
     b(Editor, false, true,  false, Right,     Command::SelectRight),
-    b(Editor, false, false, false, PageDown,  Command::PageDown),
-    b(Editor, false, false, false, PageUp,    Command::PageUp),
+    b(Editor, false, false, false, PageDown,  Command::CaretPageDown),
+    b(Editor, false, false, false, PageUp,    Command::CaretPageUp),
     // Platform-native edge motion: Home/End and Ctrl+Home/End serve Windows/Linux;
     // Command+arrows serves macOS (and remains harmless when another platform's
     // terminal reports Super). Alt/Option is the portable word modifier; the prior
@@ -178,24 +241,86 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, End,       Command::SelectLineEnd),
     b(Editor, true,  true,  false, Home,      Command::SelectDocStart),
     b(Editor, true,  true,  false, End,       Command::SelectDocEnd),
-    b(Editor, false, true,  true,  Left,      Command::SelectWordLeft),
-    b(Editor, false, true,  true,  Right,     Command::SelectWordRight),
+    // Shift+Alt+Left/Right are Shrink/Expand Selection (VS Code on Linux and
+    // Windows), so word selection keeps only its Ctrl chord.
     b(Editor, true,  true,  false, Left,      Command::SelectWordLeft),
     b(Editor, true,  true,  false, Right,     Command::SelectWordRight),
+    b(Editor, false, true,  true,  Right,     Command::ExpandSelection),
+    b(Editor, false, true,  true,  Left,      Command::ShrinkSelection),
     b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
     b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
     b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
     // Multi-cursor (VS Code parity): Ctrl+Alt+Up/Down stack carets vertically, Ctrl+D
-    // grows the selection to the next occurrence of the word / current selection.
+    // grows the selection to the next occurrence of the word / current selection,
+    // Ctrl+Shift+L selects every occurrence, Ctrl+K Ctrl+D moves the last one on,
+    // Shift+Alt+I puts a caret at each selected line's end, and Ctrl+U undoes the
+    // last of these.
     b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
     b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
     b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
+    b(Editor, true,  true,  false, Char('l'), Command::SelectAllOccurrences),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('d'))], Command::SkipOccurrence),
+    b(Editor, false, true,  true,  Char('i'), Command::AddCursorsToLineEnds),
+    b(Editor, true,  false, false, Char('u'), Command::UndoCaretOperation),
+    // Box selection (VS Code parity): the keyboard path for Shift+Alt+drag,
+    // which terminals and window managers that keep Alt or Shift lose.
+    b(Editor, true,  true,  true,  Up,        Command::ColumnSelectUp),
+    b(Editor, true,  true,  true,  Down,      Command::ColumnSelectDown),
+    b(Editor, true,  true,  true,  Left,      Command::ColumnSelectLeft),
+    b(Editor, true,  true,  true,  Right,     Command::ColumnSelectRight),
+    // Bracket pairs: Ctrl+Shift+\ jumps to the matching bracket (VS Code parity),
+    // and Alt added selects the pair. A terminal reporting alternate keys (kitty)
+    // sends Shift+\ as `|`; one that does not sends `\` with Shift. A legacy
+    // terminal cannot tell either from Ctrl+\, so both are also in the palette.
+    b(Editor, true,  true,  false, Char('|'), Command::GoToBracket),
+    b(Editor, true,  true,  false, Char('\\'), Command::GoToBracket),
+    b(Editor, true,  true,  true,  Char('|'), Command::SelectToBracket),
+    b(Editor, true,  true,  true,  Char('\\'), Command::SelectToBracket),
     // Editing.
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    // Alt+] / Alt+[ cycle the ghost-text proposals, asking for some when none
+    // is on show (VS Code parity). Tab, Ctrl+Right and Esc act on the ghost
+    // only while one is on show, so they are taken ahead of the keymap
+    // (`App::inline_completion_key`) rather than bound here.
+    b(Editor, false, false, true,  Char(']'), Command::NextInlineCompletion),
+    b(Editor, false, false, true,  Char('['), Command::PrevInlineCompletion),
+    // Ctrl+Shift+Space shows the parameter hints (VS Code parity). Only a
+    // terminal that reports Shift with Space (kitty protocol) can send it;
+    // the palette reaches it everywhere.
+    b(Editor, true,  true,  false, Char(' '), Command::SignatureHelp),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
+    // Ctrl+K Enter opens the link under the caret: the keyboard path for
+    // Ctrl/Cmd+click on a link, which macOS terminals turn into a right click.
+    // Plain Ctrl chords, so every terminal delivers it.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(false, false, false, Enter)], Command::OpenLinkAtCaret),
+    // VS Code parity: Shift+F12 lists references, Ctrl+F12 jumps to the
+    // implementations. Declaration and type definition have no default chord
+    // there either; they are reached through the palette.
+    b(Editor, false, true,  false, F(12),      Command::FindReferences),
+    b(Editor, true,  false, false, F(12),      Command::GoToImplementation),
+    // VS Code parity: Shift+Alt+H shows the call hierarchy, toward callers.
+    b(Editor, false, true,  true,  Char('h'), Command::ShowIncomingCalls),
+    b(Editor, false, false, false, F(2),       Command::RenameSymbol),
+    // VS Code parity: Ctrl+Shift+F2 starts linked editing (an HTML tag pair).
+    b(Editor, true,  true,  false, F(2),       Command::StartLinkedEditing),
+    // Formatting (VS Code parity): Shift+Alt+F formats the document, `Ctrl+K
+    // Ctrl+F` the selections (a bare caret, its line).
+    b(Editor, false, true,  true,  Char('f'), Command::FormatDocument),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('f'))], Command::FormatSelection),
+    // Quick fix (VS Code parity). Ctrl+. needs a terminal that disambiguates
+    // modified punctuation (the kitty keyboard protocol); Alt+Enter, the
+    // JetBrains chord for the same menu, reaches the app from any terminal.
+    b(Editor, true,  false, false, Char('.'), Command::CodeActions),
+    b(Editor, false, false, true,  Enter,     Command::CodeActions),
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
+    // Tab indents and Shift+Tab outdents (an open completion popup and an inline
+    // macro take Tab first). Focus cycling moves to Ctrl+Shift+E here; Tab still
+    // toggles focus everywhere else, and in an editor showing no editable text.
+    b(Editor, false, false, false, Tab,       Command::Indent),
+    b(Editor, false, true,  false, Tab,       Command::Outdent),
+    b(Editor, true,  true,  false, Char('e'), Command::ToggleFocus),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),
     b(Editor, false, false, true,  Backspace, Command::DeleteWordBackward),
@@ -208,6 +333,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  true,  false, Char('z'), Command::Redo),
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
+    // Comment toggles (VS Code parity). A legacy terminal sends Ctrl+/ as 0x1F,
+    // which crossterm reports as Ctrl+7; the kitty protocol reports Ctrl+/ itself.
+    b(Editor, true,  false, false, Char('/'), Command::ToggleLineComment),
+    b(Editor, true,  false, false, Char('7'), Command::ToggleLineComment),
+    b(Editor, false, true,  true,  Char('a'), Command::ToggleBlockComment),
 
     // Live blame: toggle inline attribution, or open the attributed commit.
     b(Editor, true,  true,  false, Char('b'), Command::ToggleInlineBlame),
@@ -215,10 +345,31 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('0'))], Command::FoldAll),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('j'))], Command::UnfoldAll),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('1'))], Command::FoldLevel(1)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('2'))], Command::FoldLevel(2)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('3'))], Command::FoldLevel(3)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('4'))], Command::FoldLevel(4)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('5'))], Command::FoldLevel(5)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('6'))], Command::FoldLevel(6)),
+    // A legacy terminal sends Ctrl+/ as Ctrl+7, so there `Ctrl+K Ctrl+/` folds level 7.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('7'))], Command::FoldLevel(7)),
+    // A legacy terminal sends Ctrl+[ as Esc (cancelling the chord) and Ctrl+]
+    // as Ctrl+5 (fold level 5); the palette reaches both commands there.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('['))], Command::FoldRecursively),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char(']'))], Command::UnfoldRecursively),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('/'))], Command::FoldAllComments),
+    // No VS Code default exists for imports; `G` is free in the `Ctrl+K` family.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('g'))], Command::FoldAllImports),
 
     // Hover documentation (VS Code parity: `Ctrl+K Ctrl+I`), incl. the
     // diagnostics under the caret.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
+
+    // Inlay hints on and off. `T` for types, since `Ctrl+H` is Backspace on a
+    // legacy terminal and could never reach this chord.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('t'))], Command::ToggleInlayHints),
 
     // The scrollable diagnostic detail view, for errors too long for a popup.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('m'))], Command::ShowDiagnostic),
@@ -257,6 +408,11 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // The full-screen commit graph browser: j/k or arrows move the selection, Enter
     // opens the selected commit as a standalone view, Esc returns focus to the sidebar.
+    // The GitHub view: its own close, because `Ctrl+W` is Global and would otherwise
+    // destroy an editor tab the user cannot even see from here.
+    b(Github, false, false, false, Esc,      Command::GithubClosePage),
+    b(Github, true,  false, false, Char('w'), Command::GithubClosePage),
+
     // The Seam view: navigation of its own, since the editor's motion keys mean
     // nothing in a cascading navigator.
     b(Seam, false, false, false, Char('j'), Command::SeamNextRow),
@@ -287,14 +443,21 @@ pub(super) static BINDINGS: &[Binding] = &[
     // `r` for reroot: the way out of a root that could not be indexed, without leaving
     // the view to find the palette.
     b(Seam, false, false, false, Char('r'), Command::ShowSeamViewAt),
+    // `s` to sync, shifted to distrust the stored index and read everything again.
+    b(Seam, false, false, false, Char('s'), Command::SeamSync),
+    b(Seam, false, false, false, Char('S'), Command::SeamForceSync),
 
     b(CommitGraph, false, false, false, Char('j'), Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Down,      Command::CommitGraphNext),
     b(CommitGraph, false, false, false, Char('k'), Command::CommitGraphPrev),
     b(CommitGraph, false, false, false, Up,        Command::CommitGraphPrev),
     b(CommitGraph, false, false, false, Enter,     Command::CommitGraphOpen),
-    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphOpen),
-    b(CommitGraph, false, false, false, Right,     Command::CommitGraphOpen),
+    // The graph spans the whole pane and can outrun it, so the horizontal keys pan it
+    // rather than opening a commit — `Enter` is the one way in.
+    b(CommitGraph, false, false, false, Char('h'), Command::CommitGraphPanLeft),
+    b(CommitGraph, false, false, false, Left,      Command::CommitGraphPanLeft),
+    b(CommitGraph, false, false, false, Char('l'), Command::CommitGraphPanRight),
+    b(CommitGraph, false, false, false, Right,     Command::CommitGraphPanRight),
     // Two-commit compare: `m` marks the selected commit as the base, `c` compares the
     // current selection against it.
     b(CommitGraph, false, false, false, Char('m'), Command::CommitGraphMarkBase),
@@ -306,6 +469,27 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Enter loads it anyway; Esc is intentionally unbound so repeated Esc never
     // leaves the placeholder view.
     b(Oversize, false, false, false, Enter, Command::OpenAnyway),
+
+    // Integrated terminal. The layer stacks over nothing, so every key it does
+    // not bind goes to the shell; these are the app keys that must survive there.
+    // Ctrl+C copies only while text is selected (otherwise it interrupts), which
+    // the terminal's key handler decides rather than a binding.
+    b(Terminal, true,  false, false, Char('`'), Command::ToggleTerminal),
+    b(Terminal, true,  true,  false, Char('`'), Command::NewTerminal),
+    b(Terminal, true,  true,  false, Char('~'), Command::NewTerminal),
+    b(Terminal, true,  true,  false, Char('c'), Command::TerminalCopy),
+    b(Terminal, true,  true,  false, Char('v'), Command::TerminalPaste),
+    b(Terminal, false, true,  false, PageUp,    Command::TerminalScrollPageUp),
+    b(Terminal, false, true,  false, PageDown,  Command::TerminalScrollPageDown),
+    b(Terminal, true,  true,  false, Home,      Command::TerminalScrollToTop),
+    b(Terminal, true,  true,  false, End,       Command::TerminalScrollToBottom),
+    b(Terminal, true,  true,  false, Char('p'), Command::OpenCommandPalette),
+    b(Terminal, false, false, false, F(1),      Command::OpenCommandPalette),
+    b(Terminal, true,  true,  false, Char('e'), Command::ToggleFocus),
+    b(Terminal, true,  false, false, PageDown,  Command::NextTab),
+    b(Terminal, true,  false, false, PageUp,    Command::PrevTab),
+    b(Terminal, true,  false, false, Tab,       Command::NextTab),
+    b(Terminal, true,  true,  false, Tab,       Command::PrevTab),
 
     // Language-server manager: list navigation plus explicit lifecycle actions.
     b(LanguageServers, false, false, false, Char('j'), Command::LanguageServerDown),
@@ -320,6 +504,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(LanguageServers, false, false, false, Char('R'), Command::LanguageServerRestart),
     b(LanguageServers, false, false, false, Char('x'), Command::LanguageServerUninstall),
     b(LanguageServers, false, false, false, Char('/'), Command::LanguageServerFilter),
+    b(LanguageServers, false, false, false, Char('o'), Command::LanguageServerUndecline),
     b(LanguageServers, false, false, false, Char('q'), Command::CloseTab),
 
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no
@@ -339,30 +524,43 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Find, true,  false, false, Char('g'), Command::FindNext),
     b(Find, true,  true,  false, Char('g'), Command::FindPrev),
     b(Find, false, false, false, Tab,       Command::FindToggleField),
-    b(Find, false, false, true,  Enter,     Command::FindReplaceAll),
+    b(Find, true,  false, false, Char('a'), Command::EditorSelectAll),
+    b(Find, true,  false, false, Char('c'), Command::Copy),
+    b(Find, true,  false, false, Char('x'), Command::Cut),
+    b(Find, true,  false, false, Char('v'), Command::Paste),
+    b(Find, false, false, true,  Enter,     Command::FindSelectAllMatches),
+    b(Find, true,  false, true,  Enter,     Command::FindReplaceAll),
     b(Find, false, false, true,  Char('h'), Command::FindToggleReplace),
     b(Find, false, false, true,  Char('r'), Command::FindToggleRegex),
     b(Find, false, false, true,  Char('c'), Command::FindToggleCase),
     b(Find, false, false, true,  Char('w'), Command::FindToggleWord),
+    b(Find, false, false, true,  Char('p'), Command::FindTogglePreserveCase),
+    b(Find, false, false, true,  Char('l'), Command::FindToggleInSelection),
     // Commit-message input.
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, true,  false, false, Enter, Command::CommitSubmit),
     b(CommitInput, true,  false, false, Char('g'), Command::CommitGenerate),
+    b(CommitInput, true,  true,  false, Char('g'), Command::CommitConfigureAi),
+    b(CommitInput, true,  false, false, Char('z'), Command::CommitGenerateUndo),
     b(CommitInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(CommitInput, true,  false, false, Char('c'), Command::Copy),
     b(CommitInput, true,  false, false, Char('x'), Command::Cut),
     b(CommitInput, true,  false, false, Char('v'), Command::Paste),
+    // Commit console.
+    b(CommitConsole, false, false, false, Esc, Command::CommitConsoleClose),
+    // A plain letter, not ^C: the console is read-only so letters are free, and
+    // ^C is Copy everywhere else — reaching for a hook's error text must not
+    // kill the commit.
+    b(CommitConsole, false, false, false, Char('c'), Command::CommitConsoleCancel),
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
-    // Discard confirmation: only the confirm keys are bound; anything else cancels.
-    b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
-    // Explorer delete confirmation: only confirm keys are bound; anything else cancels.
-    b(ExplorerDeleteConfirm, false, false, false, Enter,     Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('y'), Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('Y'), Command::ConfirmExplorerDelete),
+    // Inline rename prompt (F2).
+    b(Rename, false, false, false, Esc,   Command::RenameCancel),
+    b(Rename, false, false, false, Enter, Command::RenameSubmit),
+    b(Rename, true,  false, false, Char('c'), Command::Copy),
+    b(Rename, true,  false, false, Char('x'), Command::Cut),
+    b(Rename, true,  false, false, Char('v'), Command::Paste),
     // Context menu.
     b(ContextMenu, false, false, false, Esc,       Command::ContextMenuCancel),
     b(ContextMenu, false, false, false, Enter,     Command::ContextMenuAccept),
@@ -370,27 +568,33 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ContextMenu, false, false, false, Char('k'), Command::ContextMenuUp),
     b(ContextMenu, false, false, false, Down,      Command::ContextMenuDown),
     b(ContextMenu, false, false, false, Char('j'), Command::ContextMenuDown),
-    // Close confirmation (unsaved changes: quit or tab/pane close): save, discard, or
-    // (any other key) cancel — the default is always to abort.
-    b(CloseConfirm, false, false, false, Char('s'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('S'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('d'), Command::CloseConfirmDiscard),
-    b(CloseConfirm, false, false, false, Char('D'), Command::CloseConfirmDiscard),
-    // Startup crash-recovery prompt: recover, discard, or (any other key) dismiss.
-    b(SwapRecover, false, false, false, Char('r'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('R'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('d'), Command::DiscardSwaps),
-    b(SwapRecover, false, false, false, Char('D'), Command::DiscardSwaps),
+    // Confirmation dialog. Navigation mirrors the context menu; every other key
+    // cancels, and the safe choice is always the one selected on open, so neither a
+    // stray Enter nor a stray anything-else can run a destructive action.
+    b(Confirm, false, false, false, Esc,       Command::ConfirmCancel),
+    b(Confirm, false, false, false, Enter,     Command::ConfirmAccept),
+    b(Confirm, false, false, false, Up,        Command::ConfirmUp),
+    b(Confirm, false, false, false, Char('k'), Command::ConfirmUp),
+    b(Confirm, false, false, false, Down,      Command::ConfirmDown),
+    b(Confirm, false, false, false, Char('j'), Command::ConfirmDown),
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),
+    // The arrows and `j`/`k` alike stay inside the list: neither walks off its
+    // first row into the fields above it. `Esc` is the way back to the query.
     b(SearchList, false, false, false, Down,      Command::SearchSelectDown),
     b(SearchList, false, false, false, Char('j'), Command::SearchSelectDown),
     b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
+    b(SearchList, false, false, false, Right,     Command::SearchExpand),
+    b(SearchList, false, false, false, Char('l'), Command::SearchExpand),
+    b(SearchList, false, false, false, Left,      Command::SearchCollapse),
+    b(SearchList, false, false, false, Char('h'), Command::SearchCollapse),
+    b(SearchList, false, false, true,  Char('a'), Command::SearchToggleAll),
     b(SearchList, false, false, false, Char('/'), Command::SearchBeginInput),
     b(SearchList, false, false, false, Char('r'), Command::SearchReplaceAll),
     b(SearchList, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchList, false, false, true,  Char('f'), Command::SearchToggleFilters),
     b(SearchList, false, false, true,  Char('r'), Command::SearchToggleRegex),
     b(SearchList, false, false, true,  Char('c'), Command::SearchToggleCase),
     b(SearchList, false, false, true,  Char('w'), Command::SearchToggleWord),
@@ -398,12 +602,70 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
     b(SearchInput, false, false, false, Enter, Command::SearchRun),
     b(SearchInput, false, false, false, Tab,   Command::SearchToggleField),
+    // Deliberately no plain `Up`/`Down` here: an arrow must never lift the caret
+    // out of the field being typed in. Unbound, they fall through to `search_edit`,
+    // which absorbs them; `Cmd`+arrow still reaches it as a caret motion, because
+    // `KeyChord::from_event` normalizes it to `Ctrl+Home`/`Ctrl+End` first.
     b(SearchInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(SearchInput, true,  false, false, Char('c'), Command::Copy),
     b(SearchInput, true,  false, false, Char('x'), Command::Cut),
     b(SearchInput, true,  false, false, Char('v'), Command::Paste),
     b(SearchInput, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchInput, false, false, true,  Char('f'), Command::SearchToggleFilters),
     b(SearchInput, false, false, true,  Char('r'), Command::SearchToggleRegex),
     b(SearchInput, false, false, true,  Char('c'), Command::SearchToggleCase),
     b(SearchInput, false, false, true,  Char('w'), Command::SearchToggleWord),
+
+    // Modal editing (`editor.keymap`). The Normal layers hold the commands a
+    // fixed key can name; motions, operators, counts, registers and macros
+    // are the grammar in `super::vi`, which takes every plain key these leave
+    // unbound. Neovim's defaults for the language-server keys (`grr`, `grn`,
+    // `gra`, `gri`, `gO`, `[d`/`]d`).
+    b(VimNormal, false, false, false, Char('u'), Command::Undo),
+    b(VimNormal, true,  false, false, Char('r'), Command::Redo),
+    b(VimNormal, false, false, false, Char('/'), Command::OpenFind),
+    b(VimNormal, false, false, false, Char('?'), Command::OpenFind),
+    b(VimNormal, false, false, false, Char(':'), Command::OpenCommandPalette),
+    b(VimNormal, false, false, false, Char('K'), Command::Hover),
+    b(VimNormal, true,  false, false, Char(']'), Command::GoToDefinition),
+    b(VimNormal, true,  false, false, Char('o'), Command::JumpBack),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('d'))], Command::GoToDefinition),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('D'))], Command::GoToDeclaration),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('O'))], Command::GoToSymbolInEditor),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('t'))], Command::NextTab),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('T'))], Command::PrevTab),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('r'))], Command::FindReferences),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('n'))], Command::RenameSymbol),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('a'))], Command::CodeActions),
+    seq(VimNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r')), chord(false, false, false, Char('i'))], Command::GoToImplementation),
+    seq(VimNormal, chord(false, false, false, Char(']')), &[chord(false, false, false, Char('d'))], Command::NextProblem),
+    seq(VimNormal, chord(false, false, false, Char('[')), &[chord(false, false, false, Char('d'))], Command::PrevProblem),
+    // Helix's Normal layer: its goto (`g`) and space-mode pickers.
+    b(HelixNormal, false, false, false, Char('u'), Command::Undo),
+    b(HelixNormal, false, false, false, Char('U'), Command::Redo),
+    b(HelixNormal, false, false, false, Char('/'), Command::OpenFind),
+    b(HelixNormal, false, false, false, Char('?'), Command::OpenFind),
+    b(HelixNormal, false, false, false, Char(':'), Command::OpenCommandPalette),
+    b(HelixNormal, true,  false, false, Char('o'), Command::JumpBack),
+    b(HelixNormal, false, false, true,  Char('o'), Command::ExpandSelection),
+    b(HelixNormal, false, false, true,  Char('i'), Command::ShrinkSelection),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('d'))], Command::GoToDefinition),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('D'))], Command::GoToDeclaration),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('y'))], Command::GoToTypeDefinition),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('r'))], Command::FindReferences),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('i'))], Command::GoToImplementation),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('n'))], Command::NextTab),
+    seq(HelixNormal, chord(false, false, false, Char('g')), &[chord(false, false, false, Char('p'))], Command::PrevTab),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('f'))], Command::OpenQuickOpen),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('s'))], Command::GoToSymbolInEditor),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('S'))], Command::GoToSymbolInWorkspace),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('k'))], Command::Hover),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('r'))], Command::RenameSymbol),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('a'))], Command::CodeActions),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('/'))], Command::OpenGlobalSearch),
+    seq(HelixNormal, chord(false, false, false, Char(' ')), &[chord(false, false, false, Char('c'))], Command::ToggleLineComment),
+    seq(HelixNormal, chord(false, false, false, Char(']')), &[chord(false, false, false, Char('d'))], Command::NextProblem),
+    seq(HelixNormal, chord(false, false, false, Char('[')), &[chord(false, false, false, Char('d'))], Command::PrevProblem),
+    // Insert mode, shared by both presets: everything else is the editor's.
+    b(Insert, false, false, false, Esc, Command::EnterNormalMode),
 ];

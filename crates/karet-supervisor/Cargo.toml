@@ -19,14 +19,21 @@ publish = false
 default = []
 
 [dependencies]
-karet-lsp.workspace = true            # LspSpec + the shared Content-Length codec; used only by src/broker/lsp.rs, never by the broker skeleton
-command-group.workspace = true        # crash-safe process groups / Windows Job Objects
+karet-jsonrpc.workspace = true        # the shared `Framing` trait the broker skeleton is generic over, and its Content-Length/line framings
+karet-lsp.workspace = true            # LspSpec; used only by src/broker/lsp.rs, never by the broker skeleton
+command-group = { workspace = true, features = ["with-tokio"] }  # crash-safe process
+                                      # groups / Windows Job Objects; `with-tokio` is
+                                      # what makes `kill_on_drop` exist on unix.
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true                 # stable broker keys from launch descriptions
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "process", "sync", "time", "macros"] }
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true                                # scratch registry directories for the election tests
+tokio = { workspace = true, features = ["test-util"] }   # paused time, so a 5s startup deadline costs no wall clock
 
 [lints]
 workspace = true

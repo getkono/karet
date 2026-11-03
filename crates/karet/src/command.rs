@@ -13,19 +13,20 @@
 //! (the ordered list in `resolve::palette` is the single palette authority).
 
 mod hints;
+mod ids;
 mod resolve;
 
 #[cfg(test)]
 mod tests;
 
-// The app is a binary crate, so this compatibility re-export is not referenced
-// internally even though it preserves the command module's existing API path.
-#[allow(unused_imports)]
-pub use resolve::ResolveNamedError;
+// Only the keymap schema generator (a test) enumerates every id.
+#[cfg(test)]
+pub(crate) use ids::COMMAND_IDS;
 pub use resolve::palette;
 pub use resolve::resolve_named;
 
 use crate::keymap::SidebarPanel;
+use crate::view::View;
 
 /// A named operation runnable from a key binding or the command palette.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,14 +39,37 @@ pub enum Command {
     ToggleFocus,
     /// Select a sidebar panel.
     SelectPanel(SidebarPanel),
+    /// Select the top-level view that owns the content area.
+    SelectView(View),
     /// Re-run the workspace spelling scan behind the Spelling panel.
     SpellingScan,
     /// Re-run the workspace codetag scan behind the Todos panel.
     TodoScan,
     /// Switch the Todos panel between by-file and by-tag grouping.
     TodoToggleGrouping,
+    /// Move the caret to the next problem (diagnostic) in the active file.
+    NextProblem,
+    /// Move the caret to the previous problem (diagnostic) in the active file.
+    PrevProblem,
+    /// Begin editing the Problems panel's text filter.
+    ProblemsFilter,
+    /// Cycle the Problems panel's severity filter (all / warnings / errors).
+    ProblemsCycleSeverity,
+    /// Stop editing the Problems filter, keeping it.
+    ProblemsFilterAccept,
+    /// Stop editing the Problems filter, clearing it.
+    ProblemsFilterCancel,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
+    /// Open quick-open in its `@` mode: jump to a symbol of the active document.
+    GoToSymbolInEditor,
+    /// Open quick-open in its `#` mode: search the workspace's symbols through
+    /// the language server and jump to one.
+    GoToSymbolInWorkspace,
+    /// Open quick-open in its `:` mode: jump to a line of the active document.
+    GoToLine,
+    /// Pick a recently opened workspace and reopen karet on it.
+    OpenRecentWorkspace,
     /// Open the command palette overlay.
     OpenCommandPalette,
     /// Open the find-in-file bar.
@@ -74,6 +98,26 @@ pub enum Command {
     ReopenClosedTab,
     /// Open the active too-large-file placeholder anyway, bypassing the size guard.
     OpenAnyway,
+    /// Show the most recent integrated terminal (starting one in the workspace
+    /// root when none is open), or, from a terminal, go back to the last editor.
+    ToggleTerminal,
+    /// Start another integrated terminal in the workspace root.
+    NewTerminal,
+    /// Copy the active terminal's selection.
+    TerminalCopy,
+    /// Paste the clipboard into the active terminal.
+    TerminalPaste,
+    /// Scroll the active terminal's history up one page.
+    TerminalScrollPageUp,
+    /// Scroll the active terminal's history down one page.
+    TerminalScrollPageDown,
+    /// Scroll the active terminal to the top of its history.
+    TerminalScrollToTop,
+    /// Scroll the active terminal back to the live screen.
+    TerminalScrollToBottom,
+    /// Pick one of the configured `tasks` and run it in a new integrated
+    /// terminal, its problem matchers feeding the Problems panel.
+    RunTask,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -111,6 +155,8 @@ pub enum Command {
     /// Copy a web URL for the active file at the current `HEAD` commit on its
     /// origin remote (GitHub, GitLab, Gitea, or Forgejo).
     CopyRemoteFileUrl,
+    /// Close the GitHub page in front, falling back to the one beneath it.
+    GithubClosePage,
     /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
     /// anchored to the caret line in a code tab.
     CopyGithubPermalink,
@@ -136,6 +182,12 @@ pub enum Command {
     SidebarToggleExpand,
     /// Show or hide the right-side outline panel (and focus it when shown).
     ToggleOutline,
+    /// Enter or leave Zen Mode: hide the sidebar, outline, view switcher, and
+    /// status bar, restoring what was shown on the way out.
+    ToggleZenMode,
+    /// Draw only the focused pane across the content area, or tile every pane
+    /// again.
+    ToggleMaximizePane,
     /// Move the outline selection up.
     OutlineUp,
     /// Move the outline selection down.
@@ -172,6 +224,10 @@ pub enum Command {
     CaretDocStart,
     /// Move the caret to the end of the document.
     CaretDocEnd,
+    /// Move the caret up one page, scrolling the view with it.
+    CaretPageUp,
+    /// Move the caret down one page, scrolling the view with it.
+    CaretPageDown,
     /// Extend the selection to the previous word boundary.
     SelectWordLeft,
     /// Extend the selection to the next word boundary.
@@ -196,8 +252,40 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Select every occurrence of the word under the caret, or of the primary
+    /// selection's text (Ctrl+Shift+L).
+    SelectAllOccurrences,
+    /// Move the most recently added occurrence selection on to the next
+    /// occurrence, leaving the one it was on unselected (Ctrl+K Ctrl+D).
+    SkipOccurrence,
+    /// Restore the carets from before the last caret operation (Ctrl+U).
+    UndoCaretOperation,
+    /// Replace each selection with a caret at the end of every line it spans
+    /// (Shift+Alt+I).
+    AddCursorsToLineEnds,
+    /// Grow the box (column) selection one line up.
+    ColumnSelectUp,
+    /// Grow the box (column) selection one line down.
+    ColumnSelectDown,
+    /// Move the box (column) selection's moving edge one cell left.
+    ColumnSelectLeft,
+    /// Move the box (column) selection's moving edge one cell right.
+    ColumnSelectRight,
+    /// Move each caret to the other bracket of the pair it touches, or to the
+    /// closing bracket of the pair enclosing it (Ctrl+Shift+\).
+    GoToBracket,
+    /// Select each caret's bracket pair, brackets included; repeating widens to
+    /// the enclosing pair.
+    SelectToBracket,
+    /// Grow every selection to the next enclosing syntax node (Shift+Alt+Right).
+    ExpandSelection,
+    /// Undo the last Expand Selection, restoring the exact selections it grew
+    /// from (Shift+Alt+Left).
+    ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
+    /// Leave Insert mode for Normal mode (`editor.keymap` `"vim"`/`"helix"`).
+    EnterNormalMode,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -214,6 +302,21 @@ pub enum Command {
     ToggleDiffLayout,
     /// Fold or unfold the code region at the cursor.
     ToggleFold,
+    /// Collapse every fold region in the active file.
+    FoldAll,
+    /// Expand every collapsed fold in the active file.
+    UnfoldAll,
+    /// Collapse every region at the given nesting depth (1 is outermost) that
+    /// holds no caret.
+    FoldLevel(u8),
+    /// Collapse the region at the cursor and every region inside it.
+    FoldRecursively,
+    /// Expand the region at the cursor and every region inside it.
+    UnfoldRecursively,
+    /// Collapse every comment block in the active file.
+    FoldAllComments,
+    /// Collapse every import block in the active file.
+    FoldAllImports,
     /// Move to the next changed file (diff tab).
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
@@ -227,8 +330,24 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show the next ghost-text proposal, or ask for some when none is on
+    /// show (Alt+]).
+    NextInlineCompletion,
+    /// Show the previous ghost-text proposal, or ask for some when none is
+    /// on show (Alt+[).
+    PrevInlineCompletion,
+    /// Sign in to GitHub through `copilot-language-server` (palette).
+    CopilotSignIn,
+    /// Sign out of GitHub through `copilot-language-server` (palette).
+    CopilotSignOut,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
+    /// Show the parameter hints of the call around the caret
+    /// (Ctrl+Shift+Space).
+    SignatureHelp,
+    /// Show or hide inlay hints (Ctrl+K Ctrl+T); under an `…UnlessPressed`
+    /// setting, only until the next key.
+    ToggleInlayHints,
     /// Open the diagnostics under the caret in a scrollable detail view
     /// (Ctrl+K Ctrl+M) — the surface for long, formatted errors.
     ShowDiagnostic,
@@ -254,6 +373,11 @@ pub enum Command {
     NotebookInterrupt,
     /// Restart the notebook kernel (outputs are marked stale).
     NotebookRestartKernel,
+    /// Toggle a line comment on every selected line, in the language at the caret
+    /// (Ctrl+/).
+    ToggleLineComment,
+    /// Toggle a block comment around each selection or caret line (Shift+Alt+A).
+    ToggleBlockComment,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -302,16 +426,79 @@ pub enum Command {
     ScmFetch,
     /// Toggle the current file's reviewed mark in a commit view.
     CommitToggleFileReviewed,
+    /// Fold every directory in a commit view's changed-file index.
+    CommitFoldFileTree,
+    /// Unfold every directory in a commit view's changed-file index.
+    CommitUnfoldFileTree,
     /// Copy the issue URLs referenced by the selected graph commit.
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
-    /// Return to the position a definition jump started from (Ctrl+Alt+Left).
+    /// Open the link written in the source under the primary caret: the
+    /// keyboard path for Ctrl/Cmd+click on a link (Ctrl+K Enter).
+    OpenLinkAtCaret,
+    /// Jump to the declaration of the symbol at the caret.
+    GoToDeclaration,
+    /// Jump to the definition of the type of the symbol at the caret.
+    GoToTypeDefinition,
+    /// Jump to the implementations of the symbol at the caret (Ctrl+F12).
+    GoToImplementation,
+    /// List every reference to the symbol at the caret (Shift+F12).
+    FindReferences,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// its callers (Shift+Alt+H).
+    ShowIncomingCalls,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// the functions it calls.
+    ShowOutgoingCalls,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// it derives from or implements.
+    ShowSupertypes,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// derives from or implements it.
+    ShowSubtypes,
+    /// Expand the selected node of the Hierarchy panel, asking the language
+    /// server for its children the first time.
+    HierarchyExpand,
+    /// Rename the symbol at the caret across the workspace (F2).
+    RenameSymbol,
+    /// Apply the name typed into the rename prompt.
+    RenameSubmit,
+    /// Close the rename prompt without renaming.
+    RenameCancel,
+    /// Format the whole document with its language's formatter (Shift+Alt+F).
+    FormatDocument,
+    /// Format every selection, or the caret's line (Ctrl+K Ctrl+F).
+    FormatSelection,
+    /// Put a caret in every range the language server links to the caret's,
+    /// such as an HTML tag's name and its closing tag's (Ctrl+Shift+F2).
+    StartLinkedEditing,
+    /// Turn the language server's on-type formatting on or off for this
+    /// session, over `editor.formatOnType`.
+    ToggleFormatOnType,
+    /// Open the code-action menu at the caret (Ctrl+., Alt+Enter).
+    CodeActions,
+    /// Open the code-action menu showing only source actions.
+    SourceAction,
+    /// Apply the language server's organize-imports action.
+    OrganizeImports,
+    /// Apply the language server's fix-all action.
+    FixAll,
+    /// Return to the place the focused pane most recently left: a jump's origin
+    /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
+    /// Undo the last Go Back (Ctrl+Alt+Right, Alt+Right).
+    JumpForward,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
     InsertNewline,
+    /// Indent every selected line, or pad each bare caret to the next indent stop
+    /// (Tab). Outside an editable document it toggles focus instead.
+    Indent,
+    /// Remove one indent level from every line a selection or caret touches
+    /// (Shift+Tab).
+    Outdent,
     /// Delete the selection, or the character before the caret.
     DeleteBackward,
     /// Delete the selection, or the character after the caret.
@@ -390,10 +577,17 @@ pub enum Command {
     OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Pick a color theme from a live-previewing list, for this session.
+    SelectColorTheme,
     /// Open the persistent language-server inventory and lifecycle manager.
     ManageLanguageServers,
     /// Explicitly check installed managed language servers for updates.
     CheckLanguageServerUpdates,
+    /// Open the log of the active file's language server.
+    ShowLanguageServerLog,
+    /// Cancel the work the status bar shows the active file's language server
+    /// doing, when the server allows it.
+    CancelLanguageServerWork,
     /// Move to the previous row in the language-server manager.
     LanguageServerUp,
     /// Move to the next row in the language-server manager.
@@ -412,6 +606,8 @@ pub enum Command {
     LanguageServerUninstall,
     /// Filter the language-server inventory.
     LanguageServerFilter,
+    /// Forget a recorded refusal, so the selected provider is offered again.
+    LanguageServerUndecline,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -470,20 +666,34 @@ pub enum Command {
     FindToggleCase,
     /// Toggle the find bar's whole-word option.
     FindToggleWord,
+    /// Toggle the find bar's preserve-case replace option.
+    FindTogglePreserveCase,
+    /// Toggle searching only inside the selection.
+    FindToggleInSelection,
+    /// Turn every in-file match into a selection (one caret per match); in the
+    /// replace field, replace every match instead.
+    FindSelectAllMatches,
     /// Submit the commit message.
     CommitSubmit,
     /// Blur the commit input while preserving its draft.
     CommitCancel,
     /// Generate a commit message from the staged diff (AI).
     CommitGenerate,
+    /// Restore the draft a generated commit message replaced.
+    CommitGenerateUndo,
+    /// Open the AI commit-message options, so the agent, model, and effort are
+    /// settled before a generation is asked for.
+    CommitConfigureAi,
+    /// Dismiss the commit console, keeping its log for a later reopen.
+    CommitConsoleClose,
+    /// Stop the running commit and the hooks it started.
+    CommitConsoleCancel,
+    /// Show the last commit's console log again.
+    CommitConsoleShow,
     /// Commit the explorer inline name editor (create / rename).
     ExplorerEditSubmit,
     /// Cancel the explorer inline name editor.
     ExplorerEditCancel,
-    /// Confirm the pending discard.
-    ConfirmDiscard,
-    /// Confirm the pending explorer delete.
-    ConfirmExplorerDelete,
     /// Move the context menu selection up.
     ContextMenuUp,
     /// Move the context menu selection down.
@@ -492,6 +702,14 @@ pub enum Command {
     ContextMenuAccept,
     /// Dismiss the context menu.
     ContextMenuCancel,
+    /// Move the confirmation dialog's selection up.
+    ConfirmUp,
+    /// Move the confirmation dialog's selection down.
+    ConfirmDown,
+    /// Run the confirmation dialog's selected choice.
+    ConfirmAccept,
+    /// Dismiss the confirmation dialog without acting.
+    ConfirmCancel,
     /// At the close prompt (quit or tab/pane close): save the at-risk documents, then
     /// run the close.
     CloseConfirmSave,
@@ -503,6 +721,10 @@ pub enum Command {
     RecoverSwaps,
     /// At the startup recovery prompt: discard the crash-recovery backups.
     DiscardSwaps,
+    /// At the close prompt: abort the close and leave every tab untouched.
+    CloseConfirmCancel,
+    /// At the startup recovery prompt: leave the backups on disk for a later launch.
+    DismissSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
     /// Open the full-screen Seam view for the workspace package.
@@ -515,6 +737,10 @@ pub enum Command {
     SeamCopyIdentity,
     /// Copy the query this Seam view is equivalent to.
     SeamCopyQuery,
+    /// Re-index what changed since the Seam view was last built.
+    SeamSync,
+    /// Discard the stored index and read every file again.
+    SeamForceSync,
     /// Move the Seam selection down within its column.
     SeamNextRow,
     /// Move the Seam selection up within its column.
@@ -553,8 +779,12 @@ pub enum Command {
     CommitGraphNext,
     /// Move the commit graph browser's selection to the previous (newer) commit.
     CommitGraphPrev,
-    /// Open the browser's selected commit as a standalone commit view.
+    /// Open the graph view's selected commit as a standalone commit view.
     CommitGraphOpen,
+    /// Pan the commit graph left (histories can be wider than the pane).
+    CommitGraphPanLeft,
+    /// Pan the commit graph right.
+    CommitGraphPanRight,
     /// Open the go-to-commit input to view any commit by hash or ref.
     OpenCommitByHash,
     /// Submit the go-to-commit revision.
@@ -581,12 +811,20 @@ pub enum Command {
     SearchBeginInput,
     /// Leave the Search panel (from the results list).
     SearchQuit,
+    /// Expand the selected Search file group, or step into an open one.
+    SearchExpand,
+    /// Collapse the selected Search file group, or step up to its heading.
+    SearchCollapse,
+    /// Collapse every Search file group, or expand them all when none are.
+    SearchToggleAll,
     /// Run the Search query and show its results.
     SearchRun,
     /// Stop editing the Search query without leaving the panel.
     SearchEndInput,
     /// Show or hide the Search replace field.
     SearchToggleReplace,
+    /// Show or hide the Search include/exclude glob fields.
+    SearchToggleFilters,
     /// Switch the edited Search field between find and replace.
     SearchToggleField,
     /// Apply the replacement across every workspace match.
@@ -608,16 +846,30 @@ impl Command {
             Self::Quit => "Quit",
             Self::ToggleSidebar => "View: Toggle Sidebar",
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
+            Self::SelectView(View::Editor) => "View: Editor",
+            Self::SelectView(View::GitHub) => "View: GitHub",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
+            Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "View: Show Hierarchy",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
+            Self::NextProblem => "Go to Next Problem in File",
+            Self::PrevProblem => "Go to Previous Problem in File",
+            Self::ProblemsFilter => "Problems: Filter…",
+            Self::ProblemsCycleSeverity => "Problems: Cycle Severity Filter",
+            Self::ProblemsFilterAccept => "Problems: Apply Filter",
+            Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
+            Self::GoToSymbolInEditor => "Go to Symbol in Editor…",
+            Self::GoToSymbolInWorkspace => "Go to Symbol in Workspace…",
+            Self::GoToLine => "Go to Line/Column…",
+            Self::OpenRecentWorkspace => "File: Open Recent…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
             Self::OpenGlobalSearch => "Search: Find in Files…",
@@ -632,6 +884,15 @@ impl Command {
             Self::CloseAllTabs => "View: Close All Editors",
             Self::ReopenClosedTab => "View: Reopen Closed Editor",
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
+            Self::ToggleTerminal => "View: Toggle Terminal",
+            Self::NewTerminal => "Terminal: Create New Terminal",
+            Self::TerminalCopy => "Terminal: Copy Selection",
+            Self::TerminalPaste => "Terminal: Paste into Active Terminal",
+            Self::TerminalScrollPageUp => "Terminal: Scroll Up (Page)",
+            Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
+            Self::TerminalScrollToTop => "Terminal: Scroll to Top",
+            Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
+            Self::RunTask => "Tasks: Run Task",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
@@ -650,6 +911,7 @@ impl Command {
             Self::CopyRelativePath => "Copy Relative Path of Active File",
             Self::RevealActiveInExplorer => "File: Reveal Active File in Explorer",
             Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
+            Self::GithubClosePage => "GitHub: Close Page",
             Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
             Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
             Self::OpenChangesWithPrevious => "Open Changes: With Previous Revision",
@@ -661,6 +923,8 @@ impl Command {
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
             Self::ToggleOutline => "View: Toggle Outline",
+            Self::ToggleZenMode => "View: Toggle Zen Mode",
+            Self::ToggleMaximizePane => "View: Toggle Maximized Pane",
             Self::OutlineUp => "Outline: Select Previous",
             Self::OutlineDown => "Outline: Select Next",
             Self::OutlineActivate => "Outline: Go to Selected",
@@ -679,6 +943,8 @@ impl Command {
             Self::CaretLineEnd => "Cursor Line End",
             Self::CaretDocStart => "Cursor Document Start",
             Self::CaretDocEnd => "Cursor Document End",
+            Self::CaretPageUp => "Cursor Page Up",
+            Self::CaretPageDown => "Cursor Page Down",
             Self::SelectWordLeft => "Select Word Left",
             Self::SelectWordRight => "Select Word Right",
             Self::SelectLineStart => "Select to Line Start",
@@ -691,7 +957,20 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::SelectAllOccurrences => "Select All Occurrences",
+            Self::SkipOccurrence => "Move Last Selection to Next Occurrence",
+            Self::UndoCaretOperation => "Undo Last Cursor Operation",
+            Self::AddCursorsToLineEnds => "Add Cursors to Line Ends",
+            Self::ColumnSelectUp => "Column Select Up",
+            Self::ColumnSelectDown => "Column Select Down",
+            Self::ColumnSelectLeft => "Column Select Left",
+            Self::ColumnSelectRight => "Column Select Right",
+            Self::GoToBracket => "Go to Bracket",
+            Self::SelectToBracket => "Select to Bracket",
+            Self::ExpandSelection => "Expand Selection",
+            Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
+            Self::EnterNormalMode => "Enter Normal Mode",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -700,6 +979,20 @@ impl Command {
             Self::Bottom => "Go to Bottom",
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
             Self::ToggleFold => "Fold: Toggle at Cursor",
+            Self::FoldAll => "Fold: Fold All",
+            Self::UnfoldAll => "Fold: Unfold All",
+            Self::FoldLevel(1) => "Fold: Fold Level 1",
+            Self::FoldLevel(2) => "Fold: Fold Level 2",
+            Self::FoldLevel(3) => "Fold: Fold Level 3",
+            Self::FoldLevel(4) => "Fold: Fold Level 4",
+            Self::FoldLevel(5) => "Fold: Fold Level 5",
+            Self::FoldLevel(6) => "Fold: Fold Level 6",
+            Self::FoldLevel(7) => "Fold: Fold Level 7",
+            Self::FoldLevel(_) => "Fold: Fold Level",
+            Self::FoldRecursively => "Fold: Fold Recursively",
+            Self::UnfoldRecursively => "Fold: Unfold Recursively",
+            Self::FoldAllComments => "Fold: Fold All Comments",
+            Self::FoldAllImports => "Fold: Fold All Imports",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::OpenDiffFile => "Diff: Open File",
@@ -707,7 +1000,13 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::NextInlineCompletion => "Show Next Inline Suggestion",
+            Self::PrevInlineCompletion => "Show Previous Inline Suggestion",
+            Self::CopilotSignIn => "Copilot: Sign In",
+            Self::CopilotSignOut => "Copilot: Sign Out",
             Self::Hover => "Show Hover",
+            Self::SignatureHelp => "Trigger Parameter Hints",
+            Self::ToggleInlayHints => "Toggle Inlay Hints",
             Self::ShowDiagnostic => "Show Diagnostic Detail",
             Self::DebugStart => "Debug: Start / Continue",
             Self::DebugStop => "Debug: Stop",
@@ -720,6 +1019,8 @@ impl Command {
             Self::NotebookRunAll => "Notebook: Run All Cells",
             Self::NotebookInterrupt => "Notebook: Interrupt Kernel",
             Self::NotebookRestartKernel => "Notebook: Restart Kernel",
+            Self::ToggleLineComment => "Toggle Line Comment",
+            Self::ToggleBlockComment => "Toggle Block Comment",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -744,10 +1045,36 @@ impl Command {
             Self::CommitGraphInteractiveRebase => "Commit Graph: Interactive Rebase from Here",
             Self::ScmFetch => "Git: Fetch",
             Self::CommitToggleFileReviewed => "Commit: Toggle File Reviewed",
+            Self::CommitFoldFileTree => "Commit: Fold All Directories",
+            Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::OpenLinkAtCaret => "Open Link at Caret",
+            Self::GoToDeclaration => "Go to Declaration",
+            Self::GoToTypeDefinition => "Go to Type Definition",
+            Self::GoToImplementation => "Go to Implementation",
+            Self::FindReferences => "Find All References",
+            Self::ShowIncomingCalls => "Show Incoming Calls",
+            Self::ShowOutgoingCalls => "Show Outgoing Calls",
+            Self::ShowSupertypes => "Show Supertypes",
+            Self::ShowSubtypes => "Show Subtypes",
+            Self::HierarchyExpand => "Hierarchy: Expand Node",
+            Self::RenameSymbol => "Rename Symbol",
+            Self::RenameSubmit => "Rename Symbol: Confirm",
+            Self::RenameCancel => "Rename Symbol: Cancel",
+            Self::FormatDocument => "Format Document",
+            Self::FormatSelection => "Format Selection",
+            Self::StartLinkedEditing => "Start Linked Editing",
+            Self::ToggleFormatOnType => "Toggle Format on Type",
+            Self::CodeActions => "Quick Fix…",
+            Self::SourceAction => "Source Action…",
+            Self::OrganizeImports => "Organize Imports",
+            Self::FixAll => "Fix All",
             Self::JumpBack => "Go Back",
+            Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",
+            Self::Indent => "Indent Line",
+            Self::Outdent => "Outdent Line",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",
             Self::DeleteWordBackward => "Delete Word Backward",
@@ -787,8 +1114,11 @@ impl Command {
             Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
             Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::SelectColorTheme => "Settings: Select Color Theme…",
             Self::ManageLanguageServers => "Language Servers: Manage",
             Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
+            Self::ShowLanguageServerLog => "Language Servers: Show Log",
+            Self::CancelLanguageServerWork => "Language Servers: Cancel Running Work",
             Self::LanguageServerUp => "Language Servers: Select Previous",
             Self::LanguageServerDown => "Language Servers: Select Next",
             Self::LanguageServerRefresh => "Language Servers: Refresh",
@@ -798,6 +1128,7 @@ impl Command {
             Self::LanguageServerRestart => "Language Servers: Restart Selected",
             Self::LanguageServerUninstall => "Language Servers: Uninstall Selected",
             Self::LanguageServerFilter => "Language Servers: Filter…",
+            Self::LanguageServerUndecline => "Language Servers: Offer Selected Again",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -825,21 +1156,33 @@ impl Command {
             Self::FindToggleRegex => "Find: Toggle Regular Expression",
             Self::FindToggleCase => "Find: Toggle Case Sensitivity",
             Self::FindToggleWord => "Find: Toggle Whole Word",
+            Self::FindTogglePreserveCase => "Find: Toggle Preserve Case",
+            Self::FindToggleInSelection => "Find: Toggle Search in Selection",
+            Self::FindSelectAllMatches => "Find: Select All Matches",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Keep Draft and Close",
             Self::CommitGenerate => "Commit: Generate Message (AI)",
+            Self::CommitGenerateUndo => "Commit: Undo Generated Message",
+            Self::CommitConfigureAi => "Commit: AI Message Options…",
+            Self::CommitConsoleClose => "Commit: Close Console",
+            Self::CommitConsoleCancel => "Commit: Cancel Running Commit",
+            Self::CommitConsoleShow => "Commit: Show Last Console Log",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
-            Self::ConfirmDiscard => "Source Control: Confirm Discard",
-            Self::ConfirmExplorerDelete => "Explorer: Confirm Delete",
             Self::ContextMenuUp => "Context Menu: Select Previous",
             Self::ContextMenuDown => "Context Menu: Select Next",
             Self::ContextMenuAccept => "Context Menu: Accept",
             Self::ContextMenuCancel => "Context Menu: Cancel",
+            Self::ConfirmUp => "Confirm: Select Previous",
+            Self::ConfirmDown => "Confirm: Select Next",
+            Self::ConfirmAccept => "Confirm: Accept",
+            Self::ConfirmCancel => "Confirm: Cancel",
             Self::CloseConfirmSave => "Confirm Close: Save and Close",
             Self::CloseConfirmDiscard => "Confirm Close: Discard and Close",
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
+            Self::CloseConfirmCancel => "Confirm Close: Cancel",
+            Self::DismissSwaps => "Recovery: Decide Later",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
             // Key-driven navigation inside the view; deliberately absent from the
             // palette, but still named so nothing renders as a blank entry.
@@ -864,10 +1207,14 @@ impl Command {
             Self::SeamConfiguration => "Seam: Set Configuration",
             Self::SeamCopyIdentity => "Seam: Copy Node Identity",
             Self::SeamCopyQuery => "Seam: Copy Query",
+            Self::SeamSync => "Seam: Sync",
+            Self::SeamForceSync => "Seam: Force Re-sync",
             Self::ShowCommitGraph => "Source Control: Commit Graph",
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",
             Self::CommitGraphOpen => "Commit Graph: Open Commit",
+            Self::CommitGraphPanLeft => "Commit Graph: Pan Left",
+            Self::CommitGraphPanRight => "Commit Graph: Pan Right",
             Self::OpenCommitByHash => "Source Control: Go to Commit…",
             Self::RevInputSubmit => "Go to Commit: Submit",
             Self::RevInputCancel => "Go to Commit: Cancel",
@@ -881,6 +1228,10 @@ impl Command {
             Self::SearchOpen => "Search: Open Selected Result",
             Self::SearchBeginInput => "Search: Edit Query",
             Self::SearchQuit => "Search: Leave Panel",
+            Self::SearchExpand => "Search: Expand Group",
+            Self::SearchCollapse => "Search: Collapse Group",
+            Self::SearchToggleAll => "Search: Collapse or Expand All",
+            Self::SearchToggleFilters => "Search: Toggle File Filters",
             Self::SearchRun => "Search: Run Query",
             Self::SearchEndInput => "Search: Stop Editing Query",
             Self::SearchToggleReplace => "Search: Toggle Replace",

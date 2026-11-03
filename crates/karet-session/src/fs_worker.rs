@@ -15,13 +15,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
-use tokio::sync::mpsc as tokio_mpsc;
-
 use crate::api::Event;
 use crate::api::FileChunk;
 use crate::api::PathClass;
 use crate::api::PathMutation;
 use crate::api::RequestId;
+use crate::event_tx::EventTx;
 
 mod listing;
 mod mutate;
@@ -95,9 +94,7 @@ pub(crate) enum FsJob {
 
 /// Start the worker; the session sends [`FsJob`]s and answers arrive on the
 /// shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<FsJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<FsJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-fs".to_owned())
@@ -105,10 +102,10 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(jobs: &Receiver<FsJob>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
+fn run(jobs: &Receiver<FsJob>, events: &EventTx) {
     while let Ok(job) = jobs.recv() {
         let (id, event) = answer(job);
-        if events.send((Some(id), event)).is_err() {
+        if events.try_emit(Some(id), event).is_break() {
             break; // the session shut down
         }
     }

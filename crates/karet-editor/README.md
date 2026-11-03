@@ -2,8 +2,8 @@
 
 The composable ratatui code-editor widget for
 [karet](https://github.com/getkono/karet). It combines the text engines
-(`karet-text`, `karet-syntax`, `karet-theme`) into one `Editor` widget with a gutter,
-scrolling, and visual aids.
+(`karet-text`, `karet-theme`) into one `Editor` widget with a gutter, scrolling, and
+visual aids.
 
 Consumers can supply `SemanticBlocks` and enable `sticky_scroll` to keep the active
 outer-to-inner source headers pinned above the viewport. Multi-line signatures occupy one
@@ -12,7 +12,9 @@ sticky row, leaving the document usable even in a short terminal pane.
 By design it depends on **none** of the feature producers
 (`karet-lsp`/`karet-vcs`/`karet-dap`/`karet-search`): diagnostics, git markers,
 breakpoints, inlay hints, and code lenses all arrive as `karet-core` decorations that
-the application supplies. A `read_only` mode (plus `EditorState::center_on` and
+the application supplies. Nor does it depend on the syntax engine: highlights, folds, and
+`SemanticBlocks` are the neutral `karet-core` shapes that `karet-syntax` computes, so
+depending on the widget never builds tree-sitter. A `read_only` mode (plus `EditorState::center_on` and
 scroll-only paging) turns it into a pager — see `examples/read_only.rs`.
 
 Part of the karet workspace; released in lockstep with the other `karet-*` crates.

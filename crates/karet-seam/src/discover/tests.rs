@@ -423,3 +423,259 @@ fn every_discovered_package_points_at_a_file_that_exists() -> TestResult {
     }
     Ok(())
 }
+
+// --- the file-tree ecosystems -----------------------------------------------
+
+/// The kinds of everything discovered under `root`, in discovery order.
+fn kinds(root: &std::path::Path) -> Vec<PackageKind> {
+    discover(root, DiscoveryOptions::default())
+        .into_iter()
+        .map(|package| package.kind)
+        .collect()
+}
+
+#[test]
+fn a_node_package_is_rooted_at_its_source_directory() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("web");
+    let _ = std::fs::create_dir_all(root.join("src"));
+    let _ = std::fs::write(root.join("package.json"), "{}");
+    let _ = std::fs::write(root.join("src/index.ts"), "");
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    let node = discovered.iter().find(|p| p.kind == PackageKind::Node);
+    // `src` says where the sources are, not what they are called, so the name comes from
+    // the package directory.
+    assert_eq!(node.map(|p| p.name.as_str()), Some("web"));
+    assert_eq!(node.map(|p| p.root.clone()), Some(root.join("src")));
+}
+
+#[test]
+fn a_node_package_with_no_src_directory_is_rooted_at_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("package.json"), "{}");
+    let _ = std::fs::write(dir.path().join("main.js"), "");
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    assert!(discovered.iter().any(|p| p.kind == PackageKind::Node));
+}
+
+#[test]
+fn a_swift_package_yields_one_root_per_target() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("Package.swift"), "");
+    for target in ["Widgets", "Support"] {
+        let _ = std::fs::create_dir_all(dir.path().join("Sources").join(target));
+        let _ = std::fs::write(dir.path().join("Sources").join(target).join("a.swift"), "");
+    }
+    let names: Vec<String> = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .filter(|p| p.kind == PackageKind::Swift)
+        .map(|p| p.name)
+        .collect();
+    // Sorted, because discovery order is what the view's first column shows.
+    assert_eq!(names, ["Support", "Widgets"]);
+}
+
+#[test]
+fn a_single_target_swift_package_uses_sources_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("Widgets");
+    let _ = std::fs::create_dir_all(root.join("Sources"));
+    let _ = std::fs::write(root.join("Package.swift"), "");
+    let _ = std::fs::write(root.join("Sources/a.swift"), "");
+    let swift = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .find(|p| p.kind == PackageKind::Swift);
+    assert_eq!(swift.as_ref().map(|p| p.name.as_str()), Some("Widgets"));
+    assert_eq!(swift.map(|p| p.root), Some(root.join("Sources")));
+}
+
+#[test]
+fn a_gradle_module_yields_a_root_per_source_set() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let root = dir.path().join("app");
+    let _ = std::fs::create_dir_all(root.join("src/main/kotlin"));
+    let _ = std::fs::create_dir_all(root.join("src/test/kotlin"));
+    let _ = std::fs::write(root.join("build.gradle.kts"), "");
+    let roots: Vec<PathBuf> = discover(dir.path(), DiscoveryOptions::default())
+        .into_iter()
+        .filter(|p| p.kind == PackageKind::Gradle)
+        .map(|p| p.root)
+        .collect();
+    // Every set, not just `main`: which one is "the" one is a build-tool question.
+    assert_eq!(
+        roots,
+        [root.join("src/main/kotlin"), root.join("src/test/kotlin")]
+    );
+}
+
+#[test]
+fn a_gradle_module_with_no_sources_contributes_nothing() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let _ = std::fs::write(dir.path().join("build.gradle"), "");
+    assert!(kinds(dir.path()).is_empty());
+}
+
+#[test]
+fn a_polyglot_repository_answers_about_all_of_itself() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let rust = dir.path().join("engine");
+    let _ = std::fs::create_dir_all(rust.join("src"));
+    let _ = std::fs::write(rust.join("Cargo.toml"), "[package]\nname = \"engine\"\n");
+    let _ = std::fs::write(rust.join("src/lib.rs"), "");
+    let web = dir.path().join("web");
+    let _ = std::fs::create_dir_all(web.join("src"));
+    let _ = std::fs::write(web.join("package.json"), "{}");
+    let _ = std::fs::write(web.join("src/index.ts"), "");
+    let kinds = kinds(dir.path());
+    // One repository, both halves. Answering with only one would be a quieter wrong.
+    assert!(kinds.contains(&PackageKind::Cargo), "{kinds:?}");
+    assert!(kinds.contains(&PackageKind::Node), "{kinds:?}");
+}
+
+#[test]
+fn an_ecosystems_extensions_and_index_names_match_its_conventions() {
+    assert!(PackageKind::Node.extensions().contains(&"tsx"));
+    assert_eq!(PackageKind::Swift.extensions(), ["swift"]);
+    assert!(PackageKind::Gradle.extensions().contains(&"kt"));
+    // Only Node has the `__init__.py`/`mod.rs` convention.
+    assert_eq!(PackageKind::Node.index_names(), ["index"]);
+    assert!(PackageKind::Swift.index_names().is_empty());
+    // Cargo declares its tree and Python has a walk of its own.
+    assert!(PackageKind::Cargo.extensions().is_empty());
+    assert!(PackageKind::Python.extensions().is_empty());
+    // Java sits beside Kotlin in a Gradle source set, and alone in a Maven one.
+    assert!(PackageKind::Gradle.extensions().contains(&"java"));
+    assert_eq!(PackageKind::Maven.extensions(), ["java"]);
+    assert!(PackageKind::CFamily.extensions().contains(&"h"));
+    assert!(PackageKind::CFamily.extensions().contains(&"cpp"));
+}
+
+// --- C, C++ and Maven ----------------------------------------------------------
+
+#[test]
+fn the_outermost_cmake_project_claims_the_tree_below_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(
+        dir.path(),
+        "engine/CMakeLists.txt",
+        "add_subdirectory(core)\n",
+    )?;
+    write(
+        dir.path(),
+        "engine/core/CMakeLists.txt",
+        "add_library(core a.c)\n",
+    )?;
+    write(dir.path(), "engine/core/a.c", "")?;
+    write(dir.path(), "tools/meson.build", "project('tools', 'c')\n")?;
+    let found = found(dir.path());
+    // `core` is the engine's subdirectory, not a project of its own.
+    assert_eq!(
+        found,
+        [
+            ("engine".to_owned(), "engine".to_owned()),
+            ("tools".to_owned(), "tools".to_owned())
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_c_project_sharing_a_root_with_another_ecosystem_is_kept() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // A Rust crate building C beside it, with a nested C project the outer one claims.
+    write(dir.path(), "native/Cargo.toml", &package_manifest("native"))?;
+    write(dir.path(), "native/src/lib.rs", "")?;
+    write(
+        dir.path(),
+        "native/CMakeLists.txt",
+        "add_library(a lib/a.c)\n",
+    )?;
+    write(dir.path(), "native/lib/a.c", "")?;
+    write(dir.path(), "native/lib/sub/CMakeLists.txt", "")?;
+    // A Node addon whose binding is C.
+    write(dir.path(), "addon/package.json", "{}")?;
+    write(
+        dir.path(),
+        "addon/CMakeLists.txt",
+        "add_library(addon addon.c)\n",
+    )?;
+    write(dir.path(), "addon/addon.c", "")?;
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    let at = |root: &str| -> Vec<PackageKind> {
+        discovered
+            .iter()
+            .filter(|p| p.root == dir.path().join(root))
+            .map(|p| p.kind)
+            .collect()
+    };
+    assert_eq!(at("native"), [PackageKind::Cargo, PackageKind::CFamily]);
+    assert_eq!(at("addon"), [PackageKind::Node, PackageKind::CFamily]);
+    // Still one C project per tree: the nested one stays claimed by the outer.
+    assert!(at("native/lib/sub").is_empty(), "{discovered:?}");
+    Ok(())
+}
+
+#[test]
+fn a_makefile_marks_a_c_project_only_when_c_sources_sit_beside_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // Every kind of project has a Makefile; this one has no C in it.
+    write(dir.path(), "Makefile", "test:\n\tnpm test\n")?;
+    write(dir.path(), "native/Makefile", "all:\n\tcc src/x.c\n")?;
+    write(dir.path(), "native/src/x.c", "")?;
+    let found = found(dir.path());
+    // The root's Makefile is not a C project, so it does not hide the one below it.
+    assert_eq!(found, [("native".to_owned(), "native".to_owned())]);
+    Ok(())
+}
+
+#[test]
+fn only_c_projects_treat_subprojects_as_vendored() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // A Gradle build keeps its own modules under `subprojects/`.
+    write(dir.path(), "app/build.gradle.kts", "")?;
+    write(dir.path(), "app/subprojects/core/build.gradle.kts", "")?;
+    write(dir.path(), "app/subprojects/core/src/main/kotlin/A.kt", "")?;
+    // A meson project vendors its dependencies there.
+    write(dir.path(), "native/subprojects/zlib/meson.build", "")?;
+    let names = names(dir.path());
+    assert!(names.contains(&"core".to_owned()), "{names:?}");
+    assert!(!names.contains(&"zlib".to_owned()), "{names:?}");
+    Ok(())
+}
+
+#[test]
+fn a_maven_aggregator_yields_each_module_and_its_source_sets() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(
+        dir.path(),
+        "pom.xml",
+        "<project><modules><module>api</module></modules></project>\n",
+    )?;
+    write(dir.path(), "api/pom.xml", "<project></project>\n")?;
+    write(dir.path(), "api/src/main/java/a/A.java", "")?;
+    write(dir.path(), "api/src/test/java/a/ATest.java", "")?;
+    let mut found = found(dir.path());
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("api".to_owned(), "api/src/main/java".to_owned()),
+            ("api".to_owned(), "api/src/test/java".to_owned())
+        ]
+    );
+    Ok(())
+}

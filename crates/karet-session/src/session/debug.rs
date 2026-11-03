@@ -1,35 +1,33 @@
-//! `Debug*` command pre-dispatch: the session actor routes debugger commands
-//! to the [`crate::dap::DebugManager`] without touching the main match.
+//! [`DebugCommand`] dispatch: the session actor routes debugger commands to
+//! the [`crate::dap::DebugManager`].
 
 use super::Session;
-use crate::api::Command;
+use crate::api::DebugCommand;
 use crate::api::RequestId;
 use crate::dap::RunControl;
 
 impl Session {
-    /// Consume a debugger command; `false` when `command` is not one.
-    pub(super) fn handle_debug_command(&mut self, id: RequestId, command: &Command) -> bool {
+    /// Serve one [`DebugCommand`].
+    pub(super) fn handle_debug(&mut self, id: RequestId, command: DebugCommand) {
         match command {
-            Command::DebugStart { configuration } => {
+            DebugCommand::Start { configuration } => {
                 self.debug.start(configuration.as_deref());
             },
-            Command::DebugStop => self.debug.stop(),
-            Command::DebugContinue => self.debug.run_control(RunControl::Continue),
-            Command::DebugStepOver => self.debug.run_control(RunControl::StepOver),
-            Command::DebugStepIn => self.debug.run_control(RunControl::StepIn),
-            Command::DebugStepOut => self.debug.run_control(RunControl::StepOut),
-            Command::DebugPause => self.debug.run_control(RunControl::Pause),
-            Command::DebugSetBreakpoints { path, lines } => {
-                self.debug.set_breakpoints(path.clone(), lines.clone());
+            DebugCommand::Stop => self.debug.stop(),
+            DebugCommand::Continue => self.debug.run_control(RunControl::Continue),
+            DebugCommand::StepOver => self.debug.run_control(RunControl::StepOver),
+            DebugCommand::StepIn => self.debug.run_control(RunControl::StepIn),
+            DebugCommand::StepOut => self.debug.run_control(RunControl::StepOut),
+            DebugCommand::Pause => self.debug.run_control(RunControl::Pause),
+            DebugCommand::SetBreakpoints { path, lines } => {
+                self.debug.set_breakpoints(path, lines);
             },
-            Command::DebugStackTrace => self.debug.stack_trace(id),
-            Command::DebugScopes { frame } => self.debug.scopes(id, *frame),
-            Command::DebugVariables { reference } => self.debug.variables(id, *reference),
-            Command::DebugEvaluate { expression, frame } => {
-                self.debug.evaluate(id, expression.clone(), *frame);
+            DebugCommand::StackTrace => self.debug.stack_trace(id),
+            DebugCommand::Scopes { frame } => self.debug.scopes(id, frame),
+            DebugCommand::Variables { reference } => self.debug.variables(id, reference),
+            DebugCommand::Evaluate { expression, frame } => {
+                self.debug.evaluate(id, expression, frame);
             },
-            _ => return false,
         }
-        true
     }
 }

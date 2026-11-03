@@ -1,4 +1,34 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
+
+use crate::app::App;
+use crate::app::OPERATION_SHUTDOWN_TIMEOUT;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::OperationBlocker;
+use crate::app::state::PendingAutoSave;
+use crate::app::state::PendingSave;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::tab::FindState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+
+/// The most tab titles the close confirmation spells out before summarizing.
+const NAMED_TABS: usize = 6;
 
 impl App {
     /// The active tab's session document, if it is a registered code tab.
@@ -23,15 +53,29 @@ impl App {
         self.tabs.get_mut(self.active)?.find.as_mut()
     }
 
-    /// Submit a backend command against the active code tab's document, if any.
-    pub(super) fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
-        if let Some(doc) = self.active_code_doc() {
-            let _ = self.send(make(doc));
+    /// Send an undo (`undo`) or redo for the active code tab's document, if
+    /// any, remembering this view as the one whose selection set the answer
+    /// restores.
+    pub(super) fn send_history(&mut self, undo: bool) {
+        let Some(doc) = self.active_code_doc() else {
+            return;
+        };
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.docs.history_view.insert(doc, tab.view);
         }
+        let _ = self.send(if undo {
+            DocumentCommand::Undo { doc }
+        } else {
+            DocumentCommand::Redo { doc }
+        });
     }
 
     /// Handle a quit request through the unified close guard.
     pub(super) fn request_quit(&mut self) {
+        // A plain quit is not an Open Recent reopen. One armed earlier may still
+        // be set when its quit was abandoned without the prompt being cancelled
+        // (a save before quitting failed, or Esc left a source control wait).
+        self.cancel_relaunch();
         self.guarded_close(CloseRequest::Quit);
     }
 
@@ -64,30 +108,53 @@ impl App {
     /// surviving tab or another pane is not at risk, so closing
     /// one of its several views must not prompt.
     pub(super) fn docs_at_risk(&self, request: CloseRequest) -> Vec<DocumentId> {
+        self.fully_dropped_docs(request)
+            .into_iter()
+            // Prompt only for a dirty document, checked across every view so that
+            // per-tab flag skew cannot hide it.
+            .filter(|doc| {
+                self.all_tabs()
+                    .any(|t| Self::tab_doc(t) == Some(*doc) && t.dirty)
+            })
+            .collect()
+    }
+
+    /// The documents `request` drops entirely: those whose **last** referencing view
+    /// is being removed. A document still shown in a surviving tab or another pane is
+    /// not dropped by it, so closing one of its several views loses nothing.
+    pub(super) fn fully_dropped_docs(&self, request: CloseRequest) -> Vec<DocumentId> {
         let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
         let surviving: HashSet<DocumentId> = self
             .all_tabs()
             .filter(|tab| !removed.contains(&tab.view))
             .filter_map(Self::tab_doc)
             .collect();
-        let mut at_risk: Vec<DocumentId> = Vec::new();
+        let mut dropped: Vec<DocumentId> = Vec::new();
         for tab in self.all_tabs().filter(|tab| removed.contains(&tab.view)) {
             let Some(doc) = Self::tab_doc(tab) else {
                 continue;
             };
-            if surviving.contains(&doc) || at_risk.contains(&doc) {
+            if surviving.contains(&doc) || dropped.contains(&doc) {
                 continue;
             }
-            // The document is fully dropped by this request; prompt only if it is
-            // dirty (checked across every view, so per-tab flag skew can't hide it).
-            if self
-                .all_tabs()
-                .any(|t| Self::tab_doc(t) == Some(doc) && t.dirty)
-            {
-                at_risk.push(doc);
-            }
+            dropped.push(doc);
         }
-        at_risk
+        dropped
+    }
+
+    /// How many saves are still in flight for documents `request` would drop. A close
+    /// that outran one would lose a write the user explicitly asked for, so it parks
+    /// on the drain instead of racing it.
+    ///
+    /// The same count releases a parked request in [`App::on_backend_event`]: park and
+    /// release must read the *same* set of saves, or a close waits on writes it does
+    /// not own — or, worse, runs while one it does own is still in flight.
+    pub(super) fn saves_at_risk(&self, request: CloseRequest) -> usize {
+        let dropped = self.fully_dropped_docs(request);
+        self.pending_saves
+            .values()
+            .filter(|save| dropped.contains(&save.doc))
+            .count()
     }
 
     /// Route an irreversible close through the unified unsaved-changes guard. When it
@@ -96,28 +163,107 @@ impl App {
     ///
     /// Quit additionally honors `files.confirmOnExit`; tab/pane closes are always
     /// guarded — silently discarding unsaved changes is the data-loss bug this fixes.
+    /// Name the documents a close would lose, by the tab titles the user is
+    /// already looking at. "2 unsaved files" says how much is at stake but not
+    /// which, and which is the thing worth checking before discarding.
+    fn at_risk_names(&self, at_risk: &[DocumentId]) -> String {
+        let mut names: Vec<String> = Vec::new();
+        for tab in self.all_tabs() {
+            let Some(doc) = Self::tab_doc(tab) else {
+                continue;
+            };
+            if at_risk.contains(&doc) && !names.contains(&tab.title) {
+                names.push(tab.title.clone());
+            }
+        }
+        let shown = names.len().min(NAMED_TABS);
+        let mut listed = names[..shown].join(", ");
+        if let Some(rest) = names.len().checked_sub(NAMED_TABS).filter(|n| *n > 0) {
+            listed.push_str(&format!(", and {rest} more"));
+        }
+        listed
+    }
+
     pub(super) fn guarded_close(&mut self, request: CloseRequest) {
         if matches!(request, CloseRequest::Quit)
             && let Some(operation) = self.scm.operation.as_ref()
         {
-            let label = format!("{operation:?}");
+            // No notification here: `operation_blocker` is a modal that already
+            // renders this label and the wait it implies.
             self.operation_blocker = Some(OperationBlocker {
-                label: label.clone(),
+                label: format!("{operation:?}"),
                 deadline: Instant::now() + OPERATION_SHUTDOWN_TIMEOUT,
             });
-            self.status = Some(format!(
-                "quit waiting for source control operation {label} (maximum 60s)"
-            ));
             return;
         }
         let at_risk = self.docs_at_risk(request);
         let honor_setting =
             !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
         if at_risk.is_empty() || !honor_setting {
+            // A close that never raises the prompt still cannot outrun a write it
+            // already owes. A save deferred on a formatter answers seconds after
+            // it was asked for, and closing first drops it with nothing to show
+            // for the keystroke, so park on the same drain the prompt uses. Count
+            // only the writes *this* request would drop: a tab close owes nothing
+            // for a document it leaves open elsewhere. Ctrl+S on a buffer with no
+            // unsaved edits still issues a real save -- it is how a reformat is
+            // asked for -- so a clean document arrives here with a write pending
+            // and no prompt above to have held it.
+            let in_flight = self.saves_at_risk(request);
+            if in_flight > 0 {
+                // Unless the user is already waiting on a parked quit. Nothing
+                // else here releases one -- only the backend answering does --
+                // so a second Ctrl+Q is the only way out of a wedged session,
+                // and refusing it would make the editor unexitable. Only a quit
+                // arms that hatch and only a parked quit trips it: a parked tab
+                // close is a different request, and letting it stand in would
+                // abandon writes on the user's *first* Ctrl+Q.
+                let forcing = matches!(request, CloseRequest::Quit)
+                    && matches!(self.saving_close, Some(CloseRequest::Quit));
+                if !forcing {
+                    self.park_close_on_saves(request, in_flight);
+                    return;
+                }
+                self.saving_close = None;
+                self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+                // What makes an abandoned write recoverable is the swap file the
+                // session wrote for it -- and `files.backup = false` means it wrote
+                // none. Promising recovery there would tell the user their work is
+                // safe at the exact moment it is destroyed, so the two cases get
+                // two messages. Both stay on the Failure tier, which is already the
+                // loudest one (red, persists until dismissed); the wording is what
+                // has to carry the difference.
+                let report = if self.settings.files.backup {
+                    format!("quit: {in_flight} save(s) abandoned, recoverable from swap files")
+                } else {
+                    format!(
+                        "quit: {in_flight} save(s) abandoned and lost — files.backup is off, \
+                         so no swap file was written"
+                    )
+                };
+                // The loop exits before another frame is drawn, so the toast alone
+                // is never seen; the farewell is printed once the terminal is back.
+                self.farewell.push(report.clone());
+                self.notify(Report::Failure, NotificationKind::Io, report);
+            }
             self.execute_close(request);
         } else {
+            let names = self.at_risk_names(&at_risk);
+            let (title, save, discard) = close_prompt_choices(request, at_risk.len());
+            // Open first, arm second. Opening declines whatever dialog it replaces,
+            // and a close prompt's own decline clears `pending_close` — so arming
+            // before this call would have the outgoing dialog wipe the request the
+            // incoming one depends on, leaving its answers inert.
+            self.confirm(ConfirmDialog::new(
+                title,
+                format!("Unsaved changes in {names} have not been written to disk."),
+                vec![
+                    ConfirmChoice::custom("Cancel", Command::CloseConfirmCancel),
+                    ConfirmChoice::custom(save, Command::CloseConfirmSave),
+                    ConfirmChoice::custom(discard, Command::CloseConfirmDiscard),
+                ],
+            ));
             self.pending_close = Some(request);
-            self.status = Some(close_prompt_message(request, at_risk.len()));
         }
     }
 
@@ -158,16 +304,17 @@ impl App {
             &mut self.pending_commit_detail,
             views,
             &mut requests,
-            |d| match d {
-                CommitDest::Tab { view } | CommitDest::Browser { view, .. } => *view,
-            },
+            |view| *view,
         );
+        drain_view_requests(&mut self.pending_compare, views, &mut requests, |view| {
+            *view
+        });
         drain_view_requests(&mut self.latex_previews, views, &mut requests, |view| *view);
         drain_view_requests(
             &mut self.pending_prepared_diffs,
             views,
             &mut requests,
-            |v| *v,
+            |(view, _)| *view,
         );
         drain_view_requests(&mut self.pending_conversions, views, &mut requests, |v| *v);
         drain_view_requests(
@@ -182,12 +329,7 @@ impl App {
             &mut requests,
             |(view, _)| *view,
         );
-        if let Some((request, view)) = self.graph_log_req
-            && views.contains(&view)
-        {
-            self.graph_log_req = None;
-            requests.push(request);
-        }
+        drain_view_requests(&mut self.graph_log_reqs, views, &mut requests, |view| *view);
         for request in requests {
             self.cancel_backend_request(request);
         }
@@ -211,18 +353,29 @@ impl App {
             return;
         };
         let at_risk = self.docs_at_risk(request);
-        let saved = self.save_docs(&at_risk);
+        let saved = self.save_docs(&at_risk, SaveCause::Manual);
         if saved == 0 {
             self.execute_close(request);
         } else {
-            self.saving_close = Some(request);
-            let verb = if matches!(request, CloseRequest::Quit) {
-                "quitting"
-            } else {
-                "closing"
-            };
-            self.status = Some(format!("saving {saved} file(s) before {verb}…"));
+            self.park_close_on_saves(request, saved);
         }
+    }
+
+    /// Hold `request` until every save in flight has answered, and say so. The drain
+    /// in [`App::on_backend_event`] runs it; a failed save cancels it there instead.
+    fn park_close_on_saves(&mut self, request: CloseRequest, count: usize) {
+        self.saving_close = Some(request);
+        let verb = if matches!(request, CloseRequest::Quit) {
+            "quitting"
+        } else {
+            "closing"
+        };
+        self.notify_progress(
+            NotificationKind::Io,
+            Self::SAVE_BATCH_TAG.to_string(),
+            format!("saving {count} file(s) before {verb}…"),
+            None,
+        );
     }
 
     /// At the close prompt: discard unsaved changes and run the parked request now.
@@ -236,11 +389,17 @@ impl App {
     pub(super) fn cancel_close(&mut self) {
         let quitting = matches!(self.pending_close, Some(CloseRequest::Quit));
         self.pending_close = None;
-        self.status = Some(if quitting {
-            "quit cancelled".to_string()
-        } else {
-            "close cancelled".to_string()
-        });
+        // An Open Recent reopen rides on the quit it just cancelled.
+        self.cancel_relaunch();
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            if quitting {
+                "quit cancelled"
+            } else {
+                "close cancelled"
+            },
+        );
     }
 
     /// Finish a timed graceful-shutdown wait. Once the global ceiling is reached,
@@ -257,34 +416,68 @@ impl App {
     }
 
     /// Issue a save for each of `docs` (skipping any already in flight), tracking it
-    /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
-    pub(super) fn save_docs(&mut self, docs: &[DocumentId]) -> usize {
-        let mut issued = 0;
+    /// in `pending_saves` and marking its tabs as saving. Returns how many of `docs`
+    /// a write is now owed for.
+    ///
+    /// That count is documents *covered*, not requests issued: a document whose save
+    /// is already in flight is one this call must still be waited on for. Callers park
+    /// destructive work on a non-zero count, and a save deferred on a formatter can be
+    /// in flight for seconds — so counting only the new requests would run the close,
+    /// or the branch switch, while the write it was guarding is still parked.
+    pub(super) fn save_docs(&mut self, docs: &[DocumentId], cause: SaveCause) -> usize {
+        let mut covered = 0;
         for &doc in docs {
-            if self.send_save(doc) {
-                issued += 1;
+            if self.send_save(doc, cause) || self.save_in_flight(doc) {
+                covered += 1;
             }
         }
-        issued
+        covered
+    }
+
+    /// Whether a save for `doc` is already awaiting its answering event.
+    pub(super) fn save_in_flight(&self, doc: DocumentId) -> bool {
+        self.pending_saves
+            .values()
+            .any(|pending| pending.doc == doc)
     }
 
     /// Send one save through the same backend path used by manual, close-guard, and
     /// automatic saves. The session owns the last-read fingerprint check, so every
     /// caller gets identical external-change protection.
-    fn send_save(&mut self, doc: DocumentId) -> bool {
+    fn send_save(&mut self, doc: DocumentId, cause: SaveCause) -> bool {
         let Some(backend) = self.backend.clone() else {
             return false;
         };
-        if self
-            .pending_saves
-            .values()
-            .any(|pending| pending.doc == doc)
-        {
+        if self.save_in_flight(doc) {
             return false;
         }
         let version = self.document_version(doc);
+        // A save may rewrite the buffer (formatting, whitespace cleanup). Tell
+        // the backend where the caret is first, so undoing that rewrite puts
+        // the caret back here rather than at the top of the file. The focused
+        // tab's caret wins when it shows this document. A failed send is left
+        // to the save below, which reports the same backend error.
+        let is_doc =
+            |tab: &&Tab| matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
+        if let Some(tab) = self
+            .tabs
+            .get(self.active)
+            .filter(is_doc)
+            .or_else(|| self.all_tabs().find(is_doc))
+        {
+            let cursors = tab.editor.cursors().clone();
+            let _ = backend.send(
+                backend.next_id(),
+                DocumentCommand::SetCursor {
+                    doc,
+                    view: tab.view,
+                    cursors,
+                }
+                .into(),
+            );
+        }
         let id = backend.next_id();
-        match backend.send(id, SessionCommand::Save { doc }) {
+        match backend.send(id, DocumentCommand::Save { doc, cause }.into()) {
             Ok(()) => {
                 self.pending_saves.insert(id, PendingSave { doc });
                 if self
@@ -327,18 +520,22 @@ impl App {
     /// in-flight save so a slow write shows a spinner in the tab.
     pub(super) fn save_active(&mut self) {
         let Some(doc) = self.active_code_doc() else {
-            self.status = Some("save: open a text file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "save: open a text file",
+            );
             return;
         };
-        if self
-            .pending_saves
-            .values()
-            .any(|pending| pending.doc == doc)
-        {
-            self.status = Some("save already in progress".to_string());
+        if self.save_in_flight(doc) {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "save already in progress",
+            );
             return;
         }
-        self.send_save(doc);
+        self.send_save(doc, SaveCause::Manual);
     }
 
     /// Record a new dirty version for the configured automatic-save trigger. A
@@ -365,11 +562,11 @@ impl App {
         }
         self.auto_save_pending
             .insert(doc, PendingAutoSave { version, deadline });
-        let focused = (self.focus == Focus::Editor)
+        let focused = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if mode == AutoSave::OnFocusChange && focused != Some(doc) {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 
@@ -388,7 +585,7 @@ impl App {
         for doc in &due {
             self.auto_save_pending.remove(doc);
         }
-        self.save_docs(&due);
+        self.save_docs(&due, SaveCause::AutoDelay);
     }
 
     /// Save the previously-focused editor document when a user action moves focus
@@ -397,25 +594,25 @@ impl App {
         if self.settings.files.auto_save != AutoSave::OnFocusChange {
             return;
         }
-        let current = (self.focus == Focus::Editor)
+        let current = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if previous != current
             && let Some(doc) = previous
             && self.auto_save_pending.contains_key(&doc)
         {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 
     /// Save the active editor document when the terminal window itself loses focus.
     pub(super) fn auto_save_focus_lost(&mut self) {
         if self.settings.files.auto_save == AutoSave::OnFocusChange
-            && self.focus == Focus::Editor
+            && self.keyboard.focus() == Focus::Editor
             && let Some(doc) = self.active_code_doc()
             && self.auto_save_pending.contains_key(&doc)
         {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 
@@ -448,63 +645,27 @@ impl App {
             self.schedule_auto_save(doc, version, now);
         }
     }
+}
 
-    /// Cut the current selection (copy then delete); a no-op without a selection.
-    pub(super) fn cut(&mut self) {
-        if matches!(
-            self.input_context().modal,
-            Some(Modal::SearchInput | Modal::CommitInput)
-        ) {
-            let Some(text) = self.cut_modal_selection() else {
-                return;
-            };
-            self.copy_to_clipboard(text, "selection");
-            return;
-        }
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_cut_files();
-            return;
-        }
-        let has_selection = matches!(
-            self.tabs.get(self.active),
-            Some(Tab { kind: TabKind::Code { .. }, editor, .. })
-                if editor.selection_range().is_some_and(|r| !r.is_empty())
-        );
-        if !has_selection {
-            return;
-        }
-        self.copy_selection();
-        self.submit_edit_with_cause(EditCause::Cut, editing::backspace);
-    }
-
-    /// Paste the system clipboard at the caret (or the active modal's text field).
-    pub(super) fn paste_from_clipboard(&mut self) {
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_paste_files();
-            return;
-        }
-        match self.clipboard.get() {
-            Ok(text) => self.handle_paste(text),
-            Err(_) => self.status = Some("paste: clipboard unavailable".to_string()),
-        }
-    }
-
-    /// Route pasted text (from the paste command or bracketed paste) to whatever
-    /// actually owns text input right now: the active modal's field if one is
-    /// open, else the editor buffer. Shared by both paste sources, so pasted text
-    /// is never interpreted as keys and never lands in the wrong place.
-    pub(super) fn handle_paste(&mut self, text: String) {
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        if normalized.is_empty() {
-            return;
-        }
-        if let Some(modal) = self.input_context().modal {
-            self.modal_paste(modal, &normalized);
-            return;
-        }
-        self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _b, base| {
-            Some(editing::insert(caret, sel, base, &normalized))
-        });
+/// The unsaved-changes confirmation's title and its two action verbs, phrased for
+/// the scope `request` closes and its `count` at-risk files.
+fn close_prompt_choices(
+    request: CloseRequest,
+    count: usize,
+) -> (String, &'static str, &'static str) {
+    let files = if count == 1 { "file" } else { "files" };
+    if matches!(request, CloseRequest::Quit) {
+        (
+            format!("Quit with {count} unsaved {files}?"),
+            "Save all and quit",
+            "Discard and quit",
+        )
+    } else {
+        (
+            format!("Close with {count} unsaved {files}?"),
+            "Save and close",
+            "Discard and close",
+        )
     }
 }
 

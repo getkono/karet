@@ -1,16 +1,22 @@
 # Language support and language servers
 
 This is the canonical support matrix and precedence policy for karet. Changes to
-the built-in catalog in `karet-session/src/lsp.rs`, the managed catalog in
+the built-in catalog in `karet-session/src/lsp/catalog.rs` (which is also where
+every provider's launch command and arguments live), the release recipes in
 `karet-session/src/lsp_registry/catalog.rs`, or the grammar registry in
 `karet-treesitter/src/registry.rs` must update this document in the same change.
 
 ## The built-in experience
 
-TOML formatting never requires a server: karet bundles taplo's formatter as a
-fallback (`toml.format`), honoring the workspace `.taplo.toml`. Installing the
-`taplo` language server additionally brings schema-driven validation,
-completion, and hover (its `#:schema` directives work as documented upstream).
+TOML never requires an install. karet carries taplo's language server built in
+(the default-on `karet-session` feature `toml-lsp`) and runs it in-process when
+no other taplo is available, so TOML gets validation, completion, hover,
+formatting, and schema support (its `#:schema` directives and the SchemaStore
+catalogue work as documented upstream) with nothing on `PATH`. A taplo the user
+configured, the project ships, or `PATH` provides still wins, which is how a
+pinned taplo version is kept. Independently of any server, karet also bundles
+taplo's formatter as a fallback (`toml.format`), honoring the workspace
+`.taplo.toml`.
 
 
 karet resolves a provider separately for every open document:
@@ -19,7 +25,8 @@ karet resolves a provider separately for every open document:
 2. an executable in the document's repository (`node_modules/.bin`, `.venv/bin`,
    or `venv/bin`);
 3. the user's `PATH`;
-4. a checksum-verified managed installation.
+4. a checksum-verified managed installation;
+5. a server built into karet and run in-process (today only taplo, for TOML).
 
 The workspace passed on the command line is not assumed to be one repository.
 karet walks upward from each file to the nearest `.git` file or directory. Thus a
@@ -34,7 +41,7 @@ explicitly manual:
 | Language | Default providers | Managed by karet | Tree-sitter |
 |---|---|---:|---:|
 | Rust | **rust-analyzer** | yes | yes |
-| JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
+| JavaScript, TypeScript, JSX, TSX | **typescript-language-server** (with a managed TypeScript 5); **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
 | Python | **Pyright** intelligence/type checking + **Ruff** diagnostics/formatting | yes (both) | yes |
 | TeX / LaTeX | **texlab** | yes | yes |
 | C / C++ | **clangd** | yes on x86_64; project/PATH elsewhere | yes |
@@ -42,11 +49,11 @@ explicitly manual:
 | Go | **gopls** | project/PATH | yes |
 | Java | **jdtls** | project/PATH | yes |
 | Zig | **zls** | yes | yes |
-| Astro | **Astro language server** | yes | yes, with injections |
+| Astro | **Astro language server** (with a managed TypeScript 5) | yes | yes, with injections |
 | Svelte | **svelte-language-server** | yes | yes, with injections |
 | Vue | **vue-language-server** | yes | yes, with injections |
 | YAML | **yaml-language-server** | yes | yes |
-| XML / SVG | **lemminx** (`xml`) | project/PATH | yes |
+| XML / SVG | **lemminx** (`xml`) | yes (native build, no Java) | yes |
 | HTML | vscode-html-language-server | yes | yes |
 | CSS / Sass / Less | vscode-css-language-server | yes | yes |
 | JSON | vscode-json-language-server | yes | yes |
@@ -62,7 +69,7 @@ explicitly manual:
 | Dart | `dart language-server` | project/PATH | when compiled in |
 | R | languageserver | project/PATH | when compiled in |
 | Clojure | clojure-lsp | yes | when compiled in |
-| TOML | taplo | project/PATH | yes |
+| TOML | taplo | built in (project/PATH preferred) | yes |
 | Pkl | pkl-lsp | project/PATH | when compiled in |
 | Protobuf | `buf beta lsp` | yes | when compiled in |
 | GraphQL | graphql-lsp | yes | when compiled in |
@@ -76,22 +83,124 @@ explicitly manual:
 diagnostics, and editor features work without configuration when the conventional
 executable is present. It does not mean karet downloads that third-party tool.
 
-The manual entries are explicit, not an unexplained remainder:
+The manual entries are explicit, not an unexplained remainder. Every provider
+that is not plainly fetched has one of three strategies, chosen in this order:
 
-| Providers requiring user installation | Reason |
-|---|---|
-| C# Language Server | distributed with Microsoft's C# tooling and requires the user's .NET SDK/MSBuild |
-| gopls | the official installation and analysis flow uses the project's Go toolchain |
-| jdtls, LemMinX | require a compatible user-selected Java runtime; current jdtls requires Java 21 plus project JDK configuration |
-| ruby-lsp, phpactor | must run inside the project's Ruby/Bundler or PHP environment |
-| sourcekit-lsp, Dart Language Server | ship with the matching Swift/Xcode or Dart/Flutter SDK |
-| Metals, Haskell Language Server, ocamllsp, ELP | must match the project's Scala/JVM, GHC, opam-switch, or Erlang/OTP toolchain |
-| R languageserver, PowerShell Editor Services, Esbonio, pkl-lsp | require the user's R, PowerShell, Python/Sphinx, or Java/Pkl runtime environment |
-| Taplo | current native release assets do not provide a publisher-authenticated SHA-256 digest; the older npm channel is not treated as a current update source |
+- **Fetch** — a managed recipe, used only where the publisher ships a
+  self-contained artifact with a verifiable SHA-256 digest.
+- **Embed** — compile the server into karet. Only a pure-Rust server qualifies,
+  under the no-system-dependencies policy.
+- **Stay manual** — the server has to match, or run inside, a toolchain the
+  project already owns, so a copy karet chose would analyse the wrong thing. These
+  languages still get tree-sitter highlighting, folding, and outlines with no
+  server at all; the server adds the semantic features.
+
+None of the manual servers below is written in Rust, so embedding is open to none
+of them; each row records why fetching is not either.
+
+| Provider | Strategy | Reason |
+|---|---|---|
+| LemMinX | fetch | Red Hat attaches GraalVM native LemMinX builds — one executable per platform, needing no Java runtime, each with a GitHub SHA-256 digest — to every `redhat-developer/vscode-xml` release. LemMinX's own repository publishes no assets, so the version karet records is vscode-xml's. |
+| taplo | embed (`toml-lsp`) | see below |
+| clangd, off x86_64 | stay manual | `clangd/clangd` publishes x86_64 Linux, macOS, and Windows archives only; there is no verified ARM artifact to fetch. |
+| C# Language Server | stay manual | loads projects through the user's .NET SDK and MSBuild, which a fetched server cannot bring with it |
+| gopls | stay manual | published as Go module source for `go install`, with no release binaries, and its analysis drives the project's `go` toolchain |
+| jdtls | stay manual | a Java application needing Java 21 or newer to run, plus the project's own JDKs to import it |
+| ruby-lsp | stay manual | a gem that must run inside the project's Ruby and Bundler environment to see its dependencies |
+| phpactor | stay manual | a PHAR that runs on the project's PHP runtime and extensions |
+| sourcekit-lsp | stay manual | ships with, and must match, the Swift or Xcode toolchain |
+| Metals | stay manual | a JVM application that must match the project's JVM and Scala build environment |
+| Haskell Language Server | stay manual | built per GHC version; the wrapper picks the build matching the project's GHC |
+| ocamllsp | stay manual | must be built in the project's opam switch, against its compiler |
+| ELP | stay manual | releases carry digests, but as one build per Erlang/OTP version; the right one depends on the project's OTP, which karet does not choose |
+| Dart Language Server | stay manual | a mode of the `dart` executable in the Dart or Flutter SDK |
+| R languageserver | stay manual | a CRAN package installed into the user's R library |
+| PowerShell Editor Services | stay manual | a PowerShell module bundle entered through `Start-EditorServices.ps1`, needing the user's PowerShell, with no standalone executable |
+| Esbonio | stay manual | must run in the project's Python and Sphinx environment |
+| pkl-lsp | stay manual | published as a Java archive, needing a compatible Java runtime and Pkl |
+| pylsp | stay manual | must be installed in the project's Python environment, with its Flake8 plugin |
+
+Taplo is embedded rather than fetched. Its native release assets still carry no
+publisher-authenticated SHA-256 digest, so karet does not download them; it
+compiles the server in instead, and the crates.io checksum is the integrity
+check. The npm `@taplo/cli` package is not an alternative: its WebAssembly build
+omits the language server (`taplo lsp stdio` reports "the LSP is not part of this
+build"). A build without `toml-lsp` treats taplo as manual again, for the
+digest reason above.
 
 On an architecture for which a normally managed provider has no verified upstream
 artifact, the manager reports that platform-specific reason and treats the provider
 as manual. Currently this applies to clangd on ARM.
+
+### How providers are launched
+
+Every provider is launched over stdio with a command and arguments recorded once,
+in `karet-session/src/lsp/catalog.rs`. The same row is used whether the executable
+came from the project, from `PATH`, or from a karet-managed install, so those can
+never disagree.
+
+Of the 41 providers, 17 speak LSP on stdio when run bare and are launched with no
+arguments at all. The remaining 24 are launched as shown here — this table is the
+complete set, so a provider absent from it takes no arguments.
+
+Eleven need only the conventional flag that selects stdio over a socket:
+
+| Provider | Invocation |
+|---|---|
+| astro-language-server | `astro-ls --stdio` |
+| csharp | `Microsoft.CodeAnalysis.LanguageServer --stdio` |
+| docker-langserver | `docker-langserver --stdio` |
+| pyright | `pyright-langserver --stdio` |
+| svelte-language-server | `svelteserver --stdio` |
+| typescript-language-server | `typescript-language-server --stdio` |
+| vscode-css-language-server | `vscode-css-language-server --stdio` |
+| vscode-html-language-server | `vscode-html-language-server --stdio` |
+| vscode-json-language-server | `vscode-json-language-server --stdio` |
+| vue-language-server | `vue-language-server --stdio` |
+| yaml-language-server | `yaml-language-server --stdio` |
+
+Thirteen enter their language-server mode some other way — a subcommand, a
+different executable, or an expression. These are the rows worth reading before
+changing anything, because a bare invocation of any of them does something else
+entirely (`taplo` prints usage to *stdout*, which is fatal to the framing):
+
+| Provider | Invocation |
+|---|---|
+| taplo | `taplo lsp stdio` |
+| neocmakelsp | `neocmakelsp stdio` |
+| phpactor | `phpactor language-server` |
+| elp | `elp server` |
+| haskell-language-server | `haskell-language-server-wrapper --lsp` |
+| marksman | `marksman server` |
+| ruff | `ruff server` |
+| biome | `biome lsp-proxy` |
+| buf | `buf beta lsp` |
+| graphql-lsp | `graphql-lsp server -m stream` |
+| bash-language-server | `bash-language-server start` |
+| dart | `dart language-server` |
+| R | `R --no-echo -e languageserver::run()` |
+
+Two rows are known-incomplete rather than verified:
+
+- **PowerShell Editor Services** has no standalone executable — it is a module
+  bundle entered through `Start-EditorServices.ps1`. Point `lsp.servers` at your
+  own bundle; the built-in row only keeps the language routed.
+- **esbonio** is launched as the published `esbonio` console script, which suits
+  karet's `.venv/bin` resolution better than hardcoding an interpreter. Its
+  bare-invocation behavior has not been verified against a live install.
+
+### TypeScript's managed companion
+
+typescript-language-server and the Astro language server both drive `tsserver`,
+which they do not ship. karet installs TypeScript alongside them, **pinned to
+5**: `latest` is now TypeScript 7, a ground-up rewrite whose `lib` directory
+contains no `tsserver.js` at all, so taking the newest release leaves both
+servers unable to start.
+
+Astro additionally takes the SDK location as an `initializationOptions` value
+rather than looking for one itself, so karet records the installed path with the
+activation and sends it with `initialize`. Nothing on the command line can
+substitute for it — the option is part of the protocol.
 
 ### GraphQL specifics
 
@@ -118,6 +227,28 @@ spawn failure; karet never downloads a JDK. During the initial import — which
 can take a minute or two on a large build — jdtls's `language/status`
 notifications are forwarded to the status line so the server never looks hung.
 
+### Checking the catalogue against upstream
+
+The support matrix above is a claim about other people's release processes, so
+it can go stale without anything in this repository changing: an asset gets
+renamed, a publisher stops attaching a SHA-256 digest, an npm flag is removed.
+No offline test can see that.
+
+`mise run test-servers-live` checks it for real. For every managed provider it
+installs into a throwaway registry, opens a file of that provider's language,
+waits for the connection to reach `running`, and prints a table:
+
+```text
+| provider | version | install | launch | secs | note |
+```
+
+It needs network and takes minutes, so it is `#[ignore]`d and never runs as part
+of `mise run verify`. `KARET_LIVE_SERVERS=taplo,bash-language-server` narrows it
+to a subset. A weekly non-blocking workflow (`.github/workflows/servers.yml`)
+runs it so drift surfaces before a user hits it.
+
+Run it whenever this matrix, the launch table, or the release recipes change.
+
 ## Capability ownership and overlap
 
 Only one provider owns a capability that produces edits or navigation results.
@@ -126,21 +257,139 @@ provider, path, and document version, then sorted and deduplicated.
 
 | Capability | Owner and behavior |
 |---|---|
-| Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
-| Completion, hover, symbols, rename, signature help, code actions, inlay hints | first capable LSP in the language's ordered `servers` list |
-| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | first capable LSP in the language's ordered `servers` list; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
-| Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
+| Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline (folds give way to a server's folding ranges, below) |
+| Folding ranges | the language's primary server, when it offers them (`textDocument/foldingRange`, declared as whole-line folding). Every open document is asked at each version the server has been sent, at most once at a time and off the server task's serial path; a request the server cancels is asked again a bounded number of times. An answer for a version the text has moved past is dropped. While held, the server's ranges replace the tree-sitter (or indentation) folds -- its `comment` and `imports` kinds feed *Fold All Comments* and *Fold All Imports*, `region` stays its own kind -- and they move with the text, by line, until the next answer. An empty answer, a reload, a change of language, or the server going away for good gives the tree-sitter folds back |
+| Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
+| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. A request the server fails, times out on, or never answers because it is restarting leaves the hints on screen as they are and is re-asked after the same pause, the wait doubling with each failure in a row up to 30 seconds (a server coming back, an answer, or an edit resets it); only a server that does not offer hints, one that is unavailable for good, or one whose restart circuit has opened clears them. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
+| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
+| References (`Shift+F12`), implementation (`Ctrl+F12`), declaration and type definition (palette) | the language's primary server, as above, each gated on its own capability (`referencesProvider`, `implementationProvider`, `declarationProvider`, `typeDefinitionProvider`). References ask with `includeDeclaration: true` and are always listed in the location picker; the others jump to a lone answer like Go to Definition. Every location is converted to buffer columns against its own file |
+| Call hierarchy (`Shift+Alt+H` for incoming calls, outgoing calls in the palette) and type hierarchy (supertypes and subtypes, palette), walked in the Hierarchy sidebar panel (`Ctrl+8`), which stays open with its expansion when Enter opens an item | the language's primary server, as above, gated on `callHierarchyProvider` or `typeHierarchyProvider`. `textDocument/prepareCallHierarchy` / `prepareTypeHierarchy` finds the roots at the caret; each level after is asked only when its node is first expanded (`callHierarchy/incomingCalls`, `…/outgoingCalls`, `typeHierarchy/supertypes`, `…/subtypes`), handing the server back its item exactly as it sent it, `data` included. Every item is converted to buffer columns against its own file, and an answer is delivered even after an edit, since each item is anchored in the file it names |
+| Rename (`F2`) and workspace edits | the language's primary server, as above. `prepareRename` shapes the prompt (a server without it, or one answering `defaultBehavior`, gets the identifier at the caret). Every workspace edit -- a rename's, and a server's own `workspace/applyEdit` -- goes through one session path: text edits land in documents (unopened files are opened in the background, so each change is unsaved and undoable per document), creates, renames and deletes act on disk, and a text-only edit applies whole or not at all (`textOnlyTransactional`). An edit computed against a document version that has moved on is refused |
+| Code actions (`Ctrl+.` / `Alt+Enter`, the gutter lightbulb, *Organize Imports*, *Fix All*) | the language's primary server, as above. The request carries the diagnostics that server last published touching the range, exactly as it sent them (`data` included), and an optional kind filter that is also applied to the answer. The lightbulb asks with `triggerKind: Automatic` once the caret has rested for the `didChange` debounce, and never reports a server without code actions; a request made by hand does. Running an action resolves a deferred edit (`codeAction/resolve`), applies the edit through the workspace-edit path above, then runs its command (`workspace/executeCommand`, refused without being sent when the server listed its commands and this is not one); edits the server makes while running it arrive as `workspace/applyEdit`. An action listed at a document version that has moved on is refused |
+| Code lenses (`editor.codeLens`) | the language's primary server, as above. Listed for the whole document (`textDocument/codeLens`) for the front tab of each visible pane, on the inlay-hint schedule: once an edit has been quiet for the `didChange` debounce, and again when the viewport leaves the lines already resolved. The deferred lenses on the viewport and its overscan are resolved (`codeLens/resolve`) inside the same request, concurrently; one elsewhere stays untitled, and undrawn, until it is scrolled to. At most one listing per document is in flight, off the server task's serial path, and its timeouts never mark a server hung. Until the replacement arrives the lenses on screen move with the text; a failed listing leaves them as they are and is re-asked with the inlay-hint back-off. A click on a title runs its command (`workspace/executeCommand`, refused without being sent when the server does not run it -- the client-side commands some servers put on lenses among them, reported under the lens's title); `workspace/codeLens/refresh` is not declared |
+| Document links and colours (`Ctrl+Click` on a link; colour swatches under `editor.colorHighlight`) | the language's primary server, as above. Both are listed for the whole document together (`textDocument/documentLink` and `textDocument/documentColor`, concurrently) for the front tab of each visible pane, once per text version: once an edit has been quiet for the `didChange` debounce, and again when a server's state changes. At most one listing per document is in flight, off the server task's serial path, and its timeouts never mark a server hung; each half stands or fails on its own, and a failed half leaves what is shown and is re-asked with the inlay-hint back-off. Until the replacement arrives the links and colours move with the text, and one an edit reaches into is dropped. `Ctrl`-hover underlines a link over the span the server gave, and `Ctrl+Click` follows it ahead of a link read from the source: a link the server sent without a target is resolved first (`documentLink/resolve`), a web or mail link opens with the desktop, a `file:` link opens in the editor -- at the line and column a `#L<line>,<column>` fragment names -- and one outside the workspace asks first. A server colour is drawn as a swatch, and the built-in detector's swatch is skipped wherever a server colour already covers it |
+| Semantic tokens | one owner per language: `lsp.languages.<id>.semanticTokens` when set (a provider that does not serve the language leaves it without), else the language's primary server. While `editor.semanticHighlighting.enabled` is on (the default), every open document is asked at each version the owner has been sent (`textDocument/semanticTokens/full`), and afterwards as a delta against the last answer (`…/full/delta`); a delta that does not fit is asked again whole. At most one request per document is in flight, off the server task's serial path, and a newer version aborts the older one. `workspace/semanticTokens/refresh` re-asks every open document. The answer is laid over the tree-sitter highlights as a sparse overlay -- comments, strings and markup keep their tree-sitter class -- and moves with the text until the next one arrives; it is dropped with its server's diagnostics when the server stays down or is retired. Turning the setting off stops the requests and clears the overlay without restarting anything. Never allowed to replace parsing |
+| Linked editing (*Start Linked Editing* `Ctrl+Shift+F2`) | the language's primary server, as above (`textDocument/linkedEditingRange`). Asked by hand only, so a server without it says so. The answer puts a caret in every linked range -- an HTML or JSX tag's name and its closing tag's -- each at the caret's offset into its own range (a selection inside the name is mirrored too), and from there it is ordinary multi-caret editing. An answer for text or selections that have changed since is dropped; a range spanning lines is skipped, and the server's `wordPattern` is not enforced |
+| On-type formatting (`editor.formatOnType`, *Toggle Format on Type*) | the language's primary server, as above (`textDocument/onTypeFormatting`). Off by default, as in VS Code. While on, a character typed with a single bare caret (`\n` for Enter) is offered to the server, until its first answer names the characters it formats on, and then only those (none at all for a server without on-type formatting); a character it does not format on costs no request. The edits are applied by the client, as one undoable edit, and only while the buffer is still at the version they were computed for -- a keystroke typed while the server worked drops them rather than being lost or misplaced. Never reported as unsupported |
+| Will-save edits (`textDocument/willSaveWaitUntil`) | the formatting server, as below, when it asks for them in its `textDocumentSync` options. Before every save that may format (every cause but the `afterDelay` autosave) the server is asked, with the save's reason, whether or not `formatOnSave` is on; its edits are applied to the buffer first, and format-on-save then formats the text they produced. The wait shares format-on-save's `formatOnSaveTimeout`: the will-save request and the formatting after it spend one deadline between them, and a will-save request that spends all of it leaves the save unformatted rather than formatting text already written. A refusal, failure or overrun costs the edits, never the save |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
-| Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |
+| Formatting (format-on-save, *Format Document* `Shift+Alt+F`, *Format Selection* `Ctrl+K Ctrl+F`) | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default. *Format Selection* sends one `textDocument/rangeFormatting` per selection (a bare caret stands for its line; touching selections merge) and applies the answers together as one undoable edit. An answer for a document version that has moved on is dropped with a notice; with no server, *Format Document* falls back to the built-in formatter where the language has one |
+
+### Capability negotiation
+
+A server is asked only for what it said it can do. karet keeps the capability
+set from the `initialize` reply, updates it as the server registers or
+unregisters capabilities afterwards (`client/registerCapability`), and refuses
+a request the server does not currently offer, **without putting it on the
+wire**.
+
+This matters because the sets differ enormously — no two of rust-analyzer,
+gopls, jdtls and `vscode-json-language-server` implement the same one — and an
+un-negotiated request comes back as a protocol error indistinguishable from a
+failure. A missing feature then reads as a broken server rather than an absent
+capability.
+
+A refusal is therefore reported as a *fact about the provider*, not a fault. It
+is not counted against the provider's failure budget, does not advance the
+"stopped answering" streak that declares a server dead, and does not satisfy
+the "has it ever answered" gate — because nothing reached the wire either way.
+
+For a request you make by hand — hover (`Ctrl+K Ctrl+I`) and go to
+definition, *Format Document* and *Format Selection*; the backend treats rename
+and workspace symbol search the same way — a refusal says so. A notice reads "*server* does not support *feature*"
+in place of "no definition found" or "no hover information", which would be a
+claim about your code rather than about the provider. Requests karet makes on its own — inlay hints, completion as you
+type, the outline's document symbols, format-on-save — are refused silently,
+since a notice on every keystroke or save is noise (format-on-save falls back
+to the built-in formatter instead).
+
+What the client declares at the handshake is kept to what it honours:
+
+- `textDocument.inlayHint`, and `workspace.inlayHint.refreshSupport`. A server
+  sends `workspace/inlayHint/refresh` when something outside a document changes
+  its hints — edit a return type in one file and the `: u32` shown at a call
+  site in another is stale. karet answers it at once and re-asks for the hints
+  of every visible document.
+- `textDocument.inlayHint.resolveSupport` for `tooltip`, `label.tooltip` and
+  `label.location`. A server may leave those out of its answer; resting the
+  pointer on a hint, or Ctrl+clicking one of its label parts, sends
+  `inlayHint/resolve` with the hint exactly as the server sent it, and the
+  tooltip shows, or the click goes where the part leads, once it is filled in.
+- `textDocument.codeLens`, without dynamic registration (its options carry a
+  `resolveProvider` flag karet would drop) and without
+  `workspace.codeLens.refreshSupport`. A lens the server sends untitled is
+  filled in with `codeLens/resolve`, handing it back exactly as the server
+  sent it, when it is near the viewport.
+- `textDocument.documentLink` with `tooltipSupport`, without dynamic
+  registration (its options carry a `resolveProvider` flag karet would drop).
+  A link the server sends without a target is filled in with
+  `documentLink/resolve`, handing it back exactly as the server sent it, when
+  it is Ctrl+clicked.
+- `textDocument.colorProvider`, with dynamic registration. Colours are only
+  drawn: `textDocument/colorPresentation` is not asked.
+- `textDocument.completion`: a trigger context on every request (invoked, a
+  trigger character, or narrowing an incomplete list), insert/replace edits,
+  commit characters, markdown documentation, and `resolveSupport` for
+  `documentation`, `detail` and `additionalTextEdits`. The selected item is
+  resolved with `completionItem/resolve`, and its documentation shows beside
+  the popup; an item accepted before its resolve answered gets the deferred
+  additional edits as a follow-up edit, unless the document changed in
+  between. The server's trigger characters re-request completions (`.` and
+  `::` stand in until it has answered once); its commit characters accept the
+  selection before they are typed; typing over an incomplete list asks again.
+  `snippetSupport` is declared: a snippet inserts the text it shows before
+  any edit, then Tab and Shift+Tab move between its tabstops (mirrored ones
+  edited together) until the final stop, and Esc leaves it.
+- `dynamicRegistration` for the gated requests whose registration carries
+  nothing karet reads beyond "on": hover, definition, implementation, type
+  hierarchy, document and workspace symbols, rename, formatting, range
+  formatting, linked editing ranges, and inlay hints. Completion, signature
+  help, code actions and on-type formatting are deliberately not declared:
+  their registrations carry trigger characters and action kinds karet would
+  drop, so a server should keep stating them in its handshake.
+- `synchronization.willSaveWaitUntil` and `synchronization.didSave`: the
+  will-save edits above are asked for, and every save is announced.
+
+A registration applies only to the documents its `registerOptions.documentSelector`
+covers; an absent or `null` selector covers every document, and so does one
+karet cannot read — a selector of an unrecognised shape, or a filter pattern whose
+braces do not balance or expand too far (the filter's other fields still apply).
+A broken registration fails open, so it never silently disables a feature the
+server has. A filter matches on
+the language id the document was opened with, its scheme (every karet document is
+a `file` URI), and its glob `pattern` — a plain glob over the absolute path, or a
+relative pattern under a base URI. A request for a document that no active
+registration covers, and that the handshake did not advertise, is refused like
+any other unoffered request. Withdrawing a registration removes exactly its own
+scope: another registration of the same method, or the handshake having
+advertised it, keeps the feature on.
+
+The reply is read from its JSON rather than through a typed mirror of one
+spec revision, so a capability karet learns about later needs no dependency
+bump: `typeHierarchyProvider`, which karet already issues requests against, has
+no field at all in the `lsp-types` release this workspace pins.
+
+Position encoding is *offered*, not negotiated: the client lists UTF-16 as the
+only encoding it speaks, which is also the protocol's default, and every
+position crosses the wire in UTF-16 code units. A server's `positionEncoding`
+reply is read and kept, but not yet acted on. The distinction matters because
+the encodings agree on every ASCII-only line, so a server that answered in
+another one anyway — clangd prefers UTF-8 — would look correct until a line
+contained one non-ASCII character, and then misplace every position after it.
 
 Tree-sitter and LSP are complementary. Tree-sitter is local, incremental, stable
 while a server restarts, and understands injected regions in Astro, Svelte, Vue,
 Markdown, and similar documents. LSP semantic tokens are repository-aware and can
 distinguish meanings that syntax alone cannot. karet therefore paints Tree-sitter
-as the complete current layer. When semantic-token transport is enabled, it will
-be a sparse, single-provider overlay; servers are not advertised that capability
-until the overlay is present. LSP data never controls parsing, indentation
-structure, or injection boundaries.
+as the complete base layer, and lays one provider's semantic tokens over it as a
+sparse overlay. The client advertises the token types and modifiers it can
+style -- the LSP standard set plus the common custom names (`mutable`,
+`unresolvedReference`, `lifetime`, …) -- with `augmentsSyntaxTokens`, so a
+server may leave out what syntax already shows; a token of any other type is
+dropped and the Tree-sitter colour beneath it stays. The theme resolves each
+token through its `semanticTokenColors`, falling back to the colour of the
+closest syntax class. LSP data never controls parsing, indentation structure,
+or injection boundaries.
 
 ### Python
 
@@ -171,6 +420,23 @@ layer and preferred repository formatter without duplicating completion or
 navigation. Astro, Svelte, and Vue use their framework server for the outer
 document and Tree-sitter language injections for embedded script and style syntax.
 
+### Inline completions (Copilot)
+
+`copilot-language-server` proposes ghost text for every language through LSP
+3.18 `textDocument/inlineCompletion` (see `editor.inlineCompletion` in the
+[configuration](configuration.md)). It sends the code being edited to GitHub,
+so it is attached only once you opt in: install it from the Language Servers
+manager (a karet-managed npm install), or give it an `lsp.servers` entry --
+`"copilot-language-server": {}` attaches the one on `PATH`, and
+`{ "enabled": false }` keeps it off. Being on `PATH` alone attaches nothing.
+
+Sign in with **Copilot: Sign In** from the palette: the device code is copied
+to the clipboard and shown until dismissed, together with the GitHub page to
+enter it at. karet does not open that page for you: open it in a browser and
+enter the code. Once you have, a second notification says whether the sign-in
+landed. **Copilot: Sign Out** signs out. Any other server that
+offers inline completions is asked too, beside the language's primary.
+
 ## Shared process lifecycle
 
 Installations and live processes are machine-local shared resources. A hidden,
@@ -192,6 +458,84 @@ The broker launches the real process through karet's process-group supervisor
 Crashes close the broker connection; each session retains the latest full text of
 every open document, reconnects with exponential delays from 250 ms to 30 seconds,
 and replays `didOpen`. Five failures in one minute open a five-minute circuit.
+
+A lost connection is noticed the moment it happens, not the next time karet has
+something to ask: each server task waits on the connection's liveness alongside its
+own command queue, so a server that exits while you are reading rather than typing
+starts reconnecting immediately. A server that keeps its pipe open but stops
+answering is also treated as dead, after three consecutive request timeouts -- but
+only once it has answered a request the editor issued *after* the handshake.
+"Stopped answering" presupposes having answered: a cold rust-analyzer or a jdtls
+mid-import can go minutes without answering its first request, and killing one
+there restarts the import, which guarantees the next requests time out too. The
+handshake itself does not count, since every connected server answers `initialize`.
+Two silent deaths in a row put the provider behind the circuit; they are counted
+directly rather than through the sliding failure window, because establishing each
+one costs at least three 30-second timeouts and the window always expires between
+them.
+
+Only requests the server task waits on one at a time count toward that streak.
+Inlay-hint requests run in the background, several documents at once, so three can
+time out together inside one 30-second window, and a server slow to infer types
+for a large file is slow rather than hung — so a timed-out or failed hint request
+never counts toward declaring the server dead. An answered hint request is neutral
+too: it does not clear the streak, so a server that keeps answering hints while
+hover and completion time out is still caught. It does count as the server having
+answered, so one whose only answers so far were hints can still be declared hung.
+
+A connection that dies without having lasted ten seconds is charged against the
+restart budget, so five such cycles in a minute open the circuit. Connecting is
+not the same as working: a server that exits as soon as it has read `didOpen`
+connects perfectly every time, and would otherwise respawn without bound.
+
+A dead provider's diagnostics are dropped one second after it goes down, and only
+its own: they are keyed by the exact provider-and-root that published them, so
+other servers' markers, the same provider's markers at another repository root,
+spell-check and lint results are all untouched. The delay is deliberate -- the
+usual death is followed by a reconnect at 250 ms, and clearing immediately would
+flicker every marker off and back on for an outage nobody would otherwise have
+noticed.
+
+That covers a server that *dies*. A provider **retired** outright -- turning LSP
+off, editing its settings, closing the last document that needed it, asking for a
+restart -- is one operation with one meaning: its markers are cleared and its stop
+is reported, together, whichever of those four paths retired it.
+
+Retirement is safe against the case that makes it hard. A retired task and the one
+that replaces it hold the same provider at the same root, so they are
+indistinguishable by name; each slot therefore carries a token no other slot ever
+reuses, and a task's report about its own slot is accepted only while it still
+holds it. A task that has been retired cannot clear, overwrite, or publish over
+its replacement -- and the clear itself is not a message at all, but part of
+retiring the slot, so there is no window between the two.
+
+A provider retired by *any* path reports `idle` with no open documents, and the
+Language Servers panel offers **Restart** only where this session holds a process.
+
+Keeping the panel right takes one more thing, because the per-transition event
+carries a provider's *state* and nothing else: the open-document count has no
+event at all, so a client patching rows field by field finishes with one that
+reads `idle` and still offers a Restart for a process that is gone. So a
+retirement also tells the client its inventory is **stale**, and the client asks
+for a current one. The signal carries no rows deliberately -- building an
+inventory re-resolves every provider against the settings, the project and
+`PATH`, and most sessions have nobody looking at the result, so the session
+states the fact and the client decides what it is worth.
+
+Asking rather than being pushed to is also what keeps the answer current. A
+retirement is often the first half of an operation: a restart retires a provider
+and then starts its replacement, and a snapshot taken at the retirement would
+describe the gap in between, where the provider has no process and no documents.
+A request is answered when it is handled, after the operation it followed has
+finished.
+
+One consequence is worth stating, because it reads as a regression and is not.
+Closing the last file of a provider that could not start used to leave the panel
+showing `unavailable` and its error; it now reads `idle`, because there is no
+longer anywhere to record a state for a provider this session is not running. The
+diagnosis is not lost -- the launch failure is reported when it happens, and
+logged.
+
 Requests made during an outage receive an empty response rather than hanging.
 Both protocol and per-server command queues are bounded at 256 messages.
 
@@ -208,11 +552,51 @@ shows its languages, executable source, managed version, and runtime state. The
 selected-server detail lists every repository root, resolved command and arguments,
 open-document count, retry/circuit state, and most recent error.
 
-An open file covered by a provider shows its live lifecycle beside the language label
-in the editor status bar: idle, starting, in sync, retrying, crashed, or unavailable.
-The badge changes color and text as runtime events arrive. Retry and crash failures
-also create persistent LSP notifications containing the underlying protocol or launch
-error, so the failure remains visible without opening the manager.
+### The badge
+
+Every editor pane carries its own language-server badge, right-aligned in its
+breadcrumb row, so a split showing a healthy Rust file beside a broken Python one
+says so twice rather than reporting only whichever pane has focus. The status bar
+spells the same condition out for the focused pane. A buffer with no path has no
+badge, because provider resolution is path-based and there is nothing to resolve.
+
+The eight states separate by *cause*, because what the user should do differs:
+
+| Badge | Condition | Whose move |
+|---|---|---|
+| `off` | a provider covers the language but your settings suppress it -- `lsp.enabled`, or an `enabled: false` entry the language actually selects | yours, if you want it |
+| `idle` | resolvable and healthy; nothing has needed it yet | nobody's |
+| `ready` | connected and synchronized | nobody's |
+| `starting` | connecting | nobody's |
+| `retrying` | dropped; karet is reconnecting on its own | nobody's |
+| `needs setup` | missing, and karet cannot fetch it -- it needs your SDK or toolchain, or you declined it | yours |
+| `not installed` | missing, and karet can install it once you approve | yours, one click |
+| `failed` | the executable is present and does not work | yours, via the manager |
+
+Resolution is read before the runtime state, so "nothing is installed" is never
+reported as a crash: `failed` is reserved for a binary that exists and does not
+work. An open circuit is `failed` here and an error in the manager table too --
+the breaker is karet's mechanism, but what you have is a provider that crashed
+five times in a minute and will not be retried for five more.
+
+Where several providers cover one file -- Python is Pyright *and* Ruff -- the worst
+state wins so a problem is never hidden, and a `healthy/total` count rides along so
+a partial failure reads as partial. A provider you switched off is not counted: a
+running Pyright beside a deliberately disabled Ruff is working completely, and
+reporting `1/2` would invite you to go and fix your own decision. A file whose Pyright is answering normally and
+whose Ruff is missing shows `not installed 1/2`, not a blanket failure.
+
+**Clicking a badge opens the Language Servers tab, and does nothing else.** It
+starts no install and restarts no process: an install spends your bandwidth and a
+restart kills a running server, and neither is something a single click on a status
+glyph should decide. The manager is where those live.
+
+Retry and crash failures also create persistent LSP notifications containing the
+underlying protocol or launch error, so the failure remains visible without opening
+the manager. A provider karet *cannot* install raises no notification at all -- the
+badge says `needs setup` and the manager's row names the SDK or toolchain required
+and the executable karet looked for. karet does not tell you to put things on
+`PATH`.
 
 The bordered table responds to terminal width by dropping secondary columns before
 primary state and wrapping row actions when necessary. Runtime, availability,
@@ -223,8 +607,10 @@ appear only when applicable. A missing managed provider shows **Install**, an
 installed provider shows **Check updates** (or **Update** after discovery) and
 **Uninstall**, and an active session instance shows **Restart**. Pending operations
 replace only that provider's action with a progress label, so other providers remain
-independently actionable. Installation progress and completion stay in this view
-instead of creating status-bar messages or notifications. The operation state is
+independently actionable. This view keeps the detailed per-provider progress; a
+confirmed install also reports itself as a notification, so a user who approved it
+from an editor buffer is not left watching a tab they never opened. The operation
+state is
 owned independently of the tab, so closing and reopening the manager does not lose
 it. The loading placeholder follows the shared 200 ms reveal delay. The view can be
 operated with either mouse or these focused-tab keys:
@@ -241,8 +627,9 @@ publisher-verification constraint.
 | `U` | force an update check for every installed managed provider |
 | `Enter` / `i` | run the selected row's contextual install, update, or check action |
 | `R` | restart the selected provider connections in this editor session |
-| `x` | uninstall a Karet-managed provider after typed confirmation |
+| `x` | uninstall a Karet-managed provider (asks first) |
 | `/` | filter by provider or language; submit an empty filter to clear it |
+| `o` | offer a declined provider again (clears its recorded refusal) |
 | `q` | close the manager tab |
 
 Update discovery never applies a change. Discovered target versions remain visible
@@ -268,6 +655,20 @@ Node providers use a registry-owned, verified active-LTS Node runtime.
 - `prompt` (default): opening a file performs no network I/O. karet first asks
   permission to discover and install the provider's latest stable version. That
   single approval covers the resulting verified download and activation.
+
+  The prompt is a dialog whose **first** answer is *Not now* — the one `Enter`,
+  `Esc`, and any unbound key take — because approving it spends the user's
+  bandwidth. A provider that is disabled for the language is asked about
+  differently, since saying yes there also turns it on.
+
+  It is raised **at most once** per provider. Two records beside the install
+  journals decide that, deliberately kept out of settings: `declined.json`, which
+  the *Never ask* answer writes, and the activation history, which reports a
+  provider as already decided about even after it is uninstalled. Settings say
+  what you want configured; these say what karet has already asked and been told,
+  so re-enabling a provider never silently re-triggers a download you refused.
+  A declined provider says so in the Language Servers tab; `o` there clears
+  the refusal, and it is offered again the next time a file needs it.
 - `auto`: the user has pre-authorized discovery and installation.
 - `off`: no discovery or download.
 
@@ -276,9 +677,42 @@ after 15 minutes and is rejected if another process changed the active version.
 Existing brokers keep their pinned executable until restarted; new brokers use the
 new activation.
 
+### Recovering without being asked
+
+karet distinguishes conditions it can fix from conditions only you can. Everything
+in the first group recovers on its own, idempotently, and without coordination
+between karet instances -- every recovery path re-reads the same install journal
+that each instance writes through the same per-provider lock, so two of them
+converge rather than fight.
+
+A provider that is simply not installed needs no recovery machinery. Resolution
+finds nothing, so no process slot is created, and resolution short-circuits only on
+a slot -- so installing it by hand is picked up the next time a file of that
+language opens. The check performs no network I/O: it reads settings, the project,
+`PATH`, and the install journal. That journal is the one every karet process writes
+through the same per-provider lock, so instances converge rather than fight, and
+the install prompt is still raised at most once, so re-resolving never re-asks a
+question you have answered.
+
+A provider whose *launch* fails in a way no retry can fix -- an explicitly
+configured command that is not there, a binary that exits on sight -- reports
+`failed` and is not retried for the rest of the session. karet deliberately does
+not re-attempt it on each file you open: nothing observable changes between those
+opens, so it would re-exec the same broken command and raise the same failure once
+per file. Fix it, then use **Restart** in the Language Servers tab.
+
+A completed install starts the provider immediately, for every open document whose
+language it serves -- including a companion like Ruff or Biome, which is no
+language's default and so used to require reopening the file by hand.
+
+What karet will not do by itself is spend your bandwidth. Downloading a provider
+needs explicit approval, once, and update discovery never applies a change: both
+live in the Language Servers tab, which is where the badge takes you.
+
 Uninstall first appends a deactivation record, so future resolution immediately
-stops selecting that managed version. It then retires language-server connections
-only in the requesting editor session. Other karet processes and their shared
+stops selecting that managed version. It then retires the connections *for that
+provider*, and only in the requesting editor session -- uninstalling Ruff used to
+stop rust-analyzer alongside it. Other karet processes and their shared
 brokers keep running. The immutable payload is deleted only after broker endpoint
 checks show that no live process still references it; until then the manager
 reports `cleanup pending`, and the registry retries reclamation in the background.
@@ -313,6 +747,61 @@ reports `cleanup pending`, and the registry retries reclamation in the backgroun
   }
 }
 ```
+
+### Server settings and initialization options
+
+A server entry also carries what the server itself reads, as free-form JSON:
+
+```jsonc
+{
+  "lsp": {
+    "servers": {
+      // No `command`: karet's own launch stands; only the settings are added.
+      "rust-analyzer": {
+        "settings": { "rust-analyzer": { "cargo": { "features": "all" } } },
+        "initializationOptions": { "lens": { "enable": false } }
+      }
+    }
+  }
+}
+```
+
+- `settings` is keyed by section, the way VS Code writes it. A server's
+  `workspace/configuration` request for a section is answered with the value at
+  that dotted path (a literal dotted key such as `"python.analysis"` is tried
+  first); an item naming no section gets the whole object, and a missing section
+  is `null`, which a server reads as its default. The whole object is also pushed
+  once with `workspace/didChangeConfiguration` right after `initialized`, for the
+  servers that read the push instead of pulling.
+- `initializationOptions` is sent verbatim with `initialize`, replacing any karet
+  would have sent (Astro's TypeScript SDK path, for instance).
+- An entry with no `command` keeps karet's own launch: keyed by a provider id it
+  configures that provider wherever it runs; keyed by a language it configures
+  that language's primary server. Only `enabled: false` switches a server off.
+- A live settings reload that changes only `settings` restarts nothing: each
+  running server whose settings changed gets `workspace/didChangeConfiguration`,
+  and its next reconnect starts with the new ones. Any other `lsp.*` change,
+  `initializationOptions` included, retires and restarts the servers as before.
+
+Through the shared broker, the first window to start a server performs its
+handshake, so its `initializationOptions` are the ones that server keeps.
+
+### What a server says to you
+
+- **Progress** (`$/progress` work-done reports) shows in the status bar beside the
+  language-server badge, which reads `LSP busy` while the file's server is
+  working. Clicking a cancellable report cancels it
+  (`window/workDoneProgress/cancel`).
+- **`window/showMessage`** becomes a notification, prefixed with the server's name.
+- **`window/showMessageRequest`** opens a choice prompt with the server's actions;
+  backing out answers "no action".
+- **`window/logMessage`** (and every shown message) is kept per server, the newest
+  2000 entries; **Language Servers: Show Log** in the command palette opens the
+  log of the active file's server.
+- **Watched files.** A server's dynamic registration of
+  `workspace/didChangeWatchedFiles` is honoured: karet's file watcher reports every
+  change in the workspace, and each server is sent only the changes its own
+  registered globs and kinds asked for.
 
 Custom executables receive the same broker, supervisor, restart, queue, root, and
 document-version protections as built-ins. karet cannot authenticate or update an

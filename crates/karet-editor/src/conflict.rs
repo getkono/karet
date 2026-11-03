@@ -188,16 +188,16 @@ fn decorate_conflict(decorations: &mut Vec<Decoration>, conflict: Conflict) {
 
 fn marker_decorations(decorations: &mut Vec<Decoration>, line: usize, glyph: char) {
     let range = line_range(line);
-    decorations.push(Decoration {
+    decorations.push(Decoration::new(
         range,
-        kind: DecorationKind::GutterMarker { glyph },
-        role: Some(ThemeRole::DiffModified),
-    });
-    decorations.push(Decoration {
+        DecorationKind::GutterMarker { glyph },
+        Some(ThemeRole::DiffModified),
+    ));
+    decorations.push(Decoration::new(
         range,
-        kind: DecorationKind::LineBackground,
-        role: Some(ThemeRole::DiffModified),
-    });
+        DecorationKind::LineBackground,
+        Some(ThemeRole::DiffModified),
+    ));
 }
 
 fn section_decoration(
@@ -209,14 +209,14 @@ fn section_decoration(
     if start >= end {
         return;
     }
-    decorations.push(Decoration {
-        range: Range {
+    decorations.push(Decoration::new(
+        Range {
             start: LineCol::new(start as u32, 0),
             end: LineCol::new((end - 1) as u32, u32::MAX),
         },
-        kind: DecorationKind::LineBackground,
-        role: Some(role),
-    });
+        DecorationKind::LineBackground,
+        Some(role),
+    ));
 }
 
 fn line_range(line: usize) -> Range {
@@ -290,7 +290,16 @@ mod tests {
     fn accepts_consistent_custom_marker_width() {
         let decorations =
             conflict_decorations("<<<<<<<<< ours\na\n=========\nb\n>>>>>>>>> theirs\n");
-        assert!(!decorations.is_empty());
+        assert_eq!(
+            backgrounds(&decorations),
+            vec![
+                (0, 0, ThemeRole::DiffModified),
+                (1, 1, ThemeRole::DiffModified),
+                (2, 2, ThemeRole::DiffModified),
+                (3, 3, ThemeRole::DiffAdded),
+                (4, 4, ThemeRole::DiffModified),
+            ]
+        );
     }
 
     #[test]
@@ -303,6 +312,25 @@ mod tests {
         ] {
             assert!(conflict_decorations(text).is_empty(), "unexpected: {text}");
         }
+    }
+
+    #[test]
+    fn ignores_a_repeated_base_and_an_unterminated_nested_start() {
+        for text in [
+            "<<<<<<< a\n||||||| b\n||||||| c\n=======\n>>>>>>> d\n",
+            "<<<<<<< outer\n<<<<<<< inner\n",
+        ] {
+            assert!(conflict_decorations(text).is_empty(), "unexpected: {text}");
+        }
+    }
+
+    #[test]
+    fn a_nested_marker_set_is_skipped_whole_including_complete_conflicts_inside_it() {
+        // The inner `<<<<<<< c` … `>>>>>>> c` would be a complete conflict on its
+        // own, but it sits inside the outer, nested set, which is ignored as one.
+        let text = "<<<<<<< outer\n<<<<<<< inner\na\n=======\nb\n>>>>>>> inner\n\
+                    <<<<<<< c\nx\n=======\ny\n>>>>>>> c\n>>>>>>> outer\n";
+        assert!(conflict_decorations(text).is_empty());
     }
 
     #[test]

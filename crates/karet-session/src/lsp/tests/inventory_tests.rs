@@ -60,8 +60,10 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
         "buf",
         "clangd",
         "clojure-lsp",
+        "copilot-language-server",
         "docker-langserver",
         "graphql-lsp",
+        "lemminx",
         "lua-language-server",
         "marksman",
         "neocmakelsp",
@@ -94,6 +96,8 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
 #[test]
 fn language_server_inventory_payload_is_serde_ready() -> TestResult {
     let status = LanguageServerStatus {
+        ever_installed: false,
+        declined: false,
         server: LanguageServerId::Texlab,
         languages: vec!["tex".to_owned()],
         enabled: true,
@@ -189,5 +193,39 @@ fn repository_markers_select_non_overlapping_companions() -> TestResult {
     let biome = tempfile::tempdir()?;
     std::fs::write(biome.path().join("biome.json"), "{}")?;
     assert!(uses_biome(biome.path()));
+    Ok(())
+}
+
+/// With no taplo configured, in the project, on `PATH`, or installed, a TOML
+/// document resolves to the server built into karet -- and the panel says so,
+/// rather than reporting TOML's default provider as unavailable.
+#[cfg(feature = "toml-lsp")]
+#[test]
+fn toml_falls_back_to_the_built_in_server() -> TestResult {
+    if executable_exists(OsStr::new("taplo")) {
+        // A taplo on PATH rightly wins, and this machine has one.
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join(".git"))?;
+    let (manager, _rx) = LspManager::new(
+        LspSettings::default(),
+        Some(root.path().to_path_buf()),
+        None,
+        None,
+    );
+    let statuses = manager.inventory(vec![root.path().join("Cargo.toml")]);
+    let taplo = statuses
+        .iter()
+        .find(|status| status.server.key() == "taplo")
+        .ok_or("taplo is TOML's built-in provider")?;
+    assert!(
+        !taplo.managed,
+        "nothing is installed, so nothing is managed"
+    );
+    assert_eq!(taplo.manual_install_reason, None);
+    let instance = taplo.instances.first().ok_or("no instance for the root")?;
+    assert_eq!(instance.source, LanguageServerSource::Builtin);
+    assert_eq!(instance.command.as_deref(), Some(crate::toml_lsp::COMMAND));
     Ok(())
 }

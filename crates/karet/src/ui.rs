@@ -2,16 +2,28 @@
 //! breadcrumb, a switchable sidebar (explorer / search / source-control), the main
 //! content area (the active tab), and a status bar.
 
-mod commit;
+pub(crate) mod commit;
+mod commit_console;
+#[cfg(test)]
+pub(crate) use commit_console::console_lines;
+mod confirm;
 mod content;
+mod display;
 mod github;
 mod language_servers;
+mod lsp_badge;
+mod markdown_images;
+mod osc8;
 mod panes;
+mod rename;
 mod scm;
 mod seam;
 mod secondary;
 mod sidebar;
 mod status;
+#[cfg(feature = "terminal")]
+mod terminal;
+mod view_chrome;
 
 #[cfg(test)]
 mod tests;
@@ -20,20 +32,22 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use commit::*;
 use content::*;
+use display::EditorDisplay;
 use github::*;
 use karet_core::Decoration;
 use karet_core::Diagnostic;
+use karet_core::Highlights;
+use karet_core::InlayHint;
+use karet_core::SemanticBlocks;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
-use karet_fileview::HexView;
+use karet_fileview::hex::HexView;
 use karet_fileview::image::GraphicsProtocol;
 #[cfg(feature = "pdf")]
 use karet_fileview::image::Image;
@@ -42,17 +56,12 @@ use karet_fileview::image::ImageWidget;
 #[cfg(feature = "pdf")]
 use karet_fileview::image::fit_rect;
 use karet_fileview::viewer::Placeholder;
-use karet_graph::LaneInput;
-use karet_graph::assign_lanes;
-use karet_graph::view::render_rail;
 use karet_markdown::WrappedDocument;
 use karet_markdown::view::MarkdownView;
 use karet_markdown::view::MarkdownViewState;
 use karet_session::ConfigLayerStatus;
 use karet_session::DocumentId;
 use karet_session::LoadedConfig;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use karet_theme::Theme;
 use karet_vcs::StatusKind;
@@ -64,6 +73,7 @@ use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use language_servers::*;
+use markdown_images::PreviewEnv;
 use panes::*;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -86,26 +96,31 @@ use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use scm::draw_scm;
-pub(crate) use scm::relative_time;
 use secondary::*;
 use sidebar::*;
 use status::*;
 use unicode_width::UnicodeWidthStr;
+use view_chrome::*;
 
 use crate::app::App;
+use crate::app::LanguageServerBadgeSummary;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
-use crate::app::Pending;
-use crate::app::SIDEBAR_MIN_WIDTH;
 use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
+use crate::app::clamp_sidebar_width;
+mod time;
+pub(crate) use time::relative_time;
+
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
 use crate::keymap::Focus;
+use crate::pending::Pending;
 use crate::tab::CommitFiles;
+use crate::view::View;
 
 /// Render single-line text-field content with a highlighted selection and an
 /// insertion caret, through the shared `karet-widgets` text-area renderer.
@@ -125,24 +140,26 @@ pub(super) fn text_field_text(
     )
 }
 
+pub(crate) use commit::responsive::document_row as commit_document_row;
+use content::diff as diff_paint;
 pub(crate) use karet_widgets::scroll::ScrollAxes;
 pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;
 pub(crate) use karet_widgets::scroll::ScrollExtent;
 pub(crate) use karet_widgets::scroll::ScrollTrack;
 pub(crate) use karet_widgets::scroll::ScrollbarStyles;
-pub(crate) use karet_widgets::scroll::draw_horizontally_scrollable_lines;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
 
 use crate::app::ContextMenuEntryExt;
+pub(crate) use crate::app::FindBarRects;
+use crate::app::FrameHits;
 pub(crate) use crate::app::ScrollHits;
 pub(crate) use crate::app::ScrollSurface;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
-use crate::render::{self};
 use crate::tab::FindState;
 use crate::tab::MergeConflictState;
 use crate::tab::Tab;
@@ -150,42 +167,56 @@ use crate::tab::TabKind;
 use crate::tab::ViewMode;
 
 /// Draw one frame of the shell.
+///
+/// Paints and records geometry only. The requests, fold openings and model
+/// clamps a frame depends on run beforehand in [`App::prepare_frame`], so
+/// drawing sends the backend nothing.
 pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme.clone();
     let area = f.area();
-    // Collected into a local and handed over at the end rather than cleared on `app`
-    // up front: the panel draws already borrow `app` mutably, so a field sink would
-    // not compile. One assignment is also one clear — no half-rebuilt registry can
-    // survive a frame that returns early.
-    let mut hits = ScrollHits::default();
+    // Every hit region is collected into a local and handed over at the end rather
+    // than cleared on `app` up front: the panel draws already borrow `app` mutably,
+    // so a field sink would not compile. One assignment is also one clear — no
+    // half-rebuilt region can survive a frame that returns early, and a surface this
+    // frame does not paint (Zen Mode's chrome rows, the panes under the GitHub
+    // view, a hidden sidebar) records nothing and so claims no clicks.
+    let mut hits = FrameHits {
+        focused_pane: Some(app.focus_pane()),
+        ..FrameHits::default()
+    };
 
-    // Top level: the body (sidebar + panes) over a one-row status bar. Tab strips
-    // and breadcrumbs now live *inside* each pane rather than spanning the top.
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-    let body = rows[0];
+    // Top level: a one-row view switcher, the body (sidebar + panes) it sits above,
+    // and a one-row status bar. Tab strips and breadcrumbs live *inside* each pane.
+    // Zen Mode gives both rows to the body.
+    let zen = app.modes.zen.is_some();
+    let chrome_height = u16::from(!zen);
+    let rows = Layout::vertical([
+        Constraint::Length(chrome_height),
+        Constraint::Min(0),
+        Constraint::Length(chrome_height),
+    ])
+    .split(area);
+    if !zen {
+        draw_view_chrome(f, app, &theme, rows[0], &mut hits);
+    }
+    let body = rows[1];
 
-    let sidebar = if app.sidebar_visible {
-        // Responsive clamp: the sidebar can grow to nearly the full width, but always
-        // leaves one column for the drag divider. The stored width is written back so
-        // a subsequent drag starts from what's actually shown after a terminal resize.
-        let max = body.width.saturating_sub(1).max(1);
-        let lo = SIDEBAR_MIN_WIDTH.min(max);
-        let width = app.sidebar_width.clamp(lo, max);
-        app.sidebar_width = width;
+    let sidebar = if app.sidebar_visible && app.view.shows_sidebar() {
+        // Responsive clamp: `App::prepare_frame` already stored the clamped width;
+        // clamping again here keeps a frame drawn without it inside the body.
+        let width = clamp_sidebar_width(app.sidebar_width, body.width);
         let cols = Layout::horizontal([
             Constraint::Length(width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
         .split(body);
-        app.sidebar_rect = cols[0];
-        app.sidebar_divider_x = cols[1].x;
-        app.main_rect = cols[2];
+        hits.sidebar_rect = cols[0];
+        hits.sidebar_divider_x = cols[1].x;
+        hits.main_rect = cols[2];
         Some((cols[0], cols[1]))
     } else {
-        app.sidebar_rect = Rect::default();
-        app.sidebar_divider_x = 0;
-        app.main_rect = body;
+        hits.main_rect = body;
         None
     };
 
@@ -199,25 +230,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut outline_area = None;
     let mut outline_divider = None;
     app.outline.overlay = false;
-    if app.outline.visible && app.main_rect.width > app.outline.width + 8 {
-        let region = app.main_rect;
+    let outline_shown = app.outline.visible && app.view == View::Editor;
+    if outline_shown && hits.main_rect.width > app.outline.width + 8 {
+        let region = hits.main_rect;
         let cols = Layout::horizontal([
             Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(app.outline.width),
         ])
         .split(region);
-        app.main_rect = cols[0];
+        hits.main_rect = cols[0];
         app.outline.rect = cols[2];
         outline_area = Some(cols[2]);
         outline_divider = Some(cols[1]);
-    } else if app.outline.visible && app.main_rect.width > 0 {
-        let width = app.outline.width.min(app.main_rect.width);
+    } else if outline_shown && hits.main_rect.width > 0 {
+        let main = hits.main_rect;
+        let width = app.outline.width.min(main.width);
         let rect = Rect::new(
-            app.main_rect.right().saturating_sub(width),
-            app.main_rect.y,
+            main.right().saturating_sub(width),
+            main.y,
             width,
-            app.main_rect.height,
+            main.height,
         );
         app.outline.rect = rect;
         app.outline.overlay = true;
@@ -227,39 +260,73 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline.content_rect = Rect::default();
     }
 
-    draw_panes(f, app, &theme, app.main_rect, &mut hits);
+    let main = hits.main_rect;
+    match app.view {
+        View::Editor => draw_panes(f, app, &theme, main, &mut hits),
+        // The panes are not drawn under another view, so they record no hit
+        // regions; the inlay hints kept on the app are dropped with them.
+        View::GitHub => {
+            app.inlay_ui.hits.clear();
+            draw_github_view(f, app, &theme, main, &mut hits.scroll);
+        },
+    }
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);
     }
     if let Some(area) = outline_area {
-        draw_outline(f, app, &theme, area, &mut hits);
+        draw_outline(f, app, &theme, area, &mut hits.scroll);
     }
-    draw_drop_preview(f, app, &theme);
-    draw_status(f, app, &theme, rows[1]);
+    draw_drop_preview(f, app, &theme, &hits.panes);
+    if !zen {
+        draw_status(f, app, &theme, rows[2], &mut hits);
+    }
 
+    // The signature popup sits above the caret, under the completion popup
+    // that may open below it (and over it, where the editor is too short).
+    let editor = hits.editor_rect();
+    draw_signature(f, app, &theme, editor);
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
-    draw_completion(f, app, &theme, &mut hits);
+    draw_completion(f, app, &theme, editor, &mut hits.scroll);
     // The hover popup floats the same way (they never overlap in practice —
     // one follows typing, the other an explicit keystroke).
-    draw_hover(f, app, &theme);
+    draw_hover(f, app, &theme, editor);
+    // An inlay hint's tooltip, against the hint the pointer rests on.
+    draw_inlay_tooltip(f, app, &theme, editor);
+    // The rename prompt floats over both: while it is open, nothing else is
+    // being typed into.
+    rename::draw_rename(f, app, &theme, editor);
     draw_diagnostic_view(f, app, &theme, area);
 
-    if let Some(overlay) = &app.overlay {
-        draw_overlay(f, overlay, &theme, area);
+    if let Some(overlay) = app.keyboard.overlay() {
+        // Quick-open over a first walk (or a symbol request) that is taking a
+        // while says so.
+        let loading = app
+            .quick_open_loading()
+            .is_some_and(|pending| pending.visible());
+        draw_overlay(f, overlay, loading, &theme, area);
     }
     if let Some(rev) = &app.rev_input {
         draw_rev_input(f, rev, &theme, area);
     }
     draw_context_menu(f, app, &theme, area);
+    // A confirmation outranks every picker and menu: it is a question the user
+    // must answer before anything under it can matter.
+    confirm::draw_confirm(f, app, &theme, area);
     if let Some(blocker) = &app.operation_blocker {
         draw_operation_blocker(f, blocker, &theme, area);
     }
 
-    // Toasts float above everything, including the modal overlay.
-    draw_toasts(f, app, &theme, area);
+    // The commit console sits above the pickers but below a confirmation and the
+    // toasts: it is a log to read, not a question to answer.
+    commit_console::draw_commit_console(f, app, &theme, area, &mut hits.scroll);
 
-    app.scroll_hits = hits;
+    // Toasts float above everything, including the modal overlay.
+    draw_toasts(f, app, &theme, area, &mut hits);
+
+    app.last_frame = hits;
+    // Every preview has looked up the images it shows: the rest may be evicted.
+    app.preview_images.end_frame();
 }
 
 /// Draw the modal explaining why a destructive operation is delaying shutdown.
@@ -285,6 +352,62 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
+/// Draw the signature-help popup above the caret, so the completion popup
+/// below it can show at the same time; below the caret only when there is no
+/// row above. Shifted left to stay inside the editor, and not drawn under an
+/// open hover popup, which the user asked for more recently.
+fn draw_signature(f: &mut Frame, app: &App, theme: &Theme, editor: Rect) {
+    let Some(ui) = app.signature.ui.as_ref() else {
+        return;
+    };
+    if app.hover_ui.is_some() || editor.width == 0 || editor.height == 0 {
+        return;
+    }
+    let caret_cell = {
+        let Some(tab) = app.tabs.get(app.active) else {
+            return;
+        };
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if *doc != ui.doc {
+            return;
+        }
+        let fold_lines = crate::app::resolve_folds(folds, folded);
+        tab.editor.primary_caret_cell(editor, buffer, &fold_lines)
+    };
+    let Some((caret_x, caret_y)) = caret_cell else {
+        return; // caret scrolled out of view
+    };
+    let popup = karet_widgets::SignaturePopup::new(&ui.help, theme).shown(ui.shown());
+    let (width, rows) = popup.desired_size(editor.width);
+    let above = caret_y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let (y, height) = if above > 0 {
+        let height = rows.min(above);
+        (caret_y - height, height)
+    } else {
+        (caret_y.saturating_add(1), rows.min(below))
+    };
+    if width == 0 || height == 0 {
+        return;
+    }
+    let x = caret_x.clamp(
+        editor.left(),
+        editor.right().saturating_sub(width).max(editor.left()),
+    );
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+    f.render_widget(popup, rect);
+}
+
 /// Draw the scrollable diagnostic detail view (Ctrl+K Ctrl+M): a centered
 /// modal rendering the composed markdown through `MarkdownView`, so fenced
 /// TypeScript types come out highlighted and long errors scroll.
@@ -295,6 +418,9 @@ fn draw_diagnostic_view(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect)
     let width = area.width.saturating_sub(8).clamp(24, 100);
     let height = area.height.saturating_sub(4).clamp(5, 28);
     let rect = centered(area, width, height);
+    // The view is modal for the pointer too: a click inside it is kept, one
+    // outside it dismisses it, so the mouse needs to know where it is.
+    view.rect = rect;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Diagnostics · ↑↓ scroll · Esc closes")
@@ -353,29 +479,60 @@ struct PaneCtx<'a> {
     graphical_cursor: bool,
     /// Language-resolved word-wrap override; `None` delegates to the active file type.
     word_wrap: Option<bool>,
-    /// Language-resolved semantic sticky-scroll setting.
-    sticky_scroll: bool,
+    /// Language-resolved gutter, cursor-line, ruler, scroll-margin and
+    /// sticky-scroll settings.
+    display: EditorDisplay<'a>,
     /// Per-document hard-tab display width.
     tab_width: u16,
     /// Complete diagnostic sets keyed by backend document.
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
+    /// Inlay hints keyed by backend document, in buffer columns.
+    inlay_hints: &'a HashMap<DocumentId, Vec<InlayHint>>,
+    /// Code lenses keyed by backend document, in buffer columns; empty while
+    /// `editor.codeLens` is off.
+    code_lenses: &'a HashMap<DocumentId, Vec<karet_core::CodeLens>>,
+    /// The language servers' colours keyed by backend document, each with the
+    /// buffer version its ranges are positioned against.
+    document_colors: &'a crate::app::HeldColors,
+    /// Cached document symbols keyed by backend document, for the breadcrumb's
+    /// enclosing-symbol chain.
+    symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,
+    /// Uncommitted-line gutter markers keyed by backend document; `None` while
+    /// `git.decorations` is off.
+    line_changes: Option<&'a HashMap<DocumentId, Vec<Decoration>>>,
+    /// The client's one copy of the language-server inventory, which the manager
+    /// tab draws from. Held on the app rather than the view, so a background
+    /// pane's manager tab and the focused one cannot disagree.
+    language_servers: &'a [karet_session::LanguageServerStatus],
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
     find: Option<FindState>,
-    /// Stale-checked virtual text for the focused editor.
-    blame: Option<Decoration>,
+    /// Stale-checked inline blame for the focused editor.
+    blame: Option<karet_core::VirtualText>,
     /// The Ctrl-hovered symbol to underline as navigable (focused pane only).
     definition_underline: Option<Decoration>,
+    /// The code-action lightbulb on the caret line (focused pane only).
+    code_action_bulb: Option<Decoration>,
+    /// The ghost text on show at the caret: its first line after the caret
+    /// and its further lines as rows below (focused pane only).
+    inline_ghost: Option<(
+        Option<karet_core::VirtualText>,
+        Vec<karet_core::VirtualLine>,
+    )>,
+    /// The occurrences of the symbol under the caret (focused pane only).
+    occurrences: Vec<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.
     markdown_link_hover: Option<(u16, u16)>,
+    /// The live pointer selection to paint over this pane's rows (focused pane
+    /// only) — read-only surfaces have no selection state of their own.
+    selection: Option<crate::app::SurfaceSelection>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
-    /// Fence languages the markdown preview renders as mermaid diagrams
-    /// (`None` = rendering disabled or compiled out).
-    mermaid: Option<&'a [String]>,
+    /// What the markdown preview renders beyond text: mermaid fences and images.
+    preview: PreviewEnv<'a>,
     /// Whether to tint visible color literals with their own color.
     color_highlight: bool,
     /// Dependency-freshness hints per open manifest.
@@ -386,6 +543,13 @@ struct PaneCtx<'a> {
     debug_stopped: Option<&'a (PathBuf, u32)>,
     /// Every ref per commit hash, for log-row decorations.
     ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
+    /// Branch, upstream and divergence, for the commit-graph header.
+    repo_state: Option<&'a karet_vcs::RepositoryState>,
+    /// This pane's own language-server condition, badged in its breadcrumb.
+    ///
+    /// Resolved per pane rather than read from the focused tab: a split showing a
+    /// healthy Rust file beside a broken Python one has to say so twice.
+    lsp_badge: Option<LanguageServerBadgeSummary>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -395,15 +559,21 @@ struct RenderedPane {
     action_hits: Vec<(u16, u16, Command)>,
     breadcrumb_rect: Rect,
     breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
+    lsp_badge_hit: Option<(u16, u16)>,
     content_rect: Rect,
     editor_rect: Rect,
     markdown_preview_rect: Rect,
     image_area: Option<Rect>,
     commit_badge_rect: Option<Rect>,
     commit_file_hits: Vec<crate::app::CommitFileHit>,
+    commit_dir_hits: Vec<crate::app::CommitDirHit>,
+    commit_rail_rect: Rect,
     commit_collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
+    inlay_hits: Vec<crate::app::InlayHintHit>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
+    find_rects: FindBarRects,
 }
 
 /// Geometry a tab's content reported for post-draw use: a reserved Kitty image rect
@@ -415,9 +585,14 @@ struct PaneContent {
     image_area: Option<Rect>,
     badge_rect: Option<Rect>,
     file_hits: Vec<crate::app::CommitFileHit>,
+    dir_hits: Vec<crate::app::CommitDirHit>,
+    rail_rect: Option<Rect>,
     collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
+    /// Where each inlay-hint label part was painted.
+    inlay_hits: Vec<crate::app::InlayHintHit>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
+    select_regions: Vec<crate::app::SelectRegion>,
 }
 
 /// A `width`×`height` rect centered within `area`.
@@ -480,15 +655,14 @@ fn draw_pane_tabs(
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        let pinned = tab.is_github_dashboard();
-        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
+        spans.push(Span::styled("\u{00d7}", style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close: if pinned { u16::MAX } else { close },
+            close,
         });
     }
     let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());
@@ -524,9 +698,7 @@ fn draw_pane_tabs(
 
 fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
     match &tab.kind {
-        TabKind::Code { path, .. }
-            if karet_filetype::file_type_for_path(path).name() == "Markdown" =>
-        {
+        TabKind::Code { .. } if tab.is_markdown() => {
             vec![
                 (
                     UiIcon::Preview,
@@ -652,24 +824,86 @@ fn save_mark(tab: &Tab, icon_style: karet_filetype::IconStyle) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-/// Draw the pane's breadcrumb (the active tab's path components joined by `›`)
-/// via the shared widget, and return the clickable segment regions.
+/// Draw one pane's breadcrumb — the active tab's path components, then the
+/// symbols enclosing its caret, joined by `›` — via the shared widget,
+/// reserving the row's right edge for the LSP badge.
+///
+/// The badge is painted here rather than inside `karet_widgets::breadcrumbs`
+/// because the widget crate must not learn what a language-server state is; it
+/// keeps its neutral API and simply gets a narrower `Rect`. The symbol chain is
+/// resolved here for the same reason: the widget takes plain labels.
+///
+/// Returns the segment hits and, when a badge was painted, the columns it
+/// occupies.
 fn draw_pane_breadcrumb(
     f: &mut Frame,
     tab: Option<&Tab>,
-    theme: &Theme,
-    root: &Path,
-    icon_style: karet_filetype::IconStyle,
+    ctx: &PaneCtx,
     area: Rect,
-) -> Vec<crate::app::BreadcrumbHit> {
+) -> (Vec<crate::app::BreadcrumbHit>, Option<(u16, u16)>) {
+    let (theme, icon_style) = (ctx.theme, ctx.icon_style);
     let Some(path) = tab.and_then(Tab::path) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    karet_widgets::breadcrumbs::Breadcrumbs {
+    let symbols = tab
+        .map(|tab| symbol_chain(tab, ctx.symbols))
+        .unwrap_or_default();
+    // The path yields the badge's columns, not the other way round: a breadcrumb
+    // too narrow to hold both keeps the path, because a truncated path is still
+    // readable while a half-painted badge is not.
+    let (crumbs, badge_hit) = match ctx.lsp_badge {
+        Some(badge) => {
+            let text = lsp_badge::compact(badge, icon_style);
+            let width = cell_width(&text);
+            if width < area.width {
+                let x = area.right().saturating_sub(width);
+                f.buffer_mut().set_string(
+                    x,
+                    area.y,
+                    &text,
+                    theme
+                        .style(lsp_badge::role(badge.state))
+                        .bg(theme.role(ThemeRole::Background).to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                );
+                (
+                    Rect {
+                        width: area.width.saturating_sub(width),
+                        ..area
+                    },
+                    Some((x, area.right())),
+                )
+            } else {
+                (area, None)
+            }
+        },
+        None => (area, None),
+    };
+    let hits = karet_widgets::breadcrumbs::Breadcrumbs {
         path,
-        root,
+        root: ctx.root,
         is_symlink: tab.is_some_and(|tab| tab.is_symlink),
         icon_style,
+        symbols: &symbols,
     }
-    .draw(f, theme, area)
+    .draw(f, theme, crumbs);
+    (hits, badge_hit)
+}
+
+/// The names of the symbols enclosing `tab`'s caret, outermost first, from its
+/// document's cached symbols. The cache may trail the buffer by an edit; the
+/// chain then follows the last answer until the fresh one lands. Empty for a tab
+/// with no backend document or no symbols yet.
+fn symbol_chain(tab: &Tab, symbols: &HashMap<DocumentId, Vec<karet_core::Symbol>>) -> Vec<String> {
+    let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
+        return Vec::new();
+    };
+    let Some(symbols) = symbols.get(doc) else {
+        return Vec::new();
+    };
+    let path = crate::outline::enclosing_path(symbols, tab.editor.cursor());
+    crate::outline::resolve_path(symbols, &path)
+        .into_iter()
+        .map(|symbol| symbol.name.clone())
+        .collect()
 }

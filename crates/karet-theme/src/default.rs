@@ -1,14 +1,16 @@
 //! The built-in dark theme palette (Tokyo-Night-flavored).
 
+use karet_core::Emphasis;
 use karet_core::StandardToken;
 use karet_core::ThemeRole;
 
-use crate::Emphasis;
 use crate::ROLE_COUNT;
 use crate::Rgba;
 use crate::TOKEN_COUNT;
 use crate::Theme;
 use crate::is_dark_color;
+use crate::semantic::SemanticRule;
+use crate::semantic::SemanticStyle;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
     Rgba { r, g, b, a: 255 }
@@ -94,6 +96,14 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::DiffRemoved, rgb(0x33, 0x18, 0x1c));
     role(ThemeRole::DiffModified, rgb(0x1f, 0x2a, 0x40));
     role(ThemeRole::SearchMatch, rgb(0x3d, 0x59, 0xa1));
+    // The current match: a warm amber against the blue of every other match,
+    // still dark enough to keep the code on it readable.
+    role(ThemeRole::SearchMatchCurrent, rgb(0x7a, 0x5a, 0x1e));
+    // Occurrences of the symbol under the caret: a neutral slate for reads and
+    // textual mentions, a muted violet for writes, both clear of the blue
+    // search matches and the amber current match.
+    role(ThemeRole::WordHighlight, rgb(0x36, 0x3b, 0x52));
+    role(ThemeRole::WordHighlightStrong, rgb(0x4a, 0x3d, 0x6b));
     role(ThemeRole::Breakpoint, rgb(0xdb, 0x4b, 0x4b));
     // A secondary accent for mouse hover, distinct from the (bluer) Selection.
     role(ThemeRole::HoverHighlight, rgb(0x2e, 0x35, 0x50));
@@ -103,6 +113,14 @@ pub(crate) fn dark() -> Theme {
     // De-emphasized UI text — readable grey (matches the Comment brightness), used
     // for gitignored explorer rows.
     role(ThemeRole::Muted, rgb(0x56, 0x5f, 0x89));
+    role(ThemeRole::InlayHint, rgb(0x4d, 0x55, 0x7a));
+    // Per-kind hints stay in the same dim band as the general one, tinted
+    // apart by hue: a muted blue for types, a muted violet for parameter names.
+    role(ThemeRole::InlayHintType, rgb(0x4a, 0x6a, 0x8c));
+    role(ThemeRole::InlayHintParameter, rgb(0x6e, 0x5c, 0x92));
+    // Code lenses read like inlay hints' neighbours: dim, but a step brighter,
+    // since each title is something to click.
+    role(ThemeRole::CodeLens, rgb(0x73, 0x7a, 0xa2));
     // Explorer file-icon tints, keyed to the coarse file Category.
     role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
     role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));
@@ -119,6 +137,11 @@ pub(crate) fn dark() -> Theme {
     // A dim amber wash: visible under syntax colors, unmistakably not the
     // cursor line.
     role(ThemeRole::DebugStoppedLine, rgb(0x4d, 0x3c, 0x1a));
+    // Uncommitted-change gutter markers: green added, blue modified, red deleted
+    // (VS Code's convention), bright enough to read as a one-cell glyph.
+    role(ThemeRole::GutterAdded, rgb(0x9e, 0xce, 0x6a));
+    role(ThemeRole::GutterModified, rgb(0x7a, 0xa2, 0xf7));
+    role(ThemeRole::GutterDeleted, rgb(0xf7, 0x76, 0x8e));
 
     Theme {
         tokens,
@@ -126,5 +149,47 @@ pub(crate) fn dark() -> Theme {
         fallback_fg: fg,
         roles,
         dark: is_dark_color(bg),
+        semantic: semantic_rules(),
     }
+}
+
+/// The built-in `semanticTokenColors`: only what a semantic token tells
+/// apart that tree-sitter cannot. Every other semantic token takes its
+/// fallback class's palette colour, so turning semantic highlighting on
+/// refines the colours rather than repainting them.
+///
+/// The two style-only rules (no colour) are also kept under a loaded VS Code
+/// theme -- see [`portable_semantic_rules`] -- since they fit any palette.
+fn semantic_rules() -> Vec<SemanticRule> {
+    let mut rules = portable_semantic_rules();
+    // A macro reads apart from the function calls tree-sitter colours it
+    // like: a pale cyan beside the function blue.
+    rules.extend(SemanticRule::parse(
+        "macro",
+        SemanticStyle::fg(rgb(0xb4, 0xf9, 0xf8)),
+    ));
+    // A name the server could not resolve is very likely a typo: the error
+    // red, ahead of the diagnostic that will follow.
+    rules.extend(SemanticRule::parse(
+        "unresolvedReference",
+        SemanticStyle::fg(rgb(0xf7, 0x76, 0x8e)),
+    ));
+    rules
+}
+
+/// The colourless built-in rules: struck-through deprecated names, and
+/// underlined mutable bindings (rust-analyzer's own default).
+pub(crate) fn portable_semantic_rules() -> Vec<SemanticRule> {
+    let deprecated = SemanticStyle {
+        strikethrough: Some(true),
+        ..SemanticStyle::default()
+    };
+    let mutable = SemanticStyle {
+        underline: Some(true),
+        ..SemanticStyle::default()
+    };
+    [("*.deprecated", deprecated), ("*.mutable", mutable)]
+        .into_iter()
+        .filter_map(|(selector, style)| SemanticRule::parse(selector, style))
+        .collect()
 }

@@ -14,17 +14,17 @@ fn markdown_app(text: &str, caret: LineCol) -> App {
     let mut tab = text_tab("notes.md", text);
     if let TabKind::Code {
         path,
-        language,
+        file_type,
         doc,
         ..
     } = &mut tab.kind
     {
         *path = std::path::PathBuf::from("notes.md");
-        *language = "Markdown";
+        *file_type = language_type("Markdown");
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     app.tabs[idx].editor.set_carets(&[caret]);
     app
@@ -39,7 +39,7 @@ fn rust_app(text: &str) -> App {
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app
 }
 
@@ -51,12 +51,9 @@ fn caret_of(app: &App) -> LineCol {
 #[test]
 fn the_markdown_gate_recognizes_a_markdown_path() {
     let app = markdown_app("# title\n", LineCol::new(0, 0));
-    // The gate keys off the filetype registry, not the tab's language label.
-    assert_eq!(
-        karet_filetype::file_type_for_path(std::path::Path::new("notes.md")).name(),
-        "Markdown"
-    );
+    // The gate keys off the file type the tab stores, not its status label.
     assert!(matches!(&app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert!(app.tabs[app.active].is_markdown());
 }
 
 #[test]
@@ -117,7 +114,7 @@ fn italic_outside_markdown_explains_itself_instead_of_editing() {
 
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("markdown formatting applies to Markdown files")
     );
 }
@@ -144,7 +141,7 @@ fn a_multi_line_selection_refuses_rather_than_mangling_it() {
 
     assert_eq!(code_tab_text(&app), "one\ntwo\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("select within one line to toggle formatting")
     );
 }
@@ -161,11 +158,33 @@ fn the_checkbox_toggles_without_moving_the_caret() {
 }
 
 #[test]
+fn the_checkbox_toggles_once_with_two_carets_on_its_line() {
+    let mut app = markdown_app("- [ ] buy milk\n", LineCol::new(0, 9));
+    let idx = app.active;
+    app.tabs[idx]
+        .editor
+        .set_carets(&[LineCol::new(0, 7), LineCol::new(0, 11)]);
+    app.dispatch(Command::ToggleTaskCheckbox);
+    assert_eq!(code_tab_text(&app), "- [x] buy milk\n");
+    let carets: Vec<LineCol> = app.tabs[idx]
+        .editor
+        .cursors()
+        .selections
+        .iter()
+        .map(|s| s.head)
+        .collect();
+    assert_eq!(carets, vec![LineCol::new(0, 7), LineCol::new(0, 11)]);
+}
+
+#[test]
 fn a_line_without_a_checkbox_says_so() {
     let mut app = markdown_app("just prose\n", LineCol::new(0, 3));
     app.dispatch(Command::ToggleTaskCheckbox);
     assert_eq!(code_tab_text(&app), "just prose\n");
-    assert_eq!(app.status.as_deref(), Some("no task checkbox on this line"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("no task checkbox on this line")
+    );
 }
 
 #[test]
@@ -250,7 +269,10 @@ fn create_inserts_a_toc_block_at_the_caret() {
         code_tab_text(&app),
         "# Title\n<!-- toc -->\n- [Alpha](#alpha)\n- [Beta](#beta)\n<!-- /toc -->\n\n\n## Alpha\n\n## Beta\n"
     );
-    assert_eq!(app.status.as_deref(), Some("table of contents inserted"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("table of contents inserted")
+    );
 }
 
 #[test]
@@ -278,7 +300,10 @@ fn update_rewrites_an_existing_region_in_place() {
          \n\
          ## Beta\n"
     );
-    assert_eq!(app.status.as_deref(), Some("table of contents updated"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("table of contents updated")
+    );
 }
 
 #[test]
@@ -288,7 +313,7 @@ fn update_without_markers_points_at_the_create_command() {
 
     assert_eq!(code_tab_text(&app), "# Title\n\n## Alpha\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no <!-- toc --> markers — use Markdown: Create Table of Contents")
     );
 }
@@ -300,7 +325,7 @@ fn a_document_with_no_headings_in_range_says_so() {
     // The default range is 2..=6, so a lone h1 yields nothing to list.
     assert_eq!(code_tab_text(&app), "# Only an h1\n\nprose\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no headings in the table's level range")
     );
 }
@@ -348,14 +373,14 @@ fn the_toc_commands_stay_out_of_non_markdown_files() {
     app.dispatch(Command::MarkdownTocCreate);
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("the table of contents applies to Markdown files")
     );
 
     app.dispatch(Command::MarkdownHeadingUp);
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("heading levels apply to Markdown files")
     );
 }
@@ -377,4 +402,68 @@ fn a_heading_inside_a_fence_never_reaches_the_toc() {
     assert!(toc.contains("- [Real](#real)"), "{toc}");
     assert!(toc.contains("- [Also real](#also-real)"), "{toc}");
     assert!(!toc.contains("Not a heading"), "{toc}");
+}
+
+/// Fix All Lint Issues asks the session for the active document -- the lint
+/// and the configuration are the session's -- and edits nothing locally.
+#[test]
+fn fix_all_lint_issues_asks_the_session_for_the_active_document() {
+    let mut app = markdown_app("# Title\n\ntext \n", LineCol::new(2, 2));
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.clone()).unwrap_or_default();
+    assert!(
+        sent.iter().any(|(_, command)| matches!(
+            command,
+            SessionCommand::Document(DocumentCommand::FixMarkdownLint { doc: DocumentId(9) })
+        )),
+        "{sent:?}"
+    );
+    assert_eq!(code_tab_text(&app), "# Title\n\ntext \n");
+}
+
+#[test]
+fn fix_all_lint_issues_outside_markdown_refuses_without_asking() {
+    let mut app = rust_app("fn main() {}\n");
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.len()).unwrap_or_default();
+    assert_eq!(sent, 0);
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("lint fixes apply to Markdown files")
+    );
+}
+
+/// The session's count becomes the toast: a success names how many, and
+/// nothing to fix is a refusal, not a success.
+#[test]
+fn the_session_answer_reports_the_fixed_count() {
+    let mut app = markdown_app("# Title\n", LineCol::new(0, 0));
+    let answer = |fixed| SessionEvent::MarkdownLintFixed {
+        doc: DocumentId(9),
+        fixed,
+    };
+
+    app.on_backend_event(Some(RequestId(1)), answer(0));
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Report::Refusal.severity(),
+            "no fixable lint issues".to_owned()
+        ))
+    );
+
+    app.on_backend_event(Some(RequestId(2)), answer(1));
+    assert_eq!(
+        last_report(&app),
+        Some((Report::Outcome.severity(), "fixed 1 lint issue".to_owned()))
+    );
+
+    app.on_backend_event(Some(RequestId(3)), answer(3));
+    assert_eq!(last_message(&app).as_deref(), Some("fixed 3 lint issues"));
 }

@@ -15,8 +15,11 @@ use karet_core::TextEdit;
 
 use super::RemoteBackend;
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
+use crate::api::GithubCommand;
+use crate::api::WorkspaceCommand;
 use crate::backend::Backend;
 use crate::local::SnapshotRx;
 use crate::session::EventRx;
@@ -75,9 +78,9 @@ async fn pair(files: &[(&str, &str)]) -> Option<Pair> {
 
 impl Pair {
     /// Submit `command` and wait for the event answering it.
-    async fn ask(&mut self, command: Command) -> Option<Event> {
+    async fn ask(&mut self, command: impl Into<Command>) -> Option<Event> {
         let id = self.backend.next_id();
-        self.backend.send(id, command).ok()?;
+        self.backend.send(id, command.into()).ok()?;
         tokio::time::timeout(PATIENCE, async {
             while let Some((event_id, event)) = self.events.recv().await {
                 if event_id == Some(id) {
@@ -143,11 +146,12 @@ impl Pair {
         let id = self.backend.next_id();
         let _ = self.backend.send(
             id,
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
-                cause: karet_text::EditCause::Type,
-            },
+                cause: karet_core::EditCause::Type,
+            }
+            .into(),
         );
     }
 
@@ -158,7 +162,7 @@ impl Pair {
     /// silently passes by never applying its edit at all.
     async fn open(&mut self, path: std::path::PathBuf) -> Option<(DocumentId, u64)> {
         match self
-            .ask(Command::OpenDocument {
+            .ask(DocumentCommand::Open {
                 path,
                 language: None,
             })
@@ -225,11 +229,12 @@ async fn an_edit_converges_between_the_client_replica_and_the_backend() {
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
         id,
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: replace_first_line(version, 5, "omega"),
-            cause: karet_text::EditCause::Type,
-        },
+            cause: karet_core::EditCause::Type,
+        }
+        .into(),
     );
 
     let text = pair.await_text(doc, |text| text.starts_with("omega")).await;
@@ -254,11 +259,12 @@ async fn a_local_edit_appears_before_the_backend_answers() {
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
         id,
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: replace_first_line(version, 5, "omega"),
-            cause: karet_text::EditCause::Type,
-        },
+            cause: karet_core::EditCause::Type,
+        }
+        .into(),
     );
 
     // The very next snapshot is the local echo, minted client-side before any
@@ -291,18 +297,21 @@ async fn a_backend_originated_edit_converges_on_the_client() {
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
         id,
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: replace_first_line(version, 5, "omega"),
-            cause: karet_text::EditCause::Type,
-        },
+            cause: karet_core::EditCause::Type,
+        }
+        .into(),
     );
     let Some(_) = pair.await_text(doc, |text| text.starts_with("omega")).await else {
         return;
     };
 
     let undo = pair.backend.next_id();
-    let _ = pair.backend.send(undo, Command::Undo { doc });
+    let _ = pair
+        .backend
+        .send(undo, DocumentCommand::Undo { doc }.into());
 
     let text = pair.await_text(doc, |text| text.starts_with("alpha")).await;
     assert_eq!(text.as_deref(), Some("alpha\n"));
@@ -316,7 +325,7 @@ async fn a_workspace_command_is_answered_over_the_connection() {
         return;
     };
 
-    let event = pair.ask(Command::ListFiles { limit: 100 }).await;
+    let event = pair.ask(WorkspaceCommand::ListFiles { limit: 100 }).await;
 
     let Some(Event::FilesListed { files, .. }) = event else {
         return;
@@ -332,7 +341,7 @@ async fn bytes_of_a_workspace_file_cross_the_connection() {
     let path = pair.root().join("media.bin");
 
     let event = pair
-        .ask(Command::ReadFileBytes {
+        .ask(WorkspaceCommand::ReadFileBytes {
             path,
             offset: 2,
             len: 4,
@@ -365,17 +374,23 @@ async fn saving_clears_the_dirty_flag_on_the_client() {
     let edit = pair.backend.next_id();
     let _ = pair.backend.send(
         edit,
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: replace_first_line(version, 5, "omega"),
-            cause: karet_text::EditCause::Type,
-        },
+            cause: karet_core::EditCause::Type,
+        }
+        .into(),
     );
     let Some(_) = pair.await_text(doc, |text| text.starts_with("omega")).await else {
         return;
     };
 
-    let _ = pair.ask(Command::Save { doc }).await;
+    let _ = pair
+        .ask(DocumentCommand::Save {
+            doc,
+            cause: crate::api::SaveCause::Manual,
+        })
+        .await;
 
     let clean = tokio::time::timeout(PATIENCE, async {
         while let Some((id, snapshot)) = pair.snapshots.recv().await {
@@ -402,12 +417,13 @@ async fn a_command_that_cannot_be_serialized_is_dropped_without_killing_the_sess
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
         id,
-        Command::GithubLogin {
+        GithubCommand::Login {
             token: crate::api::GithubToken::new("ghp_example".to_owned()),
-        },
+        }
+        .into(),
     );
 
-    let event = pair.ask(Command::ListFiles { limit: 8 }).await;
+    let event = pair.ask(WorkspaceCommand::ListFiles { limit: 8 }).await;
     assert!(
         matches!(event, Some(Event::FilesListed { .. })),
         "the session must survive an unsendable command: {event:?}"
@@ -459,11 +475,12 @@ async fn repeated_edit_and_undo_cycles_keep_converging() {
         let id = pair.backend.next_id();
         let _ = pair.backend.send(
             id,
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: replace_first_line(version, 5, &typed),
-                cause: karet_text::EditCause::Type,
-            },
+                cause: karet_core::EditCause::Type,
+            }
+            .into(),
         );
         let typed_arrived = pair
             .await_text(doc, |text| text.starts_with(&typed))
@@ -475,7 +492,9 @@ async fn repeated_edit_and_undo_cycles_keep_converging() {
         );
 
         let undo = pair.backend.next_id();
-        let _ = pair.backend.send(undo, Command::Undo { doc });
+        let _ = pair
+            .backend
+            .send(undo, DocumentCommand::Undo { doc }.into());
         let undo_arrived = pair
             .await_text(doc, |text| text.starts_with("alpha"))
             .await

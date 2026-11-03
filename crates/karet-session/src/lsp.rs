@@ -1,26 +1,51 @@
-//! LSP orchestration: lazy per-language server tasks and completion serving.
+//! LSP orchestration: lazy server tasks, one per provider at a repository root.
 //!
 //! The [`LspManager`] lives on the session actor and owns one background task per
-//! language. A task is spawned lazily on the first open of a matching document; it
-//! owns the [`LspClient`], serializes document sync ahead of requests (a
-//! completion always sees the latest text), debounces full-text `didChange`
-//! forwards, and reports back to the actor on an [`LspUpdate`] channel — the
-//! session converts positions (LSP UTF-16 ↔ buffer UTF-32) there, where the
-//! buffer lives, and emits the answering [`Event`](crate::api::Event).
+//! slot -- a [`SlotKey`]: one provider at one repository root. A task is spawned
+//! lazily on the first open of a matching document; it owns the [`LspClient`],
+//! serves every request the session routes to that provider (completion, hover,
+//! formatting, code actions and lenses, pulled diagnostics, inlay hints, and the
+//! server's window traffic), serializes document sync ahead of requests (a
+//! request always sees the latest text), debounces `didChange` forwards --
+//! sent as ranges to a server that asked for incremental sync, else as the
+//! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`]
+//! channel — the session converts positions (LSP UTF-16 ↔ buffer UTF-32)
+//! there, where the buffer lives, and emits the answering
+//! [`Event`](crate::api::Event).
 //!
 //! Failure policy: launch failures and closed connections are reported once per
 //! outage. The task retains authoritative open-document text, reconnects with
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod account;
+mod catalog;
+mod code_actions;
+mod code_lens;
+mod commands;
 mod connector;
+mod delta;
+mod editing;
+mod folding;
+mod format;
+mod forward;
+mod health;
+mod hint_flight;
+mod inline_completion;
 mod inventory;
 mod jdtls;
 mod lifecycle;
+mod link_color;
+mod message;
 mod provider;
+mod pull;
+mod requests;
 mod runtime;
+mod semantic_tokens;
+mod slot;
 #[cfg(test)]
 mod tests;
+mod window;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,22 +55,37 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
+pub(crate) use catalog::managed_arguments;
+pub(crate) use catalog::serves_language;
+pub(crate) use code_actions::CodeActionAnswer;
+pub(crate) use code_actions::CodeActionCmd;
+pub(crate) use code_lens::CodeLensAnswer;
+pub(crate) use code_lens::CodeLensCmd;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
-use karet_core::CompletionItem;
-use karet_core::Diagnostic;
-use karet_core::Hover;
 use karet_core::LineCol;
-use karet_core::Location;
-use karet_core::Symbol;
-use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
-use provider::absolute_path;
+pub(crate) use link_color::LinkColorAnswer;
+pub(crate) use link_color::LinkColorCmd;
+pub(crate) use link_color::NO_TARGET;
+pub(crate) use message::DiagnosticFeed;
+pub(crate) use message::DiagnosticLayer;
+pub(crate) use message::DocumentHighlightsAnswer;
+pub(crate) use message::EditingAnswer;
+pub(crate) use message::EditingAsk;
+pub(crate) use message::EditingReply;
+pub(crate) use message::FormattingAsk;
+pub(crate) use message::FormattingScope;
+pub(crate) use message::HierarchyAsk;
+pub(crate) use message::LspUpdate;
+pub(crate) use message::RenameAnswer;
+pub(crate) use message::SelectionRangesAnswer;
+use message::ServerCmd;
+pub(crate) use provider::absolute_path;
 pub(crate) use provider::builtin_server;
 use provider::builtin_spec;
 use provider::executable_exists;
@@ -55,7 +95,21 @@ use provider::project_local_spec;
 use provider::python_diagnostic_provider;
 use provider::uses_biome;
 pub(crate) use provider::version_i32;
+pub(crate) use slot::Retired;
+use slot::ServerSlot;
+use slot::SettingsCell;
+pub(crate) use slot::SlotKey;
+use slot::SlotToken;
 use tokio::sync::mpsc;
+// Tokio's clock, not the standard one: the server task's backoff, failure
+// window and diagnostic grace all measure time with it, so a test can pause
+// and advance it rather than wait those delays out.
+use tokio::time::Instant;
+use window::Notice;
+pub(crate) use window::WindowState;
+pub(crate) use window::WindowUpdate;
+pub(crate) use window::severity as message_severity;
+pub(crate) use window::work as work_report;
 
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
@@ -64,260 +118,76 @@ use crate::api::LanguageServerSource;
 use crate::api::RequestId;
 use crate::config::schema::Lsp as LspSettings;
 
-/// How long an edited document may sit before its full text is forwarded as
-/// `didChange`. A pending forward is also flushed immediately ahead of any
-/// request, so completions never see stale text.
-const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How long an edited document may sit before its pending edits are forwarded
+/// as `didChange`. A pending forward is also flushed immediately ahead of any
+/// request the user is waiting on, so requests never see stale text; an
+/// inlay-hint request waits for the debounced flush instead (see
+/// `hint_flight`).
+///
+/// Public so a client can pace its own background requests to it: a request
+/// issued once an edit has been quiet this long reaches a server that already
+/// has the edit.
+pub const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 const SERVER_COMMAND_CAPACITY: usize = 256;
 const RESTART_MIN_DELAY: Duration = Duration::from_millis(250);
 const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 const RESTART_LIMIT: usize = 5;
 const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
+/// How long a dead provider's diagnostics stay on screen before being dropped.
+///
+/// Not zero, because the common death is followed by a reconnect at 250ms and
+/// another at 500ms; clearing immediately would flicker every marker off and back
+/// on for an outage the user would otherwise never have noticed. Long enough to
+/// outlast both, short enough that a server which is really gone does not leave
+/// its squiggles pointing at lines the user has since edited away.
+const DIAGNOSTIC_GRACE: Duration = Duration::from_secs(1);
 
-/// A command for one per-language server task.
-pub(crate) enum ServerCmd {
-    /// Forward `textDocument/didOpen`.
-    DidOpen {
-        /// The document path.
-        path: PathBuf,
-        /// LSP `languageId` for this document.
-        language: String,
-        /// The document version.
-        version: i32,
-        /// The full text.
-        text: String,
-    },
-    /// Forward `textDocument/didChange` (full text, debounced).
-    DidChange {
-        /// The document path.
-        path: PathBuf,
-        /// The document version.
-        version: i32,
-        /// The full text after the change.
-        text: String,
-    },
-    /// Forward `textDocument/didClose`.
-    DidClose {
-        /// The document path.
-        path: PathBuf,
-    },
-    /// Forward `textDocument/didSave`.
-    DidSave {
-        /// Saved document path.
-        path: PathBuf,
-        /// Current full text, supplied for servers that request it.
-        text: String,
-    },
-    /// Request completions; always answered with an [`LspUpdate::Completions`].
-    Completion {
-        /// The originating request, echoed on the answer.
-        request: RequestId,
-        /// The target document, echoed on the answer.
-        doc: DocumentId,
-        /// The buffer version at request time, echoed on the answer.
-        version: u64,
-        /// The document path.
-        path: PathBuf,
-        /// The position, already converted to UTF-16 columns.
-        position: LineCol,
-    },
-    /// Request the document's structural symbols.
-    DocumentSymbols {
-        /// The originating request, echoed on the answer.
-        request: RequestId,
-        /// The target document, echoed on the answer.
-        doc: DocumentId,
-        /// The buffer version at request time, echoed on the answer.
-        version: u64,
-        /// The document path.
-        path: PathBuf,
-    },
-    /// Request hover information.
-    Hover {
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: PathBuf,
-        position: LineCol,
-    },
-    /// Request definition locations.
-    Definition {
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: PathBuf,
-        position: LineCol,
-    },
-    WorkspaceSymbols {
-        request: RequestId,
-        query: String,
-    },
-    Rename {
-        request: RequestId,
-        path: PathBuf,
-        position: LineCol,
-        new_name: String,
-    },
-    Formatting {
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: PathBuf,
-    },
-}
-
-/// A result flowing from a server task back to the session actor.
-pub(crate) enum LspUpdate {
-    /// A server-pushed status line (jdtls `language/status`-style), for the
-    /// status bar while a heavyweight server imports/indexes.
-    ServerStatus {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The language the server serves.
-        server: String,
-        /// The human-readable status message.
-        message: String,
-    },
-    /// Completion items answering a [`ServerCmd::Completion`] (ranges still in
-    /// UTF-16 columns; the session converts them against the buffer).
-    Completions {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The originating request.
-        request: RequestId,
-        /// The target document.
-        doc: DocumentId,
-        /// The buffer version the request was made against.
-        version: u64,
-        /// The mapped items.
-        items: Vec<CompletionItem>,
-    },
-    /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
-    /// remain in UTF-16 until the session adopts the update.
-    Symbols {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The originating request.
-        request: RequestId,
-        /// The target document.
-        doc: DocumentId,
-        /// The buffer version the request was made against.
-        version: u64,
-        /// The mapped symbol tree.
-        symbols: Vec<Symbol>,
-    },
-    /// Hover response in UTF-16 coordinates.
-    Hover {
-        generation: u64,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        hover: Option<Hover>,
-    },
-    /// Definition response in UTF-16 coordinates.
-    Definitions {
-        generation: u64,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        locations: Vec<Location>,
-    },
-    WorkspaceSymbols {
-        generation: u64,
-        request: RequestId,
-        symbols: Vec<Symbol>,
-    },
-    WorkspaceEdit {
-        generation: u64,
-        request: RequestId,
-        edit: WorkspaceEdit,
-    },
-    Formatting {
-        generation: u64,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        edits: Vec<TextEdit>,
-    },
-    /// A complete server diagnostic layer for one file.
-    Diagnostics {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// Provider/root identity whose diagnostic layer is replaced.
-        server: String,
-        /// File whose LSP diagnostic layer is replaced.
-        path: PathBuf,
-        /// LSP document version, when the server supplied it.
-        version: Option<i32>,
-        /// Diagnostics in UTF-16 coordinates.
-        diagnostics: Vec<Diagnostic>,
-    },
-    /// The server binary could not be started (reported once per language).
-    SpawnFailed {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The language the server was for.
-        language: String,
-        /// The executable that failed to start.
-        command: String,
-    },
-    /// A launch preflight failed with a specific diagnosis (reported once per
-    /// generation); the server is not spawned.
-    PreflightFailed {
-        /// The manager generation the preflight ran under.
-        generation: u64,
-        /// The human-readable diagnosis (what is missing and how to fix it).
-        message: String,
-    },
-    /// A running server's connection closed (reported once per language).
-    ServerDied {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The language whose server died.
-        language: String,
-    },
-    /// A built-in provider is locally absent. No network operation was attempted.
-    InstallRequired {
-        /// The manager generation that observed the missing installation.
-        generation: u64,
-        /// Missing managed provider.
-        server: LanguageServerId,
-    },
-    /// A provider/root connection changed lifecycle state.
-    RuntimeState {
-        generation: u64,
-        server: LanguageServerId,
-        root: PathBuf,
-        state: LanguageServerRuntimeState,
-        error: Option<String>,
-    },
-}
-
-/// Lazy per-language language-server orchestration (see the module docs).
+/// Lazy per-slot language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
     settings: LspSettings,
     generation: u64,
     root: Option<PathBuf>,
     registry_root: Option<PathBuf>,
-    servers: HashMap<String, ServerSlot>,
+    servers: HashMap<SlotKey, ServerSlot>,
     missing_reported: HashSet<LanguageServerId>,
     /// The cached jdtls JDK preflight: `None` until first checked, then the
     /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
     /// settings reload re-probes a fixed PATH.
     jdtls_preflight: Option<Option<String>>,
+    /// Slots whose document sync has already been reported as failing.
+    ///
+    /// A full queue is not a one-off: the task is blocked, so *every* subsequent
+    /// keystroke fails to enqueue. The resulting notification is a persistent
+    /// card -- warnings never auto-dismiss, and only transient cards are evicted --
+    /// so reporting per failure grew an unbounded stack the user had to clear by
+    /// hand. Reported once per outage instead, and cleared by the first delivery
+    /// that succeeds.
+    sync_failure_reported: HashSet<SlotKey>,
+    /// Providers whose launch preflight has already been reported in this
+    /// generation, so a failed one is explained once rather than per document.
+    preflight_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
-    runtime_states:
-        HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
+    /// Source of slot tokens. Never reused, and never zero, so a task holding a
+    /// token can always be told apart from every task that held its key before.
+    next_token: SlotToken,
+    /// Each provider's log and the questions servers are waiting on.
+    pub(crate) window: WindowState,
+    /// `editor.semanticHighlighting.enabled`, handed to every slot that owns
+    /// semantic tokens (see [`Self::set_semantic_highlighting`]).
+    semantic_highlighting: bool,
 }
 
-struct ServerSlot {
-    tx: mpsc::Sender<ServerCmd>,
-    documents: HashSet<PathBuf>,
-    provider: Option<LanguageServerId>,
-    primary: bool,
-    root: PathBuf,
+/// What the user's `lsp.servers` table says about one provider id.
+enum Configured {
+    /// No entry: the built-in launch table decides.
+    Absent,
+    /// An entry that forbids a launch: `enabled = false`.
+    Suppressed,
+    /// An entry naming exactly what to run. Boxed: a spec is large beside
+    /// the two empty verdicts.
+    Spec(Box<LspSpec>),
 }
 
 impl LspManager {
@@ -337,10 +207,15 @@ impl LspManager {
                 registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
+                sync_failure_reported: HashSet::new(),
                 jdtls_preflight: None,
+                preflight_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
-                runtime_states: HashMap::new(),
+                next_token: SlotToken::FIRST,
+                window: WindowState::default(),
+                // The setting's default; the session applies its own value.
+                semantic_highlighting: true,
             },
             rx,
         )
@@ -353,75 +228,198 @@ impl LspManager {
     }
 
     /// Apply new settings, retiring every task created under the old snapshot.
-    /// Returns whether documents need to be reopened against fresh servers.
-    pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> bool {
+    ///
+    /// `None` means the settings are unchanged and nothing need happen. `Some`
+    /// carries the retirement the caller must adopt, and is also its signal to
+    /// reopen documents against fresh servers.
+    ///
+    /// The one exception is a change confined to servers' `settings`: nothing
+    /// a server was launched or initialized with moved, so no slot is retired
+    /// and `None` is returned; each slot whose provider's settings changed is
+    /// told with `workspace/didChangeConfiguration` instead.
+    ///
+    /// Otherwise every slot is retired, not only the ones whose settings
+    /// moved, and that is deliberate. Which slots an `lsp.*` edit touches is not a function of
+    /// the slot key: `enabled` reaches all of them, a `languages` entry can move
+    /// the primary flag or the formatter owner of a slot serving several
+    /// languages, and the repository defaults (Ruff, Biome) are resolved per
+    /// root. A narrowed guess that misses one leaves a server running a stale
+    /// launch, which is worse than restarting a healthy one. The generation is
+    /// bumped for the same reason, so it fences every in-flight answer.
+    ///
+    /// `Session::commit_pending_format_saves` drains *every* parked save on
+    /// the strength of this: with every slot gone, no formatting answer is
+    /// still coming, and one that slipped through would be refused by the
+    /// generation fence anyway. Narrowing this function means narrowing that
+    /// drain to the retired slots' documents and the fence to those slots.
+    ///
+    /// `#[must_use]` for the same reason as [`LspManager::restart`]: a dropped
+    /// `Option<Retired>` warns about nothing on its own.
+    #[must_use]
+    pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> Option<Retired> {
         if self.settings == settings {
-            return false;
+            return None;
+        }
+        // Settings are the one thing a running server can be told about
+        // instead of replaced: nothing it was launched or initialized with
+        // moved, so every slot stays and only the changed ones hear about it.
+        if self.settings.differs_only_in_settings(&settings) {
+            self.settings = settings;
+            self.push_settings();
+            return None;
         }
         self.settings = settings;
         self.generation = self.generation.wrapping_add(1);
-        self.servers.clear();
-        self.runtime_states.clear();
+        let retired = self.retire_matching(|_| true);
         self.jdtls_preflight = None;
-        true
+        self.preflight_reported.clear();
+        Some(retired)
     }
 
-    /// Whether an asynchronous update belongs to the current server generation.
+    /// Whether an asynchronous update is still worth adopting.
+    ///
+    /// Two rules, because there are exactly two kinds of message.
+    ///
+    /// A task's report *about its own slot* -- its state, its diagnostics, its
+    /// death -- is worth adopting only while it still holds that slot. The token
+    /// says which incarnation is speaking, and a key is re-taken unchanged, so
+    /// without it a retired task and its replacement are indistinguishable. That
+    /// is one predicate covering every such message; the attempt this replaces
+    /// had four, one per message shape, and each was separately wrong.
+    ///
+    /// An *answer to a request* is different, and deliberately not fenced on the
+    /// slot: a task that has since been retired still gives the right answer to
+    /// the question that was put to it, and dropping it would leave the caller
+    /// waiting for a reply that never comes. Those keep the generation fence,
+    /// which exists to discard work begun under a settings snapshot that is gone.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
-        let generation = match update {
+        match update {
+            LspUpdate::ServerStatus { token, key, .. }
+            | LspUpdate::Window { token, key, .. }
+            | LspUpdate::InlayHintsRefresh { token, key }
+            | LspUpdate::ApplyEdit { token, key, .. }
+            | LspUpdate::Diagnostics {
+                token, server: key, ..
+            }
+            | LspUpdate::DiagnosticsCleared {
+                token, server: key, ..
+            }
+            | LspUpdate::PulledDiagnosticsWithdrawn {
+                token, server: key, ..
+            }
+            | LspUpdate::SemanticTokens {
+                token, server: key, ..
+            }
+            | LspUpdate::FoldingRanges {
+                token, server: key, ..
+            }
+            | LspUpdate::SpawnFailed { token, key, .. }
+            | LspUpdate::ServerDied { token, key, .. }
+            | LspUpdate::RuntimeState { token, key, .. } => self
+                .servers
+                .get(key)
+                .is_some_and(|slot| slot.token == *token),
             LspUpdate::Completions { generation, .. }
+            | LspUpdate::CompletionResolved { generation, .. }
+            | LspUpdate::InlayHints { generation, .. }
+            | LspUpdate::InlayHintsFailed { generation, .. }
+            | LspUpdate::InlayHintResolved { generation, .. }
+            | LspUpdate::InlineCompletions { generation, .. }
+            | LspUpdate::Account { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
+            | LspUpdate::SignatureHelp { generation, .. }
+            | LspUpdate::SelectionRanges { generation, .. }
+            | LspUpdate::DocumentHighlights { generation, .. }
+            | LspUpdate::Editing { generation, .. }
+            | LspUpdate::Hierarchy { generation, .. }
+            | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }
+            | LspUpdate::PrepareRename { generation, .. }
+            | LspUpdate::CodeAction { generation, .. }
+            | LspUpdate::CodeLens { generation, .. }
+            | LspUpdate::LinkColor { generation, .. }
             | LspUpdate::Formatting { generation, .. }
-            | LspUpdate::Diagnostics { generation, .. }
-            | LspUpdate::ServerStatus { generation, .. }
-            | LspUpdate::SpawnFailed { generation, .. }
+            | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
-            | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
-            | LspUpdate::RuntimeState { generation, .. } => *generation,
-        };
-        generation == self.generation
+            | LspUpdate::ManualInstallRequired { generation, .. } => *generation == self.generation,
+        }
+    }
+
+    /// What the user's configuration says about `language`'s primary server:
+    /// the id `lsp.languages.<language>.servers` names, else an entry named
+    /// after the language itself, together with that entry's verdict.
+    ///
+    /// One lookup, three readers. [`Self::spec_for`] turns a verdict into a
+    /// launch; `ensure_server` asks it *why* there was no launch — a provider
+    /// the user switched off is a decision, not a missing install — and whether
+    /// the command about to run is the user's rather than karet's.
+    fn configured_primary(&self, language: &str) -> Option<(LanguageServerId, Configured)> {
+        let named = self
+            .settings
+            .languages
+            .get(language)
+            .and_then(|selection| selection.servers.first())
+            .map(String::as_str);
+        named
+            .into_iter()
+            .chain(std::iter::once(language))
+            .find_map(
+                |server_id| match self.configured_spec(server_id, language) {
+                    Configured::Absent => None,
+                    verdict => Some((LanguageServerId::new(server_id.to_owned()), verdict)),
+                },
+            )
     }
 
     /// The launch spec for `language`: user config first, then the built-ins.
-    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
-        if let Some(selection) = self.settings.languages.get(language)
-            && let Some(server_id) = selection.servers.first()
-            && let Some(server) = self.settings.servers.get(server_id)
-        {
-            return (server.enabled && !server.command.is_empty()).then(|| {
-                (
-                    LspSpec {
-                        command: server.command.clone(),
-                        args: server.args.clone(),
-                        languages: vec![language.to_owned()],
-                    },
-                    Some(LanguageServerId::new(server_id.clone())),
-                )
-            });
-        }
-        if let Some(server) = self.settings.servers.get(language) {
-            if !server.enabled || server.command.is_empty() {
-                return None;
-            }
-            return Some((
-                LspSpec {
-                    command: server.command.clone(),
-                    args: server.args.clone(),
-                    languages: vec![language.to_owned()],
-                },
-                Some(LanguageServerId::new(language.to_owned())),
-            ));
+    ///
+    /// The provider is not optional: every launch names one, either the id the
+    /// user configured or the built-in for the language. It used to be an
+    /// `Option` whose `None` arm made callers invent a provider id out of the
+    /// language name -- an identity no other part of the manager ever produced.
+    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, LanguageServerId)> {
+        match self.configured_primary(language) {
+            Some((server_id, Configured::Spec(spec))) => return Some((*spec, server_id)),
+            // An entry that forbids a launch is the whole answer: the built-in
+            // table does not get a second vote on a server switched off.
+            Some((_, Configured::Suppressed)) => return None,
+            Some((_, Configured::Absent)) | None => {},
         }
         let provider = builtin_server(language)?;
         let spec = self.resolve_provider(&provider, language, root);
         #[cfg(test)]
-        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
-        spec.map(|spec| (spec, Some(provider)))
+        let spec = spec.or_else(|| builtin_spec(&provider, language));
+        spec.map(|spec| (spec, provider))
+    }
+
+    /// What `lsp.servers` says about the provider id `server_id`.
+    ///
+    /// The single reader of a user's server entry, so every launch honours the
+    /// same three fields -- `command`, `args`, `enabled` -- however the id was
+    /// named: as a language's primary, or in that language's `diagnostics`
+    /// companions. A companion used to skip this entirely and be launched as a
+    /// bare `<id>` off `PATH`, arguments and `enabled = false` alike ignored.
+    fn configured_spec(&self, server_id: &str, language: &str) -> Configured {
+        let Some(server) = self.settings.servers.get(server_id) else {
+            return Configured::Absent;
+        };
+        if !server.enabled {
+            return Configured::Suppressed;
+        }
+        // No command names no launch: the entry only configures the provider
+        // (`settings`, `initializationOptions`), and karet's own launch stands.
+        if server.command.is_empty() {
+            return Configured::Absent;
+        }
+        Configured::Spec(Box::new(LspSpec::new(
+            server.command.clone(),
+            server.args.clone(),
+            vec![language.to_owned()],
+        )))
     }
 
     fn resolve_provider(
@@ -430,7 +428,7 @@ impl LspManager {
         language: &str,
         root: &Path,
     ) -> Option<LspSpec> {
-        let fallback = builtin_spec(provider, language);
+        let fallback = builtin_spec(provider, language)?;
         self.resolve_builtin(provider, language, root, fallback)
             .map(|(spec, _)| spec)
     }
@@ -449,37 +447,133 @@ impl LspManager {
                     .then_some((fallback, LanguageServerSource::Path))
             })
             .or_else(|| {
-                crate::lsp_registry::installed_spec(
+                crate::lsp_registry::store::installed_spec(
                     self.registry_root.as_deref(),
                     provider,
                     language,
                 )
                 .map(|spec| (spec, LanguageServerSource::Managed))
             })
+            .or_else(|| {
+                crate::lsp_registry::builtin_spec(provider, language)
+                    .map(|spec| (spec, LanguageServerSource::Builtin))
+            })
+    }
+
+    /// Give Astro the TypeScript SDK path it refuses to start without.
+    ///
+    /// Only a karet-managed installation carried one, because only the install
+    /// recorded it -- so the ordinary way an Astro project installs the server,
+    /// `@astrojs/language-server` in `node_modules`, resolved first and was
+    /// launched with no `typescript.tsdk` at all, and Astro declined the
+    /// handshake. The project's own TypeScript is the right SDK for that
+    /// install; a managed one keeps the bundle it was installed with.
+    ///
+    /// Only for a launch karet itself chose — the caller skips it for a command
+    /// out of `lsp.servers`, where refusing would override the user rather than
+    /// diagnose karet.
+    ///
+    /// Returns whether the launch may proceed.
+    fn astro_launch_gate(
+        &mut self,
+        spec: &mut LspSpec,
+        provider: Option<&LanguageServerId>,
+        language: &str,
+        root: &Path,
+    ) -> bool {
+        if !provider::is_astro(provider, spec) || spec.initialization_options.is_some() {
+            return true;
+        }
+        let managed = || {
+            crate::lsp_registry::store::installed_spec(
+                self.registry_root.as_deref(),
+                &LanguageServerId::new(provider::ASTRO),
+                language,
+            )
+            .and_then(|managed| managed.initialization_options)
+        };
+        if let Some(options) = provider::project_typescript_sdk(Path::new(&spec.command), root)
+            .map(|tsdk| provider::typescript_sdk_options(&tsdk))
+            .or_else(managed)
+        {
+            spec.initialization_options = Some(options);
+            return true;
+        }
+        // Refusing to launch is the honest outcome: Astro would reject the
+        // handshake anyway, and "no TypeScript" says why while a rejected
+        // handshake does not.
+        if self
+            .preflight_reported
+            .insert(LanguageServerId::new(provider::ASTRO))
+        {
+            let _ = self.updates.send(LspUpdate::PreflightFailed {
+                generation: self.generation,
+                message: "the Astro language server needs a TypeScript SDK: install typescript in \
+                          this project (npm install -D typescript), or let karet install Astro, \
+                          which bundles one"
+                    .to_owned(),
+            });
+        }
+        false
     }
 
     /// The task inbox for `language`, spawning the server task on first use.
     /// `None` when LSP is disabled or no server is configured for the language.
+    /// Report a provider that could not be resolved, at most once per manager
+    /// generation.
+    ///
+    /// The two outcomes are deliberately different events. karet offers to
+    /// install only what it can actually install; for everything else it says
+    /// what the user has to do instead. Sending the offer unconditionally is
+    /// what produced the "taplo is not installed · type install" prompt whose
+    /// install then failed with "taplo has no managed installer" — and, under
+    /// `managedDownloads: "auto"`, queued that doomed job with no prompt at all.
+    fn report_unresolved(&mut self, provider: LanguageServerId, language: &str) {
+        // A provider built into this karet is never missing: it resolves on
+        // every launch, so a report could only be wrong.
+        if crate::lsp_registry::builtin_provider(&provider)
+            || !self.missing_reported.insert(provider.clone())
+        {
+            return;
+        }
+        let update = match crate::lsp_registry::manual_install_reason(&provider) {
+            None => LspUpdate::InstallRequired {
+                generation: self.generation,
+                server: provider,
+                language: language.to_owned(),
+            },
+            Some(reason) => LspUpdate::ManualInstallRequired {
+                generation: self.generation,
+                command: builtin_spec(&provider, language)
+                    .map_or_else(|| provider.key().to_owned(), |spec| spec.command),
+                server: provider,
+                reason,
+            },
+        };
+        let _ = self.updates.send(update);
+    }
+
     fn ensure_server(
         &mut self,
         language: Option<&str>,
         path: &Path,
-    ) -> Option<(&mpsc::Sender<ServerCmd>, String)> {
+    ) -> Option<(&mpsc::Sender<ServerCmd>, SlotKey)> {
         if !self.settings.enabled {
             return None;
         }
         let language = language_key(language)?;
         let root = nearest_repository_root(path, self.root.as_deref());
+        let configured = self.configured_primary(&language);
         let (mut spec, provider) = match self.spec_for(&language, &root) {
             Some(spec) => spec,
             None => {
-                if let Some(provider) = builtin_server(&language)
-                    && self.missing_reported.insert(provider.clone())
+                // A provider the user switched off has nothing to report:
+                // turning a server off is a decision, and answering it with
+                // "install it yourself" is answering a question nobody asked.
+                if !matches!(configured, Some((_, Configured::Suppressed)))
+                    && let Some(provider) = builtin_server(&language)
                 {
-                    let _ = self.updates.send(LspUpdate::InstallRequired {
-                        generation: self.generation,
-                        server: provider,
-                    });
+                    self.report_unresolved(provider, &language);
                 }
                 return None;
             },
@@ -487,42 +581,20 @@ impl LspManager {
         if !self.jdtls_launch_gate(&mut spec, &root) {
             return None;
         }
-        // Built-in JavaScript and TypeScript share one provider process. Custom
-        // entries remain language-keyed because independent config entries may
-        // intentionally name different executables.
-        let provider_key = provider
-            .as_ref()
-            .map_or_else(|| language.clone(), |server| server.key().to_owned());
-        let key = format!("{provider_key}@{}", root.to_string_lossy());
-        if !self.servers.contains_key(&key) {
-            // Server tasks need an async runtime; a session driven synchronously
-            // (unit tests, bare library use) simply runs without LSP.
-            let handle = tokio::runtime::Handle::try_current().ok()?;
-            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            let runtime_provider = provider
-                .clone()
-                .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
-            handle.spawn(runtime::server_task(runtime::ServerTask {
-                spec: spec.clone(),
-                root,
-                language: key.clone(),
-                provider: runtime_provider,
-                rx,
-                updates: self.updates.clone(),
-                connector: Arc::clone(&self.connector),
-                generation: self.generation,
-            }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    tx,
-                    documents: HashSet::new(),
-                    provider,
-                    primary: true,
-                    root: nearest_repository_root(path, self.root.as_deref()),
-                },
-            );
+        let settings_key = self.configure(&mut spec, &provider, Some(&language));
+        // The preflight diagnoses a command *karet* chose. A user who named
+        // their own is entitled to have it run: a wrapper that supplies its own
+        // `tsdk` is exactly why someone configures one.
+        if !matches!(configured, Some((_, Configured::Spec(_))))
+            && !self.astro_launch_gate(&mut spec, Some(&provider), &language, &root)
+        {
+            return None;
         }
+        // Built-in JavaScript and TypeScript share one provider process, so the
+        // key names the *provider*, not the language that selected it.
+        let owner = self.owns_semantic_tokens(&language, &provider, true);
+        let key = SlotKey::new(provider, root.clone());
+        self.spawn_slot(&key, &spec, true, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
@@ -531,46 +603,49 @@ impl LspManager {
         provider: LanguageServerId,
         language: &str,
         path: &Path,
-    ) -> Option<(mpsc::Sender<ServerCmd>, String)> {
+    ) -> Option<(mpsc::Sender<ServerCmd>, SlotKey)> {
         let root = nearest_repository_root(path, self.root.as_deref());
-        let spec = self.resolve_provider(&provider, language, &root);
-        #[cfg(test)]
-        let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
-        let Some(spec) = spec else {
-            if self.missing_reported.insert(provider.clone()) {
-                let _ = self.updates.send(LspUpdate::InstallRequired {
-                    generation: self.generation,
-                    server: provider,
-                });
-            }
+        let spec = match self.configured_spec(provider.key(), language) {
+            Configured::Spec(spec) => Some(*spec),
+            // `enabled = false` is a decision about the provider, not about the
+            // slot it was named in: a companion the user switched off stays off.
+            Configured::Suppressed => return None,
+            Configured::Absent => {
+                let spec = self.resolve_provider(&provider, language, &root);
+                #[cfg(test)]
+                let spec = spec.or_else(|| builtin_spec(&provider, language));
+                spec
+            },
+        };
+        let Some(mut spec) = spec else {
+            self.report_unresolved(provider, language);
             return None;
         };
-        let key = format!("{}@{}", provider.key(), root.to_string_lossy());
-        if !self.servers.contains_key(&key) {
-            let handle = tokio::runtime::Handle::try_current().ok()?;
-            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            handle.spawn(runtime::server_task(runtime::ServerTask {
-                spec: spec.clone(),
-                root,
-                language: key.clone(),
-                provider: provider.clone(),
-                rx,
-                updates: self.updates.clone(),
-                connector: Arc::clone(&self.connector),
-                generation: self.generation,
-            }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    tx,
-                    documents: HashSet::new(),
-                    provider: Some(provider),
-                    primary: false,
-                    root: nearest_repository_root(path, self.root.as_deref()),
-                },
-            );
-        }
+        provider::default_initialization_options(&provider, &mut spec);
+        // A companion reads only its own entry: the language's belongs to
+        // the language's primary.
+        let settings_key = self.configure(&mut spec, &provider, None);
+        let owner = self.owns_semantic_tokens(language, &provider, false);
+        let key = SlotKey::new(provider, root);
+        self.spawn_slot(&key, &spec, false, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
+    }
+
+    /// The inline-completion companion every document is attached to, once
+    /// the user opted in to it: installed it through karet, or gave it an
+    /// `lsp.servers` entry (one with `enabled: false` is honoured by the
+    /// launch, which then starts nothing). Being on `PATH` is not opting in:
+    /// it sends the code being edited to a remote service, which a server
+    /// installed for another editor never agreed to on karet's behalf.
+    fn inline_companion(&self) -> Option<LanguageServerId> {
+        let copilot = LanguageServerId::new(catalog::COPILOT);
+        let opted_in = self.settings.servers.contains_key(copilot.key())
+            || crate::lsp_registry::store::installed_version(
+                self.registry_root.as_deref(),
+                &copilot,
+            )
+            .is_some();
+        opted_in.then_some(copilot)
     }
 
     /// The running task inbox for `language`, when one was already spawned.
@@ -598,13 +673,24 @@ impl LspManager {
         path: &Path,
         version: u64,
         text: impl FnOnce() -> String,
-    ) {
+    ) -> Retired {
+        // Checked here, not only in `ensure_server`: companions are attached
+        // below without going through it, so once the primary stopped being
+        // required this was the only remaining gate on the whole feature.
+        if !self.settings.enabled {
+            return Retired::default();
+        }
         let path = absolute_path(path);
         let selector = language_key(selector);
-        let Some((tx, key)) = self.ensure_server(selector.as_deref(), &path) else {
-            return;
-        };
-        let mut targets = vec![(tx.clone(), key)];
+        // The primary is optional. Diagnostics are explicitly a merged layer,
+        // not the primary's to grant: a Python repository with Ruff installed
+        // and Pyright missing must still get Ruff's diagnostics, and returning
+        // here meant it got nothing at all -- an installed, configured provider
+        // that silently never ran.
+        let mut targets = self
+            .ensure_server(selector.as_deref(), &path)
+            .map(|(tx, key)| vec![(tx.clone(), key)])
+            .unwrap_or_default();
         let root = nearest_repository_root(&path, self.root.as_deref());
         if let Some(language_key) = selector.as_deref() {
             let configured_diagnostics = self
@@ -639,64 +725,172 @@ impl LspManager {
                     targets.push(target);
                 }
             }
+            if let Some(provider) = self.inline_companion()
+                && let Some(target) = self.ensure_additional_provider(provider, language_key, &path)
+            {
+                targets.push(target);
+            }
+        }
+        if targets.is_empty() {
+            return Retired::default();
         }
         let document_language = lsp_language_id
             .map(str::to_owned)
             .unwrap_or_else(|| selector.unwrap_or_default());
         let document_text = text();
         let mut seen_targets = HashSet::new();
+        let mut undelivered = Vec::new();
         for (tx, key) in targets {
             if !seen_targets.insert(key.clone()) {
                 continue;
             }
-            if let Some(slot) = self.servers.get_mut(&key) {
-                slot.documents.insert(path.clone());
+            // A slot that already holds this document has already been told
+            // about it, and `didOpen` for an open document is a protocol error.
+            // This is reachable whenever a reopen fans out to a provider that
+            // was not retired: scoping a restart to one provider leaves its
+            // language's companions running, and installing a provider reopens
+            // documents whose other providers never went anywhere.
+            let newly_attached = self
+                .servers
+                .get_mut(&key)
+                .is_none_or(|slot| slot.documents.insert(path.clone()));
+            if !newly_attached {
+                continue;
             }
-            let _ = tx.try_send(ServerCmd::DidOpen {
-                path: path.clone(),
-                language: document_language.clone(),
-                version: version_i32(version),
-                text: document_text.clone(),
+            if tx
+                .try_send(ServerCmd::DidOpen {
+                    path: path.clone(),
+                    language: document_language.clone(),
+                    version: version_i32(version),
+                    text: document_text.clone(),
+                })
+                .is_err()
+            {
+                // The document set records what the *server was told*, so a
+                // command that never left the queue must not leave a mark on it.
+                // Kept as written, the dedup guard above reads the file as
+                // already announced for the rest of the session: the reopen that
+                // exists precisely to repair a provider would `continue` straight
+                // past it, and only closing the document could undo that.
+                if let Some(slot) = self.servers.get_mut(&key) {
+                    slot.documents.remove(&path);
+                }
+                undelivered.push(key);
+            } else {
+                // Delivery works again: forget the suppression so a *later* outage
+                // is reported rather than silenced by one that has since cleared.
+                self.sync_failure_reported.remove(&key);
+            }
+        }
+        // A dropped `didOpen` used to be silent, and was the worst of the silent
+        // drops: the server never learns the document exists, the task never adds
+        // it to its replay set, and no later restart fixes it. The file simply has
+        // no language support, with nothing anywhere saying why.
+        let mut retired = Retired::default();
+        for key in undelivered {
+            retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
+        }
+        retired
+    }
+
+    /// Report that a document-sync command never reached its server, and retire
+    /// the slot if the task behind it is gone.
+    ///
+    /// Both `try_send` failures leave the server's copy of the document out of
+    /// step with the buffer, which is exactly the state that reads to a user as
+    /// "the LSP stopped working for this file". A closed channel additionally
+    /// means the task has exited, so the slot is dropped and the next open builds
+    /// a fresh one rather than writing into a sender nobody reads.
+    fn report_undelivered(&mut self, key: &SlotKey, reason: &str) -> Retired {
+        let Some(slot) = self.servers.get(key) else {
+            return Retired::default();
+        };
+        let closed = slot.tx.is_closed();
+        if self.sync_failure_reported.insert(key.clone()) {
+            let _ = self.updates.send(LspUpdate::SyncFailed {
+                generation: self.generation,
+                server: key.provider.clone(),
+                reason: reason.to_owned(),
             });
+        }
+        if closed {
+            self.retire(key)
+        } else {
+            Retired::default()
         }
     }
 
-    /// Forward an edit (full text, debounced by the server task). A no-op for
+    /// Forward an edit to `buffer` (debounced by the server task). A no-op for
     /// languages without a running server.
+    ///
+    /// `applied` is the edit that just produced `buffer`'s current version, when
+    /// there is one: its content changes ride beside the full text, so a server
+    /// that takes incremental sync is sent only those. `None` (a reload that
+    /// replaced the content wholesale) always sends the full text.
     pub(crate) fn document_changed(
         &mut self,
         language: Option<&str>,
         path: &Path,
-        version: u64,
-        text: impl FnOnce() -> String,
-    ) {
+        buffer: &karet_text::TextBuffer,
+        applied: Option<&karet_text::Applied>,
+    ) -> Retired {
         if language_key(language).is_none() {
-            return;
+            return Retired::default();
         }
         let path = absolute_path(path);
         let senders: Vec<_> = self
             .servers
-            .values()
-            .filter(|slot| slot.documents.contains(&path))
-            .map(|slot| slot.tx.clone())
+            .iter()
+            .filter(|(_, slot)| slot.documents.contains(&path))
+            .map(|(key, slot)| (key.clone(), slot.tx.clone()))
             .collect();
         if senders.is_empty() {
-            return;
+            return Retired::default();
         }
-        let text = text();
-        for tx in senders {
-            let _ = tx.try_send(ServerCmd::DidChange {
-                path: path.clone(),
-                version: version_i32(version),
-                text: text.clone(),
+        let version = buffer.version();
+        let text = buffer.text();
+        // Every edit bumps the version by one, so the delta starts at the one
+        // before -- provided `applied` is what made the current version.
+        let delta = applied
+            .filter(|applied| applied.version == version)
+            .and_then(|applied| delta::content_changes(buffer, applied))
+            .zip(version.checked_sub(1))
+            .map(|(edits, base)| delta::DocumentDelta {
+                base_version: version_i32(base),
+                edits,
             });
+        let mut undelivered = Vec::new();
+        for (key, tx) in senders {
+            if tx
+                .try_send(ServerCmd::DidChange {
+                    path: path.clone(),
+                    version: version_i32(version),
+                    text: text.clone(),
+                    delta: delta.clone(),
+                })
+                .is_err()
+            {
+                undelivered.push(key);
+            } else {
+                self.sync_failure_reported.remove(&key);
+            }
         }
+        // A dropped `didChange` leaves the server's copy of the file behind the
+        // buffer, so every answer it gives is about text the user no longer has.
+        // The next edit that *does* land repairs it, as the full text: its delta
+        // starts from a version the task never saw, so the task drops it -- but
+        // until then the condition is real and was previously invisible.
+        let mut retired = Retired::default();
+        for key in undelivered {
+            retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
+        }
+        retired
     }
 
-    /// Forward a document close. A no-op for languages without a running server.
-    pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) {
+    /// Forward a document close, retiring any slot it was the last document for.
+    pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) -> Retired {
         let Some(_language) = language_key(language) else {
-            return;
+            return Retired::default();
         };
         let path = absolute_path(path);
         let keys: Vec<_> = self
@@ -705,6 +899,7 @@ impl LspManager {
             .filter(|(_, slot)| slot.documents.contains(&path))
             .map(|(key, _)| key.clone())
             .collect();
+        let mut retired = Retired::default();
         for key in keys {
             let remove = self.servers.get_mut(&key).is_some_and(|slot| {
                 let _ = slot.tx.try_send(ServerCmd::DidClose { path: path.clone() });
@@ -712,9 +907,10 @@ impl LspManager {
                 slot.documents.is_empty()
             });
             if remove {
-                self.servers.remove(&key);
+                retired.absorb(self.retire(&key));
             }
         }
+        retired
     }
 
     /// Forward a successful save to every server attached to the document.
@@ -744,198 +940,5 @@ impl LspManager {
                 text: text.clone(),
             });
         }
-    }
-
-    /// Forward a completion request (`position` already in UTF-16 columns).
-    /// Returns whether it was forwarded — when `false`, no server serves this
-    /// language and the caller must answer the request itself (empty set).
-    pub(crate) fn completion(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Completion {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    /// Forward a document-symbol request. Returns whether a live server accepted it.
-    pub(crate) fn document_symbols(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::DocumentSymbols {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn hover(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Hover {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn definition(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Definition {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn workspace_symbols(&self, request: RequestId, query: String) -> bool {
-        let Some(tx) = self
-            .servers
-            .values()
-            .find(|slot| slot.primary)
-            .map(|slot| &slot.tx)
-        else {
-            return false;
-        };
-        tx.try_send(ServerCmd::WorkspaceSymbols { request, query })
-            .is_ok()
-    }
-
-    pub(crate) fn rename(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        path: &Path,
-        position: LineCol,
-        new_name: String,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Rename {
-            request,
-            path,
-            position,
-            new_name,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn formatting(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let Some(language_key) = language_key(language) else {
-            return false;
-        };
-        let path = absolute_path(path);
-        let preferred = self
-            .settings
-            .languages
-            .get(&language_key)
-            .and_then(|selection| selection.formatter.as_deref());
-        let repository_default = if preferred.is_none() && language_key == "python" {
-            Some(python_diagnostic_provider(&nearest_repository_root(
-                &path,
-                self.root.as_deref(),
-            )))
-        } else if preferred.is_none()
-            && matches!(
-                language_key.as_str(),
-                "javascript" | "typescript" | "jsx" | "tsx"
-            )
-            && uses_biome(&nearest_repository_root(&path, self.root.as_deref()))
-        {
-            Some(LanguageServerId::Biome)
-        } else {
-            None
-        };
-        let selected = preferred
-            .map(str::to_owned)
-            .or_else(|| repository_default.map(|provider| provider.key().to_owned()));
-        let tx = selected
-            .as_deref()
-            .and_then(|provider| {
-                self.servers.values().find(|slot| {
-                    slot.documents.contains(&path)
-                        && slot
-                            .provider
-                            .as_ref()
-                            .is_some_and(|id| id.key() == provider)
-                })
-            })
-            .or_else(|| {
-                self.servers
-                    .values()
-                    .find(|slot| slot.primary && slot.documents.contains(&path))
-            })
-            .map(|slot| &slot.tx);
-        let Some(tx) = tx else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Formatting {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
     }
 }

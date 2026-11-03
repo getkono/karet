@@ -1,0 +1,967 @@
+//! The scripted in-memory language server the session tests run against.
+//!
+//! A real process is the one thing these tests must not need, and a trait double
+//! would prove nothing: what is under test is the wire — framing, the handshake,
+//! the capabilities a server advertises and the replies it sends. So this speaks
+//! actual LSP over a `duplex` pipe, and [`Behavior`] scripts what it does once
+//! the handshake is done.
+
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
+use karet_lsp::LspClient;
+use serde_json::Value;
+use serde_json::json;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::io::DuplexStream;
+use tokio::io::ReadHalf;
+use tokio::io::WriteHalf;
+use tokio::sync::mpsc;
+
+use super::super::Connector;
+use super::super::LspError;
+
+/// Read one `Content-Length`-framed message, for a test that speaks the wire
+/// itself rather than scripting this double.
+pub(super) async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Value> {
+    let mut len: Option<usize> = None;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).await.ok()? == 0 {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&line);
+        let text = text.trim_end();
+        if text.is_empty() {
+            break;
+        }
+        if let Some(value) = text.strip_prefix("Content-Length:") {
+            len = value.trim().parse().ok();
+        }
+    }
+    let mut body = vec![0_u8; len?];
+    reader.read_exact(&mut body).await.ok()?;
+    serde_json::from_slice(&body).ok()
+}
+
+/// Frame and send one message, the counterpart to [`read_msg`].
+pub(super) async fn write_msg(writer: &mut WriteHalf<DuplexStream>, message: &Value) {
+    let body = serde_json::to_vec(message).unwrap_or_default();
+    let head = format!("Content-Length: {}\r\n\r\n", body.len());
+    let _ = writer.write_all(head.as_bytes()).await;
+    let _ = writer.write_all(&body).await;
+    let _ = writer.flush().await;
+}
+
+/// What the scripted server should do after the initialize handshake.
+#[derive(Clone, Copy)]
+pub(super) enum Behavior {
+    /// Serve completions; echo every received message to `observed`.
+    Normal,
+    /// Hang up right after the handshake (a crashing server).
+    DieAfterHandshake,
+    /// Crash the first process, then serve normally after the supervisor retries.
+    DieOnce,
+    /// Accept the document, then hang up with nothing outstanding.
+    ///
+    /// The only way to notice this death is to watch the connection: no request
+    /// is ever issued over it, and `didOpen` is a notification, so nothing the
+    /// client sends can come back failed.
+    DieWhenIdle,
+    /// Publish one diagnostic for the opened document, then hang up for good.
+    DieAfterDiagnostics,
+    /// Advertise `textDocument/formatting` and answer it, replacing the first
+    /// line with `formatted\n`. The only behaviour that lets a save actually
+    /// reach `begin_format_on_save` and park on a reply.
+    Formats,
+    /// Format like [`Behavior::Formats`], and ask for will-save edits
+    /// (`textDocument/willSaveWaitUntil`), answering each with `// saved\n`
+    /// inserted at the start of line 1, where formatting does not reach.
+    WillSaves,
+    /// Ask for will-save edits like [`Behavior::WillSaves`], then never answer
+    /// `textDocument/willSaveWaitUntil`, while formatting and serving
+    /// everything else.
+    WillSavesNever,
+    /// Advertise `textDocument/formatting` and then never answer it, while
+    /// staying perfectly alive and serving everything else. A formatter wedged
+    /// on one request is not a dead server, and must not be treated as one.
+    FormatsNever,
+    /// Serve normally, but never answer `textDocument/inlayHint`: a server
+    /// slow to infer, which must not hold up anything else asked of it.
+    HintsNever,
+    /// Serve normally, but hang up on receiving `textDocument/inlayHint`: the
+    /// connection is lost with that request in flight.
+    DiesOnHint,
+    /// Serve normally, and ask the client to refresh its inlay hints
+    /// (`workspace/inlayHint/refresh`) once it has opened a document.
+    RefreshesHints,
+    /// Advertise nothing but document sync, so every gated request is
+    /// refused before it reaches the wire.
+    Bare,
+    /// Serve normally, but ask for incremental document sync.
+    Incremental,
+    /// Serve normally, and offer pull diagnostics: each pull is answered with
+    /// one diagnostic naming the version the double last saw, and a report
+    /// for the related `elsewhere.rs` beside the asking file.
+    Pulls,
+    /// Pull like [`Behavior::Pulls`], and also publish one `checked`
+    /// diagnostic, without a version, for each opened document: rust-analyzer
+    /// keeps publishing `cargo check`'s results while it answers pulls.
+    PushesAndPulls,
+    /// Advertise no pull diagnostics, but register them dynamically
+    /// (`client/registerCapability`) once a document is opened, then answer
+    /// pulls like [`Behavior::Pulls`]. Withdraws that registration
+    /// (`client/unregisterCapability`) whenever a document is saved.
+    RegistersPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], with a
+    /// `documentSelector` covering only documents opened as `rust`.
+    RegistersRustPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], but
+    /// hold every pull's answer until a document is closed: an answer that
+    /// arrives after the withdrawal it raced.
+    RegistersPullsLate,
+    /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
+    PullsAcrossFiles,
+    /// Pull like [`Behavior::PullsAcrossFiles`], and ask the client to pull
+    /// everything again (`workspace/diagnostic/refresh`) whenever a document
+    /// is saved.
+    RefreshesPulls,
+    /// Serve normally, and offer semantic tokens with deltas: a whole answer
+    /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
+    /// rewrites that token to a `variable.mutable`. Each result id names the
+    /// version the double last saw.
+    SemanticTokens,
+    /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
+    /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
+    CancelsSemanticTokensOnce,
+    /// Serve normally, and offer folding ranges (see
+    /// `folding_tests::double_reply`).
+    Folds,
+}
+
+/// What the scripted server advertises at the handshake.
+///
+/// It has to advertise something: karet refuses a request the server never
+/// said it could answer, so a double that advertised `{}` and answered anyway
+/// would have every request refused before reaching it. That gap is the point
+/// of the gate; see issue #279.
+///
+/// `textDocument/formatting` is the one exception, advertised only by the
+/// formatting behaviours: whether a server formats decides between it and the
+/// built-in formatter at save, and the tests of that choice need a server that
+/// does not.
+fn advertised_capabilities(behavior: Behavior) -> Value {
+    if matches!(behavior, Behavior::Bare) {
+        return json!({"textDocumentSync": 1});
+    }
+    let mut capabilities = json!({
+        "textDocumentSync": 1,
+        "hoverProvider": true,
+        "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": ["."],
+            "allCommitCharacters": [";"]
+        },
+        "definitionProvider": true,
+        "referencesProvider": true,
+        "documentSymbolProvider": true,
+        "workspaceSymbolProvider": true,
+        "renameProvider": true,
+        "documentRangeFormattingProvider": true,
+        "codeActionProvider": {"resolveProvider": true},
+        "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
+        "inlineCompletionProvider": {},
+        "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
+        "signatureHelpProvider": {
+            "triggerCharacters": ["("],
+            "retriggerCharacters": [","]
+        },
+        "inlayHintProvider": {"resolveProvider": true},
+        "implementationProvider": true,
+        "callHierarchyProvider": true,
+        "typeHierarchyProvider": true,
+        "selectionRangeProvider": true,
+        "documentHighlightProvider": true,
+        "linkedEditingRangeProvider": true,
+        "documentOnTypeFormattingProvider": {
+            "firstTriggerCharacter": ";",
+            "moreTriggerCharacter": ["}"]
+        },
+    });
+    if matches!(
+        behavior,
+        Behavior::Formats | Behavior::FormatsNever | Behavior::WillSaves | Behavior::WillSavesNever
+    ) {
+        capabilities["documentFormattingProvider"] = json!(true);
+    }
+    if matches!(behavior, Behavior::WillSaves | Behavior::WillSavesNever) {
+        capabilities["textDocumentSync"] =
+            json!({"openClose": true, "change": 1, "willSaveWaitUntil": true});
+    }
+    if matches!(behavior, Behavior::Incremental) {
+        capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
+    }
+    if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
+    if matches!(
+        behavior,
+        Behavior::PullsAcrossFiles | Behavior::RefreshesPulls
+    ) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": true, "workspaceDiagnostics": false});
+    }
+    if matches!(
+        behavior,
+        Behavior::SemanticTokens | Behavior::CancelsSemanticTokensOnce
+    ) {
+        capabilities["semanticTokensProvider"] = json!({
+            "legend": {"tokenTypes": ["variable", "macro"], "tokenModifiers": ["mutable"]},
+            "full": {"delta": true}
+        });
+    }
+    if matches!(behavior, Behavior::Folds) {
+        capabilities["foldingRangeProvider"] = json!(true);
+    }
+    capabilities
+}
+
+/// Whether `behavior` registers pulls on `didOpen` and withdraws them on
+/// `didSave`.
+fn registers_pulls(behavior: Behavior) -> bool {
+    matches!(
+        behavior,
+        Behavior::RegistersPulls | Behavior::RegistersRustPulls | Behavior::RegistersPullsLate
+    )
+}
+
+/// The double's answer to `textDocument/diagnostic`: one error on line 0
+/// naming `version`, linked to its documentation and related to line 1 of the
+/// asking file, beside a full report for `elsewhere.rs`.
+fn pull_reply(msg: &Value, version: &Value) -> Value {
+    let asking = msg["params"]["textDocument"]["uri"]
+        .as_str()
+        .unwrap_or_default();
+    let elsewhere = asking
+        .rsplit_once('/')
+        .map(|(dir, _)| format!("{dir}/elsewhere.rs"))
+        .unwrap_or_default();
+    let line = |line: u32| json!({"start": {"line": line, "character": 0}, "end": {"line": line, "character": 2}});
+    json!({
+        "kind": "full",
+        "resultId": format!("v{version}"),
+        "items": [{
+            "range": line(0),
+            "severity": 1,
+            "code": "E1",
+            "codeDescription": {"href": "https://example.com/E1"},
+            "message": format!("pulled at version {version}"),
+            "relatedInformation": [{
+                "location": {"uri": asking, "range": line(1)},
+                "message": "declared here"
+            }]
+        }],
+        "relatedDocuments": {
+            elsewhere: {"kind": "full", "items": [{"range": line(0), "message": "related"}]}
+        }
+    })
+}
+
+/// The double's answer to `textDocument/selectionRange`: for each position,
+/// the one UTF-16 code unit after it, inside the first six code units of
+/// line 0. Echoing the position proves the request crossed in UTF-16 columns.
+fn selection_range_reply(positions: &Value) -> Value {
+    let chains: Vec<Value> = positions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|at| {
+            let (line, character) = (at["line"].as_u64(), at["character"].as_u64());
+            let (line, character) = (line.unwrap_or(0), character.unwrap_or(0));
+            json!({
+                "range": {
+                    "start": {"line": line, "character": character},
+                    "end": {"line": line, "character": character + 1}
+                },
+                "parent": {"range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 6}
+                }}
+            })
+        })
+        .collect();
+    Value::Array(chains)
+}
+
+/// The double's answer to `textDocument/documentHighlight`: a write over the
+/// one UTF-16 code unit after the position, echoing it to prove the request
+/// crossed in UTF-16 columns, and a kindless highlight over characters 0..2
+/// of line 1.
+fn document_highlight_reply(position: &Value) -> Value {
+    let line = position["line"].as_u64().unwrap_or(0);
+    let character = position["character"].as_u64().unwrap_or(0);
+    json!([
+        {"range": {"start": {"line": line, "character": character},
+                   "end": {"line": line, "character": character + 1}},
+         "kind": 3},
+        {"range": {"start": {"line": 1, "character": 0},
+                   "end": {"line": 1, "character": 2}}}
+    ])
+}
+
+/// The double's answer to the hierarchy methods.
+///
+/// Preparing answers one item `root` in the asked document, its selection
+/// range the one UTF-16 code unit after the position (echoing it proves the
+/// request crossed in UTF-16 columns), with `data` the server needs back.
+/// Every follow-up answers one item named after the method and the asked
+/// item's `data` -- `<method> of <data>` -- over UTF-16 characters 2..3 of
+/// line 1, so an item handed back without its `data` reads `... of null`.
+fn hierarchy_reply(msg: &Value) -> Value {
+    let method = msg["method"].as_str().unwrap_or_default();
+    let params = &msg["params"];
+    let item = |name: String, uri: &Value, at: &Value| {
+        let after = at["character"].as_u64().unwrap_or(0) + 1;
+        let selection = json!({"start": at, "end": {"line": at["line"], "character": after}});
+        json!({"name": name, "kind": 12, "uri": uri, "range": selection,
+               "selectionRange": selection, "data": {"from": method}})
+    };
+    if method.starts_with("textDocument/prepare") {
+        let uri = &params["textDocument"]["uri"];
+        return json!([item("root".to_owned(), uri, &params["position"])]);
+    }
+    let asked = &params["item"];
+    let name = format!("{method} of {}", asked["data"]["from"]);
+    let child = item(name, &asked["uri"], &json!({"line": 1, "character": 2}));
+    match method {
+        "callHierarchy/incomingCalls" => json!([{"from": child, "fromRanges": []}]),
+        "callHierarchy/outgoingCalls" => json!([{"to": child, "fromRanges": []}]),
+        _ => json!([child]),
+    }
+}
+
+/// The double's answer to the three code-action methods.
+///
+/// Listing offers two actions for the asked document: one with its edit
+/// inline (UTF-16 characters 2..4 of line 0) and one, preferred, whose edit is
+/// deferred to `codeAction/resolve` and which then runs `double.fix 7`.
+/// Resolving fills in an edit inserting `fixed ` at the start of the listed
+/// document; running the command answers `null`.
+fn code_action_reply(msg: &Value, last_uri: &mut Value) -> Value {
+    let span = |from: u32, to: u32| json!({"start": {"line": 0, "character": from}, "end": {"line": 0, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/codeAction") => {
+            let uri = msg["params"]["textDocument"]["uri"].clone();
+            *last_uri = uri.clone();
+            json!([
+                {"title": "Replace here", "kind": "refactor.rewrite",
+                 "edit": {"changes": {uri.as_str().unwrap_or_default():
+                     [{"range": span(2, 4), "newText": "X"}]}}},
+                {"title": "Fix it", "kind": "quickfix", "isPreferred": true,
+                 "data": {"n": 1},
+                 "command": {"title": "fix", "command": "double.fix", "arguments": [7]}}
+            ])
+        },
+        Some("codeAction/resolve") => {
+            let mut resolved = msg["params"].clone();
+            resolved["edit"] = json!({"changes": {last_uri.as_str().unwrap_or_default():
+                [{"range": span(0, 0), "newText": "fixed "}]}});
+            resolved
+        },
+        _ => Value::Null,
+    }
+}
+
+/// The double's answer to the two code-lens methods.
+///
+/// Listing offers three lenses: `Run` over UTF-16 characters 2..4 of line 0
+/// (buffer columns 1..3 past the emoji `code_lens_tests` opens with), resolved
+/// and running `double.run 1`; and two deferred ones, on lines 1 and 5.
+/// Resolving titles a lens `references <n>` from its `data`, with a command
+/// that only informs.
+fn code_lens_reply(msg: &Value) -> Value {
+    let on = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/codeLens") => json!([
+            {"range": on(0, 2, 4),
+             "command": {"title": "Run", "command": "double.run", "arguments": [1]}},
+            {"range": on(1, 0, 2), "data": {"n": 2}},
+            {"range": on(5, 0, 2), "data": {"n": 3}}
+        ]),
+        Some("codeLens/resolve") => {
+            let mut resolved = msg["params"].clone();
+            let title = format!("references {}", msg["params"]["data"]["n"]);
+            resolved["command"] = json!({"title": title, "command": ""});
+            resolved
+        },
+        _ => Value::Null,
+    }
+}
+
+/// A connector that runs a scripted in-memory server per "spawn".
+pub(super) fn test_connector(
+    behavior: Behavior,
+    observed: Option<mpsc::UnboundedSender<Value>>,
+    spawns: Arc<AtomicUsize>,
+) -> Connector {
+    Arc::new(move |_spec, root| {
+        let observed = observed.clone();
+        let spawns = Arc::clone(&spawns);
+        Box::pin(async move {
+            let attempt = spawns.fetch_add(1, Ordering::SeqCst);
+            let behavior = if matches!(behavior, Behavior::DieOnce) && attempt > 0 {
+                Behavior::Normal
+            } else {
+                behavior
+            };
+            let (client_end, server_end) = tokio::io::duplex(1 << 20);
+            let (server_read, mut server_write) = tokio::io::split(server_end);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(server_read);
+                // Handshake.
+                let Some(init) = read_msg(&mut reader).await else {
+                    return;
+                };
+                write_msg(
+                    &mut server_write,
+                    &json!({"jsonrpc": "2.0", "id": init["id"],
+                                "result": {"capabilities": advertised_capabilities(behavior)}}),
+                )
+                .await;
+                let _initialized = read_msg(&mut reader).await;
+                if matches!(behavior, Behavior::DieAfterHandshake | Behavior::DieOnce) {
+                    return; // both halves drop: the client sees EOF
+                }
+                if matches!(
+                    behavior,
+                    Behavior::DieWhenIdle | Behavior::DieAfterDiagnostics
+                ) {
+                    let open = read_msg(&mut reader).await;
+                    if matches!(behavior, Behavior::DieAfterDiagnostics)
+                        && let Some(open) = open
+                        && let Some(uri) = open["params"]["textDocument"]["uri"].as_str()
+                    {
+                        write_msg(
+                            &mut server_write,
+                            &json!({"jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {"uri": uri, "diagnostics": [{
+                                "range": {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 2}
+                                },
+                                "severity": 1,
+                                "message": "a marker that must not outlive its server"
+                            }]}}),
+                        )
+                        .await;
+                    }
+                    return;
+                }
+                let mut last_code_action_uri = Value::Null;
+                let mut last_hint_uri = Value::Null;
+                // The version the last `didOpen` or `didChange` carried.
+                let mut last_version = Value::Null;
+                let mut cancel_tokens = matches!(behavior, Behavior::CancelsSemanticTokensOnce);
+                // `RegistersPullsLate`'s pulls, each with the version it asked at.
+                let mut held_pulls = Vec::new();
+                while let Some(msg) = read_msg(&mut reader).await {
+                    if let Some(tx) = &observed {
+                        let _ = tx.send(msg.clone());
+                    }
+                    if let Some(version) = msg["params"]["textDocument"].get("version") {
+                        last_version = version.clone();
+                    }
+                    match msg["method"].as_str() {
+                        Some("textDocument/completion") => {
+                            // A fixed item whose textEdit range is in UTF-16:
+                            // chars 2..4 on the requested line.
+                            let line = msg["params"]["position"]["line"].clone();
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "label": "emoji_aware",
+                                    "kind": 5,
+                                    "textEdit": {
+                                        "range": {
+                                            "start": {"line": line, "character": 2},
+                                            "end": {"line": line, "character": 4}
+                                        },
+                                        "newText": "emoji_aware"
+                                    },
+                                    "data": {"item": 1}
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // The item back with its deferred documentation and an
+                        // import at UTF-16 character 2 of line 0: buffer column
+                        // 1 behind a leading emoji.
+                        Some("completionItem/resolve") => {
+                            let mut item = msg["params"].clone();
+                            item["documentation"] =
+                                json!({"kind": "markdown", "value": "resolved by the double"});
+                            item["additionalTextEdits"] = json!([{
+                                "range": {"start": {"line": 0, "character": 2},
+                                          "end": {"line": 0, "character": 2}},
+                                "newText": "use x;"
+                            }]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": item}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/inlineCompletion") => {
+                            // One item replacing UTF-16 characters 0..4 of
+                            // line 0 -- buffer columns 0..3 once the emoji
+                            // is accounted for -- with an acceptance command.
+                            let result = json!({"items": [{
+                                "insertText": "😀ab = 1;",
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 0, "character": 4}},
+                                "command": {"title": "", "command": "double.accept",
+                                            "arguments": [1]}
+                            }]});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::HintsNever) => {},
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::DiesOnHint) =>
+                        {
+                            break; // both halves drop: the client sees EOF
+                        },
+                        Some("textDocument/inlayHint") => {
+                            // One hint at UTF-16 character 4 on line 0, which
+                            // is buffer column 3 once the emoji is accounted
+                            // for. Its label comes in two located parts:
+                            // ": " leads into `elsewhere.rs` beside the
+                            // asking file (never opened by the double's
+                            // tests), "i32" into the asking file itself, both
+                            // at UTF-16 character 4.
+                            last_hint_uri = msg["params"]["textDocument"]["uri"].clone();
+                            let asking = last_hint_uri.as_str().unwrap_or_default();
+                            let elsewhere = asking
+                                .rsplit_once('/')
+                                .map(|(dir, _)| format!("{dir}/elsewhere.rs"))
+                                .unwrap_or_default();
+                            let at_4 = json!({
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 5}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "position": {"line": 0, "character": 4},
+                                    "label": [
+                                        {"value": ": ", "location":
+                                            {"uri": elsewhere, "range": at_4}},
+                                        {"value": "i32", "location":
+                                            {"uri": asking, "range": at_4}}],
+                                    "kind": 1,
+                                    "paddingLeft": false,
+                                    "paddingRight": false,
+                                    "data": {"hint": 1}
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // The hint back with its deferred tooltip, and its
+                        // label split so its type leads into the file last
+                        // asked about, at UTF-16 character 4 -- buffer column
+                        // 3 behind a leading emoji.
+                        Some("inlayHint/resolve") => {
+                            let mut hint = msg["params"].clone();
+                            hint["tooltip"] = json!("resolved by the double");
+                            hint["label"] = json!([{"value": ": "}, {"value": "i32",
+                                "location": {"uri": last_hint_uri, "range": {
+                                    "start": {"line": 0, "character": 4},
+                                    "end": {"line": 0, "character": 5}}}}]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": hint}),
+                            )
+                            .await;
+                        },
+                        // One reference in the asking file at UTF-16
+                        // character 4 of line 0: buffer column 3 behind a
+                        // leading emoji.
+                        Some("textDocument/references") => {
+                            let uri = msg["params"]["textDocument"]["uri"].clone();
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "uri": uri,
+                                    "range": {
+                                        "start": {"line": 0, "character": 4},
+                                        "end": {"line": 0, "character": 5}
+                                    }
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // One signature whose second parameter is active,
+                        // labelled by UTF-16 offsets as rust-analyzer does.
+                        Some("textDocument/signatureHelp") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "signatures": [{
+                                        "label": "fn add(a: i32, b: i32) -> i32",
+                                        "parameters": [
+                                            {"label": [7, 13]},
+                                            {"label": [15, 21]}
+                                        ]
+                                    }],
+                                    "activeSignature": 0,
+                                    "activeParameter": 1
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/selectionRange") => {
+                            let result = selection_range_reply(&msg["params"]["positions"]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/prepareCallHierarchy"
+                            | "textDocument/prepareTypeHierarchy"
+                            | "callHierarchy/incomingCalls"
+                            | "callHierarchy/outgoingCalls"
+                            | "typeHierarchy/supertypes"
+                            | "typeHierarchy/subtypes",
+                        ) => {
+                            let result = hierarchy_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/documentHighlight") => {
+                            let result = document_highlight_reply(&msg["params"]["position"]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        // The UTF-16 code unit after the caret, and the
+                        // first of line 1; echoing the caret proves it
+                        // crossed in UTF-16 columns.
+                        Some("textDocument/linkedEditingRange") => {
+                            let at = &msg["params"]["position"];
+                            let after = at["character"].as_u64().unwrap_or(0) + 1;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"ranges": [
+                                    {"start": at, "end": {"line": at["line"], "character": after}},
+                                    {"start": {"line": 1, "character": 0},
+                                     "end": {"line": 1, "character": 1}}
+                                ]}}),
+                            )
+                            .await;
+                        },
+                        // `!` inserted at the caret, echoing it.
+                        Some("textDocument/onTypeFormatting") => {
+                            let at = &msg["params"]["position"];
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": at, "end": at}, "newText": "!"}
+                                ]}),
+                            )
+                            .await;
+                        },
+                        // Swallowed whole, as `FormatsNever` swallows formatting.
+                        Some("textDocument/willSaveWaitUntil")
+                            if matches!(behavior, Behavior::WillSavesNever) => {},
+                        Some("textDocument/willSaveWaitUntil") => {
+                            let line_1 = json!({"line": 1, "character": 0});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": line_1, "end": line_1},
+                                     "newText": "// saved\n"}
+                                ]}),
+                            )
+                            .await;
+                        },
+                        // Nothing to say, which is still an answer.
+                        Some("textDocument/hover") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/documentSymbol") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "name": "emoji_name",
+                                    "kind": 12,
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 4}
+                                    },
+                                    "selectionRange": {
+                                        "start": {"line": 0, "character": 2},
+                                        "end": {"line": 0, "character": 4}
+                                    }
+                                }]}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") if cancel_tokens => {
+                            cancel_tokens = false;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "error": {
+                                    "code": -32802,
+                                    "message": "cancelled by the server"
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "data": [0, 2, 2, 1, 0]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full/delta") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "edits": [{"start": 3, "deleteCount": 2, "data": [0, 1]}]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/diagnostic")
+                            if matches!(behavior, Behavior::RegistersPullsLate) =>
+                        {
+                            held_pulls.push((msg, last_version.clone()));
+                        },
+                        Some("textDocument/didClose") => {
+                            for (msg, version) in held_pulls.drain(..) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": msg["id"],
+                                        "result": pull_reply(&msg, &version)}),
+                                )
+                                .await;
+                            }
+                        },
+                        Some("textDocument/diagnostic") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"],
+                                    "result": pull_reply(&msg, &last_version)}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didOpen") => {
+                            let uri = msg["params"]["textDocument"]["uri"]
+                                .as_str()
+                                .unwrap_or_default();
+                            if matches!(behavior, Behavior::RefreshesHints) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "refresh-1",
+                                        "method": "workspace/inlayHint/refresh"}),
+                                )
+                                .await;
+                            }
+                            if matches!(behavior, Behavior::PushesAndPulls) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0",
+                                    "method": "textDocument/publishDiagnostics",
+                                    "params": {"uri": uri, "diagnostics": [{
+                                        "range": {
+                                            "start": {"line": 1, "character": 0},
+                                            "end": {"line": 1, "character": 1}
+                                        },
+                                        "message": "checked"
+                                    }]}}),
+                                )
+                                .await;
+                            }
+                            if registers_pulls(behavior) {
+                                let mut options = json!({
+                                    "interFileDependencies": false,
+                                    "workspaceDiagnostics": false
+                                });
+                                if matches!(behavior, Behavior::RegistersRustPulls) {
+                                    options["documentSelector"] = json!([{"language": "rust"}]);
+                                }
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "register-pull",
+                                    "method": "client/registerCapability",
+                                    "params": {"registrations": [{
+                                        "id": "pull",
+                                        "method": "textDocument/diagnostic",
+                                        "registerOptions": options
+                                    }]}}),
+                                )
+                                .await;
+                            }
+                            if uri.ends_with("Status.java") {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "method": "language/status",
+                                        "params": {"type": "Starting",
+                                            "message": "37% Importing projects"}}),
+                                )
+                                .await;
+                            }
+                        },
+                        // Swallowed whole: no reply, no error, no hang-up.
+                        Some("textDocument/formatting")
+                            if matches!(behavior, Behavior::FormatsNever) => {},
+                        Some("textDocument/formatting") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 1, "character": 0}
+                                    },
+                                    "newText": "formatted\n"
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // Every asked range becomes `formatted`, so a test can
+                        // see which ranges were asked for, and how many times.
+                        Some("textDocument/rangeFormatting") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "range": msg["params"]["range"],
+                                    "newText": "formatted"
+                                }]}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/codeAction"
+                            | "codeAction/resolve"
+                            | "workspace/executeCommand",
+                        ) => {
+                            let result = code_action_reply(&msg, &mut last_code_action_uri);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/codeLens" | "codeLens/resolve") => {
+                            let result = code_lens_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor"
+                            | "textDocument/foldingRange",
+                        ) => {
+                            let result = super::link_color_tests::double_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave") if registers_pulls(behavior) => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "unregister-pull",
+                                "method": "client/unregisterCapability",
+                                "params": {"unregisterations": [{
+                                    "id": "pull",
+                                    "method": "textDocument/diagnostic"
+                                }]}}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave")
+                            if matches!(behavior, Behavior::RefreshesPulls) =>
+                        {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "refresh-pulls",
+                                    "method": "workspace/diagnostic/refresh"}),
+                            )
+                            .await;
+                        },
+                        Some("shutdown") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
+                        // Copilot's sign-in: a device code, and the command
+                        // that completes it.
+                        Some("signIn") => {
+                            let result = json!({"userCode": "ABCD-EFGH",
+                                "command": {"title": "Sign in", "command": "double.run",
+                                            "arguments": [2]}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("exit") => break,
+                        _ => {},
+                    }
+                }
+            });
+            let (read, write) = tokio::io::split(client_end);
+            LspClient::connect(read, write, &root).await
+        })
+    })
+}
+
+/// A connector that always fails as if the binary were missing.
+pub(super) fn failing_connector(spawns: Arc<AtomicUsize>) -> Connector {
+    Arc::new(move |spec, _root| {
+        spawns.fetch_add(1, Ordering::SeqCst);
+        let failure = karet_lsp::LaunchFailure::new(
+            spec.command.clone(),
+            spec.args.clone(),
+            karet_lsp::LaunchCause::NotFound,
+        );
+        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
+    })
+}

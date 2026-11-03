@@ -58,7 +58,7 @@ pub enum SeamPathError {
 
 /// One segment of a [`SeamPath`]: a name plus its disambiguating ordinal.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamSegment {
     /// The segment text, without any `#n` suffix. Braced for anonymous constructs.
     pub name: String,
@@ -106,9 +106,13 @@ impl fmt::Display for SeamSegment {
 /// The semantic path naming one node, and the citation unit an agent hands back to a
 /// human.
 ///
-/// See the [module docs](self) for the identity rules this encodes.
+/// It names a node by where it sits in the containment hierarchy, never by where it sits
+/// in a file, so editing around a node leaves its path alone. An anonymous construct is
+/// a braced segment describing it (`{impl SymbolProvider for Vec<Symbol>}`), siblings
+/// that still collide take a `#n` ordinal in source order, and generic parameters and
+/// `where` clauses are left out, since adding a bound is not a rename.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamPath {
     segments: Vec<SeamSegment>,
 }
@@ -270,7 +274,7 @@ fn parse_segment(raw: &str, position: usize) -> Result<SeamSegment, SeamPathErro
 /// constant time, and keeps the node arena dense. Resolve one back to its path through
 /// [`SeamInterner::path`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamId(pub u32);
 
 /// The two-way map between [`SeamPath`]s and [`SeamId`]s.
@@ -406,6 +410,15 @@ mod tests {
     fn anonymous_segments_are_recognized() {
         assert!(SeamSegment::new("{impl A for B}").is_anonymous());
         assert!(!SeamSegment::new("Symbol").is_anonymous());
+        // Both braces are required: one alone is a malformed name, not a construct.
+        assert!(!SeamSegment::new("{impl A").is_anonymous());
+        assert!(!SeamSegment::new("impl A}").is_anonymous());
+    }
+
+    #[test]
+    fn only_a_path_without_segments_is_empty() {
+        assert!(SeamPath::default().is_empty());
+        assert!(!path("pkg").is_empty());
     }
 
     #[test]
@@ -435,6 +448,7 @@ mod tests {
         let mut interner = SeamInterner::new();
         assert!(interner.is_empty());
         let a = interner.intern(path("pkg::a"));
+        assert!(!interner.is_empty());
         let b = interner.intern(path("pkg::b"));
         // Re-interning the same path yields the same id.
         assert_eq!(interner.intern(path("pkg::a")), a);

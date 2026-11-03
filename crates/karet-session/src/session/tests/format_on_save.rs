@@ -1,0 +1,862 @@
+    #[cfg(feature = "toml-format")]
+    use crate::config::schema::EditorOverride;
+    #[cfg(feature = "toml-format")]
+    use crate::config::schema::LanguageSelector;
+
+    fn saved(events: &mut EventRx) -> bool {
+        let mut found = false;
+        while let Some((_, ev)) = events.try_recv() {
+            found |= matches!(ev, Event::Saved { .. });
+        }
+        found
+    }
+
+    #[test]
+    fn format_on_save_without_a_server_still_writes() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "fn  main() {}\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            DocumentCommand::Open {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events).ok_or("the document never opened")?;
+        session.handle(RequestId(2), DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
+        assert!(saved(&mut events), "save must complete without a formatter");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "fn  main() {}\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn format_on_save_applies_the_builtin_toml_formatter() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(&path, "[package]\nname=\"x\"\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            DocumentCommand::Open {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events).ok_or("the document never opened")?;
+        session.handle(RequestId(2), DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "[package]\nname = \"x\"\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn language_override_can_disable_format_on_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("Cargo.toml");
+        let messy = "[package]\nname=\"x\"\n";
+        std::fs::write(&path, messy)?;
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        let selector = LanguageSelector::from_language("toml").ok_or("no toml selector")?;
+        settings.editor.language_overrides.insert(
+            selector,
+            EditorOverride {
+                format_on_save: Some(false),
+                ..EditorOverride::default()
+            },
+        );
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            DocumentCommand::Open {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events).ok_or("the document never opened")?;
+        session.handle(RequestId(2), DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
+        assert!(saved(&mut events));
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), messy);
+        Ok(())
+    }
+
+    // ---- the deferred half: a save parked on a `textDocument/formatting` reply.
+    //
+    // `begin_format_on_save` only parks a save when a server actually took the
+    // request, which needs a live server. These drive the resolution side
+    // directly instead: seed `pending_format_saves` the way a dispatched request
+    // would, then deliver (or destroy) the answer it is waiting on. What is
+    // under test is that every one of those endings still puts the file on disk.
+
+    /// Open `path` in a session with `editor.formatOnSave` on.
+    fn format_on_save_session(path: &std::path::Path) -> Option<(Session, DocumentId, EventRx)> {
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        session.handle(
+            RequestId(1),
+            DocumentCommand::Open {
+                path: path.to_path_buf(),
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events)?;
+        Some((session, doc, events))
+    }
+
+    /// Open a document, dirty it, and park a save on a formatting request that
+    /// will never be answered normally. Returns the session, the document, the
+    /// event stream, and the request id the parked save is keyed by.
+    fn parked_save(path: &std::path::Path) -> Option<(Session, DocumentId, EventRx, RequestId)> {
+        let (mut session, doc, mut events) = format_on_save_session(path)?;
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "edited\n".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(2),
+            DocumentCommand::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        let request = RequestId(3);
+        session.pending_format_saves.insert(
+            request,
+            crate::session::PendingFormatSave {
+                doc,
+                issued_ms: 0,
+            },
+        );
+        Some((session, doc, events, request))
+    }
+
+    /// Every warning notification the session emitted.
+    fn warnings(events: &mut EventRx) -> Vec<String> {
+        let mut found = Vec::new();
+        while let Some((_, ev)) = events.try_recv() {
+            if let Event::Notification {
+                severity: Severity::Warning,
+                message,
+                ..
+            } = ev
+            {
+                found.push(message);
+            }
+        }
+        found
+    }
+
+    /// The defect this guards: an `lsp` settings change retires the server
+    /// generation, and every answer stamped with the old one is then dropped by
+    /// `accepts`. A save waiting on one used to be stranded forever — the file
+    /// never written, nothing answering the request, and the client's own
+    /// pending-save entry never cleared.
+    #[test]
+    fn retiring_the_servers_writes_the_saves_that_were_waiting_on_them() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, _doc, mut events, _request) =
+            parked_save(&path).ok_or("the save never parked")?;
+
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        // Any `lsp` change retires the generation the parked request belongs to.
+        settings.lsp.enabled = false;
+        session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
+
+        assert!(
+            saved(&mut events),
+            "retiring the servers must not strand the save"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "edited\n",
+            "the buffer must reach disk unformatted rather than not at all"
+        );
+        assert!(
+            session.pending_format_saves.is_empty(),
+            "the parked entry must not leak"
+        );
+        Ok(())
+    }
+
+    /// The drain is keyed on a retirement having happened, not on any reload:
+    /// a settings change that leaves `lsp.*` alone retires no server, so the
+    /// save keeps waiting for its formatter rather than being written early and
+    /// unformatted.
+    #[test]
+    fn a_reload_that_leaves_lsp_alone_keeps_the_save_waiting() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, _doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        settings.editor.insert_final_newline = !settings.editor.insert_final_newline;
+        session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
+
+        assert!(!saved(&mut events), "nothing retired, so nothing is owed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "original\n"
+        );
+        assert!(session.pending_format_saves.contains_key(&request));
+        Ok(())
+    }
+
+    /// The same strand reached from the other side: the answer arrives after the
+    /// generation moved, so `accepts` rejects it. It must still finish its save.
+    #[test]
+    fn an_answer_from_a_retired_generation_still_finishes_its_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 999, // never the live one
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events), "a rejected answer must not eat the save");
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// The ordinary path: the server answers in time, its edits are applied to
+    /// the buffer, and the formatted text is what lands on disk.
+    #[test]
+    fn a_formatting_answer_is_applied_before_the_write() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "formatted\n".to_string(),
+            }],
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "formatted\n"
+        );
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// Edits computed against a version the buffer has moved past would corrupt
+    /// it. They are dropped — but the save they were holding up still lands.
+    #[test]
+    fn a_stale_formatting_answer_writes_the_buffer_unformatted() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version: version + 7, // an answer for a buffer that no longer exists
+            formatted: true,
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "formatted\n".to_string(),
+            }],
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "edited\n",
+            "stale edits are dropped, the save is not"
+        );
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// A server with nothing to change answers with an empty edit list. That is
+    /// success, not failure: write the buffer as it stands.
+    #[test]
+    fn an_empty_formatting_answer_writes_the_buffer_as_it_stands() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// Closing the document abandons the save deliberately, and says so. The
+    /// file keeps whatever was last written to it.
+    #[test]
+    fn closing_a_document_cancels_its_pending_format_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, _request) =
+            parked_save(&path).ok_or("the save never parked")?;
+
+        session.handle(RequestId(4), DocumentCommand::Close { doc });
+
+        assert!(
+            warnings(&mut events)
+                .iter()
+                .any(|message| message.contains("save cancelled")),
+            "an abandoned save must say so"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "original\n",
+            "a cancelled save writes nothing"
+        );
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// `Command::Cancel` naming a parked save abandons it the way `close` does:
+    /// nothing is written, the request is answered, and neither the late
+    /// formatting answer nor the deadline sweep resurrects the write.
+    #[test]
+    fn cancelling_a_pending_format_save_writes_nothing() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.handle(RequestId(4), Command::Cancel { request });
+
+        let mut answered = false;
+        while let Some((tag, ev)) = events.try_recv() {
+            if let Event::Notification {
+                severity: Severity::Warning,
+                message,
+                ..
+            } = ev
+                && tag == Some(request)
+                && message.contains("save cancelled")
+            {
+                answered = true;
+            }
+        }
+        assert!(answered, "the cancelled save request must be answered");
+        assert!(session.pending_format_saves.is_empty());
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
+        });
+        session.expire_format_on_save(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS);
+
+        assert!(!saved(&mut events), "a cancelled save must not be written");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "original\n",
+            "a cancelled save writes nothing"
+        );
+        assert!(
+            session.document(doc).is_some(),
+            "cancelling a save leaves the document open"
+        );
+        Ok(())
+    }
+
+    /// A server may accept the request and never answer. Without a deadline of
+    /// its own the save would wait out the JSON-RPC request timeout — tens of
+    /// seconds of a file not being on disk, with only a spinner to show for it.
+    /// The deadline is `editor.formatOnSaveTimeout`, set here off its default so
+    /// a sweep that ignored the setting would fire at the wrong moment.
+    #[test]
+    fn a_formatter_that_never_answers_does_not_hold_the_file_forever() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, _doc, mut events, _request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        session.config.loaded_config.settings.editor.format_on_save_timeout = 2_500;
+
+        // Just short of the deadline the save is still the formatter's to finish.
+        session.expire_format_on_save(2_499);
+        assert!(!saved(&mut events), "the deadline must not fire early");
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "original\n");
+        assert_eq!(session.pending_format_saves.len(), 1);
+
+        session.expire_format_on_save(2_500);
+
+        assert!(saved(&mut events), "past the deadline the save must land");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "edited\n",
+            "an unanswered formatter costs the formatting, not the save"
+        );
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// A server can hold a TOML document without offering to format it. The
+    /// built-in taplo formatter exists for exactly that case, and the docs
+    /// promise it — but it used to be skipped whenever *any* server had the
+    /// file open, because nothing asked what the server could actually do.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn a_server_that_does_not_format_hands_toml_back_to_the_builtin() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(&path, "[package]\n")?;
+        let (mut session, doc, mut events) =
+            format_on_save_session(&path).ok_or("the document never opened")?;
+        // Dirty the buffer into something the formatter will want to change.
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "name=\"x\"\n".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(2),
+            DocumentCommand::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        let request = RequestId(3);
+        session.pending_format_saves.insert(
+            request,
+            crate::session::PendingFormatSave {
+                doc,
+                issued_ms: 0,
+            },
+        );
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: false,
+            edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "[package]\nname = \"x\"\n",
+            "the built-in formatter must run when the server offers nothing"
+        );
+        Ok(())
+    }
+
+    /// The same answer for a language with no built-in formatter is simply a
+    /// save: there is nothing to fall back to, and nothing to fail over.
+    #[test]
+    fn a_server_that_does_not_format_still_writes_other_languages() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: false,
+            edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// Reformatting the whole buffer a second after every typing pause moves
+    /// text under a cursor that is still in it. The inactivity timer therefore
+    /// saves without formatting; every other cause still formats.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn the_autosave_timer_saves_without_formatting() {
+        let formatted_after = |cause| {
+            let dir = tempfile::tempdir().ok()?;
+            let path = dir.path().join("Cargo.toml");
+            std::fs::write(&path, "[package]\nname=\"x\"\n").ok()?;
+            let mut settings = crate::config::Settings::default();
+            settings.editor.format_on_save = true;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+                loaded_config: crate::config::LoadedConfig::from_settings(settings),
+                ..SessionConfig::default()
+            });
+            session.handle(
+                RequestId(1),
+                DocumentCommand::Open {
+                    path: path.clone(),
+                    language: None,
+                },
+            );
+            let doc = opened_doc(&mut events)?;
+            session.handle(RequestId(2), DocumentCommand::Save { doc, cause });
+            assert!(saved(&mut events));
+            std::fs::read_to_string(&path).ok()
+        };
+
+        let messy = "[package]\nname=\"x\"\n".to_string();
+        let tidy = "[package]\nname = \"x\"\n".to_string();
+
+        assert_eq!(
+            formatted_after(SaveCause::AutoDelay),
+            Some(messy),
+            "the inactivity timer must not reformat under the caret"
+        );
+        assert_eq!(formatted_after(SaveCause::Manual), Some(tidy.clone()));
+        assert_eq!(
+            formatted_after(SaveCause::FocusChange),
+            Some(tidy),
+            "leaving the document is a safe moment to reformat it"
+        );
+    }
+
+    /// An unrecognized cause from a newer peer formats rather than silently
+    /// skipping: a save that formats when it need not have is recoverable, one
+    /// that quietly did not is the surprise.
+    #[test]
+    fn an_unknown_save_cause_still_formats() {
+        assert!(SaveCause::Unknown.may_format());
+        assert!(SaveCause::Manual.may_format());
+        assert!(SaveCause::FocusChange.may_format());
+        assert!(!SaveCause::AutoDelay.may_format());
+    }
+
+    /// The deadline is only real if something drives it. `expire_format_on_save`
+    /// is reached from `tick`, which the backend actor runs on its backup timer —
+    /// a sweep nothing else calls, so a broken wiring would leave every stalled
+    /// save parked forever while the unit test on the expiry itself stayed green.
+    #[test]
+    fn the_session_tick_is_what_expires_a_stalled_format_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, _doc, mut events, _request) =
+            parked_save(&path).ok_or("the save never parked")?;
+
+        session.tick_at(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS - 1);
+        assert!(!saved(&mut events), "the tick must not expire a save early");
+
+        session.tick_at(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS);
+
+        assert!(
+            saved(&mut events),
+            "the periodic tick must be what releases a stalled save"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// Retirement drains the whole map, so a second document waiting on the same
+    /// generation must land too. With one document under test a drain and a
+    /// "commit the first entry" are indistinguishable.
+    #[test]
+    fn retiring_the_servers_writes_every_document_that_was_waiting() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let first = dir.path().join("first.rs");
+        let second = dir.path().join("second.rs");
+        std::fs::write(&first, "original\n")?;
+        std::fs::write(&second, "original\n")?;
+        let (mut session, _doc, mut events, _request) =
+            parked_save(&first).ok_or("the save never parked")?;
+        // A second document, dirtied and parked the same way the first was.
+        session.handle(
+            RequestId(10),
+            DocumentCommand::Open {
+                path: second.clone(),
+                language: None,
+            },
+        );
+        let other = opened_doc(&mut events).ok_or("the document never opened")?;
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "edited\n".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(11),
+            DocumentCommand::ApplyChange {
+                doc: other,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        session.pending_format_saves.insert(
+            RequestId(12),
+            crate::session::PendingFormatSave {
+                doc: other,
+                issued_ms: 0,
+            },
+        );
+
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        settings.lsp.enabled = false;
+        session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
+
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap_or_default(),
+            "edited\n",
+            "the first parked document must reach disk"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap_or_default(),
+            "edited\n",
+            "so must every other one waiting on the same generation"
+        );
+        assert!(session.pending_format_saves.is_empty());
+        Ok(())
+    }
+
+    /// The shipped default is part of the feature, not a detail of it: turning
+    /// format-on-save on for everyone is what decides whether an ordinary save
+    /// rewrites the file. Every other test here sets the flag explicitly, so
+    /// with nothing pinning the default the whole suite stays green when it
+    /// flips — the only thing that notices is the JSON-schema sync check, which
+    /// compares two declarations of the default rather than what it does.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn format_on_save_is_on_by_default() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("Cargo.toml");
+        std::fs::write(&path, "[package]\nname=\"x\"\n")?;
+        // Deliberately the untouched defaults: no `editor.format_on_save` here.
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            DocumentCommand::Open {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let doc = opened_doc(&mut events).ok_or("the document never opened")?;
+
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            },
+        );
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "[package]\nname = \"x\"\n",
+            "a save with stock settings must format"
+        );
+        Ok(())
+    }
+
+    /// `editor.insertFinalNewline` and `editor.trimTrailingWhitespace` are
+    /// documented without qualification, so they have to survive the formatter.
+    /// Running the save cleanup before the formatter meant they applied to text
+    /// the formatter was about to replace and never to what actually reached
+    /// disk — so a formatter that emits no trailing newline wrote a file
+    /// without one, on every save, against a setting that says otherwise.
+    #[test]
+    fn the_save_cleanup_applies_to_what_the_formatter_produced() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save never parked")?;
+        let version = session.document(doc).ok_or("the document is not open")?.version();
+
+        // A formatter that leaves trailing whitespace before a newline, and no
+        // final newline at all. Whitespace at EOF is deliberately preserved by
+        // `normalize_text_for_save`, so the assertion below exercises the two
+        // rules that do apply rather than the documented exception.
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "formatted   \nstill here".to_string(),
+            }],
+            scope: crate::lsp::FormattingScope::Save,
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "formatted\nstill here\n",
+            "the cleanup must run on the formatter's output, not before it"
+        );
+        Ok(())
+    }
+
+    /// A save with nothing to ask writes straight through, so there is no wait
+    /// to back the buffer up for. The swap a deferred save leaves behind is
+    /// scoped to that wait: when the save completes, the swap dir is clean —
+    /// a leftover would have the next session offering to recover a file that
+    /// is already on disk.
+    #[test]
+    fn a_save_that_does_not_defer_leaves_no_swap_behind() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let swapdir = tempfile::tempdir()?;
+        let path = dir.path().join("main.rs");
+        std::fs::write(&path, "original\n")?;
+        // `formatOnSave` is on, but no server is attached to offer formatting,
+        // so the save never parks.
+        let (mut session, doc, mut events) =
+            format_on_save_session(&path).ok_or("the document never opened")?;
+        session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
+        session.handle(
+            RequestId(2),
+            DocumentCommand::ApplyChange {
+                doc,
+                change: Change::new(
+                    0,
+                    vec![TextEdit {
+                        range: Range {
+                            start: LineCol::new(0, 0),
+                            end: LineCol::new(1, 0),
+                        },
+                        new_text: "edited\n".to_string(),
+                    }],
+                ),
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+
+        session.handle(RequestId(3), DocumentCommand::Save {
+            doc,
+            cause: SaveCause::Manual,
+        });
+
+        assert!(saved(&mut events), "the save must write immediately");
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(
+            scan(swapdir.path()).is_empty(),
+            "a save that wrote straight through must leave no swap"
+        );
+        Ok(())
+    }

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The word model moved to `karet_text::words`: `word_bounds`, `class_run_at`, `identifier_at`, `previous_word_boundary`, `next_word_boundary` and `line_span` remain here as deprecated forwarding paths for one release, and `cluster_bounds` is now a re-export of `karet_text::words::cluster_bounds`
+- `selection_text` is deprecated in favour of `karet_text::TextBuffer::slice_range`, which reads the range off the buffer instead of requiring a copy of its text
+
+## [0.7.0](https://github.com/getkono/karet/compare/karet-editor-v0.6.1...karet-editor-v0.7.0) - 2026-09-24
+
+### Added
+
+- *(editor)* render inlay hints as column-accurate virtual text
+
+### Fixed
+
+- *(editor)* give the horizontal reveal one answer when a hint straddles the margin
+- *(editor)* re-check a reveal against the frame that paints it
+- *(editor)* reveal the caret horizontally as the motion happens
+- *(editor)* scroll horizontally by the cells the caret is drawn in
+- *(editor)* draw the caret at a hint's anchor before the hint
+- honour dynamic registration, and close the review's mapping gaps
+- *(editor)* map a click against the row's origin, not the column's
+
+## [0.6.0](https://github.com/getkono/karet/compare/karet-editor-v0.5.0...karet-editor-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(editor)* hit-test the gutter marker column
+- *(core)* a color-swatch decoration carrying its own color
+- *(ui)* drag, page and step the scrollbars
+- *(editor)* report the last render's scroll extents
+
+### Other
+
+- split the files that outgrew the code-line ceiling
+- point shadowed crate readmes at their local files
+- Merge branch 'master' into feat/goto-definition-187
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-editor-v0.3.0...karet-editor-v0.4.0) - 2026-08-06
 
 ### Added

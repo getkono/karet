@@ -1,16 +1,32 @@
 //! `karet-widgets` — a reusable ratatui widget toolkit for building editors.
 //!
-//! A lightweight (ratatui-only) crate of the UI widgets an editor needs. Widgets
-//! render data fed in by the application — they consume `karet-core` models, and
-//! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
-//! also hosts the LSP [`completion`] popup, and (behind the `hover` feature) the
-//! LSP hover/doc popup, which render `karet-core` models supplied over the
-//! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
+//! A crate of the UI widgets an editor needs, built on `ratatui` plus the
+//! neutral `karet-core` models, `karet-filetype` (file-tree icons),
+//! `karet-fuzzy` (popup filtering), `karet-theme` (role colours), `ignore` (the
+//! gitignore-aware file-tree walk) and `unicode-width`. Widgets render data fed
+//! in by the application — they consume `karet-core` models, and so do **not**
+//! depend on the producers (`karet-lsp`/`karet-vcs`). This crate
+//! also hosts the LSP [`completion`] and [`signature`]-help popups, and (behind
+//! the `hover` feature) the LSP hover/doc popup, which render `karet-core`
+//! models supplied over the backend's event stream. The [`menu`] and
+//! [`dialog`] widgets share one row
 //! model ([`choice`]), so a context menu and a modal confirmation navigate
-//! identically. The [`transcript`] widget is the live-conversation surface: an
+//! identically. [`rowselect`] is the shared pointer-selection model for the
+//! read-only surfaces that paint their own rows (diffs, hex dumps, previews) and
+//! so have no document to select over. The [`transcript`] widget is the live-conversation surface: an
 //! append-only, wrapping, stick-to-bottom view with a post-wrap scroll extent.
 //! The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
+//!
+//! # Features
+//!
+//! Both are off by default.
+//!
+//! - `markdown` — renders [`dialog`] bodies as markdown
+//!   (`DialogBody::Markdown`) through `karet-markdown`, which pulls the
+//!   tree-sitter stack for code-fence highlighting. Without it a dialog body
+//!   wraps as plain text.
+//! - `hover` — the LSP hover/doc popup (`hover` module); implies `markdown`.
 
 pub mod ansi;
 pub mod breadcrumbs;
@@ -24,8 +40,10 @@ pub mod menu;
 pub mod notify;
 pub mod pane;
 pub mod picker;
+pub mod rowselect;
 pub mod scroll;
 pub mod select;
+pub mod signature;
 pub mod spinner;
 pub mod status;
 pub mod text;
@@ -49,7 +67,6 @@ pub use file_tree::FileTreeRow;
 pub use file_tree::FileTreeState;
 pub use file_tree::PendingEdit;
 pub use glyph::UiIcon;
-pub use karet_filetype::IconStyle;
 pub use notify::Corner;
 pub use notify::ToastSlot;
 pub use notify::Toasts;
@@ -61,13 +78,17 @@ pub use pane::SplitAxis;
 pub use pane::SplitDir;
 pub use pane::drop_preview_rect;
 pub use pane::drop_zone;
+pub use rowselect::RowGeometry;
+pub use rowselect::RowPos;
+pub use rowselect::RowSelection;
 pub use select::ListSelection;
+pub use signature::SignaturePopup;
 pub use spinner::Spinner;
 pub use transcript::Transcript;
 pub use transcript::TranscriptBody;
 pub use transcript::TranscriptMessage;
 
-/// The LSP hover / documentation popup (relocated here from `karet-lsp`).
+/// The LSP hover / documentation popup.
 #[cfg(feature = "hover")]
 pub mod hover {
     use karet_core::Markup;
@@ -88,13 +109,28 @@ pub mod hover {
         pub markup: &'a Markup,
         /// The theme resolving token colors and emphasis.
         pub theme: &'a Theme,
+        /// Rows of content scrolled off the top, for content taller than the popup.
+        pub scroll: u16,
     }
 
     impl<'a> HoverPopup<'a> {
         /// Build a popup for `markup`.
         #[must_use]
         pub fn new(markup: &'a Markup, theme: &'a Theme) -> Self {
-            Self { markup, theme }
+            Self {
+                markup,
+                theme,
+                scroll: 0,
+            }
+        }
+
+        /// Start painting `rows` rows into the content, so content taller than the
+        /// popup can be scrolled into view. The caller clamps it: a scroll past the
+        /// end paints nothing.
+        #[must_use]
+        pub fn scroll(mut self, rows: u16) -> Self {
+            self.scroll = rows;
+            self
         }
 
         /// The styled lines this popup paints, soft-wrapped to `width` columns.
@@ -128,6 +164,7 @@ pub mod hover {
             for (row, line) in self
                 .lines(area.width)
                 .iter()
+                .skip(self.scroll.into())
                 .take(area.height.into())
                 .enumerate()
             {
@@ -216,6 +253,27 @@ mod tests {
             let cell = buf.cell((0, 0)).cloned().unwrap_or_default();
             assert_eq!(cell.symbol(), "#");
             assert!(cell.modifier.is_empty(), "plain text carries no emphasis");
+        }
+
+        #[test]
+        fn a_scrolled_popup_paints_from_the_scrolled_row() {
+            let theme = Theme::dark();
+            let markup = Markup {
+                kind: MarkupKind::PlainText,
+                value: "one\ntwo\nthree".to_owned(),
+            };
+            let area = Rect::new(0, 0, 8, 2);
+            let mut buf = Buffer::empty(area);
+            HoverPopup::new(&markup, &theme)
+                .scroll(1)
+                .render(area, &mut buf);
+            let first = |y: u16| buf.cell((0, y)).map(|c| c.symbol().to_owned());
+            assert_eq!(first(0), Some("t".to_owned()), "row 0 shows `two`");
+            assert_eq!(
+                buf.cell((1, 1)).map(|c| c.symbol().to_owned()),
+                Some("h".to_owned()),
+                "row 1 shows `three`"
+            );
         }
 
         #[test]

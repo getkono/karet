@@ -1,4 +1,26 @@
-use super::*;
+use std::path::Path;
+
+use karet_core::Change;
+use karet_core::Diagnostic;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::WorkspaceCommand;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::app::state::ContextMenu;
+use crate::app::state::ContextMenuAction;
+use crate::app::state::ContextMenuEntry;
+use crate::app::state::DictionaryTarget;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 const SPELLCHECK_SOURCE: &str = "karet-spell";
 
@@ -17,7 +39,6 @@ impl App {
         let TabKind::Code {
             doc: Some(doc),
             buffer,
-            text,
             ..
         } = &tab.kind
         else {
@@ -27,7 +48,7 @@ impl App {
             diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
                 && range_contains(diagnostic.range, position)
         })?;
-        spell_warning(*doc, buffer, text, diagnostic)
+        spell_warning(*doc, buffer, diagnostic)
     }
 
     /// Resolve a spell warning whose replacement span ends at `position`.
@@ -40,7 +61,6 @@ impl App {
         let TabKind::Code {
             doc: Some(active_doc),
             buffer,
-            text,
             ..
         } = &tab.kind
         else {
@@ -53,65 +73,79 @@ impl App {
             diagnostic.source.as_deref() == Some(SPELLCHECK_SOURCE)
                 && diagnostic.range.end == position
         })?;
-        spell_warning(doc, buffer, text, diagnostic)
+        spell_warning(doc, buffer, diagnostic)
     }
 
-    /// Open the correction menu for a spell warning under `position`.
-    pub(super) fn open_spelling_menu(&mut self, x: u16, y: u16, position: LineCol) -> bool {
-        let Some(warning) = self.spell_warning_at(position) else {
-            return false;
+    /// Lead the right-click menu just opened at `(x, y)` with the spelling rows
+    /// for the misspelled word under that point, when there is one: its
+    /// replacements, then adding it to a dictionary. `area` is the editor
+    /// viewport of the pane the click landed in.
+    ///
+    /// The rows live in the right-click menu rather than on a double click, so a
+    /// double click on a misspelled word selects it like any other word.
+    pub(super) fn add_spelling_to_menu(&mut self, area: Rect, x: u16, y: u16) {
+        if !rect_contains(area, (x, y)) {
+            return;
+        }
+        let Some(warning) = self
+            .char_under(area, (x, y))
+            .and_then(|position| self.spell_warning_at(position))
+        else {
+            return;
         };
-        if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
-            editor,
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            editor.set_selection(buffer, warning.range.start, warning.range.end);
+        let mut entries = spelling_entries(warning);
+        if let Some(menu) = self.context_menu.take() {
+            entries.extend(menu.into_entries());
         }
+        self.context_menu = Some(ContextMenu::new(x, y, entries));
+    }
+}
 
-        let mut entries: Vec<ContextMenuEntry> = warning
-            .suggestions
-            .iter()
-            .map(|suggestion| {
-                ContextMenuEntry::custom(
-                    format!("Replace with “{suggestion}”"),
-                    ContextMenuAction::ReplaceSpelling {
-                        doc: warning.doc,
-                        range: warning.range,
-                        replacement: suggestion.clone(),
-                    },
-                )
-            })
-            .collect();
-        if entries.is_empty() {
-            entries.push(ContextMenuEntry::disabled_custom(
-                "No similar words found",
-                ContextMenuAction::AddSpellingToDictionary {
-                    word: warning.word.clone(),
-                    target: DictionaryTarget::Project,
+/// The spelling rows for `warning`: one per replacement (or a disabled note
+/// that there is none), then adding the word to the project or user dictionary.
+fn spelling_entries(warning: SpellWarning) -> Vec<ContextMenuEntry> {
+    let mut entries: Vec<ContextMenuEntry> = warning
+        .suggestions
+        .iter()
+        .map(|suggestion| {
+            ContextMenuEntry::custom(
+                format!("Replace with “{suggestion}”"),
+                ContextMenuAction::ReplaceSpelling {
+                    doc: warning.doc,
+                    range: warning.range,
+                    replacement: suggestion.clone(),
                 },
-                "The dictionary has no close matches",
-            ));
-        }
-        entries.push(ContextMenuEntry::custom(
-            format!("Add “{}” to Project Dictionary", warning.word),
+            )
+        })
+        .collect();
+    if entries.is_empty() {
+        entries.push(ContextMenuEntry::disabled_custom(
+            "No similar words found",
             ContextMenuAction::AddSpellingToDictionary {
                 word: warning.word.clone(),
                 target: DictionaryTarget::Project,
             },
+            "The dictionary has no close matches",
         ));
-        entries.push(ContextMenuEntry::custom(
-            format!("Add “{}” to User Dictionary", warning.word),
-            ContextMenuAction::AddSpellingToDictionary {
-                word: warning.word,
-                target: DictionaryTarget::User,
-            },
-        ));
-        self.context_menu = Some(ContextMenu::new(x, y, entries));
-        true
     }
+    entries.push(ContextMenuEntry::custom(
+        format!("Add “{}” to Project Dictionary", warning.word),
+        ContextMenuAction::AddSpellingToDictionary {
+            word: warning.word.clone(),
+            target: DictionaryTarget::Project,
+        },
+    ));
+    entries.push(ContextMenuEntry::custom(
+        format!("Add “{}” to User Dictionary", warning.word),
+        ContextMenuAction::AddSpellingToDictionary {
+            word: warning.word,
+            target: DictionaryTarget::User,
+        },
+    ));
+    entries
+}
 
+impl App {
     /// Apply a selected spelling correction through the ordinary atomic edit path.
     pub(super) fn replace_spelling(&mut self, doc: DocumentId, range: Range, replacement: String) {
         if self.active_code_doc() != Some(doc) {
@@ -149,27 +183,24 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, suggestion)| karet_core::CompletionItem {
-                label: suggestion.clone(),
-                kind: karet_core::CompletionKind::Text,
                 detail: Some("Spelling".to_string()),
-                documentation: None,
-                insert_text: suggestion.clone(),
-                edit: None,
                 sort_text: Some(format!("{index:03}")),
-                deprecated: false,
+                ..karet_core::CompletionItem::new(
+                    suggestion.clone(),
+                    karet_core::CompletionKind::Text,
+                )
             })
             .collect();
-        self.pending_completion = None;
-        self.completion = Some(crate::completion::CompletionUi {
+        self.completion.pending = None;
+        self.completion.popup = Some(crate::completion::CompletionUi::new(
+            warning.doc,
+            warning.range.start,
+            warning.range.end,
             items,
-            list: karet_widgets::CompletionState::default(),
-            doc: warning.doc,
-            anchor: warning.range.start,
-            last_filter: String::new(),
-            mode: crate::completion::CompletionMode::Spelling {
+            crate::completion::CompletionMode::Spelling {
                 caret: warning.range.end,
             },
-        });
+        ));
     }
 
     /// Reveal spelling completions when the debounced warning arrives under a
@@ -179,7 +210,7 @@ impl App {
             let completion = self
                 .settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .completion();
             completion.enabled() && completion.auto_trigger()
         });
@@ -203,7 +234,7 @@ impl App {
     /// Ask the backend to add a spelling word to the project layer; the answering
     /// event either confirms the write or asks for typed creation confirmation.
     pub(super) fn add_spelling_to_project_dictionary(&mut self, word: String) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word,
             scope: karet_session::DictionaryScope::Project,
             create_project: false,
@@ -213,7 +244,7 @@ impl App {
     /// Ask the backend to add a spelling word to the platform user settings,
     /// creating that layer when necessary.
     pub(super) fn add_spelling_to_user_dictionary(&mut self, word: String) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word,
             scope: karet_session::DictionaryScope::User,
             create_project: false,
@@ -222,7 +253,7 @@ impl App {
 
     /// Finish the explicitly confirmed missing-project-settings path.
     pub(super) fn create_project_dictionary(&mut self, word: &str, _expected_path: &Path) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word: word.to_string(),
             scope: karet_session::DictionaryScope::Project,
             create_project: true,
@@ -243,20 +274,23 @@ impl App {
         // Drop the word from the Spelling panel on this keystroke rather than
         // waiting for the settings write to come back through the watcher.
         self.invalidate_spelling();
-        self.status = Some(format!("Added “{word}” to {}", path.display()));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!("Added “{word}” to {}", path.display()),
+        );
     }
 }
 
 fn spell_warning(
     doc: DocumentId,
     buffer: &karet_text::TextBuffer,
-    text: &str,
     diagnostic: &Diagnostic,
 ) -> Option<SpellWarning> {
     Some(SpellWarning {
         doc,
         range: diagnostic.range,
-        word: selection_text(buffer, text, diagnostic.range)?,
+        word: buffer.slice_range(diagnostic.range)?,
         suggestions: suggestions_from_message(&diagnostic.message),
     })
 }
@@ -281,6 +315,7 @@ fn suggestions_from_message(message: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

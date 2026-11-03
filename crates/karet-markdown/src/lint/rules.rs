@@ -5,6 +5,7 @@ use super::Config;
 use super::Fix;
 use super::Issue;
 use super::LintSeverity;
+use crate::edit::FenceScan;
 
 /// The identifiers implemented here, id ↔ alias.
 const RULES: &[(&str, &str)] = &[
@@ -56,35 +57,15 @@ pub(super) struct Context<'a> {
 impl<'a> Context<'a> {
     pub(super) fn new(text: &'a str, lines: &'a [&'a str], config: &'a Config) -> Self {
         let mut in_fence = Vec::with_capacity(lines.len());
-        let mut is_fence_line = vec![false; lines.len()];
-        let mut fence: Option<(char, usize)> = None;
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim_start();
-            let delim = if trimmed.starts_with("```") {
-                Some(('`', trimmed.chars().take_while(|&c| c == '`').count()))
-            } else if trimmed.starts_with("~~~") {
-                Some(('~', trimmed.chars().take_while(|&c| c == '~').count()))
-            } else {
-                None
-            };
-            match (fence, delim) {
-                (Some((open, len)), Some((c, l))) if c == open && l >= len => {
-                    in_fence.push(true); // the closer renders inside for MD010 etc.? no:
-                    is_fence_line[i] = true;
-                    fence = None;
-                    // A delimiter line is not interior.
-                    if let Some(last) = in_fence.last_mut() {
-                        *last = false;
-                    }
-                },
-                (Some(_), _) => in_fence.push(true),
-                (None, Some(_)) => {
-                    is_fence_line[i] = true;
-                    in_fence.push(false);
-                    fence = delim;
-                },
-                (None, None) => in_fence.push(false),
-            }
+        let mut is_fence_line = Vec::with_capacity(lines.len());
+        let mut scan = FenceScan::default();
+        for line in lines {
+            let before = scan.inside();
+            scan.feed(line);
+            let after = scan.inside();
+            // A line that opens or closes a fence is a delimiter, never interior.
+            is_fence_line.push(before != after);
+            in_fence.push(before && after);
         }
         let mut front_matter_end = 0;
         if lines.first().is_some_and(|l| l.trim_end() == "---") {
@@ -273,9 +254,11 @@ fn bare_urls(line: &str) -> Vec<(usize, usize)> {
                         i += 1;
                         continue;
                     }
+                    // `<` cannot appear unescaped in a URL, so it starts
+                    // adjacent HTML (`<br>`, `<!-- c -->`), not more URL.
                     let len = chars[i..]
                         .iter()
-                        .take_while(|&&c| !c.is_whitespace() && c != '>' && c != ')' && c != '"')
+                        .take_while(|&&c| !c.is_whitespace() && !matches!(c, '<' | '>' | ')' | '"'))
                         .count();
                     out.push((i, len));
                     i += len;
@@ -700,7 +683,9 @@ fn document_level(cx: &Context<'_>, issues: &mut Vec<Issue>) {
     if cx.text.is_empty() {
         return;
     }
-    let single_trailing = cx.text.ends_with('\n') && !cx.text.ends_with("\n\n");
+    // `\n\r\n` is the CRLF spelling of a blank final line.
+    let single_trailing =
+        cx.text.ends_with('\n') && !cx.text.ends_with("\n\n") && !cx.text.ends_with("\n\r\n");
     if !single_trailing {
         let last = cx.lines.len().saturating_sub(1);
         issues.push(issue(

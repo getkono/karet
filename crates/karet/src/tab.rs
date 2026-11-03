@@ -4,31 +4,41 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod kind;
+mod language;
 mod language_servers;
+pub(crate) mod open;
+pub(crate) mod rows;
+pub(crate) mod seam;
 mod view_state;
 
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use karet_core::Decoration;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_editor::EditorState;
+use karet_filetype::FileKind;
+use karet_filetype::FileType;
 #[cfg(any(feature = "images", feature = "pdf"))]
 use karet_fileview::image::Image;
-use karet_fileview::viewer::FileKind;
 use karet_markdown::WrappedDocument;
 #[cfg(feature = "pdf")]
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerLogEntry;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+use karet_text::TextSnapshot;
 pub(crate) use language_servers::LanguageServerAction;
 pub(crate) use language_servers::LanguageServerActionHit;
 pub(crate) use language_servers::LanguageServerPending;
@@ -36,17 +46,27 @@ pub(crate) use language_servers::LanguageServerPendingKind;
 pub(crate) use language_servers::LanguageServersViewState;
 use ratatui::layout::Rect;
 pub(crate) use view_state::MarkdownPreviewState;
+pub(crate) use view_state::PreviewKey;
 pub use view_state::ViewMode;
 
-use crate::app::Pending;
-use crate::render::FileView;
-use crate::render::Section;
+use crate::pending::Pending;
 
+mod changed_file;
 mod commit;
+pub use changed_file::ChangedFile;
+pub use changed_file::Section;
+#[cfg(test)]
+pub(crate) use changed_file::test_changed_file;
+mod file_tree;
 mod merge_conflict;
 pub(crate) use commit::CommitLayoutMode;
 pub(crate) use commit::CommitViewState;
+pub(crate) use commit::commit_rails;
 pub(crate) use commit::commit_title;
+pub(crate) use file_tree::ChangedFileRow;
+pub(crate) use file_tree::changed_file_rows;
+pub(crate) use language::code_language;
+use language::is_cbor;
 pub(crate) use merge_conflict::MergeConflictState;
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field
@@ -57,8 +77,12 @@ pub(crate) use merge_conflict::MergeConflictState;
 pub(crate) struct FindState {
     /// The search query.
     pub(crate) query: String,
+    /// Caret and selection within [`Self::query`].
+    pub(crate) query_edit: karet_widgets::textfield::TextFieldState,
     /// The replacement text.
     pub(crate) replace: String,
+    /// Caret and selection within [`Self::replace`].
+    pub(crate) replace_edit: karet_widgets::textfield::TextFieldState,
     /// The number of matches.
     pub(crate) count: usize,
     /// The current match (0-based).
@@ -73,6 +97,17 @@ pub(crate) struct FindState {
     pub(crate) case_sensitive: bool,
     /// Match whole words only.
     pub(crate) whole_word: bool,
+    /// Rewrite each replacement to follow the case of the text it replaces
+    /// ([`karet_search::preserve_case`]).
+    pub(crate) preserve_case: bool,
+    /// Search in selection: when set, only matches wholly inside this range
+    /// count. Captured from the selection when the option is turned on, and
+    /// carried through the bar's own replacements.
+    pub(crate) scope: Option<karet_core::Range>,
+    /// Whether the bar owns the keyboard. A click in the editor hands the keys
+    /// back to the text while the bar stays open (VS Code behaviour); opening
+    /// find again or clicking a field takes them back.
+    pub(crate) focused: bool,
 }
 
 impl FindState {
@@ -115,7 +150,7 @@ pub struct PagerState {
 #[derive(Default)]
 pub struct CommitFiles {
     /// Each changed file, diffed and highlighted for display.
-    pub files: Vec<FileView>,
+    pub files: Vec<ChangedFile>,
     /// The in-flight changed-file extraction, if metadata is visible but the
     /// files are not yet.
     pub loading_since: Option<Pending>,
@@ -129,7 +164,7 @@ pub struct CommitFiles {
 impl CommitFiles {
     /// A fully loaded block.
     #[must_use]
-    pub fn ready(files: Vec<FileView>) -> Self {
+    pub fn ready(files: Vec<ChangedFile>) -> Self {
         Self {
             files,
             ..Self::default()
@@ -144,11 +179,6 @@ impl CommitFiles {
             ..Self::default()
         }
     }
-
-    /// Reset to an in-flight state (a reselection cleared the shown files).
-    pub fn reset_loading(&mut self) {
-        *self = Self::loading();
-    }
 }
 
 /// The content of a tab and how to render it.
@@ -161,24 +191,34 @@ pub enum TabKind {
     Welcome,
     /// The singleton language-server inventory and lifecycle manager.
     LanguageServers(LanguageServersViewState),
-    /// A GitHub repository dashboard, detail, or creation form.
-    Github(crate::app::github::GithubViewState),
     /// An editable code/text view.
     Code {
         /// The file path.
         path: PathBuf,
-        /// The display language name.
-        language: &'static str,
+        /// The file type the tab was opened as: the registry entry for its
+        /// path, or CBOR when its content decoded as CBOR. The one record of
+        /// what the document is written in, so the status label, the language
+        /// configuration resolves against, the Markdown commands and the
+        /// default wrap all read it rather than re-deriving it from the path.
+        file_type: FileType,
         /// The session document backing this view, once registered. Editing routes
         /// through the session; the fields below are the latest snapshot for render.
         doc: Option<DocumentId>,
         /// The base version for the next edit (predicted ahead of snapshot echoes so
         /// rapid typing isn't rejected as stale).
         next_version: u64,
-        /// The latest snapshot's buffer (a cheap rope-sharing clone).
-        buffer: TextBuffer,
-        /// The source text (kept in sync with `buffer` for in-file search).
-        text: String,
+        /// The latest snapshot's buffer, shared by every split view of this
+        /// document: a snapshot hands each view a clone of one `Arc`, and a new
+        /// split takes another, so a view costs no copy of the buffer. A view's
+        /// local edit copies it on write ([`Arc::make_mut`]) and the next
+        /// snapshot reunites the views.
+        buffer: Arc<TextBuffer>,
+        /// The source text as one contiguous string, for the readers that need
+        /// one (in-file search, Markdown table and merge-conflict scans). Kept in
+        /// sync with `buffer` as a lazily materialized snapshot: refreshing it on
+        /// an edit shares the rope, and the copy is made at most once per version,
+        /// only if one of those readers asks for it.
+        text: TextSnapshot,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
         /// Semantic block scopes from the latest syntax snapshot.
@@ -206,9 +246,9 @@ pub enum TabKind {
         buffer: TextBuffer,
         /// The parsed + wrapped render model, rebuilt only when `rendered` goes stale.
         wrapped: WrappedDocument,
-        /// The `(document version, wrap width)` `wrapped` was built at, or `None` when it
-        /// has never been built. A change in either rebuilds it on the next draw.
-        rendered: Option<(u64, u16)>,
+        /// The key `wrapped` was built at, or `None` when it has never been built. A
+        /// change in any part rebuilds it on the next draw.
+        rendered: Option<PreviewKey>,
         /// The backend conversion producing this preview's markdown
         /// (a reserved DOCX preview), or `None` for an ordinary source preview.
         pending_since: Option<Pending>,
@@ -281,7 +321,7 @@ pub enum TabKind {
         /// The Source-Control group the diff belongs to.
         section: Section,
         /// The prepared file diff, once the backend has answered.
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         /// The in-flight preparation request, if any.
         loading_since: Option<Pending>,
         /// A load error, when the diff could not be prepared.
@@ -295,6 +335,18 @@ pub enum TabKind {
     StashPreview {
         /// Unified patch and stat output.
         patch: String,
+        /// Two-axis scroll state.
+        pager: PagerState,
+    },
+    /// One language server's log (`window/logMessage` and shown messages),
+    /// reserved the moment it is asked for and filled when the session answers.
+    ServerLog {
+        /// The provider whose log this is.
+        server: LanguageServerId,
+        /// Its entries, oldest first, as of the last answer.
+        entries: Vec<LanguageServerLogEntry>,
+        /// The in-flight read, while one is outstanding.
+        loading_since: Option<Pending>,
         /// Two-axis scroll state.
         pager: PagerState,
     },
@@ -312,7 +364,7 @@ pub enum TabKind {
     ///
     /// Reserved with its identity the moment it is opened, so the pane switches
     /// immediately and the index fills in behind it.
-    Seam(Box<crate::app::seam::SeamViewState>),
+    Seam(Box<seam::SeamViewState>),
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.
@@ -362,14 +414,19 @@ pub enum TabKind {
         /// Responsive scrolling, anchor, and file-rail state.
         view: CommitViewState,
     },
-    /// The full-screen commit graph browser: a scrollable DAG commit log on the left
-    /// and the selected commit's detail on the right.
+    /// The full-screen commit-graph view: the DAG log across the whole pane, panned in
+    /// both axes. Selecting a commit opens it as its own [`TabKind::Commit`] tab rather
+    /// than an embedded pane, so a wide graph keeps the full width.
     CommitGraph {
-        /// When set, the browser shows the history of this file (`git log -- <path>`)
+        /// When set, the view shows the history of this file (`git log -- <path>`)
         /// rather than the whole-repository log; paging uses the same source.
         history_path: Option<PathBuf>,
         /// The loaded commits, newest first (its own paged history).
         commits: Vec<karet_vcs::Commit>,
+        /// The lane layout for `commits`, cached because assignment is sequential from
+        /// the tip and would otherwise be recomputed for every row on every frame.
+        /// Always the same length as `commits`.
+        rails: Vec<karet_graph::RailRow>,
         /// Whether older commits remain to be paged in.
         has_more: bool,
         /// Whether a history page is currently in flight.
@@ -378,20 +435,24 @@ pub enum TabKind {
         loading_since: Option<Pending>,
         /// The selected commit's index into `commits`.
         selected: usize,
-        /// The selected commit's in-flight detail request, if any.
-        detail_loading_since: Option<Pending>,
-        /// The selected commit's loaded detail, if the fetch has answered.
-        detail: Option<Box<karet_vcs::CommitDetail>>,
-        /// The selected commit's changed files and their load state.
-        files: CommitFiles,
         /// A commit hash marked as the base for a two-commit comparison, if any. Set by
         /// "mark base"; the next "compare" diffs it against the current selection.
         compare_base: Option<String>,
-        /// The commit-list scroll offset (first visible row).
+        /// The vertical scroll offset (first visible row), free of the selection so the
+        /// graph can be panned without moving the cursor.
         list_offset: u16,
-        /// Horizontal offset for long lines in the selected commit detail.
-        detail_column: u16,
+        /// The horizontal scroll offset, for graphs wider than the pane.
+        column: u16,
+        /// The last painted rect of the commit rows. It sets how far ahead history is
+        /// prefetched and maps a click to the commit under it. Empty until the view has
+        /// been drawn once.
+        list_rect: Rect,
     },
+    /// An integrated terminal: a shell on a pseudo-terminal, started in the
+    /// workspace root. Several may be open at once; each owns its shell, which
+    /// is hung up when the tab closes.
+    #[cfg(feature = "terminal")]
+    Terminal(Box<crate::terminal::TerminalPane>),
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -428,12 +489,66 @@ pub struct Tab {
     pub(crate) is_symlink: bool,
     /// Cached merge-conflict decorations, keyed by the code buffer version.
     pub(crate) conflict_decorations: Option<(u64, Vec<Decoration>)>,
-    /// Cached GFM table source-line ranges, keyed by the code buffer version.
-    pub(crate) markdown_table_lines: Option<(u64, Vec<RangeInclusive<u32>>)>,
+    /// GFM table source-line ranges for a code view, as the session's highlight
+    /// worker last parsed them ([`karet_session::DocSnapshot::table_lines`]);
+    /// like the highlights, they trail an edit by one worker round-trip.
+    pub(crate) markdown_table_lines: std::sync::Arc<Vec<RangeInclusive<u32>>>,
     /// A rendered Markdown preview shown inside this editor view, when enabled.
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
     /// Dedicated three-way conflict presentation for this editable code document.
     pub(crate) merge_conflict: Option<MergeConflictState>,
+    /// Where the caret goes once a reserved code tab first fills, or `None`
+    /// once it holds the document's text. A code tab opened before its content
+    /// arrives starts empty (see [`Tab::open`]); the first
+    /// document snapshot replaces that empty buffer with the whole file, which
+    /// is a load, not an edit, so the caret is placed here rather than carried
+    /// through the insertion. Edits are refused while this is set, since they
+    /// would be built against the empty placeholder rather than the document.
+    pub(crate) fill_caret: Option<karet_core::LineCol>,
+    /// When a reserved code tab began waiting for its text, so the editor pane
+    /// reveals a muted loading placeholder once the wait outlasts the shared
+    /// reveal delay. Set and cleared together with [`Self::fill_caret`].
+    pub(crate) fill_since: Option<Pending>,
+    /// The cursors and viewport a restored workspace layout puts back once a
+    /// reserved code tab first fills; when set, it replaces
+    /// [`Self::fill_caret`]'s single caret. Cleared with it, and by a jump that
+    /// moves the caret while the tab is still waiting.
+    pub(crate) fill_view: Option<FillView>,
+    /// Why the session could not load a reserved code tab's text, which then
+    /// never arrives: the editor pane shows this instead of waiting forever.
+    pub(crate) fill_error: Option<String>,
+}
+
+/// A code view's cursors and viewport, held for a reserved tab until its text
+/// arrives (an empty buffer would clamp them all to the top).
+#[derive(Debug, Clone)]
+pub(crate) struct FillView {
+    /// Every selection, as saved.
+    pub(crate) cursors: karet_core::CursorState,
+    /// The first visible line.
+    pub(crate) scroll_line: u32,
+    /// The first visible column.
+    pub(crate) scroll_col: u32,
+}
+
+/// Place a code view's carets in `buffer`, the text it has just been given:
+/// `view` when one was held for it, else a single caret at `caret`. The scroll
+/// is clamped to the buffer's last line.
+pub(crate) fn place_fill(
+    editor: &mut EditorState,
+    buffer: &TextBuffer,
+    caret: karet_core::LineCol,
+    view: Option<FillView>,
+) {
+    match view {
+        Some(view) => {
+            editor.set_cursor_state(buffer, view.cursors);
+            let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
+            editor.scroll_to_line(view.scroll_line.min(last_line));
+            editor.scroll_to_column(view.scroll_col);
+        },
+        None => editor.goto(buffer, caret),
+    }
 }
 
 impl Tab {
@@ -454,9 +569,13 @@ impl Tab {
             is_preview: false,
             is_symlink,
             conflict_decorations: None,
-            markdown_table_lines: None,
+            markdown_table_lines: std::sync::Arc::default(),
             markdown_preview: None,
             merge_conflict: None,
+            fill_caret: None,
+            fill_since: None,
+            fill_view: None,
+            fill_error: None,
         }
     }
 
@@ -472,134 +591,6 @@ impl Tab {
         Self::new(
             "Language Servers",
             TabKind::LanguageServers(LanguageServersViewState::loading(pending)),
-        )
-    }
-
-    /// The singleton, permanently pinned GitHub repository dashboard.
-    #[must_use]
-    pub(crate) fn github_dashboard(
-        repository: karet_session::GithubRepository,
-        auth: karet_session::GithubAuth,
-    ) -> Self {
-        Self::new(
-            "GitHub",
-            TabKind::Github(crate::app::github::GithubViewState::dashboard(
-                repository, auth,
-            )),
-        )
-    }
-
-    /// A lazily loaded issue detail tab.
-    #[must_use]
-    pub(crate) fn github_issue(number: u64, pending: Option<karet_session::RequestId>) -> Self {
-        Self::new(
-            format!("Issue #{number}"),
-            TabKind::Github(crate::app::github::GithubViewState::Issue {
-                number,
-                issue: None,
-                comments: karet_session::GithubPage {
-                    items: Vec::new(),
-                    page: 1,
-                    next_page: None,
-                    total_count: None,
-                },
-                pending,
-                loading_since: Pending::start(),
-                error: None,
-                scroll: 0,
-            }),
-        )
-    }
-
-    /// A pull-request detail tab seeded from its search result.
-    #[must_use]
-    pub(crate) fn github_pull_request(
-        pull_request: karet_session::GithubPullRequest,
-        can_write: bool,
-        pending: Option<karet_session::RequestId>,
-    ) -> Self {
-        Self::new(
-            format!("Pull Request #{}", pull_request.number),
-            TabKind::Github(crate::app::github::GithubViewState::PullRequest(
-                crate::app::github::GithubPullRequestView {
-                    pull_request,
-                    comments: karet_session::GithubPage {
-                        items: Vec::new(),
-                        page: 1,
-                        next_page: None,
-                        total_count: None,
-                    },
-                    commits: Vec::new(),
-                    checks: Vec::new(),
-                    activity: Vec::new(),
-                    activity_error: None,
-                    can_write,
-                    section: crate::app::github::GithubPullRequestSection::Conversation,
-                    pending,
-                    loading_since: Pending::start(),
-                    error: None,
-                    scroll: 0,
-                    commit_cursor: 0,
-                    commit_offset: 0,
-                    body_edit: None,
-                    comment_edit: String::new(),
-                    editor: None,
-                    preview: false,
-                    section_hits: Vec::new(),
-                    body_rect: Rect::default(),
-                    comment_rect: Rect::default(),
-                    merge_rect: Rect::default(),
-                    draft_rect: Rect::default(),
-                    check_hits: Vec::new(),
-                    commits_rect: Rect::default(),
-                },
-            )),
-        )
-    }
-
-    /// A read-only GitHub Actions workflow-run detail tab.
-    #[must_use]
-    pub(crate) fn github_workflow_run(
-        repository: karet_session::GithubRepository,
-        workflow: Option<karet_session::GithubWorkflow>,
-        run: karet_session::GithubWorkflowRun,
-    ) -> Self {
-        Self::new(
-            format!("Actions #{}", run.run_number),
-            TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
-                repository,
-                workflow,
-                run,
-                scroll: 0,
-            }),
-        )
-    }
-
-    /// A new-issue form tab.
-    #[must_use]
-    pub(crate) fn github_new_issue(
-        repository: karet_session::GithubRepository,
-        metadata_pending: Option<karet_session::RequestId>,
-    ) -> Self {
-        let form = crate::app::github::GithubIssueForm {
-            metadata_pending,
-            ..crate::app::github::GithubIssueForm::default()
-        };
-        Self::new(
-            "New GitHub Issue",
-            TabKind::Github(crate::app::github::GithubViewState::NewIssue { repository, form }),
-        )
-    }
-
-    /// A new-pull-request form tab.
-    #[must_use]
-    pub(crate) fn github_new_pull_request(repository: karet_session::GithubRepository) -> Self {
-        Self::new(
-            "New Pull Request",
-            TabKind::Github(crate::app::github::GithubViewState::NewPullRequest {
-                repository,
-                form: crate::app::github::GithubPullRequestForm::default(),
-            }),
         )
     }
 
@@ -675,6 +666,20 @@ impl Tab {
         )
     }
 
+    /// A language server's log, reserved while its entries are read.
+    #[must_use]
+    pub fn server_log(server: LanguageServerId) -> Self {
+        Self::new(
+            format!("{} Log", server.display_name()),
+            TabKind::ServerLog {
+                server,
+                entries: Vec::new(),
+                loading_since: Some(Pending::start()),
+                pager: PagerState::default(),
+            },
+        )
+    }
+
     /// A single-file diff tab. With `file` present the diff shows immediately;
     /// without it the tab is reserved in its loading state (the caller has asked
     /// the backend to prepare the diff).
@@ -683,7 +688,7 @@ impl Tab {
         title: String,
         path: PathBuf,
         section: Section,
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         view: ViewMode,
     ) -> Self {
         let loading_since = file.is_none().then(Pending::start);
@@ -704,7 +709,7 @@ impl Tab {
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: CommitFiles) -> Self {
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         Self::new(
             title,
             TabKind::Commit {
@@ -758,18 +763,32 @@ impl Tab {
             TabKind::CommitGraph {
                 history_path,
                 commits: Vec::new(),
+                rails: Vec::new(),
                 has_more: false,
                 loading: true,
                 loading_since: Some(Pending::start()),
                 selected: 0,
-                detail_loading_since: None,
-                detail: None,
-                files: CommitFiles::default(),
                 compare_base: None,
                 list_offset: 0,
-                detail_column: 0,
+                column: 0,
+                list_rect: Rect::ZERO,
             },
         )
+    }
+
+    /// An integrated terminal tab showing `pane`.
+    #[cfg(feature = "terminal")]
+    #[must_use]
+    pub(crate) fn terminal(pane: crate::terminal::TerminalPane) -> Self {
+        let title = terminal_title(&pane);
+        Self::new(title, TabKind::Terminal(Box::new(pane)))
+    }
+
+    /// Whether this tab is an integrated terminal.
+    #[cfg(feature = "terminal")]
+    #[must_use]
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(self.kind, TabKind::Terminal(_))
     }
 
     /// A read-only compare view for the diff between two points.
@@ -780,8 +799,7 @@ impl Tab {
         merge_base: bool,
         files: CommitFiles,
     ) -> Self {
-        let sep = if merge_base { "\u{2026}" } else { ".." };
-        let title = format!("\u{21c4} {base_label}{sep}{head_label}");
+        let title = compare_title(&base_label, &head_label, merge_base);
         Self::new(
             title,
             TabKind::Compare {
@@ -809,7 +827,6 @@ impl Tab {
             TabKind::Diff { path, .. } => Some(path),
             TabKind::Welcome
             | TabKind::LanguageServers(_)
-            | TabKind::Github(_)
             | TabKind::Seam(_)
             | TabKind::Graph { .. }
             | TabKind::LoadedConfig { .. }
@@ -818,7 +835,9 @@ impl Tab {
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
-            TabKind::StashPreview { .. } => None,
+            TabKind::StashPreview { .. } | TabKind::ServerLog { .. } => None,
+            #[cfg(feature = "terminal")]
+            TabKind::Terminal(_) => None,
         }
     }
 
@@ -826,40 +845,6 @@ impl Tab {
     #[must_use]
     pub fn is_diff(&self) -> bool {
         matches!(self.kind, TabKind::Diff { .. })
-    }
-
-    /// Whether this is the uncloseable pinned GitHub dashboard.
-    #[must_use]
-    pub(crate) fn is_github_dashboard(&self) -> bool {
-        matches!(&self.kind, TabKind::Github(view) if view.is_pinned())
-    }
-
-    /// A short language/kind label for the status bar.
-    #[must_use]
-    pub fn language(&self) -> &str {
-        match &self.kind {
-            TabKind::Code { language, .. } => language,
-            TabKind::MarkdownPreview { .. } => "markdown",
-            #[cfg(feature = "images")]
-            TabKind::Image { .. } => "image",
-            #[cfg(feature = "pdf")]
-            TabKind::Document { .. } => "pdf",
-            TabKind::Hex { .. } => "binary",
-            TabKind::Placeholder { .. } => "preview",
-            TabKind::LatexPreview { .. } => "latex preview",
-            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
-            TabKind::StashPreview { .. } => "stash",
-            TabKind::Seam(_) => "seams",
-            TabKind::Graph { .. } => "graph",
-            TabKind::LoadedConfig { .. } => "settings",
-            TabKind::CommitLoading { .. } => "commit",
-            TabKind::Commit { .. } => "commit",
-            TabKind::Compare { .. } => "compare",
-            TabKind::CommitGraph { .. } => "commits",
-            TabKind::Welcome => "",
-            TabKind::LanguageServers(_) => "language servers",
-            TabKind::Github(_) => "github",
-        }
     }
 
     /// The text encoding and line-ending label for the status bar (e.g.
@@ -877,6 +862,66 @@ impl Tab {
         }
         Some(label)
     }
+
+    /// Point a file-backed tab at `path`, where its file now lives (a rename or
+    /// move), refreshing the title and symlink flag. Tabs with no file behind
+    /// them are left alone.
+    ///
+    /// A code tab's file type follows the new path only within the document's
+    /// format, which the session fixed when it loaded the file and a rename does
+    /// not change: a text document takes the new path's text type, while a CBOR
+    /// document stays CBOR (the session still saves it as CBOR), and a text
+    /// document renamed to `.cbor` is still text, so it keeps the type it had.
+    pub(crate) fn retarget(&mut self, path: &Path) {
+        let target = match &mut self.kind {
+            TabKind::Code {
+                path: p, file_type, ..
+            } => {
+                let renamed = karet_filetype::file_type_for_path(path);
+                if !is_cbor(*file_type) && !is_cbor(renamed) {
+                    *file_type = renamed;
+                }
+                Some(p)
+            },
+            TabKind::Hex { path: p, .. } | TabKind::Placeholder { path: p, .. } => Some(p),
+            #[cfg(feature = "images")]
+            TabKind::Image { path: p, .. } => Some(p),
+            #[cfg(feature = "pdf")]
+            TabKind::Document { path: p, .. } => Some(p),
+            _ => None,
+        };
+        if let Some(p) = target {
+            *p = path.to_path_buf();
+            self.is_symlink = std::fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                self.title = name.to_string();
+            }
+        }
+    }
+}
+
+/// A compare tab's title: `⇄ base…head` for a merge-base (three-dot) diff,
+/// `⇄ base..head` for a tip-to-tip (two-dot) one.
+#[must_use]
+pub(crate) fn compare_title(base_label: &str, head_label: &str, merge_base: bool) -> String {
+    let sep = if merge_base { "\u{2026}" } else { ".." };
+    format!("\u{21c4} {base_label}{sep}{head_label}")
+}
+
+/// A terminal tab's title: the program's own title when it set one, else
+/// `Terminal N`; an exited shell says so.
+#[cfg(feature = "terminal")]
+#[must_use]
+pub(crate) fn terminal_title(pane: &crate::terminal::TerminalPane) -> String {
+    let base = pane
+        .title()
+        .map_or_else(|| format!("Terminal {}", pane.id().0), str::to_owned);
+    if pane.exit_status().is_some() {
+        format!("{base} (exited)")
+    } else {
+        base
+    }
 }
 
 fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
@@ -892,8 +937,8 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Diff { path, .. } => Some(path),
         TabKind::Welcome
         | TabKind::LanguageServers(_)
-        | TabKind::Github(_)
         | TabKind::StashPreview { .. }
+        | TabKind::ServerLog { .. }
         | TabKind::Seam(_)
         | TabKind::Graph { .. }
         | TabKind::LoadedConfig { .. }
@@ -902,6 +947,8 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::Commit { .. }
         | TabKind::Compare { .. }
         | TabKind::CommitGraph { .. } => None,
+        #[cfg(feature = "terminal")]
+        TabKind::Terminal(_) => None,
     }
 }
 
@@ -916,17 +963,17 @@ mod tests {
         assert!(!tab.is_diff());
     }
 
-    #[test]
-    fn code_tab_reports_path_and_language() {
-        let tab = Tab::new(
-            "a.rs",
+    /// A code tab over `path` holding `text`, typed by its path.
+    fn code(path: &str, text: &str) -> Tab {
+        Tab::new(
+            path,
             TabKind::Code {
-                path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                path: PathBuf::from(path),
+                file_type: karet_filetype::file_type_for_path(Path::new(path)),
                 doc: None,
                 next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}"),
-                text: "fn main() {}".to_string(),
+                buffer: TextBuffer::from_text(text).into(),
+                text: text.into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
@@ -935,9 +982,55 @@ mod tests {
                 search_decos: Vec::new(),
                 syntax_errors: Vec::new(),
             },
-        );
-        assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
-        assert_eq!(tab.language(), "Rust");
+        )
+    }
+
+    #[test]
+    fn retarget_moves_the_path_title_and_path_derived_type() {
+        let mut tab = code("/x/notes.txt", "");
+        tab.retarget(Path::new("/y/notes.md"));
+        assert_eq!(tab.path(), Some(Path::new("/y/notes.md")));
+        assert_eq!(tab.title, "notes.md");
+        assert!(tab.is_markdown());
+    }
+
+    /// A CBOR document stays CBOR through a rename, whether its type came from
+    /// sniffed bytes or from a `.cbor` name it is renamed away from: the session
+    /// keeps saving it as CBOR.
+    #[test]
+    fn retarget_keeps_a_cbor_document_cbor() {
+        let mut sniffed = code("/x/data.bin", "");
+        let cbor = karet_filetype::file_type_for_language("cbor");
+        if let (TabKind::Code { file_type, .. }, Some(cbor)) = (&mut sniffed.kind, cbor) {
+            *file_type = cbor;
+        }
+        sniffed.retarget(Path::new("/x/renamed.bin"));
+        assert_eq!(sniffed.status_label(), "CBOR");
+
+        let mut named = code("/x/data.cbor", "");
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.bin"));
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.md"));
+        assert!(!named.is_markdown());
+    }
+
+    /// A text document renamed to `.cbor` is still text to the session, so it
+    /// keeps its text type rather than taking the CBOR label.
+    #[test]
+    fn retarget_does_not_make_a_text_document_cbor() {
+        let mut tab = code("/x/notes.md", "");
+        tab.retarget(Path::new("/x/notes.cbor"));
+        assert_eq!(tab.status_label(), "Markdown");
+        assert!(tab.is_markdown());
+    }
+
+    #[test]
+    fn retarget_leaves_a_tab_without_a_file_alone() {
+        let mut tab = Tab::stash_preview("stash@{0}", String::new());
+        tab.retarget(Path::new("/x/a.rs"));
+        assert_eq!(tab.title, "Stash stash@{0}");
+        assert!(tab.path().is_none());
     }
 
     #[test]
@@ -947,11 +1040,11 @@ mod tests {
             "a.rs",
             TabKind::Code {
                 path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                file_type: karet_filetype::file_type_for_path(Path::new("/x/a.rs")),
                 doc: None,
                 next_version: 0,
-                buffer,
-                text: "a\nb\n".to_string(),
+                buffer: buffer.into(),
+                text: "a\nb\n".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
@@ -975,7 +1068,6 @@ mod tests {
         };
         let detail = karet_vcs::CommitDetail {
             hash: "a".repeat(40),
-            short_hash: "aaaaaaa".to_string(),
             summary: "subject".to_string(),
             body: String::new(),
             author: identity.clone(),

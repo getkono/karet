@@ -1,19 +1,17 @@
+use super::harness::*;
 use super::support::*;
+use crate::app::hit::tab_at;
 use crate::app::*;
 
 #[test]
-fn selection_text_slices_the_source() {
+fn a_selection_slices_the_buffer() {
     use karet_text::TextBuffer;
-    let src = "foo bar\nbaz";
-    let buffer = TextBuffer::from_text(src);
+    let buffer = TextBuffer::from_text("foo bar\nbaz");
     let range = Range {
         start: LineCol::new(0, 4),
         end: LineCol::new(1, 3),
     };
-    assert_eq!(
-        selection_text(&buffer, src, range).as_deref(),
-        Some("bar\nbaz")
-    );
+    assert_eq!(buffer.slice_range(range).as_deref(), Some("bar\nbaz"));
 }
 
 #[test]
@@ -71,7 +69,12 @@ fn markdown_table_formatting_is_one_undoable_document_edit() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::ApplyChange { .. }))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -82,18 +85,18 @@ fn markdown_table_formatting_is_one_undoable_document_edit() {
 fn copy_reports_status() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "hello world"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.dispatch(Command::SelectRight);
     app.dispatch(Command::Copy);
-    assert_eq!(app.status.as_deref(), Some("copied selection"));
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
 }
 
 #[test]
 fn right_clicking_an_error_toast_copies_it_without_dismissing() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Lsp, "server failed");
+    app.notify(Report::Failure, NotificationKind::Lsp, "server failed");
     let id = app.notifications.active()[0].id;
-    app.toast_hits = vec![ToastHit {
+    app.last_frame.toast_hits = vec![ToastHit {
         rect: Rect::new(5, 3, 20, 4),
         id,
     }];
@@ -104,8 +107,13 @@ fn right_clicking_an_error_toast_copies_it_without_dismissing() {
         row: 4,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.status.as_deref(), Some("copied error"));
-    assert_eq!(app.notifications.active()[0].id, id);
+    assert_eq!(last_message(&app).as_deref(), Some("copied error"));
+    // The copy confirms with a card of its own, so the error is no longer newest
+    // — but it is still there, which is what "without dismissing" means.
+    assert!(
+        app.notifications.active().iter().any(|note| note.id == id),
+        "the error survives the copy"
+    );
 }
 
 #[test]
@@ -122,66 +130,100 @@ fn copied_notification_text_includes_the_body() {
     };
 
     assert_eq!(
-        mouse::notification_clipboard_text(&notification),
+        mouse::chrome::notification_clipboard_text(&notification),
         "server failed\npermission denied"
     );
 }
 
+/// Keyboard motion, selection and multi-caret rows (`docs/editing-behavior.md`).
 #[test]
-fn select_line_end_then_select_all_dispatch_in_editor() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello world\nsecond"));
-    app.focus = Focus::Editor;
-    // Shift+End selects from the caret to the end of the line.
-    app.dispatch(Command::SelectLineEnd);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 11),
-        })
-    );
-    // Ctrl+A selects the whole buffer.
-    app.dispatch(Command::EditorSelectAll);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(1, 6),
-        })
-    );
+fn keyboard_caret_and_selection_conformance() {
+    use KeyCode::*;
+    let shift = KeyModifiers::SHIFT;
+    let ctrl = KeyModifiers::CONTROL;
+    check(vec![
+        case(
+            "End moves the caret without selecting",
+            "|hello",
+            vec![key(End)],
+            "hello|",
+        ),
+        case(
+            "Ctrl+Left moves to the start of the previous word",
+            "foo bar| baz",
+            vec![Step::Key(Left, ctrl)],
+            "foo |bar baz",
+        ),
+        case(
+            "Ctrl+Right moves to the end of the next word",
+            "fo|o bar baz",
+            vec![Step::Key(Right, ctrl), Step::Key(Right, ctrl)],
+            "foo bar| baz",
+        ),
+        case(
+            "Alt+Right is the same word motion as Ctrl+Right",
+            "fo|o bar baz",
+            vec![Step::Key(Right, KeyModifiers::ALT)],
+            "foo| bar baz",
+        ),
+        case(
+            "Shift+End selects from the caret to the line end",
+            "|hello world\nsecond",
+            vec![Step::Key(End, shift)],
+            "[hello world|]\nsecond",
+        ),
+        case(
+            "Ctrl+A selects the whole document, head at its end",
+            "hello |world\nsecond",
+            vec![Step::Key(Char('a'), ctrl)],
+            "[hello world\nsecond|]",
+        ),
+        case(
+            "Ctrl+A does not scroll to the end of the document",
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19",
+            vec![Step::Key(Char('a'), ctrl)],
+            "[0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19|]",
+        )
+        .scrolled(0),
+        case(
+            "Shift+Right extends one character at a time",
+            "|hello",
+            vec![Step::Key(Right, shift), Step::Key(Right, shift)],
+            "[he|]llo",
+        ),
+        case(
+            "Shift+Left extends backward, the head leading",
+            "he|llo",
+            vec![Step::Key(Left, shift), Step::Key(Left, shift)],
+            "[|he]llo",
+        ),
+        case(
+            "a plain arrow clears the selection",
+            "he|llo",
+            vec![Step::Key(Left, shift), Step::Key(Left, shift), key(Left)],
+            "|hello",
+        ),
+        case(
+            "Ctrl+Alt+Down adds a caret below, which becomes primary",
+            "|ab\ncd",
+            vec![Step::Key(Down, ctrl | KeyModifiers::ALT)],
+            "|ab\n#cd",
+        ),
+    ]);
 }
 
 #[test]
-fn caret_line_end_moves_without_selecting() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::CaretLineEnd);
-    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 5));
-    assert_eq!(app.tabs[app.active].editor.selection_range(), None);
-}
+fn esc_collapses_extra_carets_and_keeps_editor_focus() {
+    let mut rig = Rig::new("|ab\ncd");
+    rig.step(Step::Cmd(Command::AddCursorBelow));
+    assert!(rig.tab().editor.has_multiple_cursors());
+    rig.step(key(KeyCode::Esc));
+    assert!(!rig.tab().editor.has_multiple_cursors());
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
 
-#[test]
-fn add_cursor_below_then_esc_collapses() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "ab\ncd"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::AddCursorBelow);
-    assert!(app.tabs[app.active].editor.has_multiple_cursors());
-    // Esc with several carets collapses to the primary, keeping editor focus.
-    app.dispatch(Command::CollapseCarets);
-    assert!(!app.tabs[app.active].editor.has_multiple_cursors());
-    assert_eq!(app.focus, Focus::Editor);
-}
-
-#[test]
-fn esc_with_a_single_caret_keeps_editor_focus() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "ab"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::CollapseCarets);
-    assert_eq!(app.focus, Focus::Editor);
+    // With one caret Esc is a no-op that never leaves the editor.
+    rig.step(key(KeyCode::Esc));
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -191,7 +233,7 @@ fn markdown_links_require_a_modifier_and_open_workspace_files() {
     write_file(&root, "docs/guide.md", b"guide");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
-    app.markdown_link_hits = vec![MarkdownLinkHit {
+    app.focused_frame_mut().markdown_link_hits = vec![MarkdownLinkHit {
         rect: Rect::new(4, 3, 5, 1),
         target: "docs/guide.md".to_string(),
     }];
@@ -216,14 +258,14 @@ fn markdown_links_require_a_modifier_and_open_workspace_files() {
 }
 
 #[test]
-fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
+fn markdown_file_links_outside_the_workspace_require_confirmation() {
     let parent = test_dir("markdown-link-boundary");
     let root = parent.join("workspace");
     write_file(&root, "README.md", b"[outside](../outside.md)");
     write_file(&parent, "outside.md", b"outside");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
-    app.markdown_link_hits = vec![MarkdownLinkHit {
+    app.focused_frame_mut().markdown_link_hits = vec![MarkdownLinkHit {
         rect: Rect::new(1, 1, 7, 1),
         target: "../outside.md".to_string(),
     }];
@@ -234,15 +276,28 @@ fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
         row: 1,
         modifiers: KeyModifiers::SUPER,
     }));
-    assert!(app.overlay.is_some());
+    assert!(app.confirm.is_some(), "the escape raised a confirmation");
+    assert_eq!(
+        app.tabs[app.active].path(),
+        Some(root.join("README.md").as_path()),
+        "still on the file the link came from"
+    );
+
+    // The safe answer is selected, so Enter alone stays inside the workspace.
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.tabs[app.active].path(),
         Some(root.join("README.md").as_path())
     );
-    if let Some(overlay) = app.overlay.as_mut() {
-        overlay.push_str("open");
-    }
-    app.overlay_accept();
+
+    assert!(app.handle_markdown_link_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 2,
+        row: 1,
+        modifiers: KeyModifiers::SUPER,
+    }));
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.tabs[app.active].path(),
         Some(parent.join("outside.md").as_path())
@@ -250,125 +305,117 @@ fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
     let _ = std::fs::remove_dir_all(parent);
 }
 
+/// Click, multi-click, modifier-click and wheel rows (`docs/editing-behavior.md`).
 #[test]
-fn alt_click_adds_a_second_caret() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    let click = |col, mods| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: mods,
-    };
-    app.handle_editor_click(click(3, KeyModifiers::NONE));
-    app.handle_editor_click(click(8, KeyModifiers::ALT));
-    assert!(app.tabs[app.active].editor.has_multiple_cursors());
+fn mouse_caret_and_selection_conformance() {
+    let alt = KeyModifiers::ALT;
+    let shift = KeyModifiers::SHIFT;
+    let lines: &'static str =
+        "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n";
+    check(vec![
+        case(
+            "a click places the caret",
+            "|foo bar baz",
+            vec![click(text(0, 5))],
+            "foo b|ar baz",
+        ),
+        case(
+            "a click past the end of a line lands at the line end",
+            "|foo\nbar",
+            vec![click(At::Offset(0, 3, 4, 0))],
+            "foo|\nbar",
+        ),
+        case(
+            "a click below the last line lands at the end of the document",
+            "|foo\nbar",
+            vec![click(At::Offset(1, 1, 0, 2))],
+            "foo\nbar|",
+        ),
+        case(
+            "a click on the right half of a wide character lands after it",
+            "|日本",
+            vec![click(At::Offset(0, 0, 1, 0))],
+            "日|本",
+        ),
+        case(
+            "a click on the last cell of a tab lands after it",
+            "|\tx",
+            vec![click(At::Offset(0, 1, -1, 0))],
+            "\t|x",
+        ),
+        case(
+            "a click on the first cell of a tab lands before it",
+            "\t|x",
+            vec![click(text(0, 0))],
+            "|\tx",
+        ),
+        case(
+            "a click drops every secondary caret",
+            "|foo\n#bar",
+            vec![click(text(0, 2))],
+            "fo|o\nbar",
+        ),
+        case(
+            "Alt+click adds a caret, which becomes primary",
+            "|foo bar baz",
+            vec![click(text(0, 0)), Step::Click(text(0, 5), alt)],
+            "|foo b#ar baz",
+        ),
+        case(
+            "a double click selects the word under the pointer",
+            "|foo bar baz",
+            vec![click(text(0, 5)), click(text(0, 5))],
+            "foo [bar|] baz",
+        ),
+        case(
+            "Shift+click extends forward from the caret",
+            "|foo bar baz",
+            vec![click(text(0, 0)), Step::Click(text(0, 5), shift)],
+            "[foo b|]ar baz",
+        ),
+        case(
+            "Shift+click extends backward when it precedes the caret",
+            "|foo bar baz",
+            vec![click(text(0, 10)), Step::Click(text(0, 3), shift)],
+            "foo[| bar ba]z",
+        ),
+        case(
+            "the wheel scrolls without moving the caret",
+            lines,
+            vec![Step::WheelDown(text(0, 0), KeyModifiers::NONE)],
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n",
+        )
+        .scrolled(3),
+        case(
+            "a wheel notch up scrolls back by the same step",
+            lines,
+            vec![
+                Step::WheelDown(text(0, 0), KeyModifiers::NONE),
+                Step::WheelDown(text(3, 0), KeyModifiers::NONE),
+                Step::WheelUp(text(6, 0), KeyModifiers::NONE),
+            ],
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n",
+        )
+        .scrolled(3)
+        .sized(40, 10),
+    ]);
 }
 
 #[test]
-fn double_click_selects_the_word() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    // Two quick clicks over the 'a' of "bar" (buffer col 5 -> screen col 8).
-    let click = |col| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
-    };
-    app.handle_editor_click(click(8));
-    app.handle_editor_click(click(8));
-    let sel = app.tabs[app.active].editor.selection_range();
-    assert_eq!(
-        sel,
-        Some(Range {
-            start: LineCol::new(0, 4),
-            end: LineCol::new(0, 7),
-        })
-    );
-}
+fn a_click_in_another_split_moves_focus_and_only_that_panes_caret() {
+    let mut rig = Rig::new("|alpha\nbeta");
+    rig.step(Step::Cmd(Command::SplitRight));
+    assert_eq!(rig.focused_index(), Some(1), "the new split is focused");
 
-#[test]
-fn shift_click_extends_selection_to_the_click() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    let click = |col, shift| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: if shift {
-            KeyModifiers::SHIFT
-        } else {
-            KeyModifiers::NONE
-        },
-    };
-    // Place the caret at buffer col 0 (screen col 3 past the gutter), then
-    // Shift+click at buffer col 5 (screen col 8) to extend the selection.
-    app.handle_editor_click(click(3, false));
-    app.handle_editor_click(click(8, true));
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 5),
-        })
-    );
+    rig.step(click(At::Pane(0, 1, 2)));
 
-    // The same gesture selects backward when the click precedes the caret.
-    app.handle_editor_click(click(13, false));
-    app.handle_editor_click(click(6, true));
+    assert_eq!(rig.focused_index(), Some(0));
+    assert_eq!(rig.marked_in(0), "alpha\nbe|ta");
     assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 3),
-            end: LineCol::new(0, 10),
-        })
+        rig.marked_in(1),
+        "|alpha\nbeta",
+        "the other view keeps its caret"
     );
-}
-
-#[test]
-fn shift_arrow_extends_then_plain_arrow_clears() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::SelectRight);
-    app.dispatch(Command::SelectRight);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 2),
-        })
-    );
-    app.dispatch(Command::CaretLeft);
-    assert_eq!(app.tabs[app.active].editor.selection_range(), None);
 }
 
 #[test]
@@ -395,13 +442,13 @@ fn tab_at_maps_columns_to_tabs_and_close() {
 #[test]
 fn status_segment_click_dispatches_its_command() {
     let mut app = app();
-    app.status_rect = Rect {
+    app.last_frame.status_rect = Rect {
         x: 0,
         y: 9,
         width: 80,
         height: 1,
     };
-    app.status_hits = vec![
+    app.last_frame.status_hits = vec![
         (0, 9, Command::ToggleFocus),
         (12, 19, Command::OpenQuickOpen),
     ];
@@ -409,26 +456,26 @@ fn status_segment_click_dispatches_its_command() {
     assert_eq!(app.status_command_at(15), Some(Command::OpenQuickOpen));
     assert_eq!(app.status_command_at(40), None);
     // Clicking the focus segment toggles focus.
-    let before = app.focus;
+    let before = app.keyboard.focus();
     app.handle_status_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 3,
         row: 9,
         modifiers: KeyModifiers::NONE,
     });
-    assert_ne!(app.focus, before);
+    assert_ne!(app.keyboard.focus(), before);
 }
 
 #[test]
 fn sidebar_header_click_switches_panel() {
     let mut app = app();
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.panel_hits = vec![
+    app.last_frame.panel_hits = vec![
         (23, 25, SidebarPanel::Explorer),
         (25, 27, SidebarPanel::Search),
         (27, 29, SidebarPanel::SourceControl),
@@ -441,13 +488,13 @@ fn sidebar_header_click_switches_panel() {
 fn sidebar_click_selects_and_opens_scm_change() {
     let mut app = app(); // staged a.rs, working b.rs
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 30,
@@ -478,7 +525,7 @@ fn dragging_moves_the_active_tab() {
     app.push_tab(code_tab("a.rs"));
     app.push_tab(code_tab("b.rs"));
     app.push_tab(code_tab("c.rs"));
-    app.pane_frames = vec![PaneFrame {
+    app.last_frame.panes = vec![PaneFrame {
         pane: app.focus_pane(),
         tabstrip_rect: Rect::default(),
         tab_hits: vec![
@@ -501,10 +548,16 @@ fn dragging_moves_the_active_tab() {
         action_hits: Vec::new(),
         breadcrumb_rect: Rect::default(),
         breadcrumb_hits: Vec::new(),
+        lsp_badge_hit: None,
         content_rect: Rect::default(),
         editor_rect: Rect::default(),
+        markdown_preview_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }];
     app.active = 0;
     app.tab_drag = Some(TabDrag {
@@ -521,7 +574,7 @@ fn dragging_moves_the_active_tab() {
 fn pane_action_click_wins_over_the_underlying_tab_hit() {
     let mut app = app();
     app.push_tab(text_tab("README.md", "# Title\n"));
-    app.pane_frames = vec![PaneFrame {
+    app.last_frame.panes = vec![PaneFrame {
         pane: app.focus_pane(),
         tabstrip_rect: Rect::new(0, 0, 30, 1),
         tab_hits: vec![TabHit {
@@ -532,10 +585,16 @@ fn pane_action_click_wins_over_the_underlying_tab_hit() {
         action_hits: vec![(24, 27, Command::MarkdownPreviewSide)],
         breadcrumb_rect: Rect::default(),
         breadcrumb_hits: Vec::new(),
+        lsp_badge_hit: None,
         content_rect: Rect::default(),
         editor_rect: Rect::default(),
+        markdown_preview_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }];
 
     app.handle_mouse(MouseEvent {
@@ -605,7 +664,7 @@ fn keyboard_split_opens_a_second_view_and_focus_cycles() {
 #[test]
 fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
     let mut app = app();
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     let left = app.layout.root_pane();
     let right = app.layout.split(left, SplitDir::Right);
     app.layout.set_focus(right);
@@ -614,13 +673,13 @@ fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
 
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(38)
     );
     assert_eq!(
         app.layout
-            .pane_rect(right, app.main_rect)
+            .pane_rect(right, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(42)
     );
@@ -629,10 +688,10 @@ fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
 #[test]
 fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     let mut app = app();
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     let left = app.layout.root_pane();
     let right = app.layout.split(left, SplitDir::Right);
-    app.pane_dividers = app.layout.dividers(app.main_rect);
+    app.last_frame.pane_dividers = app.layout.dividers(app.last_frame.main_rect);
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -655,7 +714,7 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     });
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(70)
     );
@@ -668,7 +727,7 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     });
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(70)
     );
@@ -687,13 +746,13 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
 
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(61)
     );
     assert_eq!(
         app.layout
-            .pane_rect(right, app.main_rect)
+            .pane_rect(right, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(19)
     );
@@ -730,7 +789,7 @@ fn closing_remembers_path_and_reopen_restores_it() {
     let _ = std::fs::write(&file, "fn main() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.push_tab(workspace::open_file(&file));
+    app.push_tab(Tab::open(&file));
     app.push_tab(code_tab("scratch"));
     app.active = 0;
     app.close_tab_at(0);
@@ -753,7 +812,7 @@ fn closing_the_last_tab_collapses_its_tile_when_another_remains() {
     assert_eq!(app.layout.pane_count(), 1);
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(app.tabs[0].title, "a.rs");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]

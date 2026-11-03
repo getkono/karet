@@ -6,18 +6,24 @@
 
 use std::collections::HashSet;
 
-use karet_session::api::Command as SessionCommand;
+use karet_core::NotificationKind;
 use karet_session::api::RequestId;
+use karet_session::api::SeamCommand;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
+use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
+use karet_session::api::SeamSync;
 
-use super::SeamFocus;
-use super::SeamViewState;
 use crate::app::App;
+use crate::app::Report;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
+use crate::tab::seam::Reroot;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::SeamViewState;
 
 impl Tab {
     /// The title a Seam view on `root` carries.
@@ -44,7 +50,7 @@ impl Tab {
     pub fn seam(root: std::path::PathBuf) -> Self {
         Self::new(
             Self::seam_title(&root),
-            TabKind::Seam(Box::new(SeamViewState::pending())),
+            TabKind::Seam(Box::new(SeamViewState::pending(root))),
         )
     }
 
@@ -54,7 +60,7 @@ impl Tab {
     /// where the view reads is not the same as closing it and opening another.
     pub(crate) fn repoint_seam(&mut self, root: std::path::PathBuf) {
         self.title = Self::seam_title(&root);
-        self.kind = TabKind::Seam(Box::new(SeamViewState::pending()));
+        self.kind = TabKind::Seam(Box::new(SeamViewState::pending(root)));
     }
 }
 
@@ -100,20 +106,11 @@ impl App {
 
     /// Offer the start points the Seam view could be opened on.
     ///
-    /// Discovery runs here on the app thread rather than on the backend. The picker *is*
-    /// the surface being opened, so rows arriving after it would move the selection under
-    /// the reader's fingers, and withholding it until they arrived would be exactly the
-    /// delayed surface a picker must never be. Discovery only reads manifests and lists
-    /// directories, and it is bounded — the app already runs a heavier walk than this
-    /// synchronously to open the quick-open picker.
+    /// The picker opens at once over the reader's context and the packages the last
+    /// discovery found; a fresh discovery runs on a worker thread (it walks directories,
+    /// and on a large root that takes long enough to stall a frame) and fills the rows in
+    /// when it lands, keeping the highlighted row where the reader left it.
     pub(crate) fn open_seam_view_picker(&mut self) {
-        let items = self.seam_root_candidates();
-        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
-    }
-
-    /// The start points on offer: the reader's context, and what discovery found.
-    fn seam_root_candidates(&mut self) -> Vec<(String, std::path::PathBuf)> {
-        let discovered = karet_seam::discover(&self.root, karet_seam::DiscoveryOptions::default());
         let current = self
             .tabs
             .get(self.active)
@@ -121,7 +118,35 @@ impl App {
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_path_buf);
         let explorer = self.explorer_seam_root();
-        super::roots::candidates(&self.root.clone(), current, explorer, discovered)
+        let root = self.root.clone();
+        let items = self.seam_root_candidates(&root, current.clone(), explorer.clone());
+        self.open_overlay(crate::overlay::Overlay::seam_roots(items));
+        self.seam_discovery.start(&root, current, explorer);
+    }
+
+    /// The start points on offer now: the reader's context, and what discovery last found.
+    fn seam_root_candidates(
+        &self,
+        root: &std::path::Path,
+        current: Option<std::path::PathBuf>,
+        explorer: Option<std::path::PathBuf>,
+    ) -> Vec<(String, std::path::PathBuf)> {
+        let known = self.seam_discovery.known(root);
+        super::roots::candidates(root, current, explorer, known)
+    }
+
+    /// Adopt a finished package discovery, filling in an open Seam picker.
+    ///
+    /// A picker closed since it asked is left closed, and any other overlay open in its
+    /// place is left alone; the packages are still kept for the next picker.
+    pub(crate) fn on_seam_discovery(&mut self, discovery: super::roots::Discovery) {
+        let root = self.root.clone();
+        let Some(items) = self.seam_discovery.accept(&root, discovery) else {
+            return;
+        };
+        if let Some(overlay) = self.keyboard.overlay_mut() {
+            overlay.set_seam_roots(items);
+        }
     }
 
     /// The explorer's selection as a directory, when the panel has one.
@@ -152,7 +177,7 @@ impl App {
             Some((pane, index)) => {
                 self.focus_pane_switch(pane);
                 self.set_active(index);
-                self.focus = crate::app::Focus::Editor;
+                self.keyboard.focus_editor();
                 if let Some(tab) = self.tabs.get_mut(index) {
                     tab.repoint_seam(root.clone());
                 }
@@ -160,7 +185,57 @@ impl App {
             None => self.push_tab(Tab::seam(root.clone())),
         }
         self.apply_seam_settings();
-        self.seam_index_req = self.send(SessionCommand::IndexSeams { root: Some(root) });
+        self.request_seam_index(root, SeamSync::Incremental);
+    }
+
+    /// Re-index what changed, keeping everything the stored index still describes.
+    pub(crate) fn seam_sync(&mut self) {
+        self.start_seam_sync(SeamSync::Incremental);
+    }
+
+    /// Throw the stored index away and read every file again.
+    ///
+    /// The recourse when the stored index is itself suspect. Nothing else can detect that,
+    /// which is why it is a button rather than something inferred.
+    pub(crate) fn seam_force_sync(&mut self) {
+        self.start_seam_sync(SeamSync::Forced);
+    }
+
+    /// Start a sync of the open Seam view.
+    fn start_seam_sync(&mut self, mode: SeamSync) {
+        let Some(root) = self.seam_view().map(|state| state.root.clone()) else {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
+            return;
+        };
+        if let Some(state) = self.seam_view() {
+            state.begin_sync();
+        }
+        self.request_seam_index(root, mode);
+        // Only once the request is actually out: the card is retired by the
+        // answering index, which a closed backend will never send.
+        if self.seam_index_req.is_some() {
+            self.notify_progress(
+                NotificationKind::System,
+                Self::SEAM_SYNC_TAG.to_string(),
+                match mode {
+                    SeamSync::Incremental => "seam: syncing…",
+                    SeamSync::Forced => "seam: rebuilding from source…",
+                },
+                None,
+            );
+        }
+    }
+
+    /// Send the index request and record what the view is waiting on.
+    fn request_seam_index(&mut self, root: std::path::PathBuf, mode: SeamSync) {
+        self.seam_index_req = self.send(SeamCommand::Index {
+            root: Some(root),
+            mode,
+        });
     }
 
     /// Seed a freshly opened view from the reader's settings.
@@ -170,13 +245,20 @@ impl App {
             return;
         };
         state.lens_filter = match settings.lens_filter {
-            karet_session::config::SeamLensFilter::Demote => super::LensFilter::Demote,
-            karet_session::config::SeamLensFilter::Hide => super::LensFilter::Hide,
+            karet_session::config::schema::SeamLensFilter::Demote => {
+                crate::tab::seam::LensFilter::Demote
+            },
+            karet_session::config::schema::SeamLensFilter::Hide => {
+                crate::tab::seam::LensFilter::Hide
+            },
         };
         state.hide_inactive = settings.hide_inactive;
         state.spine = settings.spine;
         for lens in &settings.default_lenses {
-            if let Some(known) = super::LENS_NAMES.iter().find(|name| *name == lens) {
+            if let Some(known) = crate::tab::seam::LENS_NAMES
+                .iter()
+                .find(|name| *name == lens)
+            {
                 state.lenses.insert(known);
             }
         }
@@ -191,7 +273,7 @@ impl App {
         if !self.seam_view().is_some_and(|state| state.covers(path)) {
             return;
         }
-        self.seam_index_req = self.send(SessionCommand::ReindexSeams {
+        self.seam_index_req = self.send(SeamCommand::Reindex {
             path: path.to_path_buf(),
             text,
         });
@@ -209,7 +291,7 @@ impl App {
                 path,
                 text,
                 ..
-            } if *id == doc => Some((path.clone(), text.clone())),
+            } if *id == doc => Some((path.clone(), text.as_str().to_owned())),
             _ => None,
         }) else {
             return;
@@ -223,11 +305,19 @@ impl App {
     /// reader can hand an agent exactly what they are looking at.
     pub(crate) fn seam_copy_query(&mut self) {
         let Some(query) = self.active_seam().map(|state| state.as_query()) else {
-            self.status = Some("seam: open the Seam view first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
             return;
         };
         if query.is_empty() {
-            self.status = Some("seam: nothing is narrowed — the query would be empty".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: nothing is narrowed — the query would be empty",
+            );
             return;
         }
         self.copy_to_clipboard(query, "seam query");
@@ -236,16 +326,24 @@ impl App {
     /// Offer the configurations this package can be read under.
     pub(crate) fn seam_configuration(&mut self) {
         let Some(state) = self.active_seam() else {
-            self.status = Some("seam: open the Seam view first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
             return;
         };
         let available = state.summary.available_configurations.clone();
         let active = state.summary.configuration.clone();
         let Some(next) = next_configuration(&available, &active) else {
-            self.status = Some("seam: only one configuration is available".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: only one configuration is available",
+            );
             return;
         };
-        self.seam_index_req = self.send(SessionCommand::SetSeamConfiguration { name: next });
+        self.seam_index_req = self.send(SeamCommand::SetConfiguration { name: next });
     }
 
     /// Copy the selected node's identity — its citation form.
@@ -254,7 +352,11 @@ impl App {
             .active_seam()
             .and_then(|state| state.selected_id().map(str::to_owned))
         else {
-            self.status = Some("seam: nothing selected".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: nothing selected",
+            );
             return;
         };
         self.copy_to_clipboard(id, "node identity");
@@ -278,6 +380,77 @@ impl App {
         // content the moment the tree arrives.
         if state.selection.is_empty() {
             state.move_row(0);
+            // Ask for what the reader just landed on. Without this the detail pane stays
+            // empty until they press a key, which reads as a view that failed to load.
+            self.request_seam_node();
+        }
+    }
+
+    /// Merge one package that has finished indexing.
+    ///
+    /// Arrives while the request is still outstanding, so the request id is checked
+    /// without being cleared — the run is not over until `SeamIndexFinished`.
+    pub(crate) fn on_seam_package_indexed(
+        &mut self,
+        id: Option<RequestId>,
+        order: usize,
+        root: &str,
+        nodes: Vec<SeamNodeView>,
+        unresolved: Vec<(String, Vec<std::path::PathBuf>)>,
+    ) {
+        if id.is_none() || id != self.seam_index_req {
+            return;
+        }
+        let Some(state) = self.seam_view() else {
+            return;
+        };
+        let first = state.selection.is_empty();
+        state.adopt_package(order, root, nodes, unresolved);
+        // Land on something as soon as there is something to land on, so the facet pane
+        // has content from the first package rather than from the last.
+        if first {
+            if let Some(state) = self.seam_view() {
+                state.move_row(0);
+            }
+            self.request_seam_node();
+        }
+    }
+
+    /// Settle the view once every package is in.
+    pub(crate) fn on_seam_index_finished(
+        &mut self,
+        id: Option<RequestId>,
+        summary: SeamSummary,
+        parsed: usize,
+        files: usize,
+    ) {
+        if !self.awaiting_seam_index(id) {
+            return;
+        }
+        let syncing = self.seam_view().and_then(|state| state.syncing).is_some();
+        if let Some(state) = self.seam_view() {
+            state.finish_sync(summary);
+            if state.selection.is_empty() {
+                state.move_row(0);
+            }
+        }
+        // Said only for a sync the reader asked for: the first index of a view is not a
+        // report about what changed, and announcing "0 of 524 files" on open would be
+        // noise about work nobody requested.
+        if syncing {
+            self.notify_tagged(
+                Report::Outcome,
+                NotificationKind::System,
+                match parsed {
+                    0 => format!("seam: up to date ({files} files)"),
+                    1 => format!("seam: re-read 1 of {files} files"),
+                    _ => format!("seam: re-read {parsed} of {files} files"),
+                },
+                Some(Self::SEAM_SYNC_TAG.to_string()),
+            );
+        } else {
+            // A first index reports nothing, but it still raised a progress card.
+            self.notifications.dismiss_tagged(Self::SEAM_SYNC_TAG);
         }
     }
 
@@ -286,6 +459,9 @@ impl App {
         if !self.awaiting_seam_index(id) {
             return;
         }
+        // The view owns the failure text; the card only has to stop claiming the
+        // index is still running.
+        self.notifications.dismiss_tagged(Self::SEAM_SYNC_TAG);
         if let Some(state) = self.seam_view() {
             state.fail(message);
         }
@@ -329,12 +505,13 @@ impl App {
         state.query_matches = Some(nodes.into_iter().collect::<HashSet<_>>());
     }
 
-    /// Attach edges to the node they belong to, ignoring a reply for another.
+    /// Attach a node's detail to the node it belongs to, ignoring a reply for another.
     pub(crate) fn on_seam_node_detail(
         &mut self,
         id: Option<RequestId>,
         node: String,
         edges: Vec<SeamEdgeView>,
+        preview: Result<SeamPreview, String>,
     ) {
         if id.is_none() || id != self.seam_node_req {
             return;
@@ -348,10 +525,12 @@ impl App {
             return;
         }
         state.edges = edges;
+        state.preview = Some(preview);
+        state.detail_since = None;
         state.facet_row = 0;
     }
 
-    /// Ask the backend for the selected node's edges.
+    /// Ask the backend for the selected node's edges and source.
     pub(crate) fn request_seam_node(&mut self) {
         let Some(id) = self
             .active_seam()
@@ -359,7 +538,12 @@ impl App {
         else {
             return;
         };
-        self.seam_node_req = self.send(SessionCommand::SeamNode { path: id });
+        if let Some(state) = self.active_seam() {
+            // The block's rows are already reserved on screen; only the shared reveal
+            // delay decides whether they say anything while the answer is on its way.
+            state.detail_since = Some(Pending::start());
+        }
+        self.seam_node_req = self.send(SeamCommand::Node { path: id });
     }
 
     /// Send the current query text for evaluation.
@@ -374,7 +558,7 @@ impl App {
             }
             return;
         }
-        self.seam_query_req = self.send(SessionCommand::SeamQuery { text });
+        self.seam_query_req = self.send(SeamCommand::Query { text });
     }
 
     /// Open the selected node's source in an ordinary editor tab.
@@ -398,8 +582,7 @@ impl App {
         };
         if state.focus == SeamFocus::Facets {
             // In the facet pane the same keys walk the edge list instead.
-            let last = state.edges.len().saturating_sub(1);
-            state.facet_row = state.facet_row.saturating_add_signed(delta).min(last);
+            state.move_facet_row(delta);
             return;
         }
         state.move_row(delta);
@@ -428,12 +611,11 @@ impl App {
             self.submit_seam_query();
             return;
         }
-        if state.reroot() {
-            self.request_seam_node();
-        } else {
+        match state.reroot() {
+            Reroot::Narrowed | Reroot::Descended => self.request_seam_node(),
             // Nothing to descend into, so Enter falls through to the escape hatch
             // rather than doing nothing at all.
-            self.open_seam_selection();
+            Reroot::Refused => self.open_seam_selection(),
         }
     }
 
@@ -483,7 +665,7 @@ impl App {
 
     /// Toggle one lens by its position in the legend.
     pub(crate) fn seam_toggle_lens(&mut self, index: usize) {
-        let Some(lens) = super::LENS_NAMES.get(index).copied() else {
+        let Some(lens) = crate::tab::seam::LENS_NAMES.get(index).copied() else {
             return;
         };
         if let Some(state) = self.active_seam() {
@@ -536,12 +718,24 @@ impl App {
         let Some(target) = edge.target.clone() else {
             // An external or unresolved endpoint has nothing in this tree to reroot on,
             // and saying so beats a view that silently does nothing.
-            self.status = Some(format!("seam: {} points outside this package", edge.kind));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                format!("seam: {} points outside this package", edge.kind),
+            );
             return;
         };
         let from = state.selected_id().unwrap_or_default().to_owned();
-        if state.pivot(&edge.kind, &from, vec![target]) {
+        if state.pivot(&edge.kind, &from, vec![target.clone()]) {
             self.request_seam_node();
+        } else {
+            // Refusing silently would look like a dropped keypress; the reader is already
+            // looking at what the pivot would have shown them.
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                format!("seam: already scoped to {target}"),
+            );
         }
     }
 }

@@ -1,12 +1,26 @@
 //! Pull-request-specific keyboard and mouse interaction.
 
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::github::state::GithubPullRequestEditor;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubViewState;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::pending::Pending;
 
 impl App {
     pub(super) fn github_pull_request_key(&mut self, key: KeyEvent) -> bool {
-        let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        else {
+        let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() else {
             return false;
         };
         if let Some(editor) = view.editor {
@@ -93,40 +107,39 @@ impl App {
     }
 
     fn set_pull_request_section(&mut self, section: GithubPullRequestSection) {
-        let range = self
-            .tabs
-            .get_mut(self.active)
-            .and_then(|tab| match &mut tab.kind {
-                TabKind::Github(GithubViewState::PullRequest(view)) => {
-                    view.section = section;
-                    view.scroll = 0;
-                    (section == GithubPullRequestSection::FilesChanged).then(|| {
-                        (
-                            view.pull_request.base_sha.clone(),
-                            view.pull_request.head_sha.clone(),
-                        )
-                    })
-                },
-                _ => None,
-            });
+        let range = self.github.active_page_mut().and_then(|page| match page {
+            GithubViewState::PullRequest(view) => {
+                view.section = section;
+                view.scroll = 0;
+                (section == GithubPullRequestSection::FilesChanged).then(|| {
+                    (
+                        view.pull_request.base_sha.clone(),
+                        view.pull_request.head_sha.clone(),
+                    )
+                })
+            },
+            _ => None,
+        });
         if let Some((base, head)) = range {
             if base.is_empty() || head.is_empty() {
-                self.status = Some("pull request revisions are still loading".to_string());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "pull request revisions are still loading",
+                );
                 return;
             }
-            self.open_range(SessionCommand::RangeChanges {
-                spec: karet_session::RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base: true,
-                },
+            self.open_range(karet_session::RangeSpec::Between {
+                base,
+                head,
+                merge_base: true,
             });
         }
     }
 
     fn submit_pull_request_editor(&mut self, editor: GithubPullRequestEditor) {
-        let submission = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
-            TabKind::Github(GithubViewState::PullRequest(view)) => {
+        let submission = self.github.active_page().and_then(|page| match page {
+            GithubViewState::PullRequest(view) => {
                 let body = match editor {
                     GithubPullRequestEditor::Body => view.body_edit.clone().unwrap_or_default(),
                     GithubPullRequestEditor::Comment => view.comment_edit.clone(),
@@ -139,21 +152,19 @@ impl App {
             return;
         };
         if editor == GithubPullRequestEditor::Comment && body.trim().is_empty() {
-            self.status = Some("comment cannot be empty".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "comment cannot be empty",
+            );
             return;
         }
         let command = match editor {
-            GithubPullRequestEditor::Body => {
-                SessionCommand::GithubUpdatePullRequestBody { number, body }
-            },
-            GithubPullRequestEditor::Comment => {
-                SessionCommand::GithubCommentPullRequest { number, body }
-            },
+            GithubPullRequestEditor::Body => GithubCommand::UpdatePullRequestBody { number, body },
+            GithubPullRequestEditor::Comment => GithubCommand::CommentPullRequest { number, body },
         };
         let request = self.send(command);
-        if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
             view.pending = request;
             view.loading_since = Pending::start();
             view.error = None;
@@ -161,8 +172,8 @@ impl App {
     }
 
     fn merge_pull_request(&mut self) {
-        let values = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
-            TabKind::Github(GithubViewState::PullRequest(view))
+        let values = self.github.active_page().and_then(|page| match page {
+            GithubViewState::PullRequest(view)
                 if view.can_write
                     && view.pending.is_none()
                     && !view.pull_request.draft
@@ -174,16 +185,20 @@ impl App {
             _ => None,
         });
         let Some((number, head_sha)) = values else {
-            self.status = Some("this pull request is not ready to merge".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "this pull request is not ready to merge",
+            );
             return;
         };
-        let request = self.send(SessionCommand::GithubMergePullRequest { number, head_sha });
+        let request = self.send(GithubCommand::MergePullRequest { number, head_sha });
         self.set_pull_request_pending(request);
     }
 
     fn toggle_pull_request_draft(&mut self) {
-        let values = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
-            TabKind::Github(GithubViewState::PullRequest(view))
+        let values = self.github.active_page().and_then(|page| match page {
+            GithubViewState::PullRequest(view)
                 if view.can_write
                     && view.pending.is_none()
                     && !view.pull_request.merged
@@ -198,10 +213,14 @@ impl App {
             _ => None,
         });
         let Some((node_id, number, draft)) = values else {
-            self.status = Some("pull request readiness cannot be changed".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "pull request readiness cannot be changed",
+            );
             return;
         };
-        let request = self.send(SessionCommand::GithubSetPullRequestDraft {
+        let request = self.send(GithubCommand::SetPullRequestDraft {
             node_id,
             number,
             draft,
@@ -210,9 +229,7 @@ impl App {
     }
 
     fn set_pull_request_pending(&mut self, request: Option<RequestId>) {
-        if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
             view.pending = request;
             view.loading_since = Pending::start();
             view.error = None;
@@ -233,10 +250,10 @@ impl App {
             None,
         }
         let hit =
-            self.tabs
-                .get(self.active)
-                .map_or(Hit::None, |tab| match &tab.kind {
-                    TabKind::Github(GithubViewState::PullRequest(view)) => {
+            self.github
+                .active_page()
+                .map_or(Hit::None, |page| match page {
+                    GithubViewState::PullRequest(view) => {
                         if let Some(section) =
                             view.section_hits.iter().find_map(|(section, rect)| {
                                 rect_contains(*rect, point).then_some(*section)
@@ -268,9 +285,7 @@ impl App {
                 });
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-                {
+                if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
                     if view.section == GithubPullRequestSection::Commits {
                         view.commit_cursor =
                             (view.commit_cursor + 3).min(view.commits.len().saturating_sub(1));
@@ -281,9 +296,7 @@ impl App {
                 return true;
             },
             MouseEventKind::ScrollUp => {
-                if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-                {
+                if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
                     if view.section == GithubPullRequestSection::Commits {
                         view.commit_cursor = view.commit_cursor.saturating_sub(3);
                     } else {
@@ -298,8 +311,7 @@ impl App {
         match hit {
             Hit::Section(section) => self.set_pull_request_section(section),
             Hit::Body => {
-                if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+                if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut()
                     && view.can_write
                 {
                     if view.body_edit.is_none() {
@@ -310,8 +322,7 @@ impl App {
                 }
             },
             Hit::Comment => {
-                if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+                if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut()
                     && view.can_write
                 {
                     view.editor = Some(GithubPullRequestEditor::Comment);
@@ -323,8 +334,8 @@ impl App {
             Hit::Check(url) => self.open_web_link(&url),
             Hit::Commit(index) => {
                 let open = self.click_streak(mouse.column, mouse.row) >= 2;
-                let hash = if let Some(TabKind::Github(GithubViewState::PullRequest(view))) =
-                    self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+                let hash = if let Some(GithubViewState::PullRequest(view)) =
+                    self.github.active_page_mut()
                     && index < view.commits.len()
                 {
                     view.commit_cursor = index;
@@ -353,9 +364,11 @@ impl App {
         };
         if let Err(error) = result {
             self.copy_to_clipboard(url.to_string(), "check link");
-            self.status = Some(format!(
-                "could not open the check link ({error}); copied it instead"
-            ));
+            self.notify(
+                Report::Failure,
+                NotificationKind::System,
+                format!("could not open the check link ({error}); copied it instead"),
+            );
         }
     }
 }

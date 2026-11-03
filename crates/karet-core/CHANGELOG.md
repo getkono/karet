@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TokenSpan`, a line-relative token run (byte offsets within one line plus a `TokenId`), moved here from `karet-diff` so per-line token tables (prepared diffs, source previews) share one core type; its serialized shape is unchanged
+
+## [0.7.1](https://github.com/getkono/karet/compare/karet-core-v0.7.0...karet-core-v0.7.1) - 2026-10-01
+
+### Added
+
+- mark uncommitted lines in the editor gutter ([#311](https://github.com/getkono/karet/pull/311))
+
+## [0.7.0](https://github.com/getkono/karet/compare/karet-core-v0.6.1...karet-core-v0.7.0) - 2026-09-24
+
+### Added
+
+- *(editor)* render inlay hints as column-accurate virtual text
+- *(core)* give language-server capabilities a neutral model
+
+## [0.6.0](https://github.com/getkono/karet/compare/karet-core-v0.5.0...karet-core-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(core)* a stopped-line theme role
+- *(core)* add the diagnostic-formatter interop trait
+- *(core)* a color-swatch decoration carrying its own color
+- *(core)* add an underline decoration kind
+- *(theme)* add scrollbar track and thumb theme roles
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-core-v0.3.0...karet-core-v0.4.0) - 2026-08-06
 
 ### Added

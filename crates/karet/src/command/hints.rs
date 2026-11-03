@@ -36,32 +36,78 @@ impl Command {
             Self::SeamConfiguration => "config",
             Self::SeamCopyIdentity => "copy id",
             Self::SeamCopyQuery => "copy query",
+            Self::SeamSync => "sync",
+            Self::SeamForceSync => "force re-sync",
             // Global.
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",
             Self::ToggleOutline => "outline",
+            Self::ToggleZenMode => "zen",
+            Self::ToggleMaximizePane => "maximize",
             Self::ToggleFocus => "focus",
+            Self::SelectView(View::Editor) => "editor",
+            Self::SelectView(View::GitHub) => "github",
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
             Self::SelectPanel(SidebarPanel::Spelling) => "spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "todos",
             Self::SelectPanel(SidebarPanel::Debug) => "debug",
+            Self::SelectPanel(SidebarPanel::Problems) => "problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "hierarchy",
             Self::TodoScan | Self::TodoToggleGrouping => "todos",
+            Self::NextProblem => "next problem",
+            Self::PrevProblem => "prev problem",
+            Self::ProblemsFilter => "filter",
+            Self::ProblemsCycleSeverity => "severity",
+            Self::ProblemsFilterAccept => "done",
+            Self::ProblemsFilterCancel => "clear",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
+            Self::OpenLinkAtCaret => "open link",
+            Self::GoToDeclaration => "declaration",
+            Self::GoToTypeDefinition => "type definition",
+            Self::GoToImplementation => "implementation",
+            Self::FindReferences => "references",
+            Self::ShowIncomingCalls => "callers",
+            Self::ShowOutgoingCalls => "callees",
+            Self::ShowSupertypes => "supertypes",
+            Self::ShowSubtypes => "subtypes",
+            Self::HierarchyExpand => "expand",
+            Self::RenameSymbol | Self::RenameSubmit => "rename",
+            Self::RenameCancel => "cancel",
+            Self::FormatDocument | Self::FormatSelection => "format",
+            Self::StartLinkedEditing => "linked edit",
+            Self::CodeActions => "quick fix",
+            Self::SourceAction => "source action",
+            Self::OrganizeImports => "organize imports",
+            Self::FixAll => "fix all",
             Self::JumpBack => "back",
+            Self::JumpForward => "forward",
             Self::OpenQuickOpen => "open",
+            Self::GoToSymbolInEditor => "symbols",
+            Self::GoToSymbolInWorkspace => "workspace symbols",
+            Self::GoToLine => "line",
+            Self::OpenRecentWorkspace => "recent",
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",
             Self::OpenGlobalSearch => "find in files",
-            Self::CloseTab => "close",
+            Self::CloseTab | Self::GithubClosePage => "close",
             Self::NextTab => "next tab",
             Self::PrevTab => "prev tab",
             Self::CloseOtherTabs => "close others",
             Self::CloseAllTabs => "close all",
             Self::ReopenClosedTab => "reopen",
             Self::OpenAnyway => "open anyway",
+            Self::ToggleTerminal => "terminal",
+            Self::NewTerminal => "new terminal",
+            Self::TerminalCopy => "copy",
+            Self::TerminalPaste => "paste",
+            Self::TerminalScrollPageUp => "scroll up",
+            Self::TerminalScrollPageDown => "scroll down",
+            Self::TerminalScrollToTop => "top",
+            Self::TerminalScrollToBottom => "bottom",
+            Self::RunTask => "run task",
             Self::DismissNotification => "dismiss",
             Self::Copy => "copy",
             // Sidebar.
@@ -81,8 +127,11 @@ impl Command {
             Self::ToggleInlineBlame => "blame",
             Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::SelectColorTheme => "theme",
             Self::ManageLanguageServers => "language servers",
             Self::CheckLanguageServerUpdates => "lsp updates",
+            Self::ShowLanguageServerLog => "lsp log",
+            Self::CancelLanguageServerWork => "cancel",
             Self::LanguageServerRefresh => "refresh",
             Self::LanguageServerCheckSelected => "check",
             Self::LanguageServerCheckAll => "check all",
@@ -90,8 +139,24 @@ impl Command {
             Self::LanguageServerRestart => "restart",
             Self::LanguageServerUninstall => "uninstall",
             Self::LanguageServerFilter => "filter",
+            Self::LanguageServerUndecline => "offer again",
             Self::ToggleFold => "fold",
+            Self::FoldAll => "fold all",
+            Self::UnfoldAll => "unfold all",
+            Self::FoldLevel(_) => "fold level",
+            Self::FoldRecursively => "fold recursively",
+            Self::UnfoldRecursively => "unfold recursively",
+            Self::FoldAllComments => "fold comments",
+            Self::FoldAllImports => "fold imports",
             Self::AddCursorNextOccurrence => "add cursor",
+            Self::SelectAllOccurrences => "select all matches",
+            Self::SkipOccurrence => "skip match",
+            Self::UndoCaretOperation => "undo cursor",
+            Self::AddCursorsToLineEnds => "cursors to line ends",
+            Self::GoToBracket => "bracket",
+            Self::SelectToBracket => "select bracket",
+            Self::ExpandSelection => "expand",
+            Self::ShrinkSelection => "shrink",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",
@@ -150,24 +215,38 @@ impl Command {
             Self::FindToggleRegex => "regex",
             Self::FindToggleCase => "case",
             Self::FindToggleWord => "word",
+            Self::FindTogglePreserveCase => "keep case",
+            Self::FindToggleInSelection => "in selection",
+            Self::FindSelectAllMatches => "select all",
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "keep draft",
             Self::CommitGenerate => "generate",
+            Self::CommitGenerateUndo => "undo generated",
+            Self::CommitConfigureAi => "ai options",
+            Self::CommitConsoleClose => "close",
+            Self::CommitConsoleCancel => "cancel commit",
+            // Reached from the palette, not advertised in a bar: it applies only
+            // after a commit whose console has already been dismissed.
+            Self::CommitConsoleShow => return None,
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
-            Self::ConfirmDiscard => "confirm",
-            Self::ConfirmExplorerDelete => "confirm",
             Self::ContextMenuAccept => "accept",
             Self::ContextMenuCancel => "cancel",
+            Self::ConfirmAccept => "accept",
+            Self::ConfirmCancel => "cancel",
             Self::CloseConfirmSave => "save & close",
             Self::CloseConfirmDiscard => "discard & close",
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
+            Self::CloseConfirmCancel => "cancel",
+            Self::DismissSwaps => "decide later",
             Self::ShowDependencyGraph => "deps",
             Self::ShowCommitGraph => "graph",
             Self::CommitGraphNext => "next",
             Self::CommitGraphPrev => "prev",
             Self::CommitGraphOpen => "open",
+            Self::CommitGraphPanLeft => "pan-left",
+            Self::CommitGraphPanRight => "pan-right",
             Self::CommitGraphMarkBase => "mark base",
             Self::CommitGraphCompare => "compare",
             Self::RevInputSubmit => "go",
@@ -175,6 +254,10 @@ impl Command {
             Self::SearchOpen => "open",
             Self::SearchBeginInput => "edit",
             Self::SearchQuit => "close",
+            Self::SearchExpand => "expand",
+            Self::SearchCollapse => "collapse",
+            Self::SearchToggleAll => "fold all",
+            Self::SearchToggleFilters => "filters",
             Self::SearchRun => "run",
             Self::SearchEndInput => "done",
             Self::SearchToggleReplace => "replace",
@@ -228,6 +311,8 @@ impl Command {
             | Self::CaretLineEnd
             | Self::CaretDocStart
             | Self::CaretDocEnd
+            | Self::CaretPageUp
+            | Self::CaretPageDown
             | Self::SelectWordLeft
             | Self::SelectWordRight
             | Self::SelectLineStart
@@ -236,10 +321,15 @@ impl Command {
             | Self::SelectDocEnd
             | Self::SelectPageUp
             | Self::SelectPageDown
+            | Self::ColumnSelectUp
+            | Self::ColumnSelectDown
+            | Self::ColumnSelectLeft
+            | Self::ColumnSelectRight
             | Self::EditorSelectAll
             | Self::AddCursorAbove
             | Self::AddCursorBelow
             | Self::CollapseCarets
+            | Self::EnterNormalMode
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
@@ -248,7 +338,14 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::NextInlineCompletion
+            | Self::PrevInlineCompletion
+            | Self::CopilotSignIn
+            | Self::CopilotSignOut
             | Self::Hover
+            | Self::SignatureHelp
+            | Self::ToggleInlayHints
+            | Self::ToggleFormatOnType
             | Self::ShowDiagnostic
             | Self::DebugStart
             | Self::DebugStop
@@ -261,6 +358,8 @@ impl Command {
             | Self::NotebookRunAll
             | Self::NotebookInterrupt
             | Self::NotebookRestartKernel
+            | Self::ToggleLineComment
+            | Self::ToggleBlockComment
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough
@@ -285,8 +384,12 @@ impl Command {
             | Self::CommitGraphInteractiveRebase
             | Self::ScmFetch
             | Self::CommitToggleFileReviewed
+            | Self::CommitFoldFileTree
+            | Self::CommitUnfoldFileTree
             | Self::CommitGraphCopyIssueUrls
             | Self::InsertNewline
+            | Self::Indent
+            | Self::Outdent
             | Self::DeleteBackward
             | Self::DeleteForward
             | Self::DeleteWordBackward
@@ -299,6 +402,8 @@ impl Command {
             | Self::SearchSelectDown
             | Self::ContextMenuUp
             | Self::ContextMenuDown
+            | Self::ConfirmUp
+            | Self::ConfirmDown
             | Self::OpenCommitByHash
             | Self::ShowFileHistory
             | Self::DiffUnpushed

@@ -24,12 +24,14 @@ attribution, with line and semantic-scope modes.
 ## Layout
 
 ```
-┌ tabs ───────────────────────────────────────────────┐
+┌ views ───────────────────────────────────────────────┐
+│  ✎ Editor   ⎈ GitHub                                 │  ← view switcher
+├ tabs ────────────────────────────────────────────────┤
 │  main.rs   logo.png   [diff: app.rs]                 │
 ├ breadcrumb (collapses when the tab has no path) ─────┤
 │  crates › karet › src › app.rs                       │
 ├──────────────┬──────────────────────────────────────┤
-│ EXPLORER 1·2·3│  1 //! …                             │
+│ EXPLORER 1 … 7│  1 //! …                             │
 │  ▾ crates     │  2                                    │  ← main area
 │   ▾ karet     │     (the active tab)                  │     (code / diff /
 │     app.rs  M │                                       │      image / hex /
@@ -38,35 +40,46 @@ attribution, with line and semantic-scope modes.
 └──────────────────────────────────────────────────────┘
 ```
 
-A single switchable **sidebar** (Explorer / Search / Source Control) sits beside
-the **main area**. Overlays (quick-open, command palette) draw centered on top; the
-find bar is a one-line strip above the main area.
+A persistent one-row **view switcher** owns the top of the terminal. A *view* sits
+above panes and tabs: the Editor view is the pane/tab shell below, while the others
+own the content area outright, so a surface that is not a document need not be
+wedged into a tab it does not behave like.
+
+The **GitHub view** is one such surface — issues, pull requests, and workflow runs,
+with a page strip of its own: the dashboard sits leftmost and never closes, detail
+pages stack on top of it, and `Esc` goes back. Opening a pull request's *Files
+changed* hands you to the Editor view, because a diff *is* a document. In a checkout
+whose `origin` is not on GitHub the view says so rather than sitting empty.
+
+Below it, a single switchable **sidebar** with seven panels (Explorer / Search /
+Source Control / Spelling / TODOs / Debug / Problems) sits beside the **main area**;
+Spelling is offered while spell check is on, and TODOs while codetag highlighting
+is. Overlays (quick-open, command palette) draw centered on
+top; the find bar is a one-line strip above the main area.
 
 ### File-type dispatch (the code window)
 
-Opening a file classifies it (`karet-widgets::viewer::classify`) and picks a
-renderer — everything unsupported fails gracefully:
-
-| kind | renderer |
-|---|---|
-| text / code | read-only `karet-editor` with tree-sitter highlights |
-| markdown | the editor (highlighted **source**; rich preview is deferred) |
-| image (png/jpg/gif/webp/bmp) | kitty graphics → halfblocks → placeholder |
-| PDF | placeholder (name / size — rasterization is deferred) |
-| binary | `karet-widgets::HexView` |
-| too large (>10 MiB) | placeholder |
+Opening a file classifies it (`karet_filetype::classify`) and picks a renderer —
+everything unsupported fails gracefully. Text and code open in the editable
+`karet-editor` with tree-sitter highlights; the other kinds and their renderers are
+listed in [docs/file-formats.md](../../docs/file-formats.md#non-text-renderers).
 
 Image and PDF rendering are optional, **default-on** features (`images`, `pdf`).
 Build with `cargo build --no-default-features` to drop their heavy dependency
-trees (`image` codecs, `hayro`); those kinds then show the placeholder instead.
+trees (Gamut image codecs, `hayro`); those kinds then show the placeholder instead.
 See [docs/binary-size.md](../../docs/binary-size.md).
 
 ## Keymap
 
-**Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
+**Global:** `Ctrl+P` quick-open (recently opened files first; `name:LINE[:COL]`
+opens a file at a line) · `Ctrl+G` go to line (`LINE[:COL]`) · `Ctrl+R` open a
+recent workspace · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
 find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
-`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+C` copy · `Tab` switch focus ·
-`Ctrl+Q` quit (`q` also quits in a viewer).
+`Ctrl+1`…`7` Explorer/Search/Source Control/Spelling/TODOs/Debug/Problems · `Ctrl+K 1/2` Editor/GitHub
+view · `Ctrl+C` copy · `Ctrl+Shift+E` switch focus (`Tab` too, except in
+the editor, where `Tab` / `Shift+Tab` indent / outdent) · `Ctrl+Q` quit (`q` also quits in a
+viewer). The view switcher's buttons are also clickable, and each view has a
+`View: …` command-palette entry.
 
 > **Modifiers, terminals & SSH.** karet uses `Ctrl` as its single primary modifier.
 > This is deliberate and platform-agnostic: a terminal never receives the macOS
@@ -76,12 +89,23 @@ find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
 > sees them; **`Ctrl+Shift+P` is the most common casualty** — use **`F1`** for the
 > command palette instead, or click the ` +N` overflow marker at the right of the
 > status bar (it opens the palette, keeping every command reachable). All bindings
-> live in one table (`keymap/mod.rs`), the single place to change or rebind them.
+> live in one table (`keymap/bindings.rs`), the single place to change or rebind them.
 
 **Tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`Ctrl+PageUp`) next /
 previous · `Ctrl+Shift+PageUp`/`PageDown` move left / right · `Alt+1`…`9` go to tab
 (`9` = last) · `Ctrl+W` close · `Ctrl+Shift+T` reopen closed. Close Others / Close
 to the Right / Close All live in the command palette.
+
+**Terminal:** ``Ctrl+` `` shows the most recent terminal tab (starting a shell in
+the workspace root when none is open) and, from a terminal, goes back to the
+editor · ``Ctrl+Shift+` `` starts another. A terminal takes every key except its
+own few: `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste (`Ctrl+C` copies while
+text is selected, and interrupts otherwise) · `Shift+PageUp`/`PageDown` and
+`Ctrl+Shift+Home`/`End` scroll the 10,000-line history · `Ctrl+Shift+P` / `F1`
+palette · `Ctrl+Tab` / `Ctrl+PageUp`/`PageDown` switch tabs · `Ctrl+Shift+E`
+switch focus. Drag to select (double-click a word, triple-click a line; hold
+`Shift` over a program that tracks the mouse), wheel to scroll, and `Ctrl`+click
+an OSC 8 hyperlink to open it. The `terminal` feature (on by default) gates it.
 
 **Sidebar:** `j`/`k`+arrows move · `Enter`/`l`/`→` open or expand · `h`/`←`
 collapse · `Space` toggle a directory.
@@ -104,16 +128,67 @@ rows are also clickable.
 symbol under it is defined, opening the defining file when it is elsewhere; holding
 `Ctrl` underlines the symbol under the pointer when a running language server can
 resolve it. When a symbol has several definitions, a filterable picker lists them by
-path and line. `Ctrl+Alt+←` (**Go Back**) returns to the position the jump started
-from. Both commands are in the palette as *Go to Definition* and *Go Back*. Some
-emulators consume `Ctrl+Click` for their own link handling, which is why `F12` also
-exists.
+path and line, each with a preview of its source line. `Ctrl+Alt+←` (**Go Back**)
+returns to the position the jump started from. Both commands are in the palette as
+*Go to Definition* and *Go Back*. Some emulators consume `Ctrl+Click` for their own
+link handling, which is why `F12` also exists.
+
+**Editor — references and related navigation.** `Shift+F12` (*Find All References*)
+lists every use of the symbol at the caret, its declaration included, in the same
+picker — always, even for a single use. `Ctrl+F12` (*Go to Implementation*) jumps to
+the implementations of a trait, interface or abstract member, and *Go to Declaration*
+and *Go to Type Definition* are in the palette. Each jumps straight to a lone answer
+(references excepted) and offers the picker for several; a server that does not
+offer one says so.
+
+**Editor — call and type hierarchies.** `Shift+Alt+H` (*Show Incoming Calls*) opens
+a tree of the callers of the function at the caret; *Show Outgoing Calls*, *Show
+Supertypes* and *Show Subtypes* are in the palette. The tree opens at once and fills
+in when the language server answers, its first item already expanded. `→` expands
+the selected item, asking the server for its next level only the first time, `←`
+collapses it (or, on a collapsed item or a leaf, selects its parent), and `Enter`
+opens the item where it is named. A server that does not offer the hierarchy says
+so.
+
+**Editor — rename symbol.** `F2` (palette: *Rename Symbol*) opens an inline prompt
+under the symbol at the caret, its current name selected so typing replaces it; the
+language server's `prepareRename` answer corrects the span and the suggested name,
+or closes the prompt with its reason when nothing there can be renamed. `Enter`
+renames across the workspace and `Esc` cancels. Files the rename touches that are
+not open are opened in background tabs: every change is unsaved and undoable per
+file, and the notice says how many files changed.
+
+**Editor — code actions.** `Ctrl+.` (or `Alt+Enter`, which reaches the app from any
+terminal; palette: *Quick Fix…*) opens a menu under the caret of the language
+server's code actions for the selection or the caret — the diagnostics there go
+along as context — grouped into quick fixes, refactorings, source actions, and the
+rest, the server's preferred fix first. An action the server offers but cannot run
+here is dimmed, and clicking it says why. Accepting one fills in its edit if the
+server deferred it, applies the edit like a rename's (unsaved and undoable per
+file), then runs its command. When the caret has rested on a line that has actions,
+a lightbulb shows in that line's gutter. The palette's *Source Action…* lists only
+source actions, and *Organize Imports* and *Fix All* run the server's (preferred)
+action of that kind directly.
 
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
-occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
-newly-added one; `Esc` collapses back to a single caret. Typing, deletion and
+occurrence (wrapping), `Ctrl+K Ctrl+D` moves that last occurrence on to the next
+one, and `Ctrl+Shift+L` selects every occurrence at once; `Shift+Alt+I` puts a caret
+at the end of every selected line; `Ctrl+U` undoes the last of these caret
+operations; `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
+newly-added one; `Shift+Alt+Click`/`Shift+Alt+Drag` select a box of display
+cells, one selection per line, and `Ctrl+Shift+Alt+arrows` grow the same box from
+the keyboard; `Esc` collapses back to a single caret. Typing, deletion and
 newlines then apply at every caret at once.
+
+**Editor — comments.** `Ctrl+/` toggles a line comment on every line the selections
+touch, aligning the markers at the lines' shared indent and skipping blank lines; a
+language with only block comments (HTML, CSS) wraps each line instead.
+`Shift+Alt+A` toggles a block comment around each selection, or around a bare
+caret's line. Both read the language *at the caret*, so a `<script>` body in HTML
+takes `//` and a fenced code block in Markdown takes its own language's comments.
+Terminals without the kitty keyboard protocol send `Ctrl+/` as `Ctrl+7`, which is
+bound too.
 
 Modifier conventions: **`Shift`** always *extends* the selection (paired with any
 motion key or click); **`Ctrl`** widens the granularity (word for arrows, document
@@ -129,48 +204,68 @@ all, and `Alt+R`/`Alt+C`/`Alt+W` toggle regex/case/whole-word. The command palet
 shows each command's shortcut on the right.
 
 **Search panel:** the find and replace fields show by default (`Alt+H` collapses the
-replace field). `Tab` switches find/replace; `Enter` runs the search (or, in the
-replace field, replaces all matches across the workspace). Option toggles —
-`Alt+R` regex, `Alt+C` case-sensitive, `Alt+W` whole-word — are also clickable
-`.*` / `Aa` / `\b` buttons on the find row; `r` (browsing results) or the ` ⟳ all`
+replace field); `Alt+F` reveals include/exclude glob fields (comma or space
+separated, e.g. `*.rs, src/**`) for narrowing a search over a large repository.
+`Tab` cycles the visible fields; `Enter` runs the search (or, in the replace
+field, replaces all matches across the workspace). Option toggles — `Alt+R`
+regex, `Alt+C` case-sensitive, `Alt+W` whole-word — are also clickable `.*` /
+`Aa` / `\b` buttons on the find row; `r` (browsing results) or the ` ⟳ all`
 button replaces everywhere.
+
+Results are grouped: a row per matching file over its matches, each showing the
+source line with the match highlighted and its line number in a right-aligned
+column. `→`/`←` (or `l`/`h`) expand and collapse a group, `Alt+A` folds or
+unfolds everything, and `Enter` opens the selected match at its own line and
+column — in the editor behind the panel, which keeps the keyboard, so the next
+arrow reaches the next hit (`Esc` leaves the panel). Results stream in as the walk
+finds them, with a status line reporting matches found, files scanned, and whether
+a result cap was reached.
 
 **Mouse** (every element is interactive): click a tab to switch, its `×` (or
 middle-click) to close, drag to reorder; click explorer rows to open files /
-toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to
+toggle folders and the header's panel icons to switch panels; click SCM / search rows to
 open them; click to place the caret and drag to select text (double / triple-click
-select word / line); `Alt+Click`/`Alt+Drag` add and grow extra carets; the wheel
-scrolls; click a status-bar segment to run it.
+select word / line, and *dragging* from one extends by whole words / lines); a
+drag that leaves the viewport keeps scrolling and selecting; `Alt+Click`/`Alt+Drag`
+add and grow extra carets; a middle click in the text pastes the primary selection
+there (`editor.middleClickPaste`, on by default on Linux); the wheel scrolls; click
+a status-bar segment to run it.
+
+**Mouse — selecting outside the editor.** Dragging highlights text on every
+surface that shows it, and `Ctrl+C` copies **what the text is, not what it looks
+like**: a diff — unified, either side-by-side column, or a commit / compare file
+card — copies the code without its line numbers, `+`/`-` markers or card rail; the
+hex dump copies the byte and ASCII columns without the file-offset column; the
+markdown preview copies the text it renders. A side-by-side drag stays in the
+column it began in, so one side of a change can be taken on its own. The find bar
+and the explorer's inline rename field have a real caret, selection, and
+`Ctrl+A`/`C`/`X`/`V` too.
 
 **Where these live (source of truth).** Every key and mouse interaction is defined in
 a few files, so there is one place to read or change each behavior:
 
-- **Keybindings** — the single `BINDINGS` table in `keymap/mod.rs`; it drives both
+- **Keybindings** — the single `BINDINGS` table in `keymap/bindings.rs`; it drives both
   the resolver and the palette's shortcut hints, so a binding and its displayed hint
   can never drift.
 - **Commands** — every named operation a binding fires is a `Command` in
   `command.rs`.
-- **Mouse** — click / drag / multi-click handling lives in `app.rs`
-  (`handle_editor_click`, `drag_select_to`, and the `handle_mouse` dispatch).
+- **Mouse** — the `handle_mouse` dispatch and its capture states live in
+  `app/mouse.rs`; the editor's own click and drag in `app/editor.rs`
+  (`handle_editor_click`) and `app/drag.rs` (drag granularity and autoscroll).
 - **Caret & selection model** — the multi-caret `EditorState` in the `karet-editor`
-  crate (`lib.rs`), built on `karet_core::CursorState`.
+  crate (`state.rs`), built on `karet_core::CursorState`.
+- **Selection on the read-only surfaces** — `app/select.rs` owns the model (a
+  `karet_widgets::RowSelection` over absolute rows) and answers what a row's
+  copyable text is; `ui/content/select.rs` lays it over the rendered cells.
 
 ## Architecture notes
 
-- The shell calls the engines directly (`karet-text`, `karet-search`,
-  `karet-treesitter`/`karet-syntax`, `karet-vcs`). Routing through the headless
-  `karet-session` backend is additive future work — its `Command`/`Event`
-  variants already map onto open / save / search.
-- Diff rendering is reused from `render.rs` (the original diff viewer).
-
-## Deferred (documented TODOs)
-
-- **Editing** (insert/delete/undo/save) — the code window is read-only; needs
-  `karet-text` edits + history + `karet-session`. Text selection + copy already
-  work (read-only), via mouse drag / `Shift`+arrows and `Ctrl+C`.
-- **Diff drag-select & copy** — code tabs support it; diff tabs are keyboard-first.
-- **Kitty image lifecycle** across scroll/resize — minimal active-tab transmit.
-- **Rich markdown preview** (`karet-markdown`), **PDF rasterization**.
-- **Parallel workspace search** and **replace**; **explorer git-status overlay**.
-- **`karet-fuzzy` ranking** for quick-open / palette (currently subsequence).
+- Editing, language intelligence, and source control route through the headless
+  `karet-session` backend. The app still calls some engines directly, and those
+  calls are being migrated behind the same seam; among them are diff rendering via
+  `karet-diff`, in-file find, occurrences and replace via `karet-search`, markdown
+  editing, table formatting and lint via `karet-markdown`, and Seam package
+  discovery via `karet_seam::discover`.
+- `render.rs` presents a backend-prepared diff: the session diffs and highlights
+  off the UI thread, and the app only paints the result.
 ```

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `hex::row_count(bytes)`, the hex dump's row count without building a `HexView`, so a consumer clamps scroll from the crate's own row geometry
+
+### Changed
+
+- **Breaking:** the crate root no longer re-exports `HexView`; import it as `karet_fileview::hex::HexView`, so every item has one path (its owning module, and `viewer` for the `karet-filetype` routing items)
+
+## [0.7.1](https://github.com/getkono/karet/compare/karet-fileview-v0.7.0...karet-fileview-v0.7.1) - 2026-10-01
+
+### Added
+
+- *(markdown)* render curated HTML and local images in the preview ([#297](https://github.com/getkono/karet/pull/297))
+
+## [0.6.0](https://github.com/getkono/karet/compare/karet-fileview-v0.5.0...karet-fileview-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(karet-fileview)* drag to select and copy in the hex dump
+- preview notebooks through the document-conversion seam
+
+### Other
+
+- point shadowed crate readmes at their local files
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-fileview-v0.2.2...karet-fileview-v0.3.0) - 2026-07-19
 
 ### Fixed

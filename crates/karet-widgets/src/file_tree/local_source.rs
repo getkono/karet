@@ -37,7 +37,11 @@ pub(super) fn build_from_disk(state: &mut FileTreeState, root: &Path) {
 /// Gitignored entries are listed and flagged `ignored` (VS Code dims them) rather
 /// than filtered out. The `.git` directory is always excluded; dotfiles are shown
 /// unless `show_hidden` is false.
-fn read_dir_sorted(dir: &Path, show_hidden: bool, respect_gitignore: bool) -> Vec<DirEntry> {
+pub(super) fn read_dir_sorted(
+    dir: &Path,
+    show_hidden: bool,
+    respect_gitignore: bool,
+) -> Vec<DirEntry> {
     // The full listing (gitignore off): everything the user should see.
     let all = walk_immediate(dir, show_hidden, false);
     let mut entries: Vec<DirEntry> = if respect_gitignore {

@@ -168,15 +168,17 @@ pub(super) fn markdown_preview_rect(area: Rect) -> Rect {
 pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) buffer: &'a TextBuffer,
     pub(super) wrapped: &'a mut WrappedDocument,
-    pub(super) rendered: &'a mut Option<(u64, u16)>,
+    pub(super) rendered: &'a mut Option<crate::tab::PreviewKey>,
     pub(super) scroll: &'a mut u16,
     pub(super) hover: Option<(u16, u16)>,
     pub(super) source: &'a Path,
     pub(super) root: &'a Path,
     /// Source editor line to align with, for an in-editor preview.
     pub(super) source_scroll: Option<usize>,
-    /// Fence languages to render as mermaid diagrams (`None` = disabled).
-    pub(super) mermaid: Option<&'a [String]>,
+    /// Mermaid fences to render, and the images to paint.
+    pub(super) env: PreviewEnv<'a>,
+    /// The live pointer selection to lay over the preview's rows, if any.
+    pub(super) selection: Option<crate::app::SurfaceSelection>,
 }
 
 pub(super) fn draw_markdown_preview(
@@ -186,20 +188,30 @@ pub(super) fn draw_markdown_preview(
     preview: MarkdownPreviewRender<'_>,
     scroll_hits: &mut ScrollHits,
     surface: ScrollSurface,
-) -> Vec<crate::app::MarkdownLinkHit> {
+) -> (Vec<crate::app::MarkdownLinkHit>, crate::app::SelectRegion) {
     // Wrap to the padded width, not the pane's: the cache key follows, so a resize that
     // only moves the padding away still re-wraps exactly once.
     // Reserve the scroll track before the wrap width is read: the cache key is the
     // wrapped width, so wrapping to the pane and painting to the reserved rect would
     // re-wrap every frame — and every link hitbox would overhang the bar.
     let (area, tracks) = reserve_tracks(markdown_preview_rect(area), ScrollAxes::VERTICAL);
-    let key = (preview.buffer.version(), area.width);
+    let images = preview.env.images;
+    let key = (
+        preview.buffer.version(),
+        area.width,
+        images.generation(),
+        preview.env.icon_style,
+    );
     if *preview.rendered != Some(key) {
         let mut doc = karet_markdown::parse(&preview.buffer.text());
-        if let Some(languages) = preview.mermaid {
-            substitute_mermaid(&mut doc.blocks, languages);
+        if let Some(languages) = preview.env.mermaid {
+            substitute_mermaid(&mut doc, languages);
         }
-        *preview.wrapped = doc.wrap(area.width);
+        let sizer = images.sizer(preview.source, preview.root);
+        let sizer = super::markdown_images::StyledSizer::new(&sizer, preview.env.icon_style);
+        *preview.wrapped = doc.wrap_with(area.width, &sizer);
+        // Keyed on the generation from *before* sizing: an image that failed while
+        // being sized bumps it, and the next frame re-wraps it as a chip.
         *preview.rendered = Some(key);
     }
     if let Some(source_line) = preview.source_scroll {
@@ -226,7 +238,32 @@ pub(super) fn draw_markdown_preview(
         ),
         surface,
     );
-    let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    let region = super::content::select::markdown(
+        f,
+        theme,
+        preview.selection,
+        area,
+        preview.wrapped,
+        state.scroll,
+    );
+    super::markdown_images::paint(
+        f,
+        theme,
+        preview.wrapped,
+        area,
+        state.scroll,
+        super::markdown_images::Source {
+            images,
+            source: preview.source,
+            root: preview.root,
+            icon_style: preview.env.icon_style,
+        },
+    );
+    let mut hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    // An image is clickable and hyperlinked like a link, but not underlined on hover:
+    // an underline across every row of a picture only defaces it.
+    let image_hits = super::markdown_images::image_hits(preview.wrapped, area, state.scroll);
+    apply_markdown_osc8(f, &image_hits, preview.source, preview.root);
     apply_markdown_osc8(f, &hits, preview.source, preview.root);
     if let Some(point) = preview.hover {
         for hit in hits.iter().filter(|hit| {
@@ -244,7 +281,8 @@ pub(super) fn draw_markdown_preview(
             }
         }
     }
-    hits
+    hits.extend(image_hits);
+    (hits, region)
 }
 
 fn apply_markdown_osc8(
@@ -253,55 +291,21 @@ fn apply_markdown_osc8(
     source: &Path,
     root: &Path,
 ) {
-    use std::num::NonZeroU16;
-
-    use ratatui::buffer::CellDiffOption;
-
     for hit in hits {
         let Ok(target) = crate::links::resolve(&hit.target, source, root) else {
             continue;
         };
-        let Some(uri) = target.osc8_uri() else {
+        let Some(uri) = target.osc8_uri().and_then(crate::links::safe_external) else {
             continue;
         };
-        let mut x = hit.rect.x;
-        while x < hit.rect.right() {
-            let Some(cell) = f.buffer_mut().cell_mut((x, hit.rect.y)) else {
-                break;
-            };
-            let symbol = cell.symbol().to_string();
-            let width = u16::try_from(symbol.width()).unwrap_or(u16::MAX).max(1);
-            cell.set_symbol(&osc8_symbol(uri, &symbol));
-            if let Some(width) = NonZeroU16::new(width) {
-                cell.set_diff_option(CellDiffOption::ForcedWidth(width));
-            }
-            x = x.saturating_add(width);
-        }
+        super::osc8::link_row(
+            f.buffer_mut(),
+            hit.rect.y,
+            hit.rect.x,
+            hit.rect.right(),
+            uri,
+        );
     }
-}
-
-pub(super) fn osc8_symbol(uri: &str, symbol: &str) -> String {
-    let id = osc8_id(uri);
-    format!("\u{1b}]8;id={id};{uri}\u{1b}\\{symbol}\u{1b}]8;;\u{1b}\\")
-}
-
-/// Return a stable, terminal-safe identity for every cell carrying `uri`.
-///
-/// The renderer emits one self-contained OSC 8 sequence per cell so Ratatui can
-/// diff and repaint cells independently. An explicit shared ID lets the terminal
-/// treat those cells (and later redraws) as one hyperlink instead of allocating a
-/// fresh implicit hyperlink for every opening sequence.
-pub(super) fn osc8_id(uri: &str) -> String {
-    // FNV-1a is sufficient here: this is a compact rendering identity, not a
-    // security boundary. The URI remains part of OSC 8 and of terminal-side link
-    // identity, so a hash collision cannot substitute one validated target for
-    // another.
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let hash = uri.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-    });
-    format!("karet-{hash:016x}")
 }
 
 /// Map the link spans visible in `area` to screen-space hit regions.
@@ -377,10 +381,9 @@ pub(super) fn hint_segment(hint: &keymap::Hint) -> String {
 }
 
 /// The terminal-cell width of `s` (display width, wide/combining aware — unlike a
-/// raw `chars().count()`), via ratatui's own measurement so no extra dependency is
-/// pulled in.
+/// raw `chars().count()`), saturating at `u16::MAX`.
 pub(super) fn cell_width(s: &str) -> u16 {
-    u16::try_from(Span::raw(s).width()).unwrap_or(u16::MAX)
+    u16::try_from(karet_widgets::text::width(s)).unwrap_or(u16::MAX)
 }
 
 /// How many leading `hints` fit in `avail` columns when joined by [`HINT_SEP`].
@@ -445,167 +448,18 @@ pub(super) fn render_hints(
     }
 }
 
-/// Replace mermaid fences with their rendered diagrams, recursing into
-/// quotes and list items. Unsupported or unparsable diagrams keep their
-/// source under a one-line note. The renderer (parser + layout engine) is
-/// reused across fences and frames.
+/// Replace the fences in `languages` with their rendered diagrams, through a
+/// renderer (parser + layout engine) reused across fences and frames.
 #[cfg(feature = "mermaid")]
-fn substitute_mermaid(blocks: &mut Vec<karet_markdown::Block>, languages: &[String]) {
-    use karet_markdown::Block;
+fn substitute_mermaid(doc: &mut karet_markdown::MarkdownDocument, languages: &[String]) {
     use karet_markdown::mermaid::MermaidCharset;
-    use karet_markdown::mermaid::MermaidOutcome;
     use karet_markdown::mermaid::MermaidRenderer;
     thread_local! {
         static RENDERER: MermaidRenderer = MermaidRenderer::new(MermaidCharset::Unicode);
     }
-    // Rebuilt rather than edited in place: an unsupported diagram gains a
-    // paragraph ahead of its source, and a paragraph is what makes the reason
-    // wrap. Folding it into the code block instead would leave it preformatted,
-    // and a narrow preview pane would clip away the very part that explains
-    // itself (the diagram type).
-    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
-    for mut block in std::mem::take(blocks) {
-        match &mut block {
-            Block::CodeBlock {
-                lang: lang @ Some(_),
-                code,
-            } if lang
-                .as_deref()
-                .is_some_and(|l| languages.iter().any(|name| name.eq_ignore_ascii_case(l))) =>
-            {
-                match RENDERER.with(|renderer| renderer.render(code)) {
-                    MermaidOutcome::Diagram(lines) => {
-                        *lang = None;
-                        *code = lines.join("\n");
-                    },
-                    MermaidOutcome::Unsupported { reason } => {
-                        *lang = None;
-                        out.push(Block::Paragraph(vec![karet_markdown::Inline::Text(
-                            format!("mermaid: {reason} — showing source"),
-                        )]));
-                    },
-                }
-            },
-            Block::Quote(inner) => substitute_mermaid(inner, languages),
-            Block::List { items, .. } => {
-                for item in items {
-                    substitute_mermaid(&mut item.blocks, languages);
-                }
-            },
-            _ => {},
-        }
-        out.push(block);
-    }
-    *blocks = out;
+    RENDERER.with(|renderer| doc.substitute_mermaid(renderer, languages));
 }
 
 /// Compiled out: fences pass through untouched.
 #[cfg(not(feature = "mermaid"))]
-fn substitute_mermaid(_blocks: &mut Vec<karet_markdown::Block>, _languages: &[String]) {}
-
-#[cfg(all(test, feature = "mermaid"))]
-mod mermaid_tests {
-    use karet_markdown::Block;
-    use karet_markdown::Inline;
-
-    use super::substitute_mermaid;
-
-    fn fence(lang: &str, code: &str) -> Block {
-        Block::CodeBlock {
-            lang: Some(lang.to_owned()),
-            code: code.to_owned(),
-        }
-    }
-
-    /// The text of a paragraph block, if it is one.
-    fn paragraph_text(block: &Block) -> Option<String> {
-        match block {
-            Block::Paragraph(inlines) => Some(
-                inlines
-                    .iter()
-                    .map(|i| match i {
-                        Inline::Text(t) => t.clone(),
-                        _ => String::new(),
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn a_renderable_diagram_replaces_the_fence_in_place() {
-        let mut blocks = vec![fence("mermaid", "flowchart TD\n    A[Start] --> B[End]\n")];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        assert_eq!(blocks.len(), 1, "no explanatory paragraph is added");
-        let Some(Block::CodeBlock { lang, code }) = blocks.first() else {
-            panic!("expected a code block, got {blocks:?}");
-        };
-        assert!(
-            lang.is_none(),
-            "the rendered diagram is not source any more"
-        );
-        assert!(code.contains('─'), "box drawing reached the block: {code}");
-    }
-
-    #[test]
-    fn an_unsupported_diagram_explains_itself_in_a_wrappable_paragraph() {
-        // The reason must be a paragraph, not part of the code block: a code
-        // block is preformatted, so a narrow preview pane would clip the very
-        // words naming the diagram type.
-        let mut blocks = vec![fence("mermaid", "gitGraph\n    commit\n")];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        assert_eq!(blocks.len(), 2, "reason paragraph, then the source");
-        let Some(note) = paragraph_text(&blocks[0]) else {
-            panic!("the reason must be a paragraph, got {:?}", blocks[0]);
-        };
-        assert!(note.starts_with("mermaid: "), "{note}");
-        assert!(note.ends_with(" — showing source"), "{note}");
-        let Some(Block::CodeBlock { code, .. }) = blocks.get(1) else {
-            panic!("the source must survive, got {:?}", blocks.get(1));
-        };
-        assert!(code.contains("gitGraph"), "{code}");
-        assert!(
-            !code.contains("mermaid:"),
-            "the reason must not be inside the block: {code}"
-        );
-    }
-
-    #[test]
-    fn a_fence_in_another_language_is_left_alone() {
-        let mut blocks = vec![fence("rust", "fn main() {}\n")];
-        let before = blocks.clone();
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-        assert_eq!(blocks, before);
-    }
-
-    #[test]
-    fn diagrams_nested_in_quotes_and_lists_are_substituted_too() {
-        let mut blocks = vec![
-            Block::Quote(vec![fence("mermaid", "gitGraph\n    commit\n")]),
-            Block::List {
-                start: None,
-                items: vec![karet_markdown::ListItem {
-                    blocks: vec![fence("mermaid", "gitGraph\n    commit\n")],
-                    task: None,
-                }],
-            },
-        ];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        let Some(Block::Quote(inner)) = blocks.first() else {
-            panic!("expected a quote, got {blocks:?}");
-        };
-        assert_eq!(inner.len(), 2, "the quote gained its reason paragraph");
-        let Some(Block::List { items, .. }) = blocks.get(1) else {
-            panic!("expected a list, got {blocks:?}");
-        };
-        assert_eq!(
-            items[0].blocks.len(),
-            2,
-            "the list item gained its reason paragraph"
-        );
-    }
-}
+fn substitute_mermaid(_doc: &mut karet_markdown::MarkdownDocument, _languages: &[String]) {}

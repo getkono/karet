@@ -1,6 +1,177 @@
+//! The actor's source-control surface: serving [`VcsCommand`]s.
+//!
+//! Index writes run inline here through `vcs_write`. Status, history pages,
+//! commit details, diffs, blame and line changes are sent as jobs to the VCS
+//! worker (`crate::vcs_worker`), which performs those reads off the actor. Not
+//! every read goes there: the log events `emit_vcs_log` emits and the open log
+//! `reconcile_vcs_log` keeps in step with the repository are read on the actor
+//! itself, and `generate_commit_message` reads the staged diff on a blocking
+//! task of its own before asking the agent for an AI commit message.
+
 use super::*;
+use crate::api::VcsCommand;
+use crate::vcs_worker::VcsJob;
 
 impl Session {
+    /// Serve one [`VcsCommand`]. Index writes run inline; everything that reads
+    /// history or prepares a diff goes to the VCS worker.
+    pub(super) fn handle_vcs(&mut self, id: RequestId, command: VcsCommand) {
+        let syntax = self.diff_syntax;
+        match command {
+            VcsCommand::Refresh => self.emit_vcs_status(Some(id)),
+            VcsCommand::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            VcsCommand::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
+            VcsCommand::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
+            VcsCommand::ApplyIndexPatch { patch, reverse } => {
+                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
+            },
+            VcsCommand::StageAll => self.vcs_write(id, Repository::stage_all),
+            VcsCommand::UnstageAll => self.vcs_write(id, Repository::unstage_all),
+            VcsCommand::Commit { message } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Commit {
+                    id,
+                    message,
+                    cancel,
+                });
+            },
+            VcsCommand::GenerateCommitMessage => self.generate_commit_message(id),
+            VcsCommand::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
+            VcsCommand::SetAiCommitOptions { options } => {
+                self.set_ai_commit_options(id, *options);
+            },
+            VcsCommand::MergeConflict { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::MergeConflict { id, path, cancel });
+            },
+            VcsCommand::RepositorySnapshot => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Snapshot { id, cancel });
+            },
+            VcsCommand::NestedRepositoryStatus { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::NestedRepositoryStatus {
+                    id,
+                    path,
+                    cancel,
+                });
+            },
+            VcsCommand::Action { action } => {
+                self.emit(
+                    Some(id),
+                    Event::VcsOperationStarted {
+                        action: action.clone(),
+                    },
+                );
+                let _ = self.vcs_worker.send(VcsJob::Action { id, action });
+            },
+            VcsCommand::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
+            VcsCommand::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
+            VcsCommand::LineChanges { doc } => self.request_line_changes(id, doc),
+            VcsCommand::Log { skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Log {
+                    id,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::CommitDetail { rev } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::CommitDetail {
+                    id,
+                    rev,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::RangeChanges { spec } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RangeChanges {
+                    id,
+                    spec,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::FileHistory { path, skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::FileHistory {
+                    id,
+                    path,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::FetchCommitVerification { hash } => {
+                self.fetch_commit_verification(id, hash);
+            },
+            VcsCommand::RemoteFacts { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RemoteFacts { id, path, cancel });
+            },
+            VcsCommand::PrepareChange { path, staged } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareChange {
+                    id,
+                    path,
+                    staged,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::PrepareDiff { path, old, new } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareTexts {
+                    id,
+                    path,
+                    old,
+                    new,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::DiffWithRev { path, rev, live } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::DiffWithRev {
+                    id,
+                    path,
+                    rev,
+                    live,
+                    syntax,
+                    cancel,
+                });
+            },
+        }
+    }
+
+    /// Register a cancellation for `id` and hand the worker a job built from it —
+    /// the single submission shape for every cancellable VCS request.
+    pub(super) fn submit_vcs(
+        &self,
+        id: RequestId,
+        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
+    ) {
+        let cancel = self.cancellations.register(id);
+        let _ = self.vcs_worker.send(make(id, cancel));
+    }
+
+    pub(super) fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: "blame: unknown document".to_string(),
+                },
+            );
+            return;
+        };
+        if document.buffer.version() != version {
+            return;
+        }
+        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path: document.path.clone(),
+            text: document.buffer.text(),
+            line,
+            cancel: self.cancellations.register(id),
+        });
+    }
+
     /// Fetch a page of the commit log and emit it. Requests one extra commit to
     /// detect whether more remain, then trims to `limit`. A no-op without a repo.
     /// A requested page tags the answering event with `id`; a spontaneous reload
@@ -33,6 +204,34 @@ impl Session {
                 },
             ),
         }
+    }
+
+    /// Queue the uncommitted-line comparison of `doc`'s current buffer on the
+    /// VCS worker. A document closed before this arrives answers with no
+    /// markers: the client's request for it was already moot.
+    pub(super) fn request_line_changes(&self, id: RequestId, doc: DocumentId) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::LineChanges {
+                    doc,
+                    version: 0,
+                    markers: Vec::new(),
+                },
+            );
+            return;
+        };
+        let version = document.buffer.version();
+        let path = document.path.clone();
+        let text = document.buffer.text();
+        self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::LineChanges {
+            id,
+            doc,
+            version,
+            path,
+            text,
+            cancel,
+        });
     }
 
     /// Lazily fetch a commit's GitHub "Verified" status through the shared async
@@ -69,8 +268,16 @@ impl Session {
         }
         match repo.commits_since(prev.as_deref(), LOG_RECONCILE_CAP) {
             // A clean, bounded set of new commits anchored on a known tip → prepend.
+            // The walk stops at the old tip only when it is still an ancestor; after
+            // an amend, rebase, or reset it walks the rewritten history instead, so
+            // a batch that never reached the old tip must not be prepended.
             Ok(commits)
-                if prev.is_some() && !commits.is_empty() && commits.len() < LOG_RECONCILE_CAP =>
+                if commits.len() < LOG_RECONCILE_CAP
+                    && prev.as_deref().is_some_and(|prev| {
+                        commits
+                            .iter()
+                            .any(|commit| commit.parents.iter().any(|parent| parent == prev))
+                    }) =>
             {
                 self.emit(None, Event::VcsCommitsPrepended { commits });
             },
@@ -88,8 +295,21 @@ impl Session {
     /// filesystem event) emits only when the status changed (the worker keeps the
     /// last emitted status), collapsing event bursts and absorbing the feedback
     /// from the session's own index writes.
+    ///
+    /// Without a repository a requested refresh still answers, with an empty
+    /// status: there is nothing to report, and a notification here would fire on
+    /// every explorer refresh of a folder that is simply not under git.
     pub(super) fn emit_vcs_status(&mut self, id: Option<RequestId>) {
         if self.vcs.is_none() {
+            if id.is_some() {
+                self.emit(
+                    id,
+                    Event::VcsStatus {
+                        staged: Vec::new(),
+                        working: Vec::new(),
+                    },
+                );
+            }
             return;
         }
         let _ = self
@@ -98,14 +318,19 @@ impl Session {
     }
 
     /// Run a write action against the repository, then force a fresh status (so the
-    /// user always sees the result of their action). Failures surface as an
-    /// [`Event::Notification`].
+    /// user always sees the result of their action). Failures — including there
+    /// being no repository to write to — surface as an [`Event::Notification`].
     pub(super) fn vcs_write(
         &mut self,
         id: RequestId,
         action: impl FnOnce(&Repository) -> Result<(), VcsError>,
     ) {
         let Some(repo) = self.vcs.as_ref() else {
+            self.emit_vcs_notice(
+                id,
+                Severity::Error,
+                "no workspace repository is open".to_string(),
+            );
             return;
         };
         match action(repo) {
@@ -121,86 +346,271 @@ impl Session {
         }
     }
 
-    /// Commit the staged changes, emitting [`Event::Committed`] then a fresh status,
-    /// or a [`Event::Notification`] on failure (e.g. conflicts or no identity).
-    pub(super) fn commit(&mut self, id: RequestId, message: &str) {
-        let Some(repo) = self.vcs.as_ref() else {
-            return;
-        };
-        match repo.commit(message) {
-            Ok(oid) => {
-                self.emit(Some(id), Event::Committed { oid });
-                self.emit_vcs_status(Some(id));
-            },
-            Err(e) => self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: e.to_string(),
-                },
-            ),
+    /// The AI-commit settings a run may actually use.
+    ///
+    /// Every field is the merged configuration except `binary`, which is dropped
+    /// when it came from the project layer — `$GIT_ROOT/.karet/setting.jsonc`, a
+    /// file that arrives with the repository. A repository may reasonably say
+    /// which *model* to summarise its diffs with; letting it also name the
+    /// *executable* would turn cloning it into running it, since the agents are
+    /// probed and driven without further confirmation.
+    ///
+    /// The user and system layers keep the override: those are the machine
+    /// owner's own files.
+    #[cfg(feature = "aicommit")]
+    pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
+        let mut options = self.config.settings().git.ai_commit.clone();
+        let from_project = self
+            .config
+            .loaded_config
+            .explicit
+            .get("git.aiCommit.binary")
+            .is_some_and(|layer| *layer == crate::config::ConfigLayer::Project);
+        if from_project {
+            options.binary = None;
         }
+        options
     }
 
-    /// Generate a commit message from the staged diff and emit it as an
-    /// [`Event::CommitMessageGenerated`]. The generation is blocking (it shells out
-    /// to the `claude` CLI), so it runs on a worker thread; failures — nothing
-    /// staged, a disabled setting, or a generator error — surface as an
-    /// [`Event::Notification`]. A no-op notification when the `aicommit` feature is off.
+    /// Generate a commit message from the staged diff, answering with
+    /// [`Event::CommitMessageGenerated`] or [`Event::CommitMessageFailed`].
+    ///
+    /// Runs as a task rather than on the actor thread or the serialized VCS
+    /// worker: the agent round-trip takes seconds, and neither the editor nor
+    /// blame/log/diff may queue behind it. Reading the staged diff is blocking
+    /// `git`, so it goes to a blocking thread too.
+    ///
+    /// Cancellation is cooperative on the way in and by drop on the way out —
+    /// the agent adapters kill their child process when the future is dropped —
+    /// and a cancelled request answers with nothing at all.
     #[cfg(feature = "aicommit")]
     pub(super) fn generate_commit_message(&mut self, id: RequestId) {
-        let cfg = self.config.settings.git.ai_commit.clone();
+        let cfg = self.ai_commit_options();
         if !cfg.enabled {
-            self.emit_vcs_notice(
-                id,
-                Severity::Warning,
-                "AI commit messages are disabled (git.aiCommit.enabled)".to_string(),
+            self.emit(
+                Some(id),
+                Event::CommitMessageFailed {
+                    message: "AI commit messages are disabled (git.aiCommit.enabled)".to_string(),
+                },
             );
             return;
         }
-        let Some(repo) = self.vcs.as_ref() else {
+        let Some(root) = self.config.roots.first().cloned() else {
+            self.emit(
+                Some(id),
+                Event::CommitMessageFailed {
+                    message: "no workspace repository is open".to_string(),
+                },
+            );
             return;
         };
-        let diff = match repo.staged_diff() {
-            Ok(diff) => diff,
-            Err(e) => {
-                self.emit_vcs_notice(id, Severity::Error, e.to_string());
-                return;
-            },
-        };
-        if diff.file_count == 0 || diff.patch.trim().is_empty() {
-            self.emit_vcs_notice(
-                id,
-                Severity::Warning,
-                "commit message: stage changes first".to_string(),
+        // Same reason the availability probe checks: without a reactor there is
+        // nothing to run the agent on, and answering is better than panicking.
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.emit(
+                Some(id),
+                Event::CommitMessageFailed {
+                    message: "this session has no async runtime to generate on".to_string(),
+                },
             );
             return;
         }
 
+        // A newer request supersedes an older one: one agent process per session,
+        // never a pile of them racing to fill the same box.
+        if let Some(previous) = self.ai_commit_request.replace(id) {
+            self.cancellations.cancel(previous);
+        }
+        let cancel = self.cancellations.register(id);
         let events = self.events.clone();
-        // Off the actor thread: the CLI round-trip can take seconds. Fire-and-forget.
-        std::thread::spawn(move || {
-            let event = match crate::aicommit::generate(&diff, &cfg) {
-                Ok(message) => Event::CommitMessageGenerated { message },
-                Err(message) => Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: format!("commit message generation failed: {message}"),
+        tokio::spawn(async move {
+            let diff = tokio::task::spawn_blocking(move || {
+                karet_vcs::Repository::discover(&root)
+                    .and_then(|repo| repo.staged_diff())
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+            let diff = match diff {
+                Ok(Ok(diff)) => diff,
+                Ok(Err(message)) => {
+                    events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message });
+                    return;
+                },
+                Err(error) => {
+                    events.emit_if_live(
+                        Some(id),
+                        &cancel,
+                        Event::CommitMessageFailed {
+                            message: format!("reading the staged diff: {error}"),
+                        },
+                    );
+                    return;
                 },
             };
-            events.send((Some(id), event)).ok();
+            if diff.file_count == 0 || diff.patch.trim().is_empty() {
+                events.emit_if_live(
+                    Some(id),
+                    &cancel,
+                    Event::CommitMessageFailed {
+                        message: "stage changes first".to_string(),
+                    },
+                );
+                return;
+            }
+            // Reading the diff shells out to `git`, which is long enough to be
+            // cancelled during. Check before launching the agent rather than
+            // relying on `select!` to drop it: that would spawn the process only
+            // to kill it a moment later.
+            if cancel.is_cancelled() {
+                return;
+            }
+
+            tokio::select! {
+                // Dropping the generation future kills the agent process with it.
+                () = cancel.cancelled() => {},
+                result = crate::aicommit::generate(&diff, &cfg) => match result {
+                    Ok(message) => {
+                        events.emit_if_live(Some(id), &cancel, Event::CommitMessageGenerated { message });
+                    },
+                    Err(message) => events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message }),
+                },
+            }
         });
     }
 
-    /// Without the `aicommit` feature, message generation is unavailable — report it.
+    /// Without the `aicommit` feature there is nothing to run — say so where the
+    /// request was made, and let [`Session::emit_ai_commit_availability`] report
+    /// the same fact ahead of time.
     #[cfg(not(feature = "aicommit"))]
     pub(super) fn generate_commit_message(&mut self, id: RequestId) {
-        self.emit_vcs_notice(
-            id,
-            Severity::Warning,
-            "AI commit messages are unavailable (built without the `aicommit` feature)".to_string(),
+        self.emit(
+            Some(id),
+            Event::CommitMessageFailed {
+                message: "this build has no AI commit support".to_string(),
+            },
         );
+    }
+
+    /// Probe the agent CLIs and push [`Event::AiCommitAvailability`].
+    ///
+    /// Runs as a task: a probe launches a process, which must not stall the
+    /// actor. `id` tags an explicitly requested probe and is `None` for the
+    /// pushes that follow startup and settings reloads.
+    ///
+    /// Without a reactor there is nothing to launch a process with, so the
+    /// configuration is reported unprobed rather than panicking — a session
+    /// driven outside a runtime still gets a truthful answer.
+    ///
+    /// A probe *executes* the configured binary, and `binary` can be set by the
+    /// project settings layer — a file inside the repository being opened. So it
+    /// is not run for a workspace whose settings turn the feature off: opening a
+    /// repository must never be enough, on its own, to run a program that
+    /// repository named.
+    #[cfg(feature = "aicommit")]
+    pub(super) fn emit_ai_commit_availability(&mut self, id: Option<RequestId>) {
+        let options = self.ai_commit_options();
+        let events = self.events.clone();
+        if !options.enabled || tokio::runtime::Handle::try_current().is_err() {
+            self.emit_unprobed_ai_commit_availability(id);
+            return;
+        }
+        tokio::spawn(async move {
+            let mut agents = Vec::new();
+            for agent in crate::config::schema::AiCommitAgent::ALL {
+                // Probe each agent as *it* would be configured, so a picker can
+                // report on one the user has not selected yet. A binary override
+                // belongs to the selected agent alone.
+                let probed = crate::config::schema::AiCommit {
+                    agent,
+                    binary: (agent == options.agent)
+                        .then(|| options.binary.clone())
+                        .flatten(),
+                    ..options.clone()
+                };
+                let result = crate::aicommit::probe(&probed).await;
+                agents.push(crate::api::AiCommitAgentStatus {
+                    agent,
+                    available: result.available,
+                    detail: result.detail,
+                });
+            }
+            let effort_conflict = options.effort_conflict().map(|effort| {
+                format!(
+                    "{} does not support {} effort; using the model default",
+                    options.agent.as_str(),
+                    effort.as_str()
+                )
+            });
+            let status = crate::api::AiCommitAvailability {
+                supported: true,
+                enabled: options.enabled,
+                options,
+                agents,
+                effort_conflict,
+            };
+            events.emit(
+                id,
+                Event::AiCommitAvailability {
+                    status: Box::new(status),
+                },
+            );
+        });
+    }
+
+    /// Report that this build cannot generate commit messages at all.
+    #[cfg(not(feature = "aicommit"))]
+    pub(super) fn emit_ai_commit_availability(&mut self, id: Option<RequestId>) {
+        self.emit_unprobed_ai_commit_availability(id);
+    }
+
+    /// Emit the configuration without probing the agents.
+    ///
+    /// Two callers, one meaning — "here is the configuration, but nothing was
+    /// launched to verify it": a build without generation support, where there
+    /// is nothing to verify, and a session running without a reactor, where
+    /// there is no way to. An empty `agents` list is what makes
+    /// [`crate::api::AiCommitAvailability::ready`] report not-ready rather than
+    /// implying an agent was found.
+    pub(super) fn emit_unprobed_ai_commit_availability(&mut self, id: Option<RequestId>) {
+        let options = self.config.settings().git.ai_commit.clone();
+        let status = crate::api::AiCommitAvailability {
+            supported: cfg!(feature = "aicommit"),
+            enabled: options.enabled,
+            options,
+            agents: Vec::new(),
+            effort_conflict: None,
+        };
+        self.emit(
+            id,
+            Event::AiCommitAvailability {
+                status: Box::new(status),
+            },
+        );
+    }
+
+    /// Persist `git.aiCommit.*` to the user settings layer, then re-probe.
+    pub(super) fn set_ai_commit_options(
+        &mut self,
+        id: RequestId,
+        options: crate::config::schema::AiCommit,
+    ) {
+        match crate::config::set_user_ai_commit(&options) {
+            Ok(path) => {
+                // Apply in memory too: the settings watcher will reload the file,
+                // but the client must not see its own change bounce back stale.
+                self.adopt_settings(|settings| settings.git.ai_commit = options);
+                self.emit(
+                    Some(id),
+                    Event::Notification {
+                        severity: Severity::Information,
+                        kind: NotificationKind::Vcs,
+                        message: format!("AI commit settings saved to {}", path.display()),
+                    },
+                );
+                self.emit_ai_commit_availability(Some(id));
+            },
+            Err(error) => self.emit_vcs_notice(id, Severity::Error, error.to_string()),
+        }
     }
 
     /// Emit a source-control [`Event::Notification`] tagged with `id`.
@@ -213,5 +623,20 @@ impl Session {
                 message,
             },
         );
+    }
+
+    /// Persist the inline-blame toggle and adopt it into the live settings.
+    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
+        self.adopt_settings(|settings| settings.git.blame = enabled);
+        if let Err(error) = crate::config::set_user_blame(enabled) {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("settings: {error}"),
+                },
+            );
+        }
     }
 }

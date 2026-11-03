@@ -7,7 +7,7 @@ use super::*;
 
 pub(super) fn run_log(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     id: RequestId,
     skip: usize,
     limit: usize,
@@ -28,9 +28,8 @@ pub(super) fn run_log(
         Ok((commits, has_more, labels))
     });
     match result {
-        Ok((commits, has_more, labels)) => emit_cancellable(
-            events,
-            id,
+        Ok((commits, has_more, labels)) => events.emit_if_live(
+            Some(id),
             cancel,
             Event::VcsLog {
                 skip,
@@ -39,13 +38,13 @@ pub(super) fn run_log(
                 labels,
             },
         ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
+        Err(message) => events.emit_if_live(Some(id), cancel, vcs_failure(message)),
     }
 }
 
 pub(super) fn run_commit_detail(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     id: RequestId,
     rev: &str,
     syntax: bool,
@@ -54,19 +53,22 @@ pub(super) fn run_commit_detail(
     if cancel.is_cancelled() {
         return;
     }
-    let Ok(repo) = repository(root) else {
-        return;
+    let repo = match repository(root) {
+        Ok(repo) => repo,
+        Err(message) => {
+            events.emit_if_live(Some(id), cancel, vcs_failure(message));
+            return;
+        },
     };
     let detail = match repo.commit_detail(rev) {
         Ok(detail) => detail,
         Err(error) => {
-            notify_cancellable(events, id, cancel, error.to_string());
+            events.emit_if_live(Some(id), cancel, vcs_failure(error.to_string()));
             return;
         },
     };
-    emit_cancellable(
-        events,
-        id,
+    events.emit_if_live(
+        Some(id),
         cancel,
         Event::CommitDetailReady {
             detail: Box::new(detail.clone()),
@@ -80,9 +82,8 @@ pub(super) fn run_commit_detail(
             let Some(changes) = prepare_changes(changes, syntax, cancel) else {
                 return;
             };
-            emit_cancellable(
-                events,
-                id,
+            events.emit_if_live(
+                Some(id),
                 cancel,
                 Event::CommitReady {
                     detail: Box::new(detail),
@@ -90,13 +91,13 @@ pub(super) fn run_commit_detail(
                 },
             );
         },
-        Err(error) => notify_cancellable(events, id, cancel, error.to_string()),
+        Err(error) => events.emit_if_live(Some(id), cancel, vcs_failure(error.to_string())),
     }
 }
 
 pub(super) fn run_range_changes(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     id: RequestId,
     spec: &RangeSpec,
     syntax: bool,
@@ -160,9 +161,8 @@ pub(super) fn run_range_changes(
             let Some(changes) = prepare_changes(changes, syntax, cancel) else {
                 return;
             };
-            emit_cancellable(
-                events,
-                id,
+            events.emit_if_live(
+                Some(id),
                 cancel,
                 Event::RangeReady {
                     base_label,
@@ -172,13 +172,13 @@ pub(super) fn run_range_changes(
                 },
             );
         },
-        Err(message) => notify_cancellable(events, id, cancel, message),
+        Err(message) => events.emit_if_live(Some(id), cancel, vcs_failure(message)),
     }
 }
 
 pub(super) fn run_file_history(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     id: RequestId,
     path: PathBuf,
     skip: usize,
@@ -197,9 +197,8 @@ pub(super) fn run_file_history(
         Ok((commits, has_more))
     });
     match result {
-        Ok((commits, has_more)) => emit_cancellable(
-            events,
-            id,
+        Ok((commits, has_more)) => events.emit_if_live(
+            Some(id),
             cancel,
             Event::FileHistory {
                 path,
@@ -208,6 +207,6 @@ pub(super) fn run_file_history(
                 has_more,
             },
         ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
+        Err(message) => events.emit_if_live(Some(id), cancel, vcs_failure(message)),
     }
 }

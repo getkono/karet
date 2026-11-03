@@ -53,7 +53,7 @@ pub(crate) fn serve_config(
     root: &std::path::Path,
     loaded_config: &karet_session::config::LoadedConfig,
     syntax: bool,
-) -> karet_session::session::SessionConfig {
+) -> karet_session::SessionConfig {
     crate::app::runtime::session_config_for(
         root.to_path_buf(),
         loaded_config.clone(),
@@ -61,7 +61,10 @@ pub(crate) fn serve_config(
         // A served session persists crash-recovery swaps like any other: the
         // buffers at risk are on this machine, and a client that vanishes is
         // exactly the case backups exist for.
-        karet_session::backup::default_swap_dir(),
+        karet_session::default_swap_dir(),
+        // Keymaps are the client's: it watches its own, so a served session
+        // watches none.
+        Vec::new(),
     )
 }
 

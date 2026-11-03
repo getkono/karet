@@ -1,4 +1,33 @@
-use super::*;
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use karet_core::NotificationKind;
+use karet_session::GithubVerification;
+use karet_session::PreparedChange;
+use karet_session::RangeSpec;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_session::ViewId;
+use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
+
+use crate::app::App;
+use crate::app::GRAPH_LOG_PAGE;
+use crate::app::GRAPH_PREFETCH_SCREENS;
+use crate::app::confirm::ConfirmAction;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::command::Command;
+use crate::overlay::Overlay;
+use crate::pending::Pending;
+use crate::tab::ChangedFile;
+use crate::tab::CommitFiles;
+use crate::tab::CommitViewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::commit_title;
+use crate::tab::compare_title;
 
 impl App {
     pub(super) fn toggle_commit_file(&mut self, file: usize) -> bool {
@@ -16,14 +45,54 @@ impl App {
         true
     }
 
+    /// Show or hide one directory's rows in the active commit view's file index.
+    pub(super) fn toggle_commit_dir(&mut self, path: &Path) -> bool {
+        let Some(view) = self.active_commit_view() else {
+            return false;
+        };
+        if !view.collapsed_dirs.remove(path) {
+            view.collapsed_dirs.insert(path.to_path_buf());
+        }
+        true
+    }
+
+    /// Fold every directory in the active commit view's file index, or unfold them all.
+    pub(super) fn set_commit_dirs_collapsed(&mut self, collapsed: bool) {
+        let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
+            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        else {
+            return;
+        };
+        if !collapsed {
+            view.collapsed_dirs.clear();
+            return;
+        }
+        // Derived from the *fully expanded* tree, so one pass reaches every directory:
+        // walking the current rows would stop at the first row it folded.
+        view.collapsed_dirs = crate::tab::changed_file_rows(&files.files, &BTreeSet::new())
+            .iter()
+            .filter_map(|row| row.dir().map(Path::to_path_buf))
+            .collect();
+    }
+
+    /// The active tab's commit-family view state, if it has one.
+    ///
+    /// Shared with the rail's scroll setters in [`super::scroll`], which address the
+    /// same two tab kinds.
+    pub(super) fn active_commit_view(&mut self) -> Option<&mut CommitViewState> {
+        match self.tabs.get_mut(self.active).map(|tab| &mut tab.kind) {
+            Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) => Some(view),
+            _ => None,
+        }
+    }
+
     /// The active tab's commit graph browser, if it is one.
     pub(super) fn active_commit_graph(&mut self) -> Option<&mut TabKind> {
         let tab = self.tabs.get_mut(self.active)?;
         matches!(tab.kind, TabKind::CommitGraph { .. }).then_some(&mut tab.kind)
     }
 
-    /// Move the browser's selection by `delta` (clamped), and request the newly
-    /// selected commit's detail if it isn't already shown.
+    /// Move the view's selection by `delta` (clamped).
     pub(super) fn graph_select(&mut self, delta: i32) {
         let Some(TabKind::CommitGraph {
             commits, selected, ..
@@ -38,19 +107,17 @@ impl App {
         self.graph_select_to(next);
     }
 
-    /// Select commit `index` outright, rather than stepping towards it.
+    /// Select commit `index` outright, scrolling it into view.
     ///
-    /// The browser's list offset is recomputed from the selection every frame, so a
-    /// dragged scrollbar has to move the selection to move the view — and it has to
-    /// come through here, not by writing `selected`, or the detail pane would keep
-    /// showing whichever commit the selection left behind.
+    /// Selection and the viewport are independent here — the wheel and the scrollbar
+    /// pan the graph without moving the cursor — so a *selection* move is the one thing
+    /// that has to drag the viewport along with it.
     pub(super) fn graph_select_to(&mut self, index: usize) {
         let Some(TabKind::CommitGraph {
-            history_path,
             commits,
             selected,
-            has_more,
-            loading,
+            list_offset,
+            list_rect,
             ..
         }) = self.active_commit_graph()
         else {
@@ -59,90 +126,120 @@ impl App {
         if commits.is_empty() {
             return;
         }
-        let next = index.min(commits.len() - 1);
-        *selected = next;
-        // Page in more history when nearing the end, from the same source (whole-repo
-        // log or a single file's history).
-        let near_end = next + COMMIT_AUTOLOAD_THRESHOLD >= commits.len();
-        let want_more = *has_more && !*loading && near_end;
-        let loaded = commits.len();
-        let path = history_path.clone();
-        let hash = commits[next].hash.clone();
-        self.graph_request_detail(hash);
-        if want_more {
-            if let Some(TabKind::CommitGraph {
-                loading,
-                loading_since,
-                ..
-            }) = self.active_commit_graph()
-            {
-                *loading = true;
-                *loading_since = Some(Pending::start());
-            }
-            let command = match path {
-                Some(path) => SessionCommand::FileHistory {
-                    path,
-                    skip: loaded,
-                    limit: SCM_LOG_PAGE,
-                },
-                None => SessionCommand::VcsLog {
-                    skip: loaded,
-                    limit: SCM_LOG_PAGE,
-                },
-            };
-            let view = self.tabs[self.active].view;
-            self.graph_log_req = self.send(command).map(|id| (id, view));
-        }
+        *selected = index.min(commits.len() - 1);
+        let offset = crate::app::keep_visible(
+            *selected,
+            usize::from(*list_offset),
+            usize::from(list_rect.height),
+        );
+        *list_offset = u16::try_from(offset).unwrap_or(u16::MAX);
+        self.graph_prefetch();
     }
 
-    /// Request `hash`'s detail for the browser pane, unless it is already the shown
-    /// detail (avoids re-fetching when re-selecting the same commit).
-    pub(super) fn graph_request_detail(&mut self, hash: String) {
-        let view = self.tabs.get(self.active).map_or(ViewId(0), |tab| tab.view);
-        if let Some(TabKind::CommitGraph { detail, .. }) = self.active_commit_graph()
-            && detail.as_ref().is_some_and(|d| d.hash == hash)
-        {
+    /// Pan the graph vertically without disturbing the selection.
+    pub(super) fn graph_scroll_to(&mut self, offset: usize) {
+        let Some(TabKind::CommitGraph {
+            commits,
+            has_more,
+            list_offset,
+            list_rect,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return;
+        };
+        // One trailing row exists while more history remains (the "more" affordance),
+        // so the last commit can still be scrolled to the top of the viewport.
+        let rows = commits.len() + usize::from(*has_more);
+        let max = rows.saturating_sub(usize::from(list_rect.height).max(1));
+        *list_offset = u16::try_from(offset.min(max)).unwrap_or(u16::MAX);
+        self.graph_prefetch();
+    }
+
+    /// Keep loaded history well ahead of the viewport.
+    ///
+    /// The point is that the graph renders "as far as the eye can see": a page is
+    /// requested while the viewport is still [`GRAPH_PREFETCH_SCREENS`] screens short of
+    /// the end, and each arriving page re-runs this, so fetching chains forward on its
+    /// own. The trailing "more" row is then only reachable by outrunning the fetch.
+    pub(crate) fn graph_prefetch(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let view = tab.view;
+        let TabKind::CommitGraph {
+            history_path,
+            commits,
+            has_more,
+            loading,
+            list_offset,
+            list_rect,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if !*has_more || *loading {
             return;
         }
-        let stale: Vec<RequestId> = self
-            .pending_commit_detail
-            .iter()
-            .filter_map(|(request, destination)| {
-                matches!(destination, CommitDest::Browser { view: owner, .. } if *owner == view)
-                    .then_some(*request)
-            })
-            .collect();
-        for request in stale {
-            self.pending_commit_detail.remove(&request);
-            self.cancel_backend_request(request);
+        let height = usize::from(list_rect.height).max(1);
+        let margin = height * GRAPH_PREFETCH_SCREENS;
+        if usize::from(*list_offset) + height + margin < commits.len() {
+            return;
         }
-        let stale_verification: Vec<RequestId> = self
-            .pending_commit_verification
-            .iter()
-            .filter_map(|(request, (owner, _))| (*owner == view).then_some(*request))
-            .collect();
-        for request in stale_verification {
-            self.pending_commit_verification.remove(&request);
-            self.cancel_backend_request(request);
-        }
+        let loaded = commits.len();
+        let command = match history_path.clone() {
+            Some(path) => VcsCommand::FileHistory {
+                path,
+                skip: loaded,
+                limit: GRAPH_LOG_PAGE,
+            },
+            None => VcsCommand::Log {
+                skip: loaded,
+                limit: GRAPH_LOG_PAGE,
+            },
+        };
+        let Some(id) = self.send(command) else {
+            return;
+        };
+        self.graph_log_reqs.insert(id, view);
         if let Some(TabKind::CommitGraph {
-            detail,
-            files,
-            detail_loading_since,
+            loading,
+            loading_since,
             ..
         }) = self.active_commit_graph()
         {
-            *detail = None;
-            *files = CommitFiles::default();
-            *detail_loading_since = Some(Pending::start());
-        }
-        if let Some(id) = self.send(SessionCommand::CommitDetail { rev: hash.clone() }) {
-            self.pending_commit_detail
-                .insert(id, CommitDest::Browser { view, hash });
+            *loading = true;
+            *loading_since = Some(Pending::start());
         }
     }
 
-    /// Open the browser's selected commit as a standalone commit tab.
+    /// Select and open the commit under `point` in the graph view, if the click landed
+    /// on a commit row. Reports whether it consumed the click.
+    pub(super) fn graph_click(&mut self, point: (u16, u16)) -> bool {
+        let Some(TabKind::CommitGraph {
+            commits,
+            list_offset,
+            list_rect,
+            ..
+        }) = self.active_commit_graph()
+        else {
+            return false;
+        };
+        if !rect_contains(*list_rect, point) {
+            return false;
+        }
+        let row = usize::from(*list_offset) + usize::from(point.1 - list_rect.y);
+        if row >= commits.len() {
+            // The trailing "more" row: paging is automatic, so there is nothing to do.
+            return true;
+        }
+        self.graph_select_to(row);
+        self.graph_open_selected();
+        true
+    }
+
+    /// Open the graph view's selected commit as a standalone commit tab.
     pub(super) fn graph_open_selected(&mut self) {
         if let Some(TabKind::CommitGraph {
             commits, selected, ..
@@ -154,11 +251,41 @@ impl App {
         }
     }
 
-    /// Request a range diff; the answering [`SessionEvent::RangeReady`] opens the compare
-    /// tab, and an unresolvable range answers with a VCS notification instead.
-    pub(super) fn open_range(&mut self, command: SessionCommand) {
-        self.status = Some("computing diff…".to_string());
-        self.send_command(command);
+    /// Request a range diff and reserve its compare tab at once, keyed by the request
+    /// id: the answering [`SessionEvent::RangeReady`] fills that tab in place, and an
+    /// unresolvable range answers with a VCS notification that marks it failed. The
+    /// tab's changed-file block shows the shared delayed loading placeholder meanwhile.
+    pub(super) fn open_range(&mut self, spec: RangeSpec) {
+        // The header shows what was asked for until the backend resolves the labels.
+        let (base_label, head_label, merge_base) = match &spec {
+            RangeSpec::Unpushed => ("@{upstream}".to_string(), "HEAD".to_string(), true),
+            RangeSpec::SinceBase { base } => (
+                base.clone().unwrap_or_else(|| "base".to_string()),
+                "HEAD".to_string(),
+                true,
+            ),
+            RangeSpec::Between {
+                base,
+                head,
+                merge_base,
+            } => (base.clone(), head.clone(), *merge_base),
+            // `RangeSpec` is non-exhaustive; a future comparison still reserves its
+            // tab under generic labels until the answer names the endpoints.
+            _ => ("base".to_string(), "head".to_string(), false),
+        };
+        // No request means nothing will answer (`send` already reported why), so
+        // there is no tab to reserve.
+        let Some(id) = self.send(VcsCommand::RangeChanges { spec }) else {
+            return;
+        };
+        self.push_tab(Tab::compare(
+            base_label,
+            head_label,
+            merge_base,
+            CommitFiles::loading(),
+        ));
+        let view = self.tabs[self.active].view;
+        self.pending_compare.insert(id, view);
     }
 
     /// Mark the browser's selected commit as the base for a two-commit comparison.
@@ -171,16 +298,18 @@ impl App {
         }) = self.active_commit_graph()
             && let Some(commit) = commits.get(*selected)
         {
-            let short = commit.short_hash.clone();
+            let short = commit.short_hash().to_string();
             *compare_base = Some(commit.hash.clone());
-            self.status = Some(format!(
-                "compare base marked: {short} (select another, then compare)"
-            ));
+            self.notify(
+                Report::Outcome,
+                NotificationKind::Vcs,
+                format!("compare base marked: {short} (select another, then compare)"),
+            );
         }
     }
 
     /// Compare the browser's marked base commit against the current selection (a two-dot
-    /// `base..selected` diff). Reports a status when no base has been marked yet.
+    /// `base..selected` diff). Refuses when no base has been marked yet.
     pub(super) fn graph_compare(&mut self) {
         let Some(TabKind::CommitGraph {
             commits,
@@ -192,129 +321,69 @@ impl App {
             return;
         };
         let Some(base) = compare_base.clone() else {
-            self.status =
-                Some("mark a compare base first (Commit Graph: Mark Compare Base)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "mark a compare base first (Commit Graph: Mark Compare Base)",
+            );
             return;
         };
         let Some(head) = commits.get(*selected).map(|c| c.hash.clone()) else {
             return;
         };
-        self.open_range(SessionCommand::RangeChanges {
-            spec: RangeSpec::Between {
-                base,
-                head,
-                merge_base: false,
-            },
+        self.open_range(RangeSpec::Between {
+            base,
+            head,
+            merge_base: false,
         });
     }
 
-    /// Fill the graph browser's metadata pane from a resolved commit, and fire the lazy
-    /// GitHub verification fetch. A no-op if no browser is open.
-    pub(super) fn fill_graph_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
-        let hash = detail.hash.clone();
-        let mut filled = false;
-        for tab in self.all_tabs_mut() {
-            if tab.view != view {
-                continue;
-            }
-            if let TabKind::CommitGraph {
-                commits,
-                selected,
-                detail: slot,
-                files,
-                detail_loading_since,
-                ..
-            } = &mut tab.kind
-            {
-                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                if selected_hash != Some(hash.as_str()) {
-                    continue;
-                }
-                *slot = Some(detail.clone());
-                files.reset_loading();
-                *detail_loading_since = None;
-                filled = true;
-            }
-        }
-        if filled {
-            self.request_commit_verification(view, hash);
-        }
-    }
-
-    /// Fill the graph browser's detail pane from a resolved commit, and fire the lazy
-    /// GitHub verification fetch. A no-op if no browser is open.
-    pub(super) fn fill_graph_detail(
+    /// Apply a fetched history page to the graph view that asked for it: replace on the
+    /// first page, append otherwise.
+    ///
+    /// The page is routed by [`ViewId`], never broadcast — several graph views can be
+    /// open at once (a whole-repo log beside a file history), and each owns its own
+    /// paging cursor.
+    pub(super) fn apply_graph_log(
         &mut self,
         view: ViewId,
-        detail: Box<CommitDetail>,
-        prepared: Vec<PreparedChange>,
+        skip: usize,
+        commits: Vec<Commit>,
+        has_more: bool,
     ) {
-        let hash = detail.hash.clone();
-        let mut prepared = Some(commit_file_views(prepared));
-        let mut filled = false;
         for tab in self.all_tabs_mut() {
             if tab.view != view {
                 continue;
             }
-            if let TabKind::CommitGraph {
-                commits,
-                selected,
-                detail: slot,
-                files,
-                detail_loading_since,
-                ..
-            } = &mut tab.kind
-            {
-                let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                if selected_hash != Some(hash.as_str()) {
-                    continue;
-                }
-                let verification = (slot.as_ref().is_some_and(|d| d.hash == hash))
-                    .then(|| files.verification.take())
-                    .flatten();
-                *files = CommitFiles {
-                    verification,
-                    ..CommitFiles::ready(prepared.take().unwrap_or_default())
-                };
-                *slot = Some(detail.clone());
-                *detail_loading_since = None;
-                filled = true;
-            }
-        }
-        if filled {
-            self.request_commit_verification(view, hash);
-        }
-    }
-
-    /// Apply a fetched history page to the graph browser: replace on the first page,
-    /// append otherwise. On the first page, select the top commit and load its detail.
-    pub(super) fn apply_graph_log(&mut self, skip: usize, commits: Vec<Commit>, has_more: bool) {
-        let mut first_hash = None;
-        for tab in self.all_tabs_mut() {
-            if let TabKind::CommitGraph {
+            let TabKind::CommitGraph {
                 commits: loaded,
+                rails,
                 has_more: more,
                 loading,
                 loading_since,
                 selected,
                 ..
             } = &mut tab.kind
-            {
-                *loading = false;
-                *loading_since = None;
-                *more = has_more;
-                if skip == 0 {
-                    *loaded = commits.clone();
-                    *selected = 0;
-                    first_hash = loaded.first().map(|c| c.hash.clone());
-                } else if skip == loaded.len() {
-                    loaded.extend(commits.clone());
-                }
+            else {
+                continue;
+            };
+            *loading = false;
+            *loading_since = None;
+            *more = has_more;
+            if skip == 0 {
+                *loaded = commits;
+                *selected = 0;
+            } else if skip == loaded.len() {
+                loaded.extend(commits);
+            } else {
+                // A page that neither replaces nor continues the loaded run is stale.
+                return;
             }
+            *rails = crate::tab::commit_rails(loaded);
+            break;
         }
-        if let Some(hash) = first_hash {
-            self.graph_request_detail(hash);
-        }
+        // Chain the next page while the viewport is still short of the end.
+        self.graph_prefetch();
     }
 
     /// Build and open a commit tab from a resolved [`CommitDetail`] and its
@@ -345,7 +414,7 @@ impl App {
     /// block in a progressive loading state.
     pub(super) fn fill_commit_metadata(&mut self, view: ViewId, detail: Box<CommitDetail>) {
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -388,7 +457,7 @@ impl App {
     ) {
         let mut files = Some(commit_file_views(prepared));
         let hash = detail.hash.clone();
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         let mut detail = Some(detail);
         let mut filled = false;
         for tab in self.all_tabs_mut() {
@@ -437,8 +506,7 @@ impl App {
         {
             return;
         }
-        if let Some(request) =
-            self.send(SessionCommand::FetchCommitVerification { hash: hash.clone() })
+        if let Some(request) = self.send(VcsCommand::FetchCommitVerification { hash: hash.clone() })
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));
@@ -448,53 +516,77 @@ impl App {
     /// Mark a pending commit-detail request as failed and clear any visible loading
     /// placeholder tied to that request.
     pub(super) fn fail_pending_commit_detail(&mut self, request: RequestId, message: &str) {
-        let Some(dest) = self.pending_commit_detail.remove(&request) else {
+        let Some(view) = self.pending_commit_detail.remove(&request) else {
             return;
         };
-        match dest {
-            CommitDest::Tab { view } => {
-                for tab in self.all_tabs_mut() {
-                    if tab.view != view {
-                        continue;
-                    }
-                    match &mut tab.kind {
-                        TabKind::CommitLoading { error, .. } => {
-                            *error = Some(message.to_string());
-                        },
-                        TabKind::Commit { files, .. } => {
-                            files.loading_since = None;
-                            files.error = Some(message.to_string());
-                        },
-                        _ => {},
-                    }
-                    break;
-                }
-            },
-            CommitDest::Browser { hash, .. } => {
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::CommitGraph {
-                        commits,
-                        selected,
-                        detail,
-                        detail_loading_since,
-                        files,
-                        ..
-                    } = &mut tab.kind
-                    {
-                        let selected_hash = commits.get(*selected).map(|c| c.hash.as_str());
-                        if selected_hash != Some(hash.as_str()) {
-                            continue;
-                        }
-                        if detail.as_ref().is_some_and(|d| d.hash == hash) {
-                            files.loading_since = None;
-                            files.error = Some(message.to_string());
-                        } else {
-                            *detail_loading_since = None;
-                        }
-                    }
-                }
-            },
+        for tab in self.all_tabs_mut() {
+            if tab.view != view {
+                continue;
+            }
+            match &mut tab.kind {
+                TabKind::CommitLoading { error, .. } => {
+                    *error = Some(message.to_string());
+                },
+                TabKind::Commit { files, .. } => {
+                    files.loading_since = None;
+                    files.error = Some(message.to_string());
+                },
+                _ => {},
+            }
+            break;
         }
+    }
+
+    /// Route a resolved range to the compare tab reserved for its request. An answer
+    /// whose request no longer owns a tab (closed, cancelled, or never ours) is stale
+    /// and dropped; only an uncorrelated answer opens a tab of its own.
+    pub(super) fn on_range_ready(
+        &mut self,
+        id: Option<RequestId>,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<PreparedChange>,
+    ) {
+        match id.and_then(|request| self.pending_compare.remove(&request)) {
+            Some(view) => self.fill_compare_tab(view, base_label, head_label, merge_base, changes),
+            None if id.is_none() => {
+                self.open_compare_tab(base_label, head_label, merge_base, changes);
+            },
+            None => {},
+        }
+    }
+
+    /// Fill the reserved compare tab `view` with its resolved labels and changes.
+    fn fill_compare_tab(
+        &mut self,
+        view: ViewId,
+        base_label: String,
+        head_label: String,
+        merge_base: bool,
+        changes: Vec<PreparedChange>,
+    ) {
+        if changes.is_empty() {
+            self.notify_no_range_changes(&base_label, &head_label);
+        }
+        let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view) else {
+            return;
+        };
+        let TabKind::Compare {
+            base_label: base,
+            head_label: head,
+            merge_base: three_dot,
+            files,
+            ..
+        } = &mut tab.kind
+        else {
+            return;
+        };
+        tab.title = compare_title(&base_label, &head_label, merge_base);
+        *base = base_label;
+        *head = head_label;
+        *three_dot = merge_base;
+        *files = CommitFiles::ready(commit_file_views(changes));
     }
 
     /// Build and open a compare tab from a resolved range and its changes. An empty
@@ -507,25 +599,42 @@ impl App {
         changes: Vec<PreparedChange>,
     ) {
         if changes.is_empty() {
-            self.status = Some(format!("no changes between {base_label} and {head_label}"));
+            self.notify_no_range_changes(&base_label, &head_label);
         }
         let files = CommitFiles::ready(commit_file_views(changes));
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
     }
 
-    /// Apply the forge's verification verdict to every open commit view for `hash` —
-    /// both standalone commit tabs and the graph browser's shown detail.
+    /// Say why a resolved range's compare tab lists no files.
+    fn notify_no_range_changes(&mut self, base_label: &str, head_label: &str) {
+        self.notify(
+            Report::Refusal,
+            NotificationKind::Vcs,
+            format!("no changes between {base_label} and {head_label}"),
+        );
+    }
+
+    /// Mark the compare tab reserved for `request` as failed with the backend's
+    /// reason, so it stops showing a loading placeholder that nothing will replace.
+    pub(super) fn fail_pending_compare(&mut self, request: RequestId, message: &str) {
+        let Some(view) = self.pending_compare.remove(&request) else {
+            return;
+        };
+        if let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
+            && let TabKind::Compare { files, .. } = &mut tab.kind
+        {
+            files.loading_since = None;
+            files.error = Some(message.to_string());
+        }
+    }
+
+    /// Apply the forge's verification verdict to every open commit tab for `hash`.
     pub(super) fn apply_commit_verification(&mut self, hash: &str, status: GithubVerification) {
         for tab in self.all_tabs_mut() {
             match &mut tab.kind {
                 TabKind::Commit { detail, files, .. } if detail.hash == hash => {
                     files.verification = Some(status.clone());
                 },
-                TabKind::CommitGraph {
-                    detail: Some(detail),
-                    files,
-                    ..
-                } if detail.hash == hash => files.verification = Some(status.clone()),
                 _ => {},
             }
         }
@@ -533,8 +642,8 @@ impl App {
 }
 
 /// Wrap backend-prepared commit/range changes for display.
-fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<FileView> {
-    changes.into_iter().map(FileView::new).collect()
+fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<ChangedFile> {
+    changes.into_iter().map(ChangedFile::new).collect()
 }
 
 impl App {
@@ -554,7 +663,7 @@ impl App {
             return;
         };
         let short: String = hash.chars().take(7).collect();
-        self.overlay = Some(Overlay::commands(
+        self.open_overlay(Overlay::commands(
             format!("Commit {short}"),
             vec![
                 Command::CommitGraphTag,
@@ -578,7 +687,7 @@ impl App {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             format!("Tag name for {short}"),
             crate::overlay::TextPurpose::TagCreate { rev },
         ));
@@ -590,20 +699,29 @@ impl App {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.status = Some(format!("{verb}: {short}"));
+        self.notify_progress(
+            NotificationKind::Vcs,
+            Self::VCS_OPERATION_TAG.to_string(),
+            format!("{verb}: {short}"),
+            None,
+        );
         self.run_vcs_action(action(rev));
     }
 
-    /// Hard reset requires typing `reset` — it discards local changes.
+    /// Hard reset discards local changes, so it always asks first.
     pub(super) fn commit_graph_reset_hard(&mut self) {
         let Some(rev) = self.selected_graph_commit() else {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.overlay = Some(Overlay::text(
-            format!("Type reset to hard-reset to {short} (discards local changes)"),
-            crate::overlay::TextPurpose::ConfirmResetHard { rev },
-        ));
+        self.confirm_action(
+            format!("Hard-reset to {short}?"),
+            "Moves the branch and the worktree to this commit, throwing away every \
+             uncommitted change. This cannot be undone.",
+            "Cancel",
+            format!("Reset --hard to {short}"),
+            ConfirmAction::ResetHard(rev),
+        );
     }
 
     /// Open the interactive-rebase plan editor for the commits between the
@@ -619,7 +737,11 @@ impl App {
             return;
         };
         if *selected == 0 {
-            self.status = Some("select the commit to rebase onto (below HEAD)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "select the commit to rebase onto (below HEAD)",
+            );
             return;
         }
         let Some(onto) = commits.get(*selected).map(|commit| commit.hash.clone()) else {
@@ -633,12 +755,12 @@ impl App {
             .map(|commit| {
                 (
                     commit.hash.clone(),
-                    commit.short_hash.clone(),
+                    commit.short_hash().to_string(),
                     commit.summary.clone(),
                 )
             })
             .collect();
-        self.overlay = Some(Overlay::rebase_todo(onto, steps));
+        self.open_overlay(Overlay::rebase_todo(onto, steps));
     }
 
     /// Copy the issue URLs referenced (`#123`) by the selected commit's
@@ -665,13 +787,16 @@ impl App {
                     .or_else(|| snapshot.remotes.first())
                     .and_then(|remote| remote.url.clone())
             })?;
-            let remote = crate::remote::parse_remote(&origin)?;
-            matches!(remote.kind, crate::remote::ForgeKind::GitHub)
+            let remote = karet_vcs::parse_remote(&origin)?;
+            matches!(remote.kind, karet_vcs::ForgeKind::GitHub)
                 .then(|| format!("https://{}/{}/issues/$1", remote.host, remote.repo_path))
         });
         let Some(template) = template else {
-            self.status =
-                Some("no issue URL template (set git.issueUrl or use a GitHub origin)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "no issue URL template (set git.issueUrl or use a GitHub origin)",
+            );
             return;
         };
         let urls: Vec<String> = issue_refs(&summary)
@@ -679,15 +804,23 @@ impl App {
             .map(|number| template.replace("$1", &number))
             .collect();
         if urls.is_empty() {
-            self.status = Some("no #123 issue references in this commit".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "no #123 issue references in this commit",
+            );
             return;
         }
         let count = urls.len();
         let _ = self.clipboard.set(&urls.join("\n"));
-        self.status = Some(format!(
-            "copied {count} issue URL{}",
-            if count == 1 { "" } else { "s" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            format!(
+                "copied {count} issue URL{}",
+                if count == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     /// Fetch (and prune) every remote the snapshot knows.
@@ -705,15 +838,27 @@ impl App {
             })
             .unwrap_or_default();
         if remotes.is_empty() {
-            self.status = Some("fetch: no remotes".to_string());
+            self.notify(Report::Refusal, NotificationKind::Vcs, "fetch: no remotes");
             return;
         }
+        let mut sent = false;
         for remote in remotes {
-            self.send(SessionCommand::VcsAction {
-                action: VcsAction::Fetch { remote },
-            });
+            sent |= self
+                .send(VcsCommand::Action {
+                    action: VcsAction::Fetch { remote },
+                })
+                .is_some();
         }
-        self.status = Some("fetching…".to_string());
+        // Only once at least one fetch is actually out: the card is retired by the
+        // answering operation, which a closed backend will never send.
+        if sent {
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::VCS_OPERATION_TAG.to_string(),
+                "fetching…",
+                None,
+            );
+        }
     }
 }
 

@@ -6,20 +6,25 @@
 //! (karet-session) owns the text and performs the UTF-16 ↔ UTF-32 translation via
 //! `karet_text::TextBuffer`.
 
+use karet_core::ApplyWorkspaceEditResult;
 use karet_core::CodeAction;
 use karet_core::CommandId;
 use karet_core::CompletionItem;
 use karet_core::CompletionKind;
+use karet_core::CompletionList;
+use karet_core::DeleteOptions;
 use karet_core::Diagnostic;
 use karet_core::DiagnosticTag;
+use karet_core::DocumentChange;
+use karet_core::DocumentEdit;
+use karet_core::FileOptions;
 use karet_core::Hover;
-use karet_core::InlayHint;
-use karet_core::InlayHintKind;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Markup;
 use karet_core::MarkupKind;
 use karet_core::ParamInfo;
+use karet_core::PrepareRename;
 use karet_core::Range;
 use karet_core::RelatedInfo;
 use karet_core::Severity;
@@ -29,8 +34,10 @@ use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_core::WorkspaceSymbol;
 
-use crate::snippet::strip_snippet;
+use crate::LspError;
+use crate::snippet::parse_snippet;
 use crate::uri::uri_to_path;
 
 /// Map an LSP position (UTF-16 columns, passed through — see the module docs).
@@ -87,6 +94,9 @@ pub(crate) fn diagnostic_from_lsp(d: lsp_types::Diagnostic) -> Diagnostic {
             lsp_types::NumberOrString::Number(n) => n.to_string(),
             lsp_types::NumberOrString::String(s) => s,
         }),
+        code_href: d
+            .code_description
+            .map(|description| description.href.to_string()),
         tags: d
             .tags
             .unwrap_or_default()
@@ -114,21 +124,36 @@ pub(crate) fn diagnostic_from_lsp(d: lsp_types::Diagnostic) -> Diagnostic {
     }
 }
 
-/// Flatten a completion response to a plain item list.
+/// Map a completion response to a neutral list, keeping `isIncomplete` (a bare
+/// array is complete).
 ///
-/// `CompletionList.isIncomplete` is deliberately dropped: the pinned
-/// `completion()` contract returns `Vec<CompletionItem>`, and the consumer's
-/// strategy is to re-request on trigger characters rather than track
-/// incompleteness (see the method docs on `LspClient::completion`).
+/// With `resolvable` -- the server resolves items -- every item keeps its
+/// wire form as the payload a `completionItem/resolve` hands back; otherwise
+/// none does, so a list nobody can resolve is not serialized twice.
 pub(crate) fn completions_from_lsp(
     response: Option<lsp_types::CompletionResponse>,
-) -> Vec<CompletionItem> {
-    let items = match response {
-        None => return Vec::new(),
-        Some(lsp_types::CompletionResponse::Array(items)) => items,
-        Some(lsp_types::CompletionResponse::List(list)) => list.items,
+    resolvable: bool,
+) -> CompletionList {
+    let (items, incomplete) = match response {
+        None => return CompletionList::default(),
+        Some(lsp_types::CompletionResponse::Array(items)) => (items, false),
+        Some(lsp_types::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
     };
-    items.into_iter().map(completion_item_from_lsp).collect()
+    CompletionList {
+        items: items
+            .into_iter()
+            .map(|item| {
+                let payload = resolvable
+                    .then(|| serde_json::to_string(&item).ok())
+                    .flatten();
+                CompletionItem {
+                    payload,
+                    ..completion_item_from_lsp(item)
+                }
+            })
+            .collect(),
+        incomplete,
+    }
 }
 
 /// Map either LSP document-symbol response shape into the neutral nested model.
@@ -203,41 +228,44 @@ fn markup_kind_from_lsp(kind: lsp_types::MarkupKind) -> MarkupKind {
     }
 }
 
-/// Map workspace symbols into the same neutral symbol shape used by outlines.
+/// Map workspace symbols into the neutral workspace-symbol model, each with the
+/// file it lives in. A symbol in a non-`file:` URI is dropped (nothing can open
+/// it); the unresolved URI-only form keeps its file with no range.
 pub(crate) fn workspace_symbols_from_lsp(
     response: Option<lsp_types::WorkspaceSymbolResponse>,
-) -> Vec<Symbol> {
+) -> Vec<WorkspaceSymbol> {
     match response {
         None => Vec::new(),
         #[allow(deprecated)] // LSP retains the flat response for compatibility.
         Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
             .into_iter()
-            .map(|symbol| Symbol {
-                name: symbol.name,
-                kind: symbol_kind_from_lsp(symbol.kind),
-                detail: None,
-                range: range_from_lsp(symbol.location.range),
-                selection_range: range_from_lsp(symbol.location.range),
-                container_name: symbol.container_name,
-                children: Vec::new(),
+            .filter_map(|symbol| {
+                Some(WorkspaceSymbol {
+                    name: symbol.name,
+                    kind: symbol_kind_from_lsp(symbol.kind),
+                    container_name: symbol.container_name,
+                    path: uri_to_path(&symbol.location.uri)?,
+                    range: Some(range_from_lsp(symbol.location.range)),
+                })
             })
             .collect(),
         Some(lsp_types::WorkspaceSymbolResponse::Nested(symbols)) => symbols
             .into_iter()
             .filter_map(|symbol| {
-                let lsp_types::OneOf::Left(location) = symbol.location else {
-                    // The unresolved URI-only form has no range that the neutral
-                    // model can navigate to.
-                    return None;
+                let (uri, range) = match symbol.location {
+                    lsp_types::OneOf::Left(location) => {
+                        (location.uri, Some(range_from_lsp(location.range)))
+                    },
+                    // The URI-only form names the file but not where in it the
+                    // symbol is; `workspaceSymbol/resolve` would complete it.
+                    lsp_types::OneOf::Right(location) => (location.uri, None),
                 };
-                Some(Symbol {
+                Some(WorkspaceSymbol {
                     name: symbol.name,
                     kind: symbol_kind_from_lsp(symbol.kind),
-                    detail: None,
-                    range: range_from_lsp(location.range),
-                    selection_range: range_from_lsp(location.range),
                     container_name: symbol.container_name,
-                    children: Vec::new(),
+                    path: uri_to_path(&uri)?,
+                    range,
                 })
             })
             .collect(),
@@ -245,25 +273,6 @@ pub(crate) fn workspace_symbols_from_lsp(
 }
 
 /// Map definition response variants, dropping non-file URIs.
-/// Turn type-hierarchy items into locations, keeping their selection ranges.
-///
-/// The selection range is the one worth navigating to — the name, not the whole body —
-/// which matches how every other location in this crate is anchored.
-pub(crate) fn type_hierarchy_locations(
-    response: Option<Vec<lsp_types::TypeHierarchyItem>>,
-) -> Vec<Location> {
-    response
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| {
-            Some(Location {
-                path: uri_to_path(&item.uri)?,
-                range: range_from_lsp(item.selection_range),
-            })
-        })
-        .collect()
-}
-
 pub(crate) fn locations_from_lsp(
     response: Option<lsp_types::GotoDefinitionResponse>,
 ) -> Vec<Location> {
@@ -294,55 +303,65 @@ pub(crate) fn locations_from_lsp(
         .collect()
 }
 
-/// Map inlay hints into renderable labels and positions.
-pub(crate) fn inlay_hints_from_lsp(hints: Option<Vec<lsp_types::InlayHint>>) -> Vec<InlayHint> {
-    hints
+/// Map a workspace edit, resource operations included.
+///
+/// LSP says a client that understands `documentChanges` uses them and ignores
+/// `changes`, so when both are present only `documentChanges` is kept. Their
+/// order is preserved: a server may create a file and then edit it.
+///
+/// # Errors
+/// [`LspError::Protocol`] when a step names a URI that is not `file://`.
+/// Dropping that step would apply the rest of an edit the server meant as a
+/// whole -- the steps after it can depend on it -- and report success.
+pub(crate) fn workspace_edit_from_lsp(
+    edit: lsp_types::WorkspaceEdit,
+) -> Result<WorkspaceEdit, LspError> {
+    if let Some(document_changes) = edit.document_changes {
+        let operations = match document_changes {
+            lsp_types::DocumentChanges::Edits(edits) => edits
+                .into_iter()
+                .map(lsp_types::DocumentChangeOperation::Edit)
+                .collect(),
+            lsp_types::DocumentChanges::Operations(operations) => operations,
+        };
+        let document_changes = operations
+            .into_iter()
+            .map(document_change_from_lsp)
+            .collect::<Result<_, _>>()?;
+        return Ok(WorkspaceEdit {
+            changes: Vec::new(),
+            document_changes,
+        });
+    }
+    let mut changes = edit
+        .changes
         .unwrap_or_default()
         .into_iter()
-        .map(|hint| InlayHint {
-            position: position_from_lsp(hint.position),
-            label: match hint.label {
-                lsp_types::InlayHintLabel::String(label) => label,
-                lsp_types::InlayHintLabel::LabelParts(parts) => {
-                    parts.into_iter().map(|part| part.value).collect()
-                },
-            },
-            kind: match hint.kind {
-                Some(lsp_types::InlayHintKind::PARAMETER) => InlayHintKind::Parameter,
-                _ => InlayHintKind::Type,
-            },
-            padding_left: hint.padding_left.unwrap_or(false),
-            padding_right: hint.padding_right.unwrap_or(false),
-        })
-        .collect()
-}
-
-/// Map a workspace edit while deliberately ignoring resource operations that
-/// the neutral text-edit model cannot represent.
-pub(crate) fn workspace_edit_from_lsp(edit: lsp_types::WorkspaceEdit) -> WorkspaceEdit {
-    let mut changes = Vec::new();
-    if let Some(uri_changes) = edit.changes {
-        changes.extend(uri_changes.into_iter().filter_map(|(uri, edits)| {
-            Some((
-                uri_to_path(&uri)?,
+        .map(|(uri, edits)| {
+            Ok((
+                file_path(&uri)?,
                 edits.into_iter().map(text_edit_from_lsp).collect(),
             ))
-        }));
-    }
-    if let Some(document_changes) = edit.document_changes {
-        let edits = match document_changes {
-            lsp_types::DocumentChanges::Edits(edits) => edits,
-            lsp_types::DocumentChanges::Operations(operations) => operations
-                .into_iter()
-                .filter_map(|operation| match operation {
-                    lsp_types::DocumentChangeOperation::Edit(edit) => Some(edit),
-                    lsp_types::DocumentChangeOperation::Op(_) => None,
-                })
-                .collect(),
-        };
-        changes.extend(edits.into_iter().filter_map(|edit| {
-            let path = uri_to_path(&edit.text_document.uri)?;
-            let edits = edit
+        })
+        .collect::<Result<Vec<_>, LspError>>()?;
+    changes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    Ok(WorkspaceEdit {
+        changes,
+        document_changes: Vec::new(),
+    })
+}
+
+/// Map one ordered `documentChanges` step.
+fn document_change_from_lsp(
+    operation: lsp_types::DocumentChangeOperation,
+) -> Result<DocumentChange, LspError> {
+    use lsp_types::DocumentChangeOperation as Step;
+    use lsp_types::ResourceOp;
+    Ok(match operation {
+        Step::Edit(edit) => DocumentChange::Edit(DocumentEdit {
+            path: file_path(&edit.text_document.uri)?,
+            version: edit.text_document.version,
+            edits: edit
                 .edits
                 .into_iter()
                 .map(|edit| match edit {
@@ -350,12 +369,91 @@ pub(crate) fn workspace_edit_from_lsp(edit: lsp_types::WorkspaceEdit) -> Workspa
                     lsp_types::OneOf::Right(edit) => edit.text_edit,
                 })
                 .map(text_edit_from_lsp)
-                .collect();
-            Some((path, edits))
-        }));
+                .collect(),
+        }),
+        Step::Op(ResourceOp::Create(create)) => {
+            let (overwrite, ignore_if_exists) = create.options.map_or((None, None), |options| {
+                (options.overwrite, options.ignore_if_exists)
+            });
+            DocumentChange::Create {
+                path: file_path(&create.uri)?,
+                options: FileOptions {
+                    overwrite: overwrite.unwrap_or(false),
+                    ignore_if_exists: ignore_if_exists.unwrap_or(false),
+                },
+            }
+        },
+        Step::Op(ResourceOp::Rename(rename)) => {
+            let (overwrite, ignore_if_exists) = rename.options.map_or((None, None), |options| {
+                (options.overwrite, options.ignore_if_exists)
+            });
+            DocumentChange::Rename {
+                from: file_path(&rename.old_uri)?,
+                to: file_path(&rename.new_uri)?,
+                options: FileOptions {
+                    overwrite: overwrite.unwrap_or(false),
+                    ignore_if_exists: ignore_if_exists.unwrap_or(false),
+                },
+            }
+        },
+        Step::Op(ResourceOp::Delete(delete)) => {
+            let (recursive, ignore_if_not_exists) =
+                delete.options.map_or((None, None), |options| {
+                    (options.recursive, options.ignore_if_not_exists)
+                });
+            DocumentChange::Delete {
+                path: file_path(&delete.uri)?,
+                options: DeleteOptions {
+                    recursive: recursive.unwrap_or(false),
+                    ignore_if_not_exists: ignore_if_not_exists.unwrap_or(false),
+                },
+            }
+        },
+    })
+}
+
+/// The path a workspace-edit URI names, or why it names none.
+fn file_path(uri: &lsp_types::Uri) -> Result<std::path::PathBuf, LspError> {
+    uri_to_path(uri).ok_or_else(|| {
+        LspError::Protocol(format!(
+            "workspace edit names {}, which is not a file",
+            uri.as_str()
+        ))
+    })
+}
+
+/// Map a `textDocument/prepareRename` answer; `None` means "not renameable".
+pub(crate) fn prepare_rename_from_lsp(
+    response: Option<lsp_types::PrepareRenameResponse>,
+) -> Option<PrepareRename> {
+    use lsp_types::PrepareRenameResponse as Answer;
+    match response? {
+        Answer::Range(range) => Some(PrepareRename::Range {
+            range: range_from_lsp(range),
+            placeholder: None,
+        }),
+        Answer::RangeWithPlaceholder { range, placeholder } => Some(PrepareRename::Range {
+            range: range_from_lsp(range),
+            placeholder: Some(placeholder),
+        }),
+        // `false` is not in the spec; a server sending it is saying no.
+        Answer::DefaultBehavior { default_behavior } => {
+            default_behavior.then_some(PrepareRename::DefaultBehavior)
+        },
     }
-    changes.sort_by(|(left, _), (right, _)| left.cmp(right));
-    WorkspaceEdit { changes }
+}
+
+/// Map a karet apply outcome to the `workspace/applyEdit` reply.
+pub(crate) fn apply_result_to_lsp(
+    result: ApplyWorkspaceEditResult,
+) -> lsp_types::ApplyWorkspaceEditResponse {
+    lsp_types::ApplyWorkspaceEditResponse {
+        applied: result.applied,
+        failure_reason: result.failure_reason,
+        failed_change: result
+            .failed_change
+            .map(|index| u32::try_from(index).unwrap_or(u32::MAX)),
+    }
 }
 
 /// Map signature help, clamping server-provided active indices.
@@ -413,28 +511,75 @@ fn utf16_slice(value: &str, start: u32, end: u32) -> String {
         .collect()
 }
 
-/// Map code actions and commands, dropping disabled actions.
+/// Map code actions and commands, keeping each one's wire form as its
+/// payload so it can be resolved or run later. A disabled action is kept,
+/// with its reason, so the user can see it exists.
 pub(crate) fn code_actions_from_lsp(
     response: Option<lsp_types::CodeActionResponse>,
 ) -> Vec<CodeAction> {
     response
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|item| match item {
-            lsp_types::CodeActionOrCommand::Command(command) => Some(CodeAction {
-                title: command.title,
-                edit: None,
-                command: Some(CommandId(command.command)),
-            }),
-            lsp_types::CodeActionOrCommand::CodeAction(action) => {
-                action.disabled.is_none().then(|| CodeAction {
-                    title: action.title,
-                    edit: action.edit.map(workspace_edit_from_lsp),
-                    command: action.command.map(|command| CommandId(command.command)),
-                })
-            },
-        })
+        .map(code_action_or_command_from_lsp)
         .collect()
+}
+
+/// Map one item of a code-action answer.
+pub(crate) fn code_action_or_command_from_lsp(item: lsp_types::CodeActionOrCommand) -> CodeAction {
+    let payload = serde_json::to_string(&item).ok();
+    let mut action = match item {
+        lsp_types::CodeActionOrCommand::Command(command) => CodeAction {
+            title: command.title,
+            command: Some(CommandId(command.command)),
+            ..CodeAction::default()
+        },
+        lsp_types::CodeActionOrCommand::CodeAction(action) => code_action_from_lsp(action),
+    };
+    action.payload = payload;
+    action
+}
+
+/// Map a code-action literal (a `codeAction/resolve` answer is one too).
+pub(crate) fn code_action_from_lsp(action: lsp_types::CodeAction) -> CodeAction {
+    let mut disabled = action.disabled.map(|disabled| disabled.reason);
+    // An edit naming a non-file URI cannot be applied as the server meant it,
+    // so the action offers no edit, and says why it cannot run.
+    let edit = match action.edit.map(workspace_edit_from_lsp) {
+        Some(Ok(edit)) => Some(edit),
+        Some(Err(error)) => {
+            disabled.get_or_insert_with(|| error.to_string());
+            None
+        },
+        None => None,
+    };
+    CodeAction {
+        title: action.title,
+        kind: action.kind.map(|kind| kind.as_str().to_owned()),
+        preferred: action.is_preferred.unwrap_or(false),
+        disabled,
+        edit,
+        command: action.command.map(|command| CommandId(command.command)),
+        payload: None,
+    }
+}
+
+/// The command a code action runs, in wire form, read back from its payload:
+/// the item itself when the server answered with a bare command, else the
+/// action's own `command`.
+pub(crate) fn code_action_command(action: &CodeAction) -> Option<lsp_types::Command> {
+    match serde_json::from_str(action.payload.as_deref()?).ok()? {
+        lsp_types::CodeActionOrCommand::Command(command) => Some(command),
+        lsp_types::CodeActionOrCommand::CodeAction(action) => action.command,
+    }
+}
+
+/// The code-action literal a payload holds, for `codeAction/resolve`; `None`
+/// for a bare command, which has nothing to resolve.
+pub(crate) fn code_action_literal(action: &CodeAction) -> Option<lsp_types::CodeAction> {
+    match serde_json::from_str(action.payload.as_deref()?).ok()? {
+        lsp_types::CodeActionOrCommand::CodeAction(literal) => Some(literal),
+        lsp_types::CodeActionOrCommand::Command(_) => None,
+    }
 }
 
 /// Map formatting edits.
@@ -470,7 +615,7 @@ fn document_symbol_from_lsp(symbol: lsp_types::DocumentSymbol) -> Symbol {
     }
 }
 
-fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
+pub(crate) fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
     match kind {
         lsp_types::SymbolKind::FILE => SymbolKind::File,
         lsp_types::SymbolKind::MODULE => SymbolKind::Module,
@@ -505,34 +650,49 @@ fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
 /// Map one completion item.
 ///
 /// - **Insert text** resolves per LSP precedence: `textEdit.newText`, else
-///   `insertText`, else the label. Snippet-format text is degraded to plain
-///   text (see [`crate::snippet`]).
+///   `insertText`, else the label. Snippet-format text is expanded to the text
+///   it inserts, its stops kept beside it as `tabstops` (see
+///   [`crate::snippet`]).
 /// - **`textEdit`** maps to a neutral [`TextEdit`] (UTF-16 range passthrough);
-///   an insert/replace edit uses its *insert* range — the conservative choice
-///   that replaces only the typed prefix.
-/// - **`filterText`** has no slot on the neutral model and is dropped; karet
-///   filters on the label.
+///   an insert/replace edit puts its *insert* range there and keeps its
+///   *replace* range beside it, so the consumer chooses.
+/// - **`additionalTextEdits`**, **`filterText`** and **`commitCharacters`**
+///   carry over; a commit "character" that is not exactly one character is
+///   dropped.
 /// - **Deprecation** is the union of the legacy `deprecated` flag and the
 ///   `Deprecated` tag.
+///
+/// The payload is left empty: [`completions_from_lsp`] fills it when the
+/// server resolves items.
 pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> CompletionItem {
     let is_snippet = item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET);
-    let degrade = |text: String| {
+    let mut tabstops = Vec::new();
+    let mut degrade = |text: String| {
         if is_snippet {
-            strip_snippet(&text)
+            let snippet = parse_snippet(&text);
+            tabstops = snippet.tabstops;
+            snippet.text
         } else {
             text
         }
     };
-    let edit = item.text_edit.map(|te| match te {
-        lsp_types::CompletionTextEdit::Edit(e) => TextEdit {
-            range: range_from_lsp(e.range),
-            new_text: degrade(e.new_text),
-        },
-        lsp_types::CompletionTextEdit::InsertAndReplace(e) => TextEdit {
-            range: range_from_lsp(e.insert),
-            new_text: degrade(e.new_text),
-        },
-    });
+    let (edit, replace_range) = match item.text_edit {
+        None => (None, None),
+        Some(lsp_types::CompletionTextEdit::Edit(e)) => (
+            Some(TextEdit {
+                range: range_from_lsp(e.range),
+                new_text: degrade(e.new_text),
+            }),
+            None,
+        ),
+        Some(lsp_types::CompletionTextEdit::InsertAndReplace(e)) => (
+            Some(TextEdit {
+                range: range_from_lsp(e.insert),
+                new_text: degrade(e.new_text),
+            }),
+            Some(range_from_lsp(e.replace)),
+        ),
+    };
     let insert_text = match (&edit, item.insert_text) {
         (Some(e), _) => e.new_text.clone(),
         (None, Some(text)) => degrade(text),
@@ -552,6 +712,24 @@ pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> Compl
         edit,
         sort_text: item.sort_text,
         deprecated,
+        filter_text: item.filter_text,
+        replace_range,
+        additional_edits: item
+            .additional_text_edits
+            .unwrap_or_default()
+            .into_iter()
+            .map(text_edit_from_lsp)
+            .collect(),
+        commit_characters: item.commit_characters.map(|all| {
+            all.iter()
+                .filter_map(|text| {
+                    let mut it = text.chars();
+                    it.next().filter(|_| it.next().is_none())
+                })
+                .collect()
+        }),
+        payload: None,
+        tabstops,
     }
 }
 

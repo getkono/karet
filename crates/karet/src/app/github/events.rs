@@ -1,27 +1,48 @@
 //! Application of asynchronous GitHub backend results.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_session::GithubComment;
+use karet_session::GithubIssue;
+use karet_session::GithubOperation;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubWorkflow;
+use karet_session::GithubWorkflowRun;
+use karet_session::RequestId;
+use ratatui::layout::Rect;
 
-/// The `operation` label the session gives a commit-signature lookup.
-const VERIFICATION_OPERATION: &str = "commit verification";
+use crate::app::App;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubPullRequestSupplement;
+use crate::app::github::state::GithubPullRequestView;
+use crate::app::github::state::GithubViewState;
+use crate::app::notifications::Report;
+use crate::pending::Pending;
 
-fn human_github_error(operation: &str, message: &str) -> String {
+fn human_github_error(operation: GithubOperation, message: &str) -> String {
     let action = match operation {
-        "actions" => "Could not load GitHub Actions",
-        "authentication" | "sign in" => "Could not sign in to GitHub",
-        "create issue" => "Could not create the issue",
-        "create pull request" => "Could not create the pull request",
-        "issue detail" => "Could not load the issue",
-        "issue metadata" => "Could not load issue options",
-        "issues" => "Could not load issues",
-        "pull request detail" => "Could not load the pull request",
-        "update pull request body" => "Could not update the pull request description",
-        "comment on pull request" => "Could not add the pull request comment",
-        "merge pull request" => "Could not merge the pull request",
-        "update pull request readiness" => "Could not update the pull request readiness",
-        "pull requests" => "Could not load pull requests",
-        "refresh" => "Could not refresh GitHub",
-        _ => "GitHub request failed",
+        GithubOperation::Actions => "Could not load GitHub Actions",
+        GithubOperation::Authentication | GithubOperation::SignIn => "Could not sign in to GitHub",
+        GithubOperation::CreateIssue => "Could not create the issue",
+        GithubOperation::CreatePullRequest => "Could not create the pull request",
+        GithubOperation::IssueDetail => "Could not load the issue",
+        GithubOperation::IssueMetadata => "Could not load issue options",
+        GithubOperation::Issues => "Could not load issues",
+        GithubOperation::PullRequestDetail => "Could not load the pull request",
+        GithubOperation::UpdatePullRequestBody => "Could not update the pull request description",
+        GithubOperation::CommentPullRequest => "Could not add the pull request comment",
+        GithubOperation::MergePullRequest => "Could not merge the pull request",
+        GithubOperation::UpdatePullRequestReadiness => {
+            "Could not update the pull request readiness"
+        },
+        GithubOperation::PullRequests => "Could not load pull requests",
+        GithubOperation::Refresh => "Could not refresh GitHub",
+        // The session's message already names why the request was refused (an
+        // ineligible worktree, or a build without GitHub support); a failed
+        // signature lookup is kept quiet (see `apply_github_error`).
+        GithubOperation::Eligibility
+        | GithubOperation::FeatureDisabled
+        | GithubOperation::CommitVerification => "GitHub request failed",
     };
     format!("{action}. {message}")
 }
@@ -32,8 +53,8 @@ impl App {
         id: Option<RequestId>,
         page: GithubPage<GithubIssue>,
     ) {
-        for tab in self.all_tabs_mut() {
-            if let TabKind::Github(GithubViewState::Dashboard(dashboard)) = &mut tab.kind
+        for open in self.github.pages_mut() {
+            if let GithubViewState::Dashboard(dashboard) = open
                 && (dashboard.pending == id || id.is_none())
             {
                 dashboard.issues = page.clone();
@@ -51,8 +72,8 @@ impl App {
         id: Option<RequestId>,
         page: GithubPage<GithubPullRequest>,
     ) {
-        for tab in self.all_tabs_mut() {
-            if let TabKind::Github(GithubViewState::Dashboard(dashboard)) = &mut tab.kind
+        for open in self.github.pages_mut() {
+            if let GithubViewState::Dashboard(dashboard) = open
                 && (dashboard.pending == id || id.is_none())
             {
                 dashboard.pull_requests = page.clone();
@@ -71,9 +92,9 @@ impl App {
         workflows: GithubPage<GithubWorkflow>,
         runs: GithubPage<GithubWorkflowRun>,
     ) {
-        for tab in self.all_tabs_mut() {
-            match &mut tab.kind {
-                TabKind::Github(GithubViewState::Dashboard(dashboard))
+        for open in self.github.pages_mut() {
+            match open {
+                GithubViewState::Dashboard(dashboard)
                     if dashboard.pending == id || id.is_none() =>
                 {
                     dashboard.workflows = workflows.clone();
@@ -84,7 +105,7 @@ impl App {
                         .cursor
                         .min(dashboard.row_count().saturating_sub(1));
                 },
-                TabKind::Github(GithubViewState::WorkflowRun { workflow, run, .. }) => {
+                GithubViewState::WorkflowRun { workflow, run, .. } => {
                     if let Some(updated) = runs.items.iter().find(|updated| updated.id == run.id) {
                         *run = updated.clone();
                     }
@@ -105,14 +126,13 @@ impl App {
         issue: GithubIssue,
         comments: GithubPage<GithubComment>,
     ) {
-        for tab in self.all_tabs_mut() {
+        for open in self.github.pages_mut() {
             let created = matches!(
-                &tab.kind,
-                TabKind::Github(GithubViewState::NewIssue { form, .. }) if form.submitting == id
+                &open,
+                GithubViewState::NewIssue { form, .. } if form.submitting == id
             );
             if created {
-                tab.title = format!("Issue #{}", issue.number);
-                tab.kind = TabKind::Github(GithubViewState::Issue {
+                let state = GithubViewState::Issue {
                     number: issue.number,
                     issue: Some(issue.clone()),
                     comments: comments.clone(),
@@ -120,14 +140,15 @@ impl App {
                     loading_since: Pending::start(),
                     error: None,
                     scroll: 0,
-                });
-            } else if let TabKind::Github(GithubViewState::Issue {
+                };
+                *open = state;
+            } else if let GithubViewState::Issue {
                 pending,
                 issue: loaded,
                 comments: loaded_comments,
                 error,
                 ..
-            }) = &mut tab.kind
+            } = open
                 && (*pending == id || id.is_none())
             {
                 *loaded = Some(issue.clone());
@@ -151,15 +172,13 @@ impl App {
             activity,
             activity_error,
         } = supplement;
-        for tab in self.all_tabs_mut() {
+        for open in self.github.pages_mut() {
             let created = matches!(
-                &tab.kind,
-                TabKind::Github(GithubViewState::NewPullRequest { form, .. })
-                    if form.submitting == id
+                &open,
+                GithubViewState::NewPullRequest { form, .. } if form.submitting == id
             );
             if created {
-                tab.title = format!("Pull Request #{}", pull_request.number);
-                tab.kind = TabKind::Github(GithubViewState::PullRequest(GithubPullRequestView {
+                let state = GithubViewState::PullRequest(GithubPullRequestView {
                     pull_request: pull_request.clone(),
                     comments: comments.clone(),
                     commits: commits.clone(),
@@ -185,8 +204,9 @@ impl App {
                     draft_rect: Rect::default(),
                     check_hits: Vec::new(),
                     commits_rect: Rect::default(),
-                }));
-            } else if let TabKind::Github(GithubViewState::PullRequest(view)) = &mut tab.kind
+                });
+                *open = state;
+            } else if let GithubViewState::PullRequest(view) = open
                 && (view.pending == id || id.is_none())
             {
                 view.pull_request = pull_request.clone();
@@ -211,8 +231,8 @@ impl App {
         id: Option<RequestId>,
         assignees: Vec<String>,
     ) {
-        for tab in self.all_tabs_mut() {
-            if let TabKind::Github(GithubViewState::NewIssue { form, .. }) = &mut tab.kind
+        for open in self.github.pages_mut() {
+            if let GithubViewState::NewIssue { form, .. } = open
                 && form.metadata_pending == id
             {
                 form.assignee_options = assignees.clone();
@@ -226,42 +246,36 @@ impl App {
     pub(crate) fn apply_github_error(
         &mut self,
         id: Option<RequestId>,
-        operation: String,
+        operation: GithubOperation,
         message: String,
     ) {
-        let full = human_github_error(&operation, &message);
+        let full = human_github_error(operation, &message);
         let mut applied = false;
-        for tab in self.all_tabs_mut() {
-            match &mut tab.kind {
-                TabKind::Github(GithubViewState::Dashboard(dashboard))
-                    if dashboard.login_pending == id =>
-                {
+        for open in self.github.pages_mut() {
+            match open {
+                GithubViewState::Dashboard(dashboard) if dashboard.login_pending == id => {
                     dashboard.error = Some(full.clone());
                     dashboard.login_pending = None;
                     dashboard.login_token.clear();
                     applied = true;
                 },
-                TabKind::Github(GithubViewState::Dashboard(dashboard))
-                    if dashboard.pending == id =>
-                {
+                GithubViewState::Dashboard(dashboard) if dashboard.pending == id => {
                     dashboard.error = Some(full.clone());
                     dashboard.pending = None;
                     dashboard.loading_since = None;
                     applied = true;
                 },
-                TabKind::Github(GithubViewState::Issue { pending, error, .. })
-                    if *pending == id =>
-                {
+                GithubViewState::Issue { pending, error, .. } if *pending == id => {
                     *error = Some(full.clone());
                     *pending = None;
                     applied = true;
                 },
-                TabKind::Github(GithubViewState::PullRequest(view)) if view.pending == id => {
+                GithubViewState::PullRequest(view) if view.pending == id => {
                     view.error = Some(full.clone());
                     view.pending = None;
                     applied = true;
                 },
-                TabKind::Github(GithubViewState::NewIssue { form, .. })
+                GithubViewState::NewIssue { form, .. }
                     if form.submitting == id || form.metadata_pending == id =>
                 {
                     form.error = Some(full.clone());
@@ -273,9 +287,7 @@ impl App {
                     }
                     applied = true;
                 },
-                TabKind::Github(GithubViewState::NewPullRequest { form, .. })
-                    if form.submitting == id =>
-                {
+                GithubViewState::NewPullRequest { form, .. } if form.submitting == id => {
                     form.error = Some(full.clone());
                     form.submitting = None;
                     applied = true;
@@ -284,15 +296,22 @@ impl App {
             }
         }
         if !applied {
+            // A page can be closed while its request is still in flight, and `Esc`
+            // makes that a reflex rather than a decision. The reply is genuinely
+            // nobody's now, so it must not surface as an error about something the
+            // user has already backed out of.
+            if self.github.was_abandoned(id) {
+                return;
+            }
             // The commit-signature lookup is a speculative enrichment fired for
             // whatever commit is on screen. A commit the forge does not know —
             // unpushed, on a fork, or in a repository with no GitHub remote —
             // is an ordinary outcome, and the detail pane reads fine without a
             // verdict, so it must not raise an error the user cannot act on.
-            if operation == VERIFICATION_OPERATION {
+            if operation == GithubOperation::CommitVerification {
                 return;
             }
-            self.notify(Severity::Error, NotificationKind::System, full);
+            self.notify(Report::Failure, NotificationKind::System, full);
         }
     }
 }

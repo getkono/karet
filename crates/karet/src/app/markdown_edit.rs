@@ -1,25 +1,26 @@
-//! Markdown editing commands: emphasis toggles, task checkboxes, and
-//! list-aware Enter (continuation, renumbering, end-on-empty).
+//! Markdown editing commands: emphasis toggles, task checkboxes, list-aware
+//! Enter (continuation, renumbering, end-on-empty), the table of contents,
+//! heading shifts, lint fixes, and GFM table formatting.
 //!
 //! The pure logic lives in `karet_markdown::edit`; this module gates it to
 //! Markdown tabs, builds the buffer edits, and repositions the caret.
 
 use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_editor::editing;
+use karet_session::DocumentCommand;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Whether the active tab edits a Markdown file.
     fn active_is_markdown(&self) -> bool {
-        self.tabs.get(self.active).is_some_and(|tab| {
-            matches!(
-                &tab.kind,
-                TabKind::Code { path, .. }
-                    if karet_filetype::file_type_for_path(path).name() == "Markdown"
-            )
-        })
+        self.tabs.get(self.active).is_some_and(Tab::is_markdown)
     }
 
     /// Toggle `marker` (e.g. `**`) around the primary selection or the word
@@ -30,7 +31,11 @@ impl App {
             match fallback {
                 Some(command) => self.dispatch(command),
                 None => {
-                    self.status = Some("markdown formatting applies to Markdown files".to_owned());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "markdown formatting applies to Markdown files",
+                    );
                 },
             }
             return;
@@ -44,7 +49,11 @@ impl App {
         let caret = tab.editor.cursor();
         let selection = tab.editor.selection_range().filter(|r| !r.is_empty());
         if selection.is_some_and(|r| r.start.line != r.end.line) {
-            self.status = Some("select within one line to toggle formatting".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "select within one line to toggle formatting",
+            );
             return;
         }
         let line = caret.line;
@@ -71,7 +80,11 @@ impl App {
     /// Toggle the `[ ]`/`[x]` checkbox on the caret's line (Alt+C).
     pub(super) fn toggle_task_checkbox(&mut self) {
         if !self.active_is_markdown() {
-            self.status = Some("task checkboxes apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "task checkboxes apply to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -86,7 +99,11 @@ impl App {
             return;
         };
         let Some(new_text) = karet_markdown::edit::toggle_task(&text) else {
-            self.status = Some("no task checkbox on this line".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no task checkbox on this line",
+            );
             return;
         };
         let line_range = line_span(line, text.chars().count());
@@ -211,7 +228,11 @@ impl App {
     /// only rewrites an existing region.
     pub(super) fn markdown_toc(&mut self, create: bool) {
         if !self.active_is_markdown() {
-            self.status = Some("the table of contents applies to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "the table of contents applies to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -228,7 +249,11 @@ impl App {
             levels: min..=max.max(min),
         };
         let Some(rendered) = karet_markdown::toc::render_toc(&text, &options) else {
-            self.status = Some("no headings in the table's level range".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no headings in the table's level range",
+            );
             return;
         };
         match karet_markdown::toc::toc_region(&text) {
@@ -246,7 +271,11 @@ impl App {
                     (c == caret)
                         .then(|| editing::insert(range.start, Some(range), base, &replacement))
                 });
-                self.status = Some("table of contents updated".to_owned());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    "table of contents updated",
+                );
             },
             None if create => {
                 let at = LineCol::new(caret.line, 0);
@@ -254,11 +283,17 @@ impl App {
                 self.submit_edit(move |c, _s, _b, base| {
                     (c == caret).then(|| editing::insert(at, None, base, &block))
                 });
-                self.status = Some("table of contents inserted".to_owned());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    "table of contents inserted",
+                );
             },
             None => {
-                self.status = Some(
-                    "no <!-- toc --> markers — use Markdown: Create Table of Contents".to_owned(),
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "no <!-- toc --> markers — use Markdown: Create Table of Contents",
                 );
             },
         }
@@ -267,7 +302,11 @@ impl App {
     /// Shift the caret line's heading level by `delta` (Ctrl+Shift+] / [).
     pub(super) fn markdown_heading_shift(&mut self, delta: i8) {
         if !self.active_is_markdown() {
-            self.status = Some("heading levels apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "heading levels apply to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -299,47 +338,52 @@ impl App {
         });
     }
 
-    /// Apply every markdownlint autofix in one undoable edit, honoring the
-    /// workspace's `.markdownlint.json` when present.
+    /// Apply every markdownlint autofix in one undoable edit: ask the session,
+    /// which fixes under the same workspace `.markdownlint.json(c)` its
+    /// diagnostics layer lints with, off the UI thread.
+    ///
+    /// The fixes come back as an ordinary snapshot, so they undo as one step
+    /// and every caret follows the text it sat in; the count arrives as
+    /// [`SessionEvent::MarkdownLintFixed`], read by
+    /// [`Self::markdown_lint_fixed`].
     pub(super) fn markdown_lint_fix_all(&mut self) {
         if !self.active_is_markdown() {
-            self.status = Some("lint fixes apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "lint fixes apply to Markdown files",
+            );
             return;
         }
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let TabKind::Code { buffer, .. } = &tab.kind else {
-            return;
-        };
-        let original = buffer.text();
-        // Fetched through the backend when the workspace root became known; the
-        // rules live beside the code, which may not be on this machine.
-        let config = self.markdownlint_config.clone().unwrap_or_default();
-        let issues = karet_markdown::lint::lint(&original, &config);
-        let fixable = issues.iter().filter(|i| i.fix.is_some()).count();
-        let fixed = karet_markdown::lint::apply_fixes(&original, &issues);
-        if fixable == 0 || fixed == original {
-            self.status = Some("no fixable lint issues".to_owned());
-            return;
-        }
-        let primary = tab.editor.cursor();
-        let cursors = tab.editor.cursors().clone();
-        self.submit_edit(move |caret, _selection, buffer, base| {
-            (caret == primary).then(|| editing::replace_document(buffer, fixed.clone(), base))
-        });
-        if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
-            editor,
+        let Some(Tab {
+            kind: TabKind::Code { doc: Some(doc), .. },
             ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            editor.set_cursor_state(buffer, cursors);
+        }) = self.tabs.get(self.active)
+        else {
+            return;
+        };
+        let doc = *doc;
+        let _ = self.send(DocumentCommand::FixMarkdownLint { doc });
+    }
+
+    /// Report how many lint issues a [`DocumentCommand::FixMarkdownLint`] fixed.
+    pub(super) fn markdown_lint_fixed(&mut self, fixed: usize) {
+        if fixed == 0 {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no fixable lint issues",
+            );
+            return;
         }
-        self.status = Some(format!(
-            "fixed {fixable} lint issue{}",
-            if fixable == 1 { "" } else { "s" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!(
+                "fixed {fixed} lint issue{}",
+                if fixed == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     /// Replace the primary cursor with a `start..end` selection on `line`.
@@ -361,6 +405,65 @@ impl App {
                 },
             );
         }
+    }
+
+    /// Format every GFM table in the active Markdown document as one undoable edit.
+    pub(in crate::app) fn format_markdown_tables(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if !tab.is_markdown() {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "Table formatting is available for Markdown files",
+            );
+            return;
+        }
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let original = buffer.text();
+        let ranges = karet_markdown::table_line_ranges(&original);
+        if ranges.is_empty() {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "No Markdown tables found",
+            );
+            return;
+        }
+        let formatted = karet_markdown::format_tables(&original);
+        if formatted == original {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "Markdown tables are already formatted",
+            );
+            return;
+        }
+        let primary = tab.editor.cursor();
+        let cursors = tab.editor.cursors().clone();
+        self.submit_edit(move |caret, _selection, buffer, base| {
+            (caret == primary).then(|| editing::replace_document(buffer, formatted.clone(), base))
+        });
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.set_cursor_state(buffer, cursors);
+        }
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!(
+                "Formatted {} Markdown table{}",
+                ranges.len(),
+                if ranges.len() == 1 { "" } else { "s" }
+            ),
+        );
     }
 }
 

@@ -1,62 +1,108 @@
 use karet_core::BytePos;
+use karet_core::CursorState;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::DiagnosticTag;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::Selection;
+use karet_core::SemanticBlock;
+use karet_core::SemanticBlocks;
+use karet_core::Severity;
+use karet_core::ThemeRole;
 use karet_core::TokenId;
+use karet_core::VirtualLine;
+use karet_core::VirtualText;
+use karet_core::VirtualTextPlacement;
+use karet_text::TextBuffer;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::widgets::StatefulWidget;
 
 use super::text::*;
-use super::*;
+use crate::BracketPair;
+use crate::Editor;
+use crate::EditorState;
+use crate::Fold;
+use crate::GutterLane;
+use crate::InlineDiagnostics;
+use crate::LineNumbers;
+use crate::Motion;
+use crate::RenderWhitespace;
+use crate::WrappingIndent;
+use crate::bracket;
+use crate::bracket_decorations;
+use crate::bracket_pair_at;
+use crate::diagnostic_messages;
+use crate::diagnostic_signs;
+use crate::enclosing_pair;
+use crate::matching_pair;
 
+mod brackets;
+mod caret_ops;
 mod carets;
+mod change_lane;
+mod comment;
+mod decorations;
+mod diagnostics;
+mod display;
+mod glyphs;
+mod grapheme;
+mod hit;
+mod inlay;
+mod long_line;
+mod motion;
+mod pointer;
+mod reveal;
+mod scroll;
+mod selection;
+mod syntax_select;
+mod virtual_lines;
+mod virtual_text;
 
 #[test]
-fn inline_text_decoration_renders_after_the_line() {
+fn end_of_line_text_renders_after_the_line() {
     let buffer = TextBuffer::from_text("let answer = 42;\n");
-    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 1)) else {
-        return;
-    };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::InlineText {
-            text: "  Ada, initial".to_string(),
-            before: false,
-        },
-        role: Some(ThemeRole::Muted),
-    };
+    let text = VirtualText::end_of_line(0, "  Ada, initial", ThemeRole::Muted, 0);
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 40, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .decorations(&[decoration])
+        .virtual_text(&[text])
         .render(area, &mut target, &mut state);
     let rendered: String = (0..area.width)
         .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
         .collect();
-    assert!(rendered.contains("Ada, initial"));
+    assert!(rendered.starts_with(" 1 let answer = 42;  Ada, initial"));
 }
 
 #[test]
 fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
     let buffer = TextBuffer::from_text("#ffcc00 and #222222\n");
     let theme = Theme::dark();
-    let Ok(light) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
-        return;
-    };
-    let Ok(dark) = Range::new(LineCol::new(0, 12), LineCol::new(0, 19)) else {
-        return;
-    };
+    let light = Range::new(LineCol::new(0, 0), LineCol::new(0, 7));
+    let dark = Range::new(LineCol::new(0, 12), LineCol::new(0, 19));
     let decorations = [
-        Decoration {
-            range: light,
-            kind: DecorationKind::ColorSwatch {
+        Decoration::new(
+            light,
+            DecorationKind::ColorSwatch {
                 rgba: [0xff, 0xcc, 0x00, 0xff],
             },
-            role: None,
-        },
-        Decoration {
-            range: dark,
-            kind: DecorationKind::ColorSwatch {
+            None,
+        ),
+        Decoration::new(
+            dark,
+            DecorationKind::ColorSwatch {
                 rgba: [0x22, 0x22, 0x22, 0xff],
             },
-            role: None,
-        },
+            None,
+        ),
     ];
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 30, 1);
@@ -92,16 +138,14 @@ fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
 fn color_swatch_yields_to_an_overlapping_selection() {
     let buffer = TextBuffer::from_text("#ffcc00\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
-        return;
-    };
-    let decoration = Decoration {
+    let range = Range::new(LineCol::new(0, 0), LineCol::new(0, 7));
+    let decoration = Decoration::new(
         range,
-        kind: DecorationKind::ColorSwatch {
+        DecorationKind::ColorSwatch {
             rgba: [0xff, 0xcc, 0x00, 0xff],
         },
-        role: None,
-    };
+        None,
+    );
     let mut state = EditorState::new();
     state.set_cursor_state(
         &buffer,
@@ -158,10 +202,40 @@ fn merge_conflict_decorations_render_section_backgrounds() {
 }
 
 #[test]
-fn editor_builder_collects_layers() {
+fn editor_builder_paints_both_the_diagnostic_and_decoration_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
-    let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);
-    assert_eq!(EditorState::new().scroll_line, 0);
+    let range = |first, last| Range {
+        start: LineCol::new(0, first),
+        end: LineCol::new(0, last),
+    };
+    let diagnostic = Diagnostic {
+        range: range(1, 3),
+        severity: Severity::Error,
+        message: "e".to_owned(),
+        source: None,
+        code: None,
+        code_href: None,
+        tags: Vec::new(),
+        related: Vec::new(),
+    };
+    let search = ThemeRole::SearchMatch;
+    let decoration = Decoration::new(range(5, 8), DecorationKind::TextBackground, Some(search));
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 16, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .focused(false)
+        .line_numbers(LineNumbers::Off)
+        .diagnostics(&[diagnostic])
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut EditorState::new());
+    // Text column `c` paints at x = 2 + c, after the marker and fold columns.
+    let (underlined, highlighted) = (&target[(3, 0)], &target[(7, 0)]);
+    assert!(underlined.modifier.contains(Modifier::UNDERLINED));
+    assert_ne!(underlined.bg, theme.role(search).to_ratatui());
+    assert!(!highlighted.modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(highlighted.bg, theme.role(search).to_ratatui());
 }
 
 #[test]
@@ -208,22 +282,22 @@ fn token_style_applies_markup_emphasis() {
 #[test]
 fn scroll_to_keeps_cursor_in_view() {
     let mut state = EditorState::new();
-    state.last_height = 10;
+    state.frame.height = 10;
     state.scroll_to(LineCol::new(25, 0));
     let vp = state.viewport();
     assert!(vp.start.line <= 25 && 25 < vp.end.line);
     state.scroll_to(LineCol::new(0, 0));
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
 }
 
 #[test]
 fn motions_clamp_to_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde\nf");
     let mut state = EditorState::new();
-    state.last_height = 4;
-    state.move_down(&buffer);
-    state.move_down(&buffer);
-    state.move_down(&buffer); // past the end clamps to the last line
+    state.frame.height = 4;
+    state.extend_down(&buffer);
+    state.extend_down(&buffer);
+    state.extend_down(&buffer); // past the end clamps to the last line
     assert_eq!(state.cursor().line, 2);
     state.goto(&buffer, LineCol::new(1, 99)); // col clamps to the line length
     assert_eq!(state.cursor(), LineCol::new(1, 3));
@@ -233,14 +307,14 @@ fn motions_clamp_to_buffer() {
 fn pos_at_accounts_for_gutter_and_scroll() {
     let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
     let mut state = EditorState::new();
-    state.last_height = 3;
+    state.frame.height = 3;
     let area = Rect::new(0, 0, 20, 3);
     // gutter = marker(1) + 1 digit + space = 3; column 5 -> content col 2.
     assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 2));
     // A click past the line end clamps to the line length.
     assert_eq!(state.pos_at(area, &buffer, &[], 100, 0), LineCol::new(0, 5));
     // Vertical scroll shifts the mapped line.
-    state.scroll_line = 1;
+    state.scroll_to_line(1);
     assert_eq!(state.pos_at(area, &buffer, &[], 3, 0), LineCol::new(1, 0));
 }
 
@@ -248,7 +322,7 @@ fn pos_at_accounts_for_gutter_and_scroll() {
 fn pos_at_skips_collapsed_fold_interiors() {
     let buffer = TextBuffer::from_text("l0\nl1\nl2\nl3\nl4");
     let mut state = EditorState::new();
-    state.last_height = 5;
+    state.frame.height = 5;
     let area = Rect::new(0, 0, 20, 5);
     // Collapse lines 1..=3 under a fold headered on line 0. Visible order is now
     // l0, l4 — so screen row 1 maps to buffer line 4, not line 1.
@@ -325,7 +399,9 @@ fn configured_tab_width_controls_rendering_caret_and_click_geometry() {
     // The one-digit gutter occupies three cells, followed by four tab cells.
     assert_eq!(buf[(7, 0)].symbol(), "X");
     assert!(buf[(7, 0)].modifier.contains(Modifier::REVERSED));
-    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 0));
+    // A click rounds to the nearer tab edge: its first half, then its second.
+    assert_eq!(state.pos_at(area, &buffer, &[], 4, 0), LineCol::new(0, 0));
+    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 1));
     assert_eq!(state.pos_at(area, &buffer, &[], 7, 0), LineCol::new(0, 1));
 }
 
@@ -340,11 +416,11 @@ fn wrapped_row_scrolling_walks_continuations_before_lines() {
         .render(area, &mut buf, &mut state);
 
     state.scroll_rows(&buffer, &[], true, 1);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (0, 1));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (0, 1));
     state.scroll_rows(&buffer, &[], true, 2);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (1, 0));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (1, 0));
     state.scroll_rows(&buffer, &[], true, -1);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (0, 2));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (0, 2));
 }
 
 #[test]
@@ -356,28 +432,37 @@ fn overflow_scrolling_and_cursor_margin_are_clamped() {
     Editor::new(&buffer).render(area, &mut buf, &mut state);
 
     state.goto(&buffer, LineCol::new(0, 15));
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
     state.goto(&buffer, LineCol::new(0, 2));
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
 
     state.scroll_columns(&buffer, 3);
-    assert_eq!(state.scroll_col, 3);
+    assert_eq!(state.scroll_col(), 3);
     state.scroll_columns(&buffer, i32::MAX);
-    assert_eq!(state.scroll_col, 5, "longest line clamps manual scrolling");
+    assert_eq!(
+        state.scroll_col(),
+        5,
+        "longest line clamps manual scrolling"
+    );
 }
 
 #[test]
-fn overflow_caret_clamps_to_horizontal_edges() {
+fn overflow_caret_scrolled_off_either_side_is_hidden() {
     let buffer = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz");
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 10, 1); // 3-cell gutter, 7 content cells.
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut buf, &mut state);
-    state.scroll_col = 10;
+    state.scroll_to_column(10);
 
     state.place_caret(LineCol::new(0, 2));
-    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((3, 0)));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None, "left");
     state.place_caret(LineCol::new(0, 22));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None, "right");
+    // The first and last visible cells still hold a caret.
+    state.place_caret(LineCol::new(0, 10));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((3, 0)));
+    state.place_caret(LineCol::new(0, 16));
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((9, 0)));
 
     Editor::new(&buffer)
@@ -385,7 +470,8 @@ fn overflow_caret_clamps_to_horizontal_edges() {
         .render(area, &mut buf, &mut state);
     state.scroll_columns(&buffer, 3);
     assert_eq!(
-        state.scroll_col, 0,
+        state.scroll_col(),
+        0,
         "wrapped views never scroll horizontally"
     );
 }
@@ -394,7 +480,7 @@ fn overflow_caret_clamps_to_horizontal_edges() {
 fn selection_range_normalizes_and_clears() {
     let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
     let mut state = EditorState::new();
-    state.last_height = 3;
+    state.frame.height = 3;
     assert_eq!(state.selection_range(), None);
     state.set_caret(&buffer, LineCol::new(0, 2));
     assert_eq!(
@@ -465,6 +551,7 @@ fn diagnostics_render_as_severity_colored_underlines() {
         message: "Unknown word".to_owned(),
         source: Some("karet-spell".to_owned()),
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };
@@ -497,57 +584,32 @@ fn diagnostics_render_as_severity_colored_underlines() {
 fn line_word_and_doc_motions() {
     let buffer = TextBuffer::from_text("foo bar\nbaz");
     let mut state = EditorState::new();
-    state.last_height = 4;
-    state.move_line_end(&buffer);
+    state.frame.height = 4;
+    state.extend_line_end(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_line_start(&buffer);
+    state.extend_line_start(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 0));
     // Word-right lands at the end of each word, then wraps to the next line.
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 3));
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(1, 0));
     // Word-left from column 0 wraps to the previous line's end.
-    state.move_word_left(&buffer);
+    state.extend_word_left(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_doc_end(&buffer);
+    state.extend_doc_end(&buffer);
     assert_eq!(state.cursor(), LineCol::new(1, 3));
-    state.move_doc_start(&buffer);
+    state.extend_doc_start(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 0));
-}
-
-#[test]
-fn public_word_boundaries_cover_whitespace_punctuation_and_lines() {
-    let buffer = TextBuffer::from_text("foo  bar.baz\nnext");
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(0, 8)),
-        LineCol::new(0, 5)
-    );
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(1, 0)),
-        LineCol::new(0, 12)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 3)),
-        LineCol::new(0, 8)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 8)),
-        LineCol::new(0, 9)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 12)),
-        LineCol::new(1, 0)
-    );
 }
 
 #[test]
 fn select_all_spans_the_whole_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.select_all(&buffer);
     assert_eq!(
         state.selection_range(),
@@ -602,7 +664,7 @@ fn sticky_scroll_pins_the_active_chain_and_collapses_signatures() {
         },
     ]);
     let mut state = EditorState::new();
-    state.scroll_line = 4;
+    state.scroll_to_line(4);
     let area = Rect::new(0, 0, 24, 4);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)
@@ -636,7 +698,7 @@ fn disabled_sticky_scroll_preserves_the_original_viewport() {
         scope_end: 3,
     }]);
     let mut state = EditorState::new();
-    state.scroll_line = 2;
+    state.scroll_to_line(2);
     let area = Rect::new(0, 0, 16, 2);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)
@@ -647,8 +709,8 @@ fn disabled_sticky_scroll_preserves_the_original_viewport() {
         .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
         .collect();
     assert!(first.contains("two"));
-    assert!(state.sticky_rows.is_empty());
-    assert_eq!(state.last_height, area.height);
+    assert!(state.frame.sticky_rows.is_empty());
+    assert_eq!(state.frame.height, area.height);
 }
 
 #[test]
@@ -672,136 +734,24 @@ fn a_tiny_viewport_keeps_the_deepest_header_and_one_content_row() {
         },
     ]);
     let mut state = EditorState::new();
-    state.scroll_line = 3;
+    state.scroll_to_line(3);
     let area = Rect::new(0, 0, 16, 2);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)
         .semantic_blocks(&blocks)
         .sticky_scroll(true)
         .render(area, &mut buf, &mut state);
-    assert_eq!(state.sticky_rows, [2]);
-    assert_eq!(state.last_height, 1);
+    assert_eq!(state.frame.sticky_rows, [2]);
+    assert_eq!(state.frame.height, 1);
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None);
-}
-
-#[test]
-fn center_on_and_scroll_paging_move_viewport_only() {
-    let mut state = EditorState::new();
-    state.last_height = 10;
-    state.center_on(50);
-    assert_eq!(state.scroll_line, 45, "line centered in a 10-row viewport");
-    // Scroll-only paging moves the viewport without touching the cursor.
-    state.scroll_page_up();
-    assert_eq!(state.scroll_line, 35);
-    state.scroll_page_down();
-    assert_eq!(state.scroll_line, 45);
-    assert_eq!(state.cursor().line, 0, "paging never moves the cursor");
-    // Centering near the top saturates at 0.
-    state.center_on(2);
-    assert_eq!(state.scroll_line, 0);
-}
-
-#[test]
-fn scrolling_to_a_line_lands_there_whether_or_not_the_view_wraps() {
-    // A scrollbar hands over a position, not a delta. Stepping there with
-    // `scroll_rows` would walk one visual anchor per row in wrap mode — the whole
-    // document re-wrapped on every mouse event of a drag.
-    let long = TextBuffer::from_text(&format!("{}\n", "word ".repeat(40)).repeat(200));
-    let area = Rect::new(0, 0, 40, 10);
-
-    for wrap in [false, true] {
-        let mut state = EditorState::new();
-        Editor::new(&long)
-            .word_wrap(wrap)
-            .render(area, &mut Buffer::empty(area), &mut state);
-        state.scroll_to_line(120);
-        assert_eq!(state.scroll_line, 120, "word_wrap = {wrap}");
-        // The caret stays put: this scrolls the view, it does not navigate.
-        assert_eq!(state.cursor().line, 0);
-    }
-}
-
-#[test]
-fn scrolling_to_a_column_is_ignored_by_a_wrapped_view() {
-    let buffer = TextBuffer::from_text(&format!("{}\n", "x".repeat(300)));
-    let area = Rect::new(0, 0, 40, 4);
-
-    let mut overflow = EditorState::new();
-    Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut overflow);
-    overflow.scroll_to_column(120);
-    assert_eq!(overflow.scroll_col, 120);
-
-    // A soft-wrapped view has no horizontal axis at all, so it stays pinned at zero
-    // rather than sliding text out from under a bar that was never reserved.
-    let mut wrapped = EditorState::new();
-    Editor::new(&buffer)
-        .word_wrap(true)
-        .render(area, &mut Buffer::empty(area), &mut wrapped);
-    wrapped.scroll_to_column(120);
-    assert_eq!(wrapped.scroll_col, 0);
-}
-
-#[test]
-fn visible_lines_counts_buffer_lines_not_rows() {
-    // Ten short lines fill ten rows one-for-one...
-    let short = TextBuffer::from_text(&"short\n".repeat(10));
-    let area = Rect::new(0, 0, 40, 10);
-    let mut state = EditorState::new();
-    Editor::new(&short).render(area, &mut Buffer::empty(area), &mut state);
-    assert_eq!(state.visible_lines(), 10);
-
-    // ...but a soft-wrapped line occupies several rows, so the same ten rows show
-    // fewer buffer lines. Measuring both the total and the viewport in buffer lines
-    // is what keeps the vertical extent O(1) instead of re-wrapping the document.
-    let long = TextBuffer::from_text(&format!("{}\n", "word ".repeat(40)).repeat(10));
-    let mut wrapped = EditorState::new();
-    Editor::new(&long)
-        .word_wrap(true)
-        .render(area, &mut Buffer::empty(area), &mut wrapped);
-    assert!(
-        wrapped.visible_lines() < 10,
-        "wrapped view showed {} buffer lines in 10 rows",
-        wrapped.visible_lines()
-    );
-    assert!(wrapped.visible_lines() >= 1);
-}
-
-#[test]
-fn longest_col_is_exact_after_a_horizontal_scroll_and_never_under_reports() {
-    let buffer = TextBuffer::from_text(
-        "short\n{}\nshort\n"
-            .replace("{}", &"x".repeat(200))
-            .as_str(),
-    );
-    let area = Rect::new(0, 0, 40, 3);
-    let mut state = EditorState::new();
-    Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut state);
-
-    // The render alone sees the long line because it is on screen.
-    assert!(state.longest_col() >= 200);
-
-    // A horizontal scroll scans the whole buffer, so the answer is exact.
-    state.scroll_columns(&buffer, 5);
-    assert_eq!(state.longest_col(), 200);
-
-    // Scrolled right, the extent still covers the visible right edge — a
-    // scrollbar built on it can never claim the line is fully on screen.
-    Editor::new(&buffer).render(area, &mut Buffer::empty(area), &mut state);
-    assert!(state.longest_col() >= state.scroll_col + 40);
 }
 
 #[test]
 fn an_underline_decoration_underlines_exactly_its_range() {
     let buffer = TextBuffer::from_text("let target = 1;\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
-        return;
-    };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::Underline,
-        role: None,
-    };
+    let range = Range::new(LineCol::new(0, 4), LineCol::new(0, 10));
+    let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let area = Rect::new(0, 0, 40, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
@@ -826,20 +776,15 @@ fn an_underline_decoration_underlines_exactly_its_range() {
 fn a_diagnostic_outranks_an_underline_decoration_on_the_same_cell() {
     let buffer = TextBuffer::from_text("let target = 1;\n");
     let theme = Theme::dark();
-    let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
-        return;
-    };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::Underline,
-        role: None,
-    };
+    let range = Range::new(LineCol::new(0, 4), LineCol::new(0, 10));
+    let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let diagnostic = Diagnostic {
         range,
         severity: Severity::Error,
         message: "boom".to_owned(),
         source: None,
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };

@@ -18,6 +18,7 @@ mod remote;
 mod repo;
 mod selection;
 mod stash;
+mod subprocess;
 mod summary;
 #[cfg(test)]
 mod test_support;
@@ -38,15 +39,23 @@ pub use ops::RebaseStep;
 pub use ops::RefKind;
 pub use ops::RefLabel;
 pub use ops::ResetMode;
+pub use remote::ForgeKind;
 pub use remote::Remote;
 pub use remote::RemoteBranch;
+pub use remote::RemoteUrl;
 pub use remote::RepositoryOperation;
 pub use remote::RepositoryState;
 pub use remote::SyncOutcome;
+pub use remote::detect_forge;
+pub use remote::parse_remote;
 pub use selection::Selection;
 pub use stash::StashEntry;
 pub use stash::StashOptions;
 pub use summary::RepositorySummary;
+pub use write::CommitCancel;
+pub use write::CommitOutcome;
+pub use write::CommitOutputLine;
+pub use write::OutputStream;
 
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
@@ -226,6 +235,12 @@ impl Repository {
     ///
     /// This is the input an external commit-message generator needs; the diff is
     /// taken between `HEAD` (or the empty tree on an unborn branch) and the index.
+    ///
+    /// Binary files are reported as changed but their contents are **not**
+    /// included: the patch is meant to be read, and an embedded blob is
+    /// unreadable, unbounded, and distorts any size-based decision made from
+    /// [`StagedDiff::patch`]. This diff is therefore for describing a change,
+    /// not for reapplying one — nothing here reproduces it.
     ///
     /// # Errors
     /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or

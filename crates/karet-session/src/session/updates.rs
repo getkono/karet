@@ -1,14 +1,19 @@
-use karet_core::Symbol;
+//! Folding background results back into the actor's state.
+//!
+//! This module applies what the session's producers report: language-server
+//! updates (converting LSP UTF-16 positions to buffer columns, see `columns`),
+//! highlight and spell results, file-system events, and reloaded configuration.
+//! It also hands the actor loop the producers' receivers, and reopens or
+//! restarts language-server documents. Retiring a provider is settled in
+//! `retirement`.
 
+use super::columns::convert_symbol_columns;
+use super::columns::utf16_range_to_buffer;
 use super::*;
+use crate::lsp::FormattingScope;
+use crate::session::notify_text::one_line;
 
 impl Session {
-    /// The session's configuration (workspace roots, format-on-save, spell-check).
-    #[must_use]
-    pub fn config(&self) -> &SessionConfig {
-        &self.config
-    }
-
     /// Take the file-watcher and its event stream, to be driven by the actor.
     ///
     /// The watcher is returned (rather than kept on the session) so the actor can
@@ -51,39 +56,64 @@ impl Session {
     /// Adopt one LSP task result: convert positions against the live buffer
     /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
     /// A result for a document that has since closed is dropped as stale.
+    ///
+    /// Answers from a retired server generation are dropped — except a
+    /// formatting answer holding up a save. Every other answer is advisory, so
+    /// ignoring a stale one costs nothing; that one owes a disk write, and
+    /// dropping it would strand the file unwritten with nothing answering the
+    /// client's request. [`Self::apply_config_report`] already commits those
+    /// saves when it retires a generation, so this is the narrower race where
+    /// the answer and the retirement cross; committing twice is impossible
+    /// because [`Self::finish_format_on_save`] consumes the pending entry.
+    /// Selection ranges are the other exception: their ranges are dropped, but
+    /// the request is still answered with empty chains, because Expand
+    /// Selection waits on that answer before it moves.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
+            self.settle_retired_answer(update);
             return;
         }
         match update {
-            LspUpdate::Completions {
+            update @ (LspUpdate::Completions { .. } | LspUpdate::CompletionResolved { .. }) => {
+                self.deliver_completion(update);
+            },
+            update @ (LspUpdate::InlineCompletions { .. } | LspUpdate::Account { .. }) => {
+                self.deliver_inline_completions(update);
+            },
+            LspUpdate::InlayHints {
                 request,
                 doc,
                 version,
-                mut items,
+                mut hints,
                 ..
             } => {
-                let Some(d) = self.store.docs.get(&doc) else {
+                if !self.store.docs.contains_key(&doc) {
                     return; // closed since the request: stale by definition
-                };
-                for item in &mut items {
-                    if let Some(edit) = item.edit.as_mut() {
-                        let start = edit.range.start;
-                        let end = edit.range.end;
-                        edit.range = Range {
-                            start: d.buffer.utf16_to_line_col(start.line, start.col),
-                            end: d.buffer.utf16_to_line_col(end.line, end.col),
-                        };
-                    }
                 }
+                self.hints_to_buffer_columns(doc, &mut hints);
                 self.emit(
                     Some(request),
-                    Event::Completions {
+                    Event::InlayHints {
                         doc,
                         version,
-                        items,
+                        hints,
                     },
                 );
+            },
+            LspUpdate::InlayHintsFailed {
+                request,
+                doc,
+                version,
+                ..
+            } => self.emit(Some(request), Event::InlayHintsFailed { doc, version }),
+            LspUpdate::InlayHintResolved {
+                request,
+                doc,
+                mut hint,
+                ..
+            } => {
+                self.part_locations_to_buffer_columns(std::slice::from_mut(&mut hint));
+                self.emit(Some(request), Event::InlayHintResolved { doc, hint });
             },
             LspUpdate::Symbols {
                 request,
@@ -100,7 +130,7 @@ impl Session {
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 if symbols.is_empty() {
-                    symbols = document.syntax_symbols.as_ref().clone();
+                    symbols = document.syntax.symbols().as_ref().clone();
                 }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
@@ -122,10 +152,20 @@ impl Session {
                 }
                 self.emit(Some(request), Event::HoverResult { hover });
             },
+            // Positions-free, so delivered whatever the buffer did since: the
+            // client judges whether its caret is still in the call.
+            LspUpdate::SignatureHelp {
+                request,
+                doc,
+                help,
+                options,
+                ..
+            } => self.emit(Some(request), Event::SignatureHelp { doc, help, options }),
             LspUpdate::Definitions {
                 request,
                 doc,
                 version,
+                kind,
                 mut locations,
                 ..
             } => {
@@ -139,59 +179,89 @@ impl Session {
                 // request came from, and the server answers in UTF-16 columns for
                 // every one of them — so each location is converted against its own
                 // file, not just the requesting document's buffer.
-                for location in &mut locations {
-                    if let Some(buffer) = self.buffer_for_path(&location.path) {
-                        location.range = utf16_range_to_buffer(&buffer, location.range);
-                    }
-                }
-                self.emit(Some(request), Event::Definitions { locations });
+                self.locations_to_buffer_columns(&mut locations);
+                self.emit(
+                    Some(request),
+                    lsp_requests::locations_event(kind, locations),
+                );
             },
             LspUpdate::WorkspaceSymbols {
-                request, symbols, ..
+                request,
+                mut symbols,
+                ..
             } => {
+                self.workspace_symbols_to_buffer_columns(&mut symbols);
                 self.emit(Some(request), Event::WorkspaceSymbols { symbols });
             },
-            LspUpdate::WorkspaceEdit { request, edit, .. } => {
-                let mut edit = edit;
-                for (path, edits) in &mut edit.changes {
-                    if let Some(buffer) = self.buffer_for_path(path) {
-                        for edit in edits {
-                            edit.range = utf16_range_to_buffer(&buffer, edit.range);
-                        }
-                    }
-                }
-                self.emit(Some(request), Event::WorkspaceEdit { edit });
-            },
+            LspUpdate::WorkspaceEdit {
+                request,
+                doc,
+                version,
+                edit,
+                ..
+            } => self.adopt_rename_edit(request, doc, version, edit),
+            LspUpdate::PrepareRename {
+                request,
+                doc,
+                version,
+                caret,
+                answer,
+                ..
+            } => self.adopt_prepare_rename(request, doc, version, caret, answer),
+            LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
+            LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
+            LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer),
+            LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
+            LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
+            // A formatting answer either answers a Format command or finishes a
+            // deferred save; either way the edits are applied here, never
+            // handed to the client. For a save, edits computed against a
+            // version the buffer has moved past are dropped, but the save they
+            // were holding up still completes.
             LspUpdate::Formatting {
                 request,
                 doc,
                 version,
-                mut edits,
+                formatted,
+                edits,
+                scope: scope @ (FormattingScope::Document | FormattingScope::Ranges(_)),
                 ..
-            } => {
-                let Some(document) = self.store.docs.get(&doc) else {
-                    return;
-                };
-                if document.buffer.version() != version {
-                    return;
-                }
-                for edit in &mut edits {
-                    edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
-                }
-                self.emit(
-                    Some(request),
-                    Event::FormattingEdits {
-                        doc,
-                        version,
-                        edits,
-                    },
-                );
-            },
-            LspUpdate::ServerStatus {
-                server, message, ..
-            } => {
-                // The transient status line is the right surface: it clears on
-                // the next keystroke and never queues like a notification.
+            } => self.adopt_format(request, doc, version, (formatted, edits), &scope),
+            LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                formatted,
+                edits,
+                scope,
+                ..
+            } => self.adopt_save_format(request, (doc, version), (formatted, edits), &scope),
+            LspUpdate::Editing { answer, .. } => self.adopt_editing(answer),
+            LspUpdate::Hierarchy {
+                request,
+                direction,
+                items,
+                ..
+            } => self.adopt_hierarchy(request, direction, items),
+            LspUpdate::Unsupported {
+                request,
+                server,
+                feature,
+                ..
+            } => self.emit(Some(request), Event::FeatureUnsupported { server, feature }),
+            LspUpdate::InlayHintsRefresh { key, .. } => self.emit(
+                None,
+                Event::InlayHintsRefresh {
+                    server: key.provider,
+                },
+            ),
+            LspUpdate::Window { key, update, .. } => self.adopt_window_update(&key, update),
+            LspUpdate::ServerStatus { key, message, .. } => {
+                let server = key.provider.display_name();
+                // Progress rather than a notification: the client shows these under
+                // one tag, so a stream of ticks rewrites a single card instead of
+                // queueing one per tick.
                 self.emit(
                     None,
                     Event::Progress {
@@ -204,6 +274,7 @@ impl Session {
                 server,
                 path,
                 version,
+                feed,
                 mut diagnostics,
                 ..
             } => {
@@ -227,49 +298,96 @@ impl Session {
                         }
                     }
                 }
-                if document.lsp_diagnostics.get(&server) == Some(&diagnostics) {
+                // Only this feed's layer is replaced: a pulled set says nothing
+                // about what the same server publishes, and vice versa.
+                let layer = (server, feed);
+                if document.lsp_diagnostics.get(&layer) == Some(&diagnostics) {
                     return;
                 }
-                document.lsp_diagnostics.insert(server, diagnostics);
+                document.lsp_diagnostics.insert(layer, diagnostics);
                 self.publish_document_diagnostics(doc_id);
             },
-            LspUpdate::SpawnFailed {
-                language, command, ..
-            } => self.emit(
+            // The connection has been gone past the grace window: its
+            // markers and its overlay both describe a server that is down.
+            LspUpdate::DiagnosticsCleared { server, .. } => {
+                self.clear_lsp_diagnostic_layer(&server, None);
+                self.clear_semantic_tokens_of(&server);
+                self.clear_server_folds_of(&server);
+            },
+            // The server is up, but no longer answers pulls for a document
+            // it was pulled for: what it last answered would otherwise stay
+            // on screen, since nothing it publishes replaces that layer.
+            LspUpdate::PulledDiagnosticsWithdrawn { server, .. } => {
+                self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
+            },
+            update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
+            update @ LspUpdate::FoldingRanges { .. } => self.adopt_server_folds(update),
+            LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
-                    message: format!(
-                        "no language server for {language}: '{command}' could not be started \
-                         (language features disabled for {language})"
-                    ),
+                    message: format!("{} is behind on this file: {reason}", server.display_name()),
                 },
             ),
-            LspUpdate::ServerDied { language, .. } => self.emit(
+            LspUpdate::SpawnFailed {
+                key,
+                command,
+                reason,
+                permanent,
+                ..
+            } => {
+                let server = &key.provider;
+                let root = &key.root;
+                // The log and, through `RuntimeState`, the Language Servers
+                // panel keep the full evidence: the repository root, and the
+                // server's own words exactly as it wrote them. The toast names
+                // the launch and flattens those words to one line.
+                tracing::warn!(
+                    server = %server.key(),
+                    root = %root.display(),
+                    command = %command,
+                    reason = %reason,
+                    "language server launch failed"
+                );
+                let outcome = if permanent {
+                    "will not be retried"
+                } else {
+                    "retrying with backoff"
+                };
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Lsp,
+                        message: format!(
+                            "{} failed to start ({outcome}): '{command}' — {}",
+                            server.display_name(),
+                            one_line(&reason)
+                        ),
+                    },
+                );
+            },
+            LspUpdate::ServerDied { key, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
-                        "the {language} language server stopped; reconnecting with bounded backoff"
+                        "the {} language server stopped; reconnecting with bounded backoff",
+                        key.provider.display_name()
                     ),
                 },
             ),
             LspUpdate::RuntimeState {
-                server,
-                root,
-                state,
-                error,
-                ..
+                key, state, error, ..
             } => {
-                self.lsp
-                    .note_runtime(server.clone(), root.clone(), state, error.clone());
+                self.lsp.note_runtime(&key, state, error.clone());
                 self.emit(
                     None,
                     Event::LanguageServerRuntimeChanged {
-                        server,
-                        root,
+                        server: key.provider,
+                        root: key.root,
                         state,
                         error,
                     },
@@ -283,12 +401,46 @@ impl Session {
                     message,
                 },
             ),
-            LspUpdate::InstallRequired { server, .. } => {
-                match self.config.settings.lsp.managed_downloads {
+            LspUpdate::InstallRequired {
+                server, language, ..
+            } => {
+                match self.config.settings().lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {
-                        self.emit(None, Event::LanguageServerInstallRequired { server });
+                        // Ask at most once. A provider Karet has installed before
+                        // has had this question answered already, and a refusal the
+                        // user recorded is an answer too — re-asking either would
+                        // spend their bandwidth on a decision they have made.
+                        let root = self.config.lsp_registry_dir.as_deref();
+                        if crate::lsp_registry::store::ever_installed(root, &server) {
+                            return;
+                        }
+                        if crate::lsp_registry::store::read_declined(root, &server).is_some() {
+                            return;
+                        }
+                        let enabled = self
+                            .config
+                            .settings()
+                            .lsp
+                            .servers
+                            .get(&language)
+                            .is_none_or(|setting| setting.enabled);
+                        self.emit(
+                            None,
+                            Event::LanguageServerInstallRequired {
+                                server,
+                                language,
+                                enabled,
+                            },
+                        );
                     },
                     crate::config::schema::ManagedDownloads::Auto => {
+                        // Second guard. `report_unresolved` already routes an
+                        // unmanaged provider elsewhere, but this arm queues a
+                        // download with no prompt in front of it, so it does not
+                        // take that on trust.
+                        if !crate::lsp_registry::managed_provider(&server) {
+                            return;
+                        }
                         let request = RequestId(0);
                         self.queue_lsp_registry(
                             request,
@@ -298,6 +450,23 @@ impl Session {
                     crate::config::schema::ManagedDownloads::Off => {},
                 }
             },
+            // Reported whatever `managedDownloads` says, including `off`: it
+            // performs no network I/O and describes something only the user can
+            // do, so suppressing it would just hide why the language has no
+            // server.
+            LspUpdate::ManualInstallRequired {
+                server,
+                command,
+                reason,
+                ..
+            } => self.emit(
+                None,
+                Event::LanguageServerManualInstallRequired {
+                    server,
+                    command,
+                    reason,
+                },
+            ),
         }
     }
 
@@ -308,11 +477,19 @@ impl Session {
             .values()
             .filter(|document| {
                 only.as_ref().is_none_or(|server| {
+                    // The provider's own language list, not just "is it this
+                    // language's primary". A companion -- Ruff for Python, Biome
+                    // for TypeScript -- is never any language's primary, so
+                    // matching on that alone meant installing one started nothing
+                    // until the file was reopened by hand.
                     document
                         .language_selector
                         .and_then(crate::lsp::builtin_server)
                         .as_ref()
                         == Some(server)
+                        || document
+                            .language_selector
+                            .is_some_and(|selector| crate::lsp::serves_language(server, selector))
                 })
             })
             .map(|document| {
@@ -325,18 +502,68 @@ impl Session {
                 )
             })
             .collect();
+        let mut retired = crate::lsp::Retired::default();
         for (selector, lsp_language_id, path, version, text) in documents {
-            self.lsp
-                .document_opened(selector, lsp_language_id, &path, version, || text);
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
         }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
-        if self.lsp.restart(server) {
-            // Restart advances a global generation and retires every slot so no
-            // late answer from the old provider can be adopted.
-            self.reopen_lsp_documents(None);
+        let Some(retired) = self.lsp.restart(server) else {
+            return;
+        };
+        // Exactly the documents the retirement detached, so a surviving provider
+        // is not sent a second `didOpen` for a file it already has open.
+        let reopen = retired.document_paths();
+        // Markers cleared and the stop reported *before* the replacement starts,
+        // so the client never sees the new instance's `Starting` arrive behind
+        // the old one's retirement and conclude the provider went backwards.
+        self.adopt_retirement(retired);
+        self.reopen_documents_at(&reopen);
+    }
+
+    /// Reopen exactly `paths` against whatever provider now serves them.
+    ///
+    /// Matched on absolute paths. A document is stored under the path the client
+    /// opened it with, which need not be absolute -- `karet main.rs` opens
+    /// `./main.rs` -- while the manager records what it sent the server, which
+    /// always is. Comparing the two as written meant the commonest invocation of
+    /// all retired a provider on Restart and then matched no documents to reopen
+    /// it with, leaving it down for the rest of the session.
+    pub(super) fn reopen_documents_at(&mut self, paths: &[std::path::PathBuf]) {
+        let documents: Vec<_> = self
+            .store
+            .docs
+            .values()
+            .filter(|document| paths.contains(&crate::lsp::absolute_path(&document.path)))
+            .map(|document| {
+                (
+                    document.language_selector,
+                    document.lsp_language_id,
+                    document.path.clone(),
+                    document.buffer.version(),
+                    document.buffer.text(),
+                )
+            })
+            .collect();
+        let mut retired = crate::lsp::Retired::default();
+        for (selector, lsp_language_id, path, version, text) in documents {
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
         }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn queue_lsp_registry(
@@ -356,184 +583,6 @@ impl Session {
         }
     }
 
-    /// The single document-lookup used by request handlers: answers `id` with the
-    /// standard unknown-document notification when `doc_id` is not open.
-    ///
-    /// An associated function over the disjoint fields (not `&self`) so the
-    /// returned borrow leaves `self.lsp` free for the forwarding call.
-    fn doc_or_report<'a>(
-        store: &'a DocumentStore,
-        events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-        id: RequestId,
-        doc_id: DocumentId,
-    ) -> Option<&'a Document> {
-        let doc = store.docs.get(&doc_id);
-        if doc.is_none() {
-            events.send((Some(id), unknown_document(doc_id))).ok();
-        }
-        doc
-    }
-
-    /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
-    /// encoding and forward to the document's language server. Languages with no
-    /// server answer immediately with an empty set, so the client never waits.
-    pub(super) fn completion(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let utf16 = utf16_caret(doc, position);
-        let forwarded =
-            self.lsp
-                .completion(doc.language_selector, id, doc_id, version, &doc.path, utf16);
-        if !forwarded {
-            self.emit(
-                Some(id),
-                Event::Completions {
-                    doc: doc_id,
-                    version,
-                    items: Vec::new(),
-                },
-            );
-        }
-    }
-
-    /// Serve [`Command::DocumentSymbols`] from the document's language server.
-    pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let forwarded =
-            self.lsp
-                .document_symbols(doc.language_selector, id, doc_id, version, &doc.path);
-        if !forwarded {
-            self.emit(
-                Some(id),
-                Event::Symbols {
-                    doc: doc_id,
-                    symbols: doc.syntax_symbols.as_ref().clone(),
-                },
-            );
-        }
-    }
-
-    pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let utf16 = utf16_caret(doc, position);
-        if !self
-            .lsp
-            .hover(doc.language_selector, id, doc_id, version, &doc.path, utf16)
-        {
-            self.emit(Some(id), Event::HoverResult { hover: None });
-        }
-    }
-
-    pub(super) fn definition(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let utf16 = utf16_caret(doc, position);
-        if !self
-            .lsp
-            .definition(doc.language_selector, id, doc_id, version, &doc.path, utf16)
-        {
-            self.emit(
-                Some(id),
-                Event::Definitions {
-                    locations: Vec::new(),
-                },
-            );
-        }
-    }
-
-    pub(super) fn workspace_symbols(&mut self, id: RequestId, query: String) {
-        if !self.lsp.workspace_symbols(id, query) {
-            self.emit(
-                Some(id),
-                Event::WorkspaceSymbols {
-                    symbols: Vec::new(),
-                },
-            );
-        }
-    }
-
-    pub(super) fn rename(
-        &mut self,
-        id: RequestId,
-        doc_id: DocumentId,
-        position: LineCol,
-        new_name: String,
-    ) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let utf16 = utf16_caret(doc, position);
-        if !self
-            .lsp
-            .rename(doc.language_selector, id, &doc.path, utf16, new_name)
-        {
-            self.emit(
-                Some(id),
-                Event::WorkspaceEdit {
-                    edit: karet_core::WorkspaceEdit::default(),
-                },
-            );
-        }
-    }
-
-    pub(super) fn format_document(&mut self, id: RequestId, doc_id: DocumentId) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        if !self.lsp.formatting(
-            doc.language_selector,
-            id,
-            doc_id,
-            doc.buffer.version(),
-            &doc.path,
-        ) {
-            // No server offered formatting; TOML falls back to the built-in
-            // taplo formatter (same engine the taplo LSP would use).
-            #[cfg(feature = "toml-format")]
-            if doc.language_selector == Some("toml")
-                && self.config.settings.toml.format
-                && let Some(formatted) =
-                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
-            {
-                let version = doc.buffer.version();
-                let end_line = u32::try_from(doc.buffer.text().lines().count()).unwrap_or(u32::MAX);
-                self.emit(
-                    Some(id),
-                    Event::FormattingEdits {
-                        doc: doc_id,
-                        version,
-                        edits: vec![karet_core::TextEdit {
-                            range: karet_core::Range {
-                                start: karet_core::LineCol::new(0, 0),
-                                end: karet_core::LineCol::new(end_line, 0),
-                            },
-                            new_text: formatted,
-                        }],
-                    },
-                );
-                return;
-            }
-            self.emit(
-                Some(id),
-                Event::FormattingEdits {
-                    doc: doc_id,
-                    version: doc.buffer.version(),
-                    edits: Vec::new(),
-                },
-            );
-        }
-    }
-
     /// Adopt a completed highlight, then publish the refreshed snapshot.
     ///
     /// A result for a version the buffer has already moved past is dropped: a newer
@@ -546,13 +595,10 @@ impl Session {
         if doc.buffer.version() != result.version {
             return;
         }
-        doc.highlights = result.highlights;
-        doc.folds = result.folds;
-        doc.semantic_blocks = result.semantic_blocks;
-        doc.syntax_symbols = result.symbols;
-        doc.error_lines = result.error_lines;
-        self.publish(result.doc, None);
-        self.schedule_spell(result.doc);
+        let doc_id = result.doc;
+        doc.syntax.adopt(result);
+        self.publish(doc_id, None);
+        self.schedule_spell(doc_id);
     }
 
     /// Queue the current token model after highlighting has settled. Disabled or
@@ -578,9 +624,9 @@ impl Session {
             language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
-            highlights: doc.highlights.clone(),
-            syntax_error_lines: doc.error_lines.clone(),
-            settings: self.config.settings.spellcheck.clone(),
+            highlights: doc.syntax.highlights().clone(),
+            syntax_error_lines: doc.syntax.error_lines().clone(),
+            settings: self.config.settings().spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
             self.clear_spell_diagnostics(doc_id);
@@ -687,6 +733,7 @@ impl Session {
             );
             return;
         }
+        self.lsp.files_changed(&event);
         let config_paths: Vec<PathBuf> = self
             .config_manager
             .as_ref()
@@ -706,6 +753,20 @@ impl Session {
         if let Some(report) = changed_config {
             self.apply_config_report(report);
         }
+        let keymap_paths: Vec<PathBuf> = event
+            .paths
+            .iter()
+            .filter(|path| self.config.keymap_paths.contains(path))
+            .cloned()
+            .collect();
+        if !keymap_paths.is_empty() {
+            self.emit(
+                None,
+                Event::KeymapChanged {
+                    paths: keymap_paths.clone(),
+                },
+            );
+        }
 
         if event
             .paths
@@ -716,10 +777,17 @@ impl Session {
             self.refresh_document_settings(&docs);
         }
 
+        // A keymap file inside a root (the project's `.karet/keymap.jsonc`) is
+        // still workspace content -- it can be open, tracked, or searched -- but
+        // the user's own keymap outside every root is not.
+        let roots = &self.config.roots;
         let workspace_paths: Vec<PathBuf> = event
             .paths
             .into_iter()
             .filter(|path| !config_paths.contains(path))
+            .filter(|path| {
+                !keymap_paths.contains(path) || roots.iter().any(|root| path.starts_with(root))
+            })
             .collect();
         for path in &workspace_paths {
             if let Some(&doc_id) = self.store.by_path.get(path) {
@@ -750,21 +818,27 @@ impl Session {
 
     /// Adopt one validated live configuration snapshot and refresh producers whose
     /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
-    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
+    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`]
+    /// — so any save waiting on one is written out here first, before the
+    /// generation moves out from under it.
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
-        let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
-        self.config.settings = report.settings.clone();
+        let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
+        self.set_semantic_highlighting(report.settings.editor.semantic_highlighting.enabled);
+        let ai_commit_changed =
+            self.config.settings().git.ai_commit != report.settings.git.ai_commit;
         self.config.loaded_config = report.clone();
         let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
         self.refresh_document_settings(&docs);
 
         // Semantic-comment settings can vary by language. Requeue every open
         // document from scratch so both global and selector changes take effect.
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let highlight_tx = &self.highlight_tx;
         let mut spell_without_syntax = Vec::new();
+        let undo_cap = settings.files.undo_cap();
         for (&doc_id, doc) in &mut self.store.docs {
+            doc.buffer.set_undo_limit(undo_cap);
             if update_syntax(settings, highlight_tx, doc_id, doc, None) {
                 spell_without_syntax.push(doc_id);
             }
@@ -773,17 +847,36 @@ impl Session {
             self.schedule_spell(doc_id);
         }
 
-        if lsp_changed {
+        if let Some(retired) = lsp_retired {
+            // Retiring the servers orphans every formatting request in flight --
+            // every one, because `reconfigure` retires every slot, so the drain
+            // below is exactly as wide as the retirement and no wider.
+            // A save is not advisory: write it now, unformatted, which is the
+            // same posture a formatter error already takes -- and before the
+            // retirement is adopted, so nothing is waiting on a slot that has
+            // already gone.
+            self.commit_pending_format_saves();
+            self.adopt_retirement(retired);
+            let mut reopened = crate::lsp::Retired::default();
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
-                lsp.document_opened(
+                reopened.absorb(lsp.document_opened(
                     doc.language_selector,
                     doc.lsp_language_id,
                     &doc.path,
                     doc.buffer.version(),
                     || doc.buffer.text(),
-                );
+                ));
             }
+            self.adopt_retirement(reopened);
+        }
+
+        // Re-probe when the agent, its binary, or the on/off switch moved. A
+        // client refuses locally on the last blocker it was told about, so
+        // without this a user who fixes their configuration in the settings file
+        // would find the action still refusing until the next restart.
+        if ai_commit_changed {
+            self.emit_ai_commit_availability(None);
         }
 
         self.emit(
@@ -796,18 +889,18 @@ impl Session {
 
     /// Re-resolve per-path behavior after an application or EditorConfig change.
     pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
-        let settings = self.config.settings.clone();
-        let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
+        let settings = self.config.settings().clone();
+        let inputs: Vec<(DocumentId, PathBuf, karet_filetype::FileType)> = docs
             .iter()
             .filter_map(|doc_id| {
                 self.store
                     .docs
                     .get(doc_id)
-                    .map(|doc| (*doc_id, doc.path.clone(), doc.language_selector))
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.file_type))
             })
             .collect();
-        for (doc_id, path, language) in inputs {
-            let (resolved, error) = resolve_document_settings(&path, language, &settings);
+        for (doc_id, path, file_type) in inputs {
+            let (resolved, error) = resolve_document_settings(&path, Some(file_type), &settings);
             let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
                 if doc.settings == resolved {
                     return false;
@@ -839,60 +932,23 @@ impl Session {
             }
         }
     }
-
-    /// The text of `path` for column conversion: the live buffer when the file is
-    /// open, else its contents from disk.
-    ///
-    /// A server answers in UTF-16 columns for whatever file it names, which is often
-    /// not one the client has open — so converting those columns needs the target's
-    /// text, not the requesting document's. `None` when the file cannot be read; the
-    /// caller then leaves the range as the server sent it, since an approximate
-    /// column beats a dropped result.
-    fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
-        self.store
-            .by_path
-            .get(path)
-            .and_then(|doc| self.store.docs.get(doc))
-            .map(|document| document.buffer.clone())
-            .or_else(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| TextBuffer::from_text(&text))
-            })
-    }
-}
-
-fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
-    for symbol in symbols {
-        let range = symbol.range;
-        symbol.range = Range {
-            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-        };
-        let selection = symbol.selection_range;
-        symbol.selection_range = Range {
-            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
-            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
-        };
-        convert_symbol_columns(buffer, &mut symbol.children);
-    }
-}
-
-fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
-    Range {
-        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-    }
-}
-
-/// A caret converted to the server's UTF-16 column encoding — the conversion
-/// every positional LSP forwarder applies (see the karet-lsp crate docs).
-fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
-    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
 }
 
 #[cfg(not(feature = "mdlint"))]
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+
+    /// Without the `mdlint` feature there is no linter to fix with: the
+    /// request is answered with a notice rather than left outstanding.
+    pub(super) fn fix_markdown_lint(&mut self, id: RequestId, _doc: crate::api::DocumentId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::System,
+                message: "markdown lint is not available in this build".to_owned(),
+            },
+        );
+    }
 }

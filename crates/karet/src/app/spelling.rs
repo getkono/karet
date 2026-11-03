@@ -5,7 +5,17 @@
 //! of `SpellingScanProgress` batches and a single `SpellingScanFinished` — so the
 //! list fills as the walk proceeds rather than appearing all at once at the end.
 
-use super::*;
+use std::path::Path;
+
+use karet_session::Command as SessionCommand;
+use karet_session::RequestId;
+use karet_session::SpellingHit;
+use karet_session::WorkspaceCommand;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::keymap::SidebarPanel;
 
 /// Keep at most this many misspellings. A workspace can hold far more than a list
 /// is useful for, and every hit costs a `PathBuf` plus its line of context; past
@@ -51,7 +61,7 @@ impl App {
         }
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Spelling;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         if !self.spelling.scanned && self.spelling.scanning.is_none() {
             self.scan_workspace_spelling();
         }
@@ -97,7 +107,7 @@ impl App {
             self.send(SessionCommand::Cancel { request: previous });
         }
         self.spelling.clear();
-        self.spelling.scanning = self.send(SessionCommand::ScanWorkspaceSpelling {
+        self.spelling.scanning = self.send(WorkspaceCommand::ScanSpelling {
             limit: SPELLING_SCAN_RESULT_CAP,
         });
     }
@@ -186,7 +196,7 @@ impl App {
             return;
         };
         let (path, position) = (hit.path.clone(), hit.range.start);
-        self.focus_by_file_line(&path, position);
+        self.focus_by_file_line(&path, position, true);
     }
 
     /// Route a click inside the Spelling panel: a header action, or a result row.
@@ -209,5 +219,91 @@ impl App {
             self.spelling.selection.move_to(index);
             self.open_selected_spelling();
         }
+    }
+}
+
+/// One row of the Spelling panel's list: a file header, or one misspelled word
+/// under it. Both are selectable — the issue asks for every *instance* to be
+/// clickable, and grouping keeps a narrow sidebar readable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpellingRow {
+    /// A file heading; `hit` is the file's first hit and `count` its total.
+    File {
+        /// Index into [`SpellingPanel::hits`] of this file's first misspelling.
+        hit: usize,
+        /// How many misspellings this file has.
+        count: usize,
+    },
+    /// One misspelled word; `hit` indexes [`SpellingPanel::hits`].
+    Word {
+        /// Index into [`SpellingPanel::hits`].
+        hit: usize,
+    },
+}
+
+impl SpellingRow {
+    /// The hit this row jumps to when activated.
+    pub(crate) fn hit(self) -> usize {
+        match self {
+            Self::File { hit, .. } | Self::Word { hit } => hit,
+        }
+    }
+}
+
+/// The workspace-spelling panel state.
+#[derive(Default)]
+pub(crate) struct SpellingPanel {
+    /// Every misspelling the current scan has reported, grouped by file.
+    pub(crate) hits: Vec<SpellingHit>,
+    /// The rendered rows derived from [`hits`](Self::hits).
+    pub(crate) rows: Vec<SpellingRow>,
+    /// The cursor over `rows`.
+    pub(crate) selection: ListSelection,
+    /// The in-flight scan, if one is running. Progress for any other request is
+    /// stale — a re-scan supersedes its predecessor.
+    pub(crate) scanning: Option<RequestId>,
+    /// How many files the running (or last) scan visited.
+    pub(crate) files_scanned: usize,
+    /// The last scan stopped at its result limit.
+    pub(crate) truncated: bool,
+    /// Whether a scan has ever completed, so an empty list can distinguish
+    /// "nothing found" from "nothing asked for yet".
+    pub(crate) scanned: bool,
+}
+
+impl SpellingPanel {
+    /// Rebuild [`rows`](Self::rows) from `hits`, clamping the cursor.
+    ///
+    /// `hits` arrive grouped by file already (the scan walks a directory tree, and
+    /// the session emits each open document's hits together), so a run-length pass
+    /// over consecutive equal paths is enough to insert the headings.
+    pub(crate) fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        let mut index = 0;
+        while index < self.hits.len() {
+            let path = &self.hits[index].path;
+            let count = self.hits[index..]
+                .iter()
+                .take_while(|hit| hit.path == *path)
+                .count();
+            self.rows.push(SpellingRow::File { hit: index, count });
+            self.rows
+                .extend((index..index + count).map(|hit| SpellingRow::Word { hit }));
+            index += count;
+        }
+        let cursor = self.selection.cursor();
+        self.selection = ListSelection::new(self.rows.len());
+        self.selection
+            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Drop every result, readying the panel for a fresh scan.
+    pub(crate) fn clear(&mut self) {
+        self.hits.clear();
+        self.rows.clear();
+        self.selection = ListSelection::new(0);
+        self.files_scanned = 0;
+        self.truncated = false;
+        self.scanned = false;
     }
 }

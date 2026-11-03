@@ -10,6 +10,7 @@
 //! time, plus the context the walk has accumulated around it; it never sees the index,
 //! so it cannot invent structure that the containment tree does not already express.
 
+use karet_core::LineIndex;
 use karet_core::Range;
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
@@ -20,10 +21,38 @@ use crate::model::FacetSubtype;
 use crate::model::Lens;
 use crate::model::NodeKind;
 use crate::model::Visibility;
-use crate::text::LineIndex;
 
-pub mod python;
-pub mod rust;
+// Each language's mapping is reached through [`registered`] and [`for_language`]; the
+// modules themselves, and the tree-walk helpers inside them, are implementation.
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+pub(crate) mod cfamily;
+#[cfg(feature = "lang-java")]
+pub(crate) mod java;
+#[cfg(feature = "lang-kotlin")]
+pub(crate) mod kotlin;
+// Rust and Python stay compiled without their features because the crate's tests ask
+// `rust::language_id()`/`python::language_id()` whether the grammar is in and skip when
+// it is not; with the feature off nothing else in them is reached.
+#[cfg_attr(
+    not(feature = "lang-python"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-python`"
+    )
+)]
+pub(crate) mod python;
+#[cfg_attr(
+    not(feature = "lang-rust"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-rust`"
+    )
+)]
+pub(crate) mod rust;
+#[cfg(feature = "lang-swift")]
+pub(crate) mod swift;
+#[cfg(feature = "lang-javascript")]
+pub(crate) mod typescript;
 
 /// What a language made of one syntax node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +97,91 @@ impl Attribute {
     }
 }
 
+/// One candidate semantic owner for a construct written away from what it belongs to.
+///
+/// A candidate is a *name*, not a node: a language mapping sees one syntax node at a time
+/// and never the index, so it cannot know whether `Widget` exists, let alone where. It
+/// says what it is looking for and what to become if that is found; resolving the name is
+/// the regroup pass's job, and a name that resolves to nothing leaves the node exactly
+/// where it was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Owner {
+    /// The name to look for — a bare name, or a path the language's own syntax allows.
+    pub name: String,
+    /// Whether the construct dissolves into this owner rather than nesting under it.
+    ///
+    /// Dissolving lifts the construct's children into the owner and removes the
+    /// construct: a Rust inherent `impl` is not a thing anyone navigates to, it is where
+    /// the methods happen to be written. A trait binding *is* a thing, and nests.
+    pub dissolve: bool,
+    /// The display name and path segment to take on if this candidate is the one that
+    /// resolves, or `None` to keep what the construct already has.
+    ///
+    /// Which candidate wins changes what the construct should be called: `impl Display
+    /// for Widget` reads as `impl Display` under `Widget`, and as `impl for Widget` under
+    /// `Display`. Naming is therefore per candidate rather than per construct.
+    pub rename: Option<(String, String)>,
+    /// What the construct becomes when this candidate resolves to a module rather than a
+    /// type, or `None` to stay what it is.
+    ///
+    /// C++ writes `void ns::f() {}` and `void Widget::f() {}` alike, and only the owner
+    /// that resolves says which was meant: a member whose access its class declared, or
+    /// a free function with linkage of its own.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub in_module: Option<ModuleForm>,
+}
+
+/// What a construct nested under a module is, in place of what it was extracted as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ModuleForm {
+    /// The kind it takes on.
+    pub kind: NodeKind,
+    /// The visibility it takes on.
+    pub visibility: Option<Visibility>,
+    /// The facets it takes on, replacing the ones it was extracted with.
+    pub facets: Vec<Facet>,
+}
+
+impl Owner {
+    /// A candidate that nests under `name`, keeping the construct's own naming.
+    #[must_use]
+    pub fn nested(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            dissolve: false,
+            rename: None,
+            in_module: None,
+        }
+    }
+
+    /// A candidate that lifts the construct's children into `name` and removes it.
+    #[must_use]
+    pub fn dissolved(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            dissolve: true,
+            rename: None,
+            in_module: None,
+        }
+    }
+
+    /// Become `form` if this candidate resolves to a module.
+    #[must_use]
+    pub fn in_module(mut self, form: ModuleForm) -> Self {
+        self.in_module = Some(form);
+        self
+    }
+
+    /// Rename the construct to `name`, addressed by `segment`, if this candidate wins.
+    #[must_use]
+    pub fn renamed(mut self, name: impl Into<String>, segment: impl Into<String>) -> Self {
+        self.rename = Some((name.into(), segment.into()));
+        self
+    }
+}
+
 /// Everything a language needs to classify one node beyond the node itself.
 pub struct FacetContext<'a> {
     /// The full source text the tree was parsed from.
@@ -81,6 +195,11 @@ pub struct FacetContext<'a> {
     /// This is what separates a method in a trait (a substitutable default) from the
     /// same syntax in an inherent implementation (not one).
     pub container: Option<NodeKind>,
+    /// The names of the modules written in this file around this node, outermost first.
+    ///
+    /// Not only the nearest container: a C++ function two namespaces inside an anonymous
+    /// one still has internal linkage.
+    pub modules: &'a [String],
     /// Type parameter names in scope on the enclosing declaration.
     ///
     /// A blanket implementation is one whose self type *is* one of these, and that is
@@ -111,8 +230,17 @@ impl FacetContext<'_> {
 ///
 /// Object-safe, so languages are registered as trait objects and a new one is additive.
 pub trait SeamLanguage {
-    /// Which grammar this maps.
-    fn language(&self) -> LanguageId;
+    /// Which grammar this maps, or `None` when no grammar it maps is compiled into
+    /// this build — such a mapping reads no file.
+    fn language(&self) -> Option<LanguageId>;
+
+    /// Every grammar this maps, [`Self::language`] first.
+    ///
+    /// One for most languages. A mapping serving several grammars — TypeScript and
+    /// JavaScript, C and C++ — lists them all, since each reads with its own call query.
+    fn language_ids(&self) -> Vec<LanguageId> {
+        self.language().into_iter().collect()
+    }
 
     /// Map one syntax node onto a universal kind, or `None` if it is not a node at all.
     ///
@@ -155,6 +283,35 @@ pub trait SeamLanguage {
         Vec::new()
     }
 
+    /// Where this construct's members really belong, when its syntactic parent is not
+    /// its semantic owner — most specific candidate first.
+    ///
+    /// Some constructs are written away from the thing they belong to. A Rust `impl` and
+    /// a Swift `extension` hold members of a type declared elsewhere; a Kotlin extension
+    /// function is a member of its receiver; a JavaScript `X.prototype.y = …` is a member
+    /// of `X`. Containment built from syntax alone puts all of them beside the type
+    /// rather than inside it, and "show me everything about `Widget`" stops being a
+    /// question the tree can answer.
+    ///
+    /// Returning candidates rather than a decision keeps the contract narrow: the
+    /// language still sees one node and never the index, and it is the neutral
+    /// regroup pass that decides whether a name resolves. Empty — the default
+    /// — means the construct is already written where it belongs, which is the common
+    /// case and the whole of Python.
+    fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<Owner> {
+        let _ = (node, ctx);
+        Vec::new()
+    }
+
+    /// The declaration head: everything from the construct's start up to the body it
+    /// opens, or the whole construct when it opens none.
+    ///
+    /// The default reads the grammar's `body` field, which every grammar mapped here
+    /// names the same way, so a language overrides this only where its grammar disagrees.
+    fn header(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+        header_before_body(node, ctx)
+    }
+
     /// The name of a module whose body lives in *another file*, when this node declares one.
     ///
     /// Rust's `mod net;` is the case: a containment edge that crosses a file boundary and
@@ -165,11 +322,130 @@ pub trait SeamLanguage {
         None
     }
 
+    /// The tree-sitter query marking this language's calls, bodies, comments and imports,
+    /// for the grammar `language` — or `None`, and the language has no call tier.
+    ///
+    /// This is the whole of a language's part in the call tier: the captures it may use
+    /// are the `@call…`, `@body`, `@comment` and `@import…` names the call tier's own
+    /// tests check every query against, and everything after the query —
+    /// attribution, line counting, resolution, measuring — is language-neutral. A
+    /// mapping serving several grammars receives the one being read, since node names can
+    /// differ between them.
+    fn call_query(&self, language: LanguageId) -> Option<&'static str> {
+        let _ = language;
+        None
+    }
+
+    /// Whether a bare name inside a method may mean a member of the enclosing type.
+    ///
+    /// Kotlin, Swift, Java and C++ let `size()` mean `this.size()`; Rust, Python and
+    /// JavaScript do not — there a bare name is a free function, and reading it as a
+    /// member would turn `fn parse() { parse() }` delegation into false recursion.
+    fn implicit_receiver(&self) -> bool {
+        false
+    }
+
+    /// The lenses this mapping does not read at all.
+    ///
+    /// A lens with no facets on a node normally means the index looked and found nothing.
+    /// A mapping that never looks — a language mapped for containment and visibility
+    /// only — names those lenses here, so the view can say "not read" (`?`) rather than
+    /// "none" (`—`). Empty, the default, means every lens is read.
+    fn unread_lenses(&self) -> &'static [Lens] {
+        &[]
+    }
+
     /// The edge kinds this language's semantic tier can resolve. May be empty.
     fn semantic_capabilities(&self) -> &'static [EdgeKind];
 
     /// Every facet subtype this language can emit, for query-term suggestions.
     fn subtypes(&self) -> &'static [(Lens, FacetSubtype)];
+}
+
+/// The head of a construct that names its body with a `body` field.
+///
+/// Shared rather than defaulted-in-place so a language that overrides
+/// [`SeamLanguage::header`] for one construct can still fall back to it for the rest.
+///
+/// Where the cut lands is decided by the *line*, not by the grammar, because grammars
+/// disagree about where a body begins and readers do not. Rust's `body` is the `{` that
+/// closes the signature's line; Python's is the first statement, a line below the `:`.
+/// Cutting at the body would therefore give Rust its whole signature and Python its
+/// signature plus a stolen line of code. So a body that opens its own line — nothing but
+/// whitespace before it — cuts at the end of the line above instead.
+#[must_use]
+pub(crate) fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+    let span = node.span();
+    // A body that starts at or before the construct does is not a body we can cut at;
+    // the whole extent is the honest answer rather than an inverted range.
+    let Some(body) = node
+        .child_span("body")
+        .filter(|body| body.start > span.start)
+    else {
+        return ctx.range(span);
+    };
+    let end = line_opening_body(ctx.text, span.start.0, body.start.0).unwrap_or(body.start.0);
+    ctx.range(karet_core::Span {
+        start: span.start,
+        end: karet_core::BytePos(end),
+    })
+}
+
+/// The end of the line above `body`, when `body` opens a line of its own.
+///
+/// `None` when the body shares its line with the signature, when it is the construct's
+/// own first line, or when the line above would leave nothing of the head at all.
+fn line_opening_body(text: &str, start: usize, body: usize) -> Option<usize> {
+    let before = text.get(start..body)?;
+    let newline = start.checked_add(before.rfind('\n')?)?;
+    if !text.get(newline.checked_add(1)?..body)?.trim().is_empty() {
+        return None;
+    }
+    (newline > start).then_some(newline)
+}
+
+/// Every language mapping compiled into this build.
+///
+/// The one place the feature-gated set is written down. [`for_language`] dispatches
+/// through it, and so does subtype lookup — which is what lets a facet subtype
+/// deserialize back to the `&'static str` it was written from, rather than allocating.
+#[must_use]
+#[allow(
+    clippy::vec_init_then_push,
+    reason = "each push is feature-gated, so there is no literal to build this from"
+)]
+pub fn registered() -> Vec<&'static dyn SeamLanguage> {
+    let mut out: Vec<&'static dyn SeamLanguage> = Vec::new();
+    #[cfg(feature = "lang-rust")]
+    out.push(rust::mapping());
+    #[cfg(feature = "lang-python")]
+    out.push(python::mapping());
+    #[cfg(feature = "lang-javascript")]
+    out.push(typescript::mapping());
+    #[cfg(feature = "lang-swift")]
+    out.push(swift::mapping());
+    #[cfg(feature = "lang-kotlin")]
+    out.push(kotlin::mapping());
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    out.push(cfamily::mapping());
+    #[cfg(feature = "lang-java")]
+    out.push(java::mapping());
+    out
+}
+
+/// Every `(lens, subtype)` pair any registered language names.
+///
+/// Subtypes are open — a language names its own — so the only authority on which ones
+/// exist is the set of mappings actually compiled in.
+#[must_use]
+pub fn all_subtypes() -> Vec<(Lens, FacetSubtype)> {
+    let mut out: Vec<(Lens, FacetSubtype)> = registered()
+        .iter()
+        .flat_map(|language| language.subtypes().iter().copied())
+        .collect();
+    out.sort_by_key(|(lens, subtype)| (lens.index(), subtype.name()));
+    out.dedup();
+    out
 }
 
 /// Look up the mapping for a grammar, or `None` when the language has none.
@@ -190,6 +466,32 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
     {
         return Some(python::mapping());
     }
+    #[cfg(feature = "lang-javascript")]
+    if typescript::language_ids().contains(&language) {
+        return Some(typescript::mapping());
+    }
+    #[cfg(feature = "lang-swift")]
+    if let Some(swift) = swift::language_id()
+        && swift == language
+    {
+        return Some(swift::mapping());
+    }
+    #[cfg(feature = "lang-kotlin")]
+    if let Some(kotlin) = kotlin::language_id()
+        && kotlin == language
+    {
+        return Some(kotlin::mapping());
+    }
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    if cfamily::language_ids().contains(&language) {
+        return Some(cfamily::mapping());
+    }
+    #[cfg(feature = "lang-java")]
+    if let Some(java) = java::language_id()
+        && java == language
+    {
+        return Some(java::mapping());
+    }
     let _ = language;
     None
 }
@@ -197,7 +499,6 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::LineIndex;
 
     fn attribute(name: &str, arguments: Option<&str>) -> Attribute {
         Attribute {
@@ -227,6 +528,7 @@ mod tests {
             lines: &lines,
             attributes: &attributes,
             container: None,
+            modules: &[],
             type_parameters: &[],
         };
         assert_eq!(ctx.attribute("cfg").map(Attribute::args), Some("unix"));
@@ -236,8 +538,110 @@ mod tests {
     }
 
     #[test]
+    fn an_owner_candidate_carries_how_it_wants_to_be_attached() {
+        assert_eq!(
+            Owner::nested("Widget"),
+            Owner {
+                name: "Widget".to_owned(),
+                dissolve: false,
+                rename: None,
+                in_module: None,
+            }
+        );
+        let dissolved = Owner::dissolved("Widget");
+        assert!(dissolved.dissolve);
+        // Naming is per candidate: which owner wins changes what the node should read as.
+        let renamed = Owner::nested("Widget").renamed("impl Display", "{impl Display}");
+        assert_eq!(
+            renamed.rename,
+            Some(("impl Display".to_owned(), "{impl Display}".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_language_owns_nothing_elsewhere_by_default() {
+        // The common case, and the whole of Python: constructs are written where they
+        // belong, so the regroup pass has nothing to do.
+        struct Bare;
+        impl SeamLanguage for Bare {
+            fn language(&self) -> Option<LanguageId> {
+                None
+            }
+            fn classify(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Option<Classified> {
+                None
+            }
+            fn facets_of(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Vec<Facet> {
+                Vec::new()
+            }
+            fn interior_facets(&self, _: &WalkNode<'_>, _: &FacetContext<'_>) -> Vec<Facet> {
+                Vec::new()
+            }
+            fn is_container(&self, _: &WalkNode<'_>) -> bool {
+                false
+            }
+            fn semantic_capabilities(&self) -> &'static [EdgeKind] {
+                &[]
+            }
+            fn subtypes(&self) -> &'static [(Lens, FacetSubtype)] {
+                &[]
+            }
+        }
+        // Reached through the trait object, since that is how the extractor sees it.
+        let language: &dyn SeamLanguage = &Bare;
+        assert_eq!(language.subtypes().len(), 0);
+        // A mapping with no compiled grammar serves none, rather than a sentinel id.
+        assert!(language.language_ids().is_empty());
+    }
+
+    #[test]
+    fn a_body_on_its_own_line_leaves_that_line_out_of_the_head() {
+        // `fn f()\n{` — the brace line carries nothing a reader wants.
+        assert_eq!(line_opening_body("fn f()\n{}", 0, 7), Some(6));
+        // `fn f() {` — the brace shares the signature's line, so there is nothing to cut.
+        assert_eq!(line_opening_body("fn f() {}", 0, 7), None);
+        // A body starting on the construct's own first line has no line above to end at.
+        assert_eq!(line_opening_body("{}", 0, 0), None);
+    }
+
+    #[test]
     fn an_unmapped_language_resolves_to_nothing() {
-        // Language id 0 is never a mapped grammar; the caller degrades rather than failing.
-        assert!(for_language(LanguageId(u16::MAX)).is_none());
+        // Grammars the parse host compiles but no seam mapping reads; the caller
+        // degrades rather than failing. Each is checked only when this build has it.
+        let unmapped: Vec<LanguageId> = ["json", "toml", "markdown", "bash", "go"]
+            .into_iter()
+            .filter_map(karet_treesitter::language_id_from_injection_name)
+            .collect();
+        for language in unmapped {
+            assert!(for_language(language).is_none(), "{language:?}");
+        }
+    }
+
+    #[test]
+    fn every_registered_mapping_is_reachable_by_its_own_language_id() {
+        // `registered` and `for_language` must agree: a mapping listed in one and
+        // unreachable through the other would classify nothing while looking present.
+        for mapping in registered() {
+            let found = mapping.language().and_then(for_language);
+            assert!(
+                found.is_some(),
+                "a registered mapping was not reachable by its language id"
+            );
+        }
+    }
+
+    #[test]
+    fn subtypes_are_deduplicated_and_grouped_by_lens() {
+        let all = all_subtypes();
+        let mut sorted = all.clone();
+        sorted.sort_by_key(|(lens, subtype)| (lens.index(), subtype.name()));
+        assert_eq!(all, sorted, "subtypes come back in a stable order");
+
+        let mut unique = all.clone();
+        unique.dedup();
+        assert_eq!(
+            all.len(),
+            unique.len(),
+            "two languages naming the same subtype list it once"
+        );
     }
 }

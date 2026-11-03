@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Settings",
-  "description": "The full, validated karet configuration. Load it with\n[`crate::config::load`]; the sane baseline is [`Settings::default`].",
+  "description": "The full, validated karet configuration. Load it with\n[`crate::config::load_report`]; the sane baseline is [`Settings::default`].",
   "type": "object",
   "properties": {
     "debug": {
@@ -52,6 +52,14 @@
       "description": "Spell-checking of prose and selected source-code tokens.",
       "$ref": "#/$defs/Spellcheck"
     },
+    "tasks": {
+      "description": "Named shell commands the Run Task picker offers, keyed by label.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Task"
+      },
+      "default": {}
+    },
     "toml": {
       "description": "TOML-specific behaviour.",
       "$ref": "#/$defs/Toml"
@@ -87,8 +95,13 @@
       "description": "`git.aiCommit.*` — generate a commit message from the staged diff.",
       "type": "object",
       "properties": {
+        "agent": {
+          "description": "Which agent CLI drafts the message.",
+          "$ref": "#/$defs/AiCommitAgent",
+          "default": "claude"
+        },
         "binary": {
-          "description": "Path to the `claude` binary. `null` searches `PATH`.",
+          "description": "Path to the selected agent's executable. `null` searches `PATH` for\n[`AiCommitAgent::default_binary`]. This overrides whichever agent is\nselected, so it is cleared when the agent changes.",
           "type": [
             "string",
             "null"
@@ -96,7 +109,7 @@
           "default": null
         },
         "effort": {
-          "description": "Thinking effort for the model. `null` leaves the model's default; ignored when\n`model` is `\"auto\"` (which chooses its own effort).",
+          "description": "Thinking effort for the model.\n\n`null` defers: to the model's own default for a pinned model, and to the\nsize heuristic's choice under `\"auto\"` (which escalates effort alongside\nthe model for a large diff). A value set here outranks both.",
           "anyOf": [
             {
               "$ref": "#/$defs/AiCommitEffort"
@@ -108,12 +121,12 @@
           "default": null
         },
         "enabled": {
-          "description": "Allow generating commit messages from the staged diff (needs the `claude`\nCLI on `PATH`). When off, the generate action reports that it is disabled.",
+          "description": "Allow generating commit messages from the staged diff. When off, the\ngenerate action reports that it is disabled rather than running.",
           "type": "boolean",
           "default": true
         },
         "instructions": {
-          "description": "Extra natural-language instructions appended to the prompt (e.g. \"mention the\nuser-visible effect\", \"reference the ticket in the branch name\").",
+          "description": "Extra natural-language instructions appended to the prompt (e.g. \"mention\nthe user-visible effect\", \"reference the ticket in the branch name\").",
           "type": "array",
           "default": [],
           "items": {
@@ -121,16 +134,43 @@
           }
         },
         "model": {
-          "description": "The model to run: `\"auto\"` picks a cheap model for small diffs and a stronger\none for large or many-file diffs; any other value pins that model name\n(e.g. `\"haiku\"`, `\"sonnet\"`, or a full model id).",
+          "description": "The model to run: `\"auto\"` picks a cheap model for small diffs and a\nstronger one for large or many-file diffs; any other value pins that\nmodel name (e.g. `\"haiku\"`, `\"sonnet\"`, or a full model id).",
           "type": "string",
           "default": "auto"
+        },
+        "timeoutMs": {
+          "description": "How long one generation may run, in milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 60000,
+          "minimum": 0
         }
       },
       "additionalProperties": false
     },
-    "AiCommitEffort": {
-      "description": "How much thinking the commit-message model spends (`git.aiCommit.effort`).",
+    "AiCommitAgent": {
+      "description": "The local agent CLI that drafts the message.\n\nEach is driven through `agent-text`'s adapter for it, over pipes to the\ninstalled executable — karet never talks to a model provider directly.",
       "oneOf": [
+        {
+          "description": "Anthropic's `claude` CLI (Claude Code).",
+          "type": "string",
+          "const": "claude"
+        },
+        {
+          "description": "OpenAI's `codex` CLI. Requires `codex` 0.146.0 or newer.",
+          "type": "string",
+          "const": "codex"
+        }
+      ]
+    },
+    "AiCommitEffort": {
+      "description": "How much thinking the commit-message model spends (`git.aiCommit.effort`).\n\nMirrors `agent_text::ReasoningEffort`. Not every value is legal on every\nagent — see [`AiCommitAgent::supports_effort`].",
+      "oneOf": [
+        {
+          "description": "The least the model will do. Not supported by `claude`.",
+          "type": "string",
+          "const": "minimal"
+        },
         {
           "description": "Fastest, cheapest.",
           "type": "string",
@@ -142,9 +182,39 @@
           "const": "medium"
         },
         {
-          "description": "Slowest, most thorough.",
+          "description": "Slower, more thorough.",
           "type": "string",
           "const": "high"
+        },
+        {
+          "description": "Slower still. Spelled `xhigh`, matching the agents' own vocabulary —\n`camelCase` would render this variant `xHigh`, which no agent accepts.",
+          "type": "string",
+          "const": "xhigh"
+        },
+        {
+          "description": "The most the model will do. Not supported by `codex`.",
+          "type": "string",
+          "const": "max"
+        }
+      ]
+    },
+    "AutoClosing": {
+      "description": "When typing an opening bracket or quote inserts its closing partner.",
+      "oneOf": [
+        {
+          "description": "Whenever the opener is typed, wherever the caret is.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Only where the language's pairs say so: before whitespace, the end of\nthe line or closing punctuation, and, for quotes, outside strings and\ncomments and not straight after a word.",
+          "type": "string",
+          "const": "languageDefined"
+        },
+        {
+          "description": "Never.",
+          "type": "string",
+          "const": "never"
         }
       ]
     },
@@ -168,12 +238,54 @@
         }
       ]
     },
-    "ColorHighlight": {
-      "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
+    "BracketPairColorization": {
+      "description": "`editor.bracketPairColorization.*` — colouring brackets by nesting depth.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)\nwith their own color, on the visible lines of the editor.",
+          "description": "Colour each `()`, `[]` and `{}` pair by its nesting depth, cycling\nthrough three of the theme's colours. Off by default: the colours\ncompete with syntax highlighting for attention.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuiltinMatcher": {
+      "description": "The built-in problem matchers.",
+      "oneOf": [
+        {
+          "description": "`rustc` and `cargo` (clippy included): an `error[E0308]: message` or\n`warning: message` heading followed by its ` --> file:line:column` line.",
+          "type": "string",
+          "const": "$rustc"
+        },
+        {
+          "description": "GCC and Clang: `file:line:column: error: message`.",
+          "type": "string",
+          "const": "$gcc"
+        },
+        {
+          "description": "The TypeScript compiler, plain or `--pretty`:\n`file(line,column): error TS2322: message` or\n`file:line:column - error TS2322: message`.",
+          "type": "string",
+          "const": "$tsc"
+        },
+        {
+          "description": "The Go toolchain: `file.go:line:column: message`, column optional.",
+          "type": "string",
+          "const": "$go"
+        },
+        {
+          "description": "ESLint's `compact` formatter:\n`file: line 3, col 7, Error - message (rule)`.",
+          "type": "string",
+          "const": "$eslint-compact"
+        }
+      ]
+    },
+    "ColorHighlight": {
+      "description": "`editor.colorHighlight.*` — inline swatches on color literals and on the\ncolours a language server reports.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),\nand the colours the file's language server reports, with their own\ncolor, on the visible lines of the editor.",
           "type": "boolean",
           "default": true
         }
@@ -321,12 +433,59 @@
       },
       "additionalProperties": false
     },
+    "DiagnosticSeverity": {
+      "description": "A diagnostic severity, as a settings threshold.",
+      "oneOf": [
+        {
+          "description": "Errors only.",
+          "type": "string",
+          "const": "error"
+        },
+        {
+          "description": "Warnings and errors.",
+          "type": "string",
+          "const": "warning"
+        },
+        {
+          "description": "Information, warnings and errors.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "Every severity. The default.",
+          "type": "string",
+          "const": "hint"
+        }
+      ]
+    },
     "Editor": {
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
       "properties": {
+        "autoClosingBrackets": {
+          "description": "When an opening bracket inserts its closing bracket. Typing over a\ncloser it inserted steps past it, and Backspace between an empty pair\ndeletes both halves.",
+          "$ref": "#/$defs/AutoClosing",
+          "default": "languageDefined"
+        },
+        "autoClosingQuotes": {
+          "description": "When an opening quote inserts its closing quote (the language decides\nwhich quotes pair: Rust's `'` does not).",
+          "$ref": "#/$defs/AutoClosing",
+          "default": "languageDefined"
+        },
+        "bracketPairColorization": {
+          "description": "`editor.bracketPairColorization.*` — brackets coloured by nesting depth.",
+          "$ref": "#/$defs/BracketPairColorization",
+          "default": {
+            "enabled": false
+          }
+        },
+        "codeLens": {
+          "description": "Show the language server's code lenses on rows above the code they describe.",
+          "type": "boolean",
+          "default": true
+        },
         "colorHighlight": {
-          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
+          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the\ncolours a language server reports.",
           "$ref": "#/$defs/ColorHighlight",
           "default": {
             "enabled": true
@@ -348,6 +507,19 @@
         "formatOnSave": {
           "description": "Run the configured formatter on save.",
           "type": "boolean",
+          "default": true
+        },
+        "formatOnSaveTimeout": {
+          "description": "Milliseconds a save waits on a language-server formatter before it is\nwritten unformatted (`1..=30000`).",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "maximum": 30000,
+          "minimum": 1
+        },
+        "formatOnType": {
+          "description": "Apply the language server's on-type formatting\n(`textDocument/onTypeFormatting`) after typing one of its trigger\ncharacters. Off by default, as in VS Code.",
+          "type": "boolean",
           "default": false
         },
         "graphicalCursor": {
@@ -358,11 +530,41 @@
           ],
           "default": null
         },
+        "guides": {
+          "description": "`editor.guides.*` — vertical guides at each indentation level.",
+          "$ref": "#/$defs/Guides",
+          "default": {
+            "highlightActiveIndentation": true,
+            "indentation": true
+          }
+        },
         "hover": {
           "description": "The hover popup (documentation + diagnostics at the caret).",
           "$ref": "#/$defs/HoverPopup",
           "default": {
             "enabled": true
+          }
+        },
+        "inlayHints": {
+          "description": "`editor.inlayHints.*` — inferred types and parameter names drawn inline.",
+          "$ref": "#/$defs/InlayHints",
+          "default": {
+            "enabled": true
+          }
+        },
+        "inlineCompletion": {
+          "description": "`editor.inlineCompletion.*` — ghost text a language server (such as\nCopilot) proposes at the caret.",
+          "$ref": "#/$defs/InlineCompletion",
+          "default": {
+            "enabled": true
+          }
+        },
+        "inlineDiagnostics": {
+          "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at\nthe end of their line.",
+          "$ref": "#/$defs/InlineDiagnostics",
+          "default": {
+            "minSeverity": "hint",
+            "mode": "currentLine"
           }
         },
         "insertFinalNewline": {
@@ -375,18 +577,36 @@
           "type": "boolean",
           "default": true
         },
+        "keymap": {
+          "description": "The editing model of a code tab: `\"default\"` types at the caret, as in\nVS Code; `\"vim\"` and `\"helix\"` add a modal Normal/Insert layer with\nthat editor's motions, operators, text objects, registers and macros.",
+          "$ref": "#/$defs/KeymapPreset",
+          "default": "default"
+        },
         "lineNumbers": {
           "description": "How the line-number gutter is numbered.",
           "$ref": "#/$defs/LineNumbers",
           "default": "on"
+        },
+        "middleClickPaste": {
+          "description": "Paste the primary selection at a middle click in the text: `null` turns\nit on for Linux, where the primary selection is a platform convention,\nand off elsewhere.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
         },
         "prettyErrors": {
           "description": "Re-render TypeScript diagnostics as markdown (quoted types lifted into\nhighlighted code blocks) wherever rich rendering is available.",
           "type": "boolean",
           "default": true
         },
+        "renderWhitespace": {
+          "description": "Which whitespace characters are drawn visibly (`·` for a space, `→`\nfor a tab).",
+          "$ref": "#/$defs/RenderWhitespace",
+          "default": "none"
+        },
         "rulers": {
-          "description": "Columns to draw vertical rulers at (empty = none).",
+          "description": "Columns to draw vertical rulers after (empty = none).",
           "type": "array",
           "default": [],
           "items": {
@@ -397,7 +617,7 @@
           }
         },
         "scrollOff": {
-          "description": "Keep at least this many lines visible above and below the caret.",
+          "description": "Keep at least this many lines visible above and below the caret when\nthe keyboard moves it (capped to what the viewport can spare; a click\nnever scrolls).",
           "type": "integer",
           "format": "uint16",
           "default": 3,
@@ -416,6 +636,13 @@
               "XXX",
               "BUG"
             ]
+          }
+        },
+        "semanticHighlighting": {
+          "description": "`editor.semanticHighlighting.*` — semantic tokens over the syntax colours.",
+          "$ref": "#/$defs/SemanticHighlighting",
+          "default": {
+            "enabled": true
           }
         },
         "stickyScroll": {
@@ -437,12 +664,29 @@
           "default": true
         },
         "wordWrap": {
-          "description": "Override file-type wrapping: `null` uses the file default, `true` wraps,\nand `false` uses horizontal overflow.",
-          "type": [
-            "boolean",
-            "null"
+          "description": "Override file-type wrapping: `null` uses the file default, `true` or\n`\"on\"` wraps at the viewport, `false` or `\"off\"` uses horizontal\noverflow, and `\"wordWrapColumn\"` or `\"bounded\"` wrap at\n`wordWrapColumn` (or the viewport, when it is narrower).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WordWrap"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
+        },
+        "wordWrapColumn": {
+          "description": "The column `\"wordWrapColumn\"` and `\"bounded\"` wrapping break at; `0`\nwraps at the viewport.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 80,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "wrappingIndent": {
+          "description": "How the continuation rows of a soft-wrapped line are indented.",
+          "$ref": "#/$defs/WrappingIndent",
+          "default": "same"
         }
       },
       "additionalProperties": false,
@@ -456,6 +700,30 @@
       "description": "A partial per-language patch for [`Editor`].\n\nEvery field is optional: omitted fields inherit the merged global editor value.\nArrays replace the global value when present, and nested objects merge field by\nfield through their own partial patch types.",
       "type": "object",
       "properties": {
+        "autoClosingBrackets": {
+          "description": "Override when brackets auto-close.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoClosing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "autoClosingQuotes": {
+          "description": "Override when quotes auto-close.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoClosing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "completion": {
           "description": "Partially override completion behavior.",
           "anyOf": [
@@ -484,12 +752,44 @@
           ],
           "default": null
         },
+        "formatOnType": {
+          "description": "Override format-on-type.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
         "graphicalCursor": {
           "description": "Override graphical-cursor behavior; explicit `null` restores auto mode.",
           "type": [
             "boolean",
             "null"
           ]
+        },
+        "inlineCompletion": {
+          "description": "Partially override inline completion (ghost text).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineCompletionOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "inlineDiagnostics": {
+          "description": "Partially override which diagnostics show their message inline.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineDiagnosticsOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "insertFinalNewline": {
           "description": "Override final-newline insertion.",
@@ -585,13 +885,60 @@
         },
         "wordWrap": {
           "description": "Override wrapping; explicit `null` restores the file-type default.",
-          "type": [
-            "boolean",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WordWrap"
+            },
+            {
+              "type": "null"
+            }
           ]
+        },
+        "wordWrapColumn": {
+          "description": "Override the column `\"wordWrapColumn\"` and `\"bounded\"` wrap at.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "default": null,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "wrappingIndent": {
+          "description": "Override how wrapped continuation rows are indented.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WrappingIndent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
+    },
+    "Encoding": {
+      "description": "Text encoding used when saving. karet edits UTF-8 only; the choice is\nwhether a byte-order mark is written. Spelled as EditorConfig's `charset`.",
+      "oneOf": [
+        {
+          "description": "Preserve the encoding the file was opened with (UTF-8 without a BOM for\na new file).",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "UTF-8 without a byte-order mark: one an existing file carries is dropped\non save.",
+          "type": "string",
+          "const": "utf-8"
+        },
+        {
+          "description": "UTF-8 with a leading byte-order mark.",
+          "type": "string",
+          "const": "utf-8-bom"
+        }
+      ]
     },
     "Eol": {
       "description": "Line-ending style used when saving.",
@@ -647,9 +994,9 @@
           "default": true
         },
         "encoding": {
-          "description": "Default text encoding label (informational; karet edits UTF-8).",
-          "type": "string",
-          "default": "utf-8"
+          "description": "Text encoding used when saving. An `.editorconfig` `charset` overrides it.",
+          "$ref": "#/$defs/Encoding",
+          "default": "auto"
         },
         "eol": {
           "description": "Line-ending style used when saving.",
@@ -663,6 +1010,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "persistentUndo": {
+          "description": "Keep undo history across restarts: it is written next to the\ncrash-recovery swaps when a file is saved or closed, and restored when\nthe file is reopened unchanged.",
+          "type": "boolean",
+          "default": false
+        },
+        "undoLimit": {
+          "description": "The most undo steps kept per buffer; the oldest are forgotten first.\n`0` keeps every step (no cap).",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000,
+          "minimum": 0
         },
         "watcherExclude": {
           "description": "Glob patterns excluded from the filesystem watcher.",
@@ -683,11 +1042,13 @@
           "description": "AI-generated commit messages from the staged diff.",
           "$ref": "#/$defs/AiCommit",
           "default": {
+            "agent": "claude",
             "binary": null,
             "effort": null,
             "enabled": true,
             "instructions": [],
-            "model": "auto"
+            "model": "auto",
+            "timeoutMs": 60000
           }
         },
         "blame": {
@@ -707,6 +1068,23 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Guides": {
+      "description": "`editor.guides.*` — vertical guides at each indentation level.",
+      "type": "object",
+      "properties": {
+        "highlightActiveIndentation": {
+          "description": "Draw the guide of the block holding the caret in a brighter colour.",
+          "type": "boolean",
+          "default": true
+        },
+        "indentation": {
+          "description": "Draw a guide at each indentation level, every `tabSize` columns of a\nline's leading whitespace.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -740,6 +1118,149 @@
           "description": "Plain ASCII (maximally portable).",
           "type": "string",
           "const": "ascii"
+        }
+      ]
+    },
+    "InlayHints": {
+      "description": "`editor.inlayHints.*` — the inferred types and parameter names a language\nserver supplies, drawn between characters.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether inlay hints are drawn: `true`/`\"on\"` and `false`/`\"off\"`, or\n`\"onUnlessPressed\"`/`\"offUnlessPressed\"` to show them, or hide them,\nexcept for a moment after the Toggle Inlay Hints key.",
+          "$ref": "#/$defs/InlayHintsEnabled",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlayHintsEnabled": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "on",
+            "off",
+            "onUnlessPressed",
+            "offUnlessPressed"
+          ]
+        }
+      ]
+    },
+    "InlineCompletion": {
+      "description": "`editor.inlineCompletion.*` — ghost text proposed at the caret by a\nlanguage server offering LSP 3.18 inline completions (such as\n`copilot-language-server`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing\nis shown unless a server attached to the document offers it, so this\ncosts nothing where none does; switch it off per language with\n`\"[markdown]\": { \"inlineCompletion\": { \"enabled\": false } }`.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlineCompletionOverride": {
+      "description": "A partial per-language patch for `editor.inlineCompletion`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Override whether ghost text is asked for.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlineDiagnostics": {
+      "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at the\nend of their line.",
+      "type": "object",
+      "properties": {
+        "minSeverity": {
+          "description": "The least severe diagnostic whose message is shown: `\"error\"`,\n`\"warning\"`, `\"info\"` or `\"hint\"`.",
+          "$ref": "#/$defs/DiagnosticSeverity",
+          "default": "hint"
+        },
+        "mode": {
+          "description": "Which lines show their diagnostics' messages: `\"off\"`, `\"currentLine\"`\n(the lines a caret is on), or `\"all\"`.",
+          "$ref": "#/$defs/InlineDiagnosticsMode",
+          "default": "currentLine"
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlineDiagnosticsMode": {
+      "description": "Which lines show their diagnostics' messages\n(`editor.inlineDiagnostics.mode`).",
+      "oneOf": [
+        {
+          "description": "No line does.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Only the lines a caret is on. The default: the message is there when\nthe caret is, without filling every line of a broken file with errors.",
+          "type": "string",
+          "const": "currentLine"
+        },
+        {
+          "description": "Every line a diagnostic starts on.",
+          "type": "string",
+          "const": "all"
+        }
+      ]
+    },
+    "InlineDiagnosticsOverride": {
+      "description": "A partial per-language patch for [`InlineDiagnostics`].",
+      "type": "object",
+      "properties": {
+        "minSeverity": {
+          "description": "Override the least severe diagnostic whose message is shown.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagnosticSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mode": {
+          "description": "Override which lines show their diagnostics' messages.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineDiagnosticsMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeymapPreset": {
+      "description": "`editor.keymap` — which editing model a code tab uses.",
+      "oneOf": [
+        {
+          "description": "Modeless editing: a printable key types at the caret.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Vim's modal editing: Normal, Insert and Visual modes, operators over\nmotions and text objects, registers, macros and `.` repeat.",
+          "type": "string",
+          "const": "vim"
+        },
+        {
+          "description": "Helix's selection-first modal editing: a motion selects, then an\naction applies to the selection.",
+          "type": "string",
+          "const": "helix"
         }
       ]
     },
@@ -796,7 +1317,7 @@
           "const": "on"
         },
         {
-          "description": "No line-number gutter.",
+          "description": "No numbers; a 2-cell gutter keeps the git, diagnostic and fold markers.",
           "type": "string",
           "const": "off"
         },
@@ -830,7 +1351,7 @@
           "default": "prompt"
         },
         "servers": {
-          "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.",
+          "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.\n\nAn entry with no `command` keeps karet's own launch and only adds its\n`settings` and `initializationOptions` -- keyed by a language, to the\nlanguage's server; keyed by a provider id (`\"rust-analyzer\"`,\n`\"pyright\"`), to that provider wherever it runs.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/LspServer"
@@ -861,7 +1382,7 @@
           "default": null
         },
         "semanticTokens": {
-          "description": "Explicit semantic-token owner.",
+          "description": "The provider whose semantic tokens are laid over this language's syntax\ncolours (`editor.semanticHighlighting`). Unset, the primary server\nowns them; a provider not serving the language leaves it without.",
           "type": [
             "string",
             "null"
@@ -892,7 +1413,7 @@
           }
         },
         "command": {
-          "description": "The server executable, looked up on `PATH` (or an absolute path).",
+          "description": "The server executable, looked up on `PATH` (or an absolute path).\nEmpty keeps karet's own launch.",
           "type": "string",
           "default": ""
         },
@@ -900,6 +1421,14 @@
           "description": "Whether this provider participates in resolution.",
           "type": "boolean",
           "default": true
+        },
+        "initializationOptions": {
+          "description": "Sent verbatim as `initializationOptions` with `initialize`. Read only\nat the handshake, so a reload that changes it restarts the server.",
+          "default": null
+        },
+        "settings": {
+          "description": "The server's settings, keyed by section the way VS Code writes them\n(`{ \"rust-analyzer\": { \"cargo\": { \"features\": \"all\" } } }`). Answered to\nthe server's `workspace/configuration` requests and pushed with\n`workspace/didChangeConfiguration` at startup and on every reload that\nchanges them -- without restarting the server.",
+          "default": null
         }
       },
       "additionalProperties": false
@@ -1018,6 +1547,31 @@
       },
       "additionalProperties": false
     },
+    "MatcherSeverity": {
+      "description": "A problem's severity as a matcher names it.",
+      "oneOf": [
+        {
+          "description": "An error.",
+          "type": "string",
+          "const": "error"
+        },
+        {
+          "description": "A warning.",
+          "type": "string",
+          "const": "warning"
+        },
+        {
+          "description": "Information.",
+          "type": "string",
+          "const": "info"
+        },
+        {
+          "description": "A hint.",
+          "type": "string",
+          "const": "hint"
+        }
+      ]
+    },
     "NotebookKernel": {
       "description": "`notebook.kernel.*` — the kernel lifecycle behind Run All / Run Cell.",
       "type": "object",
@@ -1043,6 +1597,122 @@
         }
       },
       "additionalProperties": false
+    },
+    "PatternMatcher": {
+      "description": "A matcher of your own. `regexp` is tried on every output line (after the\nterminal has interpreted colours and cursor movement, so escape codes never\nreach it); a line it matches is a problem, read from its capture groups.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The capture group holding a diagnostic code such as `E0308`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "column": {
+          "description": "The capture group holding the 1-based column; unset puts the problem at\nthe start of its line.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "defaultSeverity": {
+          "description": "The severity of a problem whose own severity is not captured.",
+          "$ref": "#/$defs/MatcherSeverity",
+          "default": "error"
+        },
+        "file": {
+          "description": "The capture group holding the file: absolute, or relative to the task's\nworking directory.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1,
+          "minimum": 0
+        },
+        "line": {
+          "description": "The capture group holding the 1-based line.",
+          "type": "integer",
+          "format": "uint",
+          "default": 2,
+          "minimum": 0
+        },
+        "message": {
+          "description": "The capture group holding the message; unset uses the whole line.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "regexp": {
+          "description": "The regular expression (Rust `regex` syntax).",
+          "type": "string"
+        },
+        "severity": {
+          "description": "The capture group holding the severity (`error`, `warning`, `info`,\n`note`, `hint`, any case); unset, or a word it does not know, uses\n`defaultSeverity`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "regexp"
+      ]
+    },
+    "ProblemMatcher": {
+      "description": "A problem matcher: a built-in by name, or a regular expression of your own.",
+      "anyOf": [
+        {
+          "description": "A built-in matcher, named with a leading `$`.",
+          "$ref": "#/$defs/BuiltinMatcher"
+        },
+        {
+          "description": "A matcher of your own: one regular expression tried on every output line.",
+          "$ref": "#/$defs/PatternMatcher"
+        }
+      ]
+    },
+    "RenderWhitespace": {
+      "description": "Which whitespace characters are drawn visibly (`editor.renderWhitespace`):\na space as `·`, a tab as `→`.",
+      "oneOf": [
+        {
+          "description": "None: whitespace stays blank.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Every whitespace character except a single space between words.",
+          "type": "string",
+          "const": "boundary"
+        },
+        {
+          "description": "Only whitespace inside a selection.",
+          "type": "string",
+          "const": "selection"
+        },
+        {
+          "description": "Only whitespace at the end of a line.",
+          "type": "string",
+          "const": "trailing"
+        },
+        {
+          "description": "Every whitespace character.",
+          "type": "string",
+          "const": "all"
+        }
+      ]
     },
     "Seam": {
       "description": "`seam.*` — the Seam view.",
@@ -1206,6 +1876,18 @@
       },
       "additionalProperties": false
     },
+    "SemanticHighlighting": {
+      "description": "`editor.semanticHighlighting.*` — the language server's semantic tokens\nlaid over the tree-sitter highlighting.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Ask the language's semantic-token server (its primary, unless\n`lsp.languages.<id>.semanticTokens` names another) for semantic tokens\nand recolour what it classifies -- macros, mutable bindings,\nunresolved names -- through the theme's `semanticTokenColors`.\nTree-sitter stays the base layer: comments and strings keep its\ncolours, and a server that offers no semantic tokens changes nothing.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Spellcheck": {
       "description": "`spellcheck.*` — spell-checking of prose and selected source-code tokens.",
       "type": "object",
@@ -1283,6 +1965,39 @@
         }
       ]
     },
+    "Task": {
+      "description": "One `tasks` entry: a command line and how to read its output.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "The command line, run by the platform shell: `/bin/sh -c` on Unix,\n`cmd /C` on Windows.",
+          "type": "string",
+          "default": ""
+        },
+        "cwd": {
+          "description": "The working directory: absolute, or relative to the workspace root.\nEmpty runs in the workspace root.",
+          "type": "string",
+          "default": ""
+        },
+        "env": {
+          "description": "Environment variables set for the command, over the editor's own.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "problemMatcher": {
+          "description": "The matchers that read the command's output for problems, which the\nProblems panel lists until the task runs again. Empty matches nothing.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProblemMatcher"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Toml": {
       "description": "`toml.*` — TOML-specific behaviour.",
       "type": "object",
@@ -1312,6 +2027,23 @@
       },
       "additionalProperties": false
     },
+    "WordWrap": {
+      "description": "How long lines are laid out: `off` scrolls horizontally, `on` wraps at the viewport, `wordWrapColumn` and `bounded` wrap at `wordWrapColumn` (or the viewport, when narrower). `true` and `false` mean `on` and `off`.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "on",
+            "wordWrapColumn",
+            "bounded"
+          ]
+        }
+      ]
+    },
     "Workbench": {
       "description": "`workbench.*` — UI shell appearance.",
       "type": "object",
@@ -1326,6 +2058,11 @@
           "$ref": "#/$defs/IconStyleSetting",
           "default": "nerdFont"
         },
+        "restoreLayout": {
+          "description": "Reopen a workspace's tabs, splits, and cursors as the last clean exit\nleft them, when karet starts on it without a file to open.",
+          "type": "boolean",
+          "default": true
+        },
         "startupPanel": {
           "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",
           "$ref": "#/$defs/StartupPanel",
@@ -1333,6 +2070,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "WrappingIndent": {
+      "description": "How the continuation rows of a soft-wrapped line are indented\n(`editor.wrappingIndent`). Capped at half the wrap width, so a deeply\nindented line in a narrow pane keeps room for its text.",
+      "oneOf": [
+        {
+          "description": "Continuation rows start at the left edge of the text.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Continuation rows line up with the line's own indentation, as in\nVS Code.",
+          "type": "string",
+          "const": "same"
+        },
+        {
+          "description": "Continuation rows sit one indent level (`tabSize`) deeper than the\nline.",
+          "type": "string",
+          "const": "indent"
+        }
+      ]
     }
   }
 }

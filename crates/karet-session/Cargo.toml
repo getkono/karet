@@ -14,16 +14,16 @@ categories.workspace   = true
 publish = false                       # karet-internal backend — pulls the whole logic tree
 
 [features]
-default = ["github", "cbor", "viz", "mdlint", "deps", "toml-format"]
+default = ["github", "cbor", "viz", "mdlint", "deps", "toml-format", "toml-lsp"]
 # Lazily fetch a commit's "Verified" status from the GitHub REST API (the commit
 # view's signature badge) and drive the GitHub dashboard. NOTE: turning this off
 # does NOT drop reqwest — the managed-LSP registry uses it unconditionally.
 github = ["dep:karet-github"]
-# Generate a commit message from the staged diff by shelling out to the `claude`
-# CLI (via aicommit-core). OFF by default — a library crate should not spawn an
-# external AI CLI unless the embedder opts in; the runtime `git.aiCommit.enabled`
-# setting gates it further without a rebuild.
-aicommit = ["dep:aicommit-core"]
+# Generate a commit message from the staged diff by driving a local agent CLI
+# (`claude` or `codex`, via aicommit-core over agent-text). OFF by default — a
+# library crate should not spawn an external AI CLI unless the embedder opts in;
+# the runtime `git.aiCommit.enabled` setting gates it further without a rebuild.
+aicommit = ["dep:aicommit-core", "dep:agent-text"]
 # Open/save `.cbor` documents as editable diagnostic-notation text. On by
 # default; a lean embedder can drop the format plugin.
 cbor = ["dep:karet-cbor"]
@@ -39,12 +39,24 @@ viz = ["dep:dependable-core"]
 mdlint = ["dep:karet-markdown"]
 # Cargo.toml dependency hints: latest-version and vulnerability checks via
 # dependable-fetch (network; per-document, cached, opt-out via deps.enabled).
-deps = ["dep:dependable-fetch"]
+# `toml` reads the workspace root's members to find the governing Cargo.lock.
+deps = ["dep:dependable-fetch", "dep:toml"]
 # Built-in TOML formatting fallback (taplo), honoring the workspace .taplo.toml.
 toml-format = ["dep:taplo", "dep:toml"]
+# Built-in TOML language server: taplo's server runs in-process when no taplo is
+# configured, in the project, or on PATH, so TOML gets validation, completion,
+# hover, and schema support with nothing to install. On by default; dropping it
+# drops a second (older) reqwest/hyper/rustls stack and its JSON-schema engine.
+toml-lsp = ["dep:taplo-lsp", "dep:taplo-common", "dep:lsp-async-stub", "dep:futures"]
 # Generate the settings JSON Schema (build/tooling concern — the
 # settings-schema example and its freshness test; never needed at runtime).
 schema = ["dep:schemars"]
+# Build `karet-testbed`, a real language-server process the integration tests
+# spawn. Off by default: it is a test fixture, not part of the backend. The
+# integration tests that need it declare it via `required-features`, since
+# `CARGO_BIN_EXE_*` is only set for integration tests, examples and benches --
+# which is also why they are integration tests rather than in-crate ones.
+testbed = []
 
 [dependencies]
 karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
@@ -53,14 +65,16 @@ karet-filetype = { workspace = true, features = ["serde"] } # classify + serde-r
 karet-markdown = { workspace = true, optional = true, features = ["lint"] } # the mdlint producer
 dependable-fetch = { workspace = true, optional = true } # Cargo.toml dependency hints
 taplo = { workspace = true, optional = true } # built-in TOML formatting fallback
-toml = { workspace = true, optional = true } # read .taplo.toml formatter options
+toml = { workspace = true, optional = true } # read .taplo.toml formatter options; workspace members (feature `deps`)
+taplo-lsp = { workspace = true, optional = true }      # the built-in TOML server (feature `toml-lsp`)
+taplo-common = { workspace = true, optional = true }   # its native environment (feature `toml-lsp`)
+lsp-async-stub = { workspace = true, optional = true } # its message type (feature `toml-lsp`)
+futures = { workspace = true, optional = true }        # its Sink-based writer (feature `toml-lsp`)
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-notebook = { workspace = true, optional = true } # .ipynb → markdown for read-only previews (feature `notebook`)
 karet-treesitter.workspace = true
-# `serde` derives on the block model: semantic blocks are part of a document's
-# render state, which remote mode ships to the client (see api/render.rs).
-karet-syntax = { workspace = true, features = ["serde"] }
+karet-syntax.workspace = true
 karet-diff = { workspace = true, features = ["serde"] } # displayable diffs prepared on the VCS worker
 karet-dap.workspace = true            # debugger engine (headless)
 karet-lsp.workspace = true            # headless
@@ -68,10 +82,11 @@ karet-vcs = { workspace = true, features = ["serde"] }      # headless; writes u
 blameline.workspace = true # current-buffer line blame; workspace disables language features
 karet-github = { workspace = true, optional = true }    # GitHub commit-verification (feature `github`)
 aicommit-core = { workspace = true, optional = true }   # AI commit-message generation (feature `aicommit`)
+agent-text = { workspace = true, optional = true }      # the claude/codex CLI adapters it generates over
 karet-search = { workspace = true, features = ["serde"] } # workspace search runs on the backend's worker
 # The seam index is owned by its own worker and projected across the seam; `lang-rust`
 # and `lang-python` are the mappings that exist, so those are the grammars it can use.
-karet-seam = { workspace = true, features = ["lang-rust", "lang-python"] }
+karet-seam = { workspace = true, features = ["serde", "lang-rust", "lang-python", "lang-typescript", "lang-swift", "lang-kotlin", "lang-c", "lang-cpp", "lang-java"] }
 karet-watch.workspace = true          # centralized filesystem watching
 ignore.workspace = true               # gitignore-aware directory listing for the file tree
 karet-supervisor.workspace = true     # crash-safe process ownership + shared LSP broker
@@ -81,7 +96,13 @@ thiserror.workspace = true
 ec4rs = { workspace = true, features = ["language-tags"] } # settings / EditorConfig + spelling_language
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
-command-group.workspace = true        # crash-safe process groups / Windows Job Objects
+# The seam index cache, which is written once per sync and read on every cold start —
+# so it is worth the compactness of a binary encoding over JSON's inspectability.
+# The remote wire codec too: self-describing, so mismatched peers skip what they cannot read.
+ciborium.workspace    = true
+# The stored index decodes in parallel: it is the one part of a warm start that would
+# otherwise stay serial while the cold path it replaces runs on every core.
+rayon.workspace       = true
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
 serde_json.workspace = true           # the merge/deserialize target for JSONC config
 reqwest.workspace = true              # explicitly approved managed-LSP downloads
@@ -89,7 +110,6 @@ base64.workspace = true               # WakaTime Basic auth
 secrecy.workspace = true              # WakaTime API key handling
 sha2.workspace = true                 # release-asset integrity
 flate2.workspace = true               # .gz / .tar.gz managed tool archives; remote-frame compression
-ciborium.workspace = true             # the remote wire codec (self-describing, compact)
 lzma-rust2.workspace = true            # pure-Rust .tar.xz managed tool archives
 tar.workspace = true                  # traversal-safe managed tool extraction
 zip.workspace = true                  # Windows managed tool archives
@@ -102,10 +122,26 @@ tempfile.workspace = true             # atomic swap-file writes + open/save flow
 # Compile in the Rust + Markdown grammars so the Command/snapshot contract test can
 # assert that an *injected* language really is highlighted through the worker.
 karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"] }
+# `test-util` only: tokio's pausable clock, so a test can assert on a
+# ten-second timeout without spending ten seconds on it.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[example]]
 name = "settings-schema"
 required-features = ["schema"]
+
+[[bin]]
+name = "karet-testbed"
+path = "src/bin/karet-testbed.rs"
+required-features = ["testbed"]
+
+[[test]]
+name = "language_server_launch"
+required-features = ["testbed"]
+
+[[test]]
+name = "managed_install_matrix"
+required-features = ["testbed"]
 
 [lints]
 workspace = true

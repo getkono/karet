@@ -1,13 +1,35 @@
-use super::*;
+use std::io;
+use std::io::Write;
 
-mod chrome;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_widgets::SplitAxis;
+use karet_widgets::scroll::TrackHit;
+
+use crate::app::App;
+use crate::app::MIN_SCM_REGION;
+use crate::app::SIDEBAR_MIN_WIDTH;
+use crate::app::hit::PaneResize;
+use crate::app::hit::TextFieldTarget;
+use crate::app::hit::rect_contains;
+use crate::app::search::SearchPanelField;
+use crate::app::search::SearchRow;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::view::View;
+
+pub(super) mod chrome;
+mod focus;
 
 impl App {
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
     /// than [`SIDEBAR_MIN_WIDTH`] is read as intent to collapse. The responsive upper
     /// bound (terminal width) is applied when the layout is next computed.
     pub(super) fn resize_sidebar_to(&mut self, col: u16) {
-        let width = col.saturating_sub(self.sidebar_rect.x);
+        let width = col.saturating_sub(self.last_frame.sidebar_rect.x);
         if width < SIDEBAR_MIN_WIDTH {
             self.sidebar_visible = false;
             self.sidebar_resizing = false;
@@ -20,7 +42,7 @@ impl App {
     /// divider) sits at `row`. The list area's bottom is fixed, so the commit region
     /// grows as the divider moves up; both regions keep at least [`MIN_SCM_REGION`].
     pub(super) fn resize_scm_commits_to(&mut self, row: u16) {
-        let content = self.sidebar_content_rect;
+        let content = self.last_frame.sidebar_content_rect;
         let bottom = content.y + content.height;
         let list_top = self.scm_ui.changes_rect.y;
         let total = bottom.saturating_sub(list_top);
@@ -41,36 +63,40 @@ impl App {
         if !self.caps.pointer_shapes {
             return;
         }
+        let over_seam_affordance = self.seam_affordance_at(mouse.column, mouse.row);
+        let hits = &self.last_frame;
+        let point = (mouse.column, mouse.row);
         let over_sidebar_divider = self.sidebar_resizing
-            || (self.sidebar_visible && mouse.column == self.sidebar_divider_x);
+            || (self.sidebar_visible && mouse.column == hits.sidebar_divider_x);
         let over_scm_divider = self.scm_ui.resizing
             || (self.sidebar_panel == SidebarPanel::SourceControl
                 && self.scm_ui.divider_y != 0
                 && mouse.row == self.scm_ui.divider_y
-                && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+                && rect_contains(hits.sidebar_rect, point));
         let pane_axis = self
             .pane_resize
             .map(|resize| resize.divider.axis)
             .or_else(|| {
-                self.pane_dividers
+                hits.pane_dividers
                     .iter()
-                    .find(|divider| divider.contains(mouse.column, mouse.row))
+                    .find(|divider| divider.contains(point.0, point.1))
                     .map(|divider| divider.axis)
             });
-        let over_blame = self
-            .blame_rect
-            .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
-        let over_markdown_link = self
-            .markdown_link_hits
-            .iter()
-            .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
+        let over_blame = hits
+            .blame_rect()
+            .is_some_and(|rect| rect_contains(rect, point));
+        let over_markdown_link = hits
+            .markdown_link_hits()
+            .any(|hit| rect_contains(hit.rect, point));
+        let over_commits_title = self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_ui.commits_title_rect, point);
         // A thumb is draggable, and this shell hints every draggable it has. The grab
         // shape outlives the pointer leaving the track, because the drag does too.
-        let over_thumb = self
-            .scroll_hits
-            .at(mouse.column, mouse.row)
-            .and_then(|hit| hit.track.hit(mouse.column, mouse.row))
-            == Some(TrackHit::Thumb);
+        let thumb = hits
+            .scroll
+            .at(point.0, point.1)
+            .and_then(|hit| hit.track.hit(point.0, point.1));
+        let over_thumb = thumb == Some(TrackHit::Thumb);
         let shape = if self.scroll_drag.is_some() {
             Some("grabbing")
         } else if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
@@ -79,7 +105,12 @@ impl App {
             Some("row-resize")
         } else if over_thumb {
             Some("grab")
-        } else if over_blame || over_markdown_link || self.definition_hover.is_some() {
+        } else if over_blame
+            || over_markdown_link
+            || over_seam_affordance
+            || over_commits_title
+            || self.definition_hover.is_some()
+        {
             Some("pointer")
         } else {
             None
@@ -97,20 +128,43 @@ impl App {
         // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
         // move the active caret without passing through the keyboard input hook.
         self.reconcile_completion();
+        self.reconcile_hover();
+        self.reconcile_rename();
         self.request_live_blame();
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_definition_hover(&mouse);
+        self.update_inlay_hover(&mouse);
         self.update_pointer_shape_hint(&mouse);
+        // Ahead of every surface that could swallow it: a release that an overlay
+        // or a toast took would otherwise leave the drag running behind it.
+        if self.end_editor_drag_on(&mouse) {
+            return;
+        }
         // Toasts float above everything (including the overlay), so hit-test them
         // first: left-click dismisses and right-click copies an error.
         if self.handle_toast_mouse(mouse) {
             return;
         }
-        if self.overlay.is_some() {
+        // A confirmation outranks the overlay it may have opened over, so it is
+        // hit-tested before the overlay's blanket swallow.
+        if self.handle_confirm_mouse(mouse) {
             return;
         }
+        if self.keyboard.overlay().is_some() {
+            return;
+        }
+        if self.handle_diagnostic_view_mouse(mouse) {
+            return;
+        }
+        // A click anywhere settles the rename prompt as Esc would, then does
+        // what it would have done without it. A click outside the hover popup
+        // closes it the same way.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.rename = None;
+        }
+        self.dismiss_hover_on_press_outside(mouse);
         if self.handle_context_menu_mouse(mouse) {
             return;
         }
@@ -152,7 +206,7 @@ impl App {
                     };
                     let current = self
                         .layout
-                        .dividers(self.main_rect)
+                        .dividers(self.last_frame.main_rect)
                         .into_iter()
                         .find(|divider| {
                             divider.axis == resize.divider.axis
@@ -169,8 +223,11 @@ impl App {
                         }
                     });
                     if delta != 0 {
-                        self.layout
-                            .resize_divider(resize.divider, delta, self.main_rect);
+                        self.layout.resize_divider(
+                            resize.divider,
+                            delta,
+                            self.last_frame.main_rect,
+                        );
                     }
                 },
                 MouseEventKind::Up(MouseButton::Left) => self.pane_resize = None,
@@ -202,19 +259,36 @@ impl App {
             }
             return;
         }
-        // An in-progress text selection captures motion until the button is released.
-        if self.editor_selecting {
+        // A read-only surface's selection drag captures motion the same way the
+        // editor's does, and for the same reason: the pointer must keep extending
+        // even after it leaves the rows it started on.
+        if self.surface_selecting.is_some() {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
-                    self.drag_select_to(mouse.column, mouse.row);
+                    self.drag_surface_selection(mouse.column, mouse.row);
                 },
-                MouseEventKind::Up(MouseButton::Left) => self.editor_selecting = false,
+                MouseEventKind::Up(MouseButton::Left) => self.surface_selecting = None,
                 _ => {},
             }
             return;
         }
+        // An in-progress text selection captures motion and the wheel until the
+        // button is released (the release and any press were taken above).
+        if self.editor_drag.is_some() {
+            self.editor_drag_mouse(&mouse);
+            return;
+        }
+        // A terminal selection drag captures motion the same way, until release.
+        #[cfg(feature = "terminal")]
+        if self.view == View::Editor
+            && self.active_terminal().is_some_and(|pane| pane.selecting)
+            && self.terminal_mouse(mouse)
+        {
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && let Some(divider) = self
+                .last_frame
                 .pane_dividers
                 .iter()
                 .copied()
@@ -224,10 +298,21 @@ impl App {
             self.pane_divider_hover = Some(divider);
             return;
         }
+        let pressed_in_console = self.settle_overlays_on_press(mouse);
         // Ahead of every region test: a track sits inside the rect of whatever it
         // scrolls, and those rects were narrowed to exclude it precisely so the bar
         // could claim the column.
-        if self.scrollbar_mouse(mouse) {
+        if self.background_scrollbar_mouse(mouse) || self.scrollbar_mouse(mouse) {
+            return;
+        }
+        // The popups float over the editor, so they claim the pointer over them
+        // before anything beneath them can.
+        if self.handle_completion_mouse(mouse) || self.handle_hover_mouse(mouse) {
+            return;
+        }
+        // The console floats over whatever it overlaps, so a press on it is the
+        // console's and must not reach the editor underneath.
+        if pressed_in_console {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
@@ -239,7 +324,28 @@ impl App {
         if self.handle_status_mouse(mouse) {
             return;
         }
-        if self.github_mouse(mouse) {
+        if self.handle_view_chrome_mouse(mouse) {
+            return;
+        }
+        // Gated on the view that painted them: these read hit regions another view
+        // draws over without re-rendering, so without it last frame's rects would keep
+        // claiming clicks aimed at the view on screen.
+        if self.view == View::GitHub && self.github_mouse(mouse) {
+            return;
+        }
+        // Ahead of the region match below, and therefore ahead of the editor: the Seam
+        // view owns its whole surface, and a press that fell through to `handle_editor_click`
+        // would arm a text drag in a view that has no text to drag.
+        if self.view == View::Editor && self.seam_mouse(mouse) {
+            return;
+        }
+        // Likewise a terminal owns its grid: selection, the wheel, links, and the
+        // reports a mouse-tracking program asked for.
+        #[cfg(feature = "terminal")]
+        if self.view == View::Editor && self.terminal_mouse(mouse) {
+            return;
+        }
+        if self.handle_inlay_hint_mouse(&mouse) || self.handle_code_lens_mouse(&mouse) {
             return;
         }
         if self.handle_blame_mouse(mouse) {
@@ -249,41 +355,45 @@ impl App {
             return;
         }
         let point = (mouse.column, mouse.row);
-        let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
+        let in_sidebar = self.sidebar_visible && rect_contains(self.last_frame.sidebar_rect, point);
         let in_outline = self.outline.visible && rect_contains(self.outline.rect, point);
-        let in_editor = rect_contains(self.editor_rect, point);
-        let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
-        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let in_editor = rect_contains(self.last_frame.editor_rect(), point);
         if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
             self.dismiss_outline_overlay();
         }
+        // The console floats over everything it overlaps, so its wheel is claimed
+        // before any pane's — otherwise a notch over it would scroll the editor
+        // behind it.
+        let in_console = self.commit_console.open && rect_contains(self.commit_console.rect, point);
+        // Past every surface that floats over the panes, the wheel scrolls the pane
+        // under the pointer — focused or not — and leaves the focus alone.
+        if !in_console && !in_outline && !in_sidebar && self.pane_wheel(mouse) {
+            return;
+        }
         match mouse.kind {
+            MouseEventKind::ScrollDown if in_console => self.commit_console_scroll(3),
+            MouseEventKind::ScrollUp if in_console => self.commit_console_scroll(-3),
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
-            MouseEventKind::ScrollDown if in_markdown_preview => {
-                self.scroll_markdown_preview(3);
-            },
-            MouseEventKind::ScrollUp if in_markdown_preview => {
-                self.scroll_markdown_preview(-3);
-            },
-            MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
-            MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
-            MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),
-            MouseEventKind::ScrollUp if in_editor && shift => self.scroll_columns(-3),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) if in_outline => {
                 self.handle_outline_click(mouse.row);
             },
+            // Past the tab strip, which closes a tab on a middle click.
+            MouseEventKind::Down(MouseButton::Middle) if !in_sidebar && !in_outline => {
+                self.middle_click_paste(mouse);
+            },
             MouseEventKind::Down(MouseButton::Right)
                 if in_sidebar && self.sidebar_panel == SidebarPanel::Explorer =>
             {
-                let row = rect_contains(self.sidebar_content_rect, point)
+                let row = rect_contains(self.last_frame.sidebar_content_rect, point)
                     .then(|| {
-                        self.explorer
-                            .visible_index((mouse.row - self.sidebar_content_rect.y) as usize)
+                        self.explorer.visible_index(
+                            (mouse.row - self.last_frame.sidebar_content_rect.y) as usize,
+                        )
                     })
                     .flatten();
                 self.open_context_menu(mouse.column, mouse.row, row);
@@ -291,19 +401,22 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 // Right-click in a pane's content area opens the pane context menu
                 // for that pane's active tab.
-                if let Some(pane) = self
-                    .pane_frames
+                if let Some((pane, area)) = self
+                    .last_frame
+                    .panes
                     .iter()
                     .find(|f| rect_contains(f.content_rect, point))
-                    .map(|f| f.pane)
+                    .map(|f| (f.pane, f.editor_rect))
                 {
                     self.focus_pane_switch(pane);
-                    self.focus = Focus::Editor;
-                    self.open_pane_context_menu(mouse.column, mouse.row);
+                    self.keyboard.focus_editor();
+                    self.right_click_caret(area, mouse.column, mouse.row);
+                    self.open_pane_context_menu(mouse.column, mouse.row, true);
+                    self.add_spelling_to_menu(area, mouse.column, mouse.row);
                 }
             },
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
+                if self.sidebar_visible && mouse.column == self.last_frame.sidebar_divider_x {
                     // Grab the sidebar-width divider to start a resize drag.
                     self.sidebar_resizing = true;
                 } else if in_sidebar
@@ -315,40 +428,38 @@ impl App {
                     self.scm_ui.resizing = true;
                 } else if in_sidebar {
                     self.handle_sidebar_click(mouse.column, mouse.row, mouse.modifiers);
-                } else {
-                    self.commit_input.focused = false;
-                    self.handle_editor_click(mouse);
+                } else if !self.handle_find_bar_click(mouse) {
+                    self.keyboard.release_commit_box();
+                    // A read-only surface owns the click before the editor sees it;
+                    // the editor's own handler only answers for code tabs.
+                    if !self.begin_surface_selection(mouse.column, mouse.row) {
+                        self.handle_editor_click(mouse);
+                    }
                 }
             },
             // Track the hover position for the secondary-accent row highlight in the
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
-                self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.hover =
+                    rect_contains(self.last_frame.sidebar_content_rect, point).then_some(point);
                 self.pane_action_hover = None;
                 self.update_language_server_hover(mouse.column, mouse.row);
                 self.pane_divider_hover = self
+                    .last_frame
                     .pane_dividers
                     .iter()
                     .copied()
                     .find(|divider| divider.contains(mouse.column, mouse.row));
                 self.sidebar_header_hover =
-                    (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
+                    (in_sidebar && mouse.row == self.last_frame.sidebar_rect.y).then_some(point);
                 self.markdown_link_hover = self
-                    .markdown_link_hits
-                    .iter()
+                    .last_frame
+                    .markdown_link_hits()
                     .any(|hit| rect_contains(hit.rect, point))
                     .then_some(point);
             },
             _ => {},
         }
-    }
-
-    /// The absolute explorer row index under the hover cursor, if the mouse is over
-    /// the explorer's content (accounts for the current scroll offset).
-    pub(crate) fn hovered_explorer_row(&self) -> Option<usize> {
-        let (_, hy) = self.hover?;
-        let top = self.sidebar_content_rect.y;
-        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
     }
 
     /// The source-control change index under the hover cursor, if any (mirrors the
@@ -362,26 +473,43 @@ impl App {
         self.scm_ui.row_map.get(display).copied().flatten()
     }
 
-    /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
-    pub(super) fn panel_at(&self, col: u16, row_y: u16) -> Option<SidebarPanel> {
-        if row_y != self.sidebar_rect.y {
-            return None;
-        }
-        self.panel_hits
-            .iter()
-            .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
+    /// Whether the pointer is over the Source-Control `COMMITS` title, which opens the
+    /// full commit-graph view.
+    pub(crate) fn hovered_scm_commits_title(&self) -> bool {
+        self.hover
+            .is_some_and(|point| rect_contains(self.scm_ui.commits_title_rect, point))
     }
 
-    /// Handle a left click inside the sidebar: switch panels via the header, or
-    /// select the clicked row. A plain click moves the cursor and activates the
+    /// Handle a left click inside the sidebar: switch panels via the header (a
+    /// double-click on the open panel's tab folds the sidebar), or select the
+    /// clicked row. A plain click moves the cursor and activates the
     /// row; Ctrl toggles it in the selection and Shift extends a range to it
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
-        self.focus = Focus::Sidebar;
+        if self.keyboard.focus() != Focus::Sidebar {
+            // Arriving by click lands on the Problems list, not a filter edit
+            // abandoned when focus left; a click on the filter field re-enters it.
+            self.problems.filter_input = false;
+        }
+        self.keyboard.focus_sidebar();
+        // The AI chip sits on the commit box's border, so it is tested before the
+        // box itself — and only when it was actually painted, since the rect is
+        // cleared each frame.
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_ui.ai_chip_rect, (col, row_y))
+        {
+            self.keyboard.focus_commit_box();
+            if self.ai_commit.generating().is_some() {
+                self.commit_generate_cancel();
+            } else {
+                self.commit_generate();
+            }
+            return;
+        }
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.commit_rect, (col, row_y))
         {
-            self.commit_input.focused = true;
+            self.keyboard.focus_commit_box();
             self.commit_input.place_cursor(
                 col.saturating_sub(self.scm_ui.commit_rect.x),
                 row_y.saturating_sub(self.scm_ui.commit_rect.y),
@@ -391,10 +519,11 @@ impl App {
             self.text_field_drag = Some(TextFieldTarget::Commit);
             return;
         }
-        self.commit_input.focused = false;
+        self.keyboard.release_commit_box();
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
-        if row_y == self.sidebar_rect.y
+        if row_y == self.last_frame.sidebar_rect.y
             && let Some(cmd) = self
+                .last_frame
                 .header_action_hits
                 .iter()
                 .find_map(|&(start, end, cmd)| (col >= start && col < end).then_some(cmd))
@@ -403,7 +532,19 @@ impl App {
             return;
         }
         if let Some(panel) = self.panel_at(col, row_y) {
-            self.dispatch(Command::SelectPanel(panel));
+            let streak = self.click_streak(col, row_y);
+            if panel == self.sidebar_panel && streak >= 2 {
+                // A double-click on the tab already open folds the sidebar (#315).
+                self.dispatch(Command::ToggleSidebar);
+            } else {
+                if panel != self.sidebar_panel {
+                    // A click that switches panels starts no streak, so a
+                    // double-click on another tab opens it rather than opening it
+                    // and folding it away again.
+                    self.last_click = None;
+                }
+                self.dispatch(Command::SelectPanel(panel));
+            }
             return;
         }
         if self.sidebar_panel == SidebarPanel::SourceControl
@@ -424,11 +565,29 @@ impl App {
             SidebarPanel::Spelling => self.spelling_click(col, row_y),
             SidebarPanel::Todos => self.todos_click(col, row_y),
             SidebarPanel::Debug => self.debug_click(col, row_y),
+            SidebarPanel::Problems => self.problems_click(col, row_y),
+            SidebarPanel::Hierarchy => self.hierarchy_click(col, row_y),
             SidebarPanel::Explorer => {
-                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                if !rect_contains(self.last_frame.sidebar_content_rect, (col, row_y)) {
                     return;
                 }
-                let view_row = (row_y - self.sidebar_content_rect.y) as usize;
+                // An open inline rename owns clicks on its own row: they place the
+                // caret in the name rather than selecting a different entry.
+                if self
+                    .explorer
+                    .edit_rect()
+                    .is_some_and(|rect| rect_contains(rect, (col, row_y)))
+                {
+                    self.place_text_field_cursor(
+                        TextFieldTarget::ExplorerRename,
+                        col,
+                        row_y,
+                        shift,
+                    );
+                    self.text_field_drag = Some(TextFieldTarget::ExplorerRename);
+                    return;
+                }
+                let view_row = (row_y - self.last_frame.sidebar_content_rect.y) as usize;
                 self.build_explorer();
                 if self.explorer.visible_index(view_row).is_none() {
                     return;
@@ -452,15 +611,16 @@ impl App {
             SidebarPanel::SourceControl => {
                 // The pinned commit-log region: click a commit row to open its commit
                 // view; the trailing "load more" affordance pages in older history.
+                if rect_contains(self.scm_ui.commits_title_rect, (col, row_y)) {
+                    self.dispatch(Command::ShowCommitGraph);
+                    return;
+                }
                 if rect_contains(self.scm_ui.commits_rect, (col, row_y)) {
                     let display =
                         self.scm_ui.commits_offset + (row_y - self.scm_ui.commits_rect.y) as usize;
                     if self.scm_ui.more_row == Some(display) {
                         self.load_more_scm_log();
-                    } else if let Some(commit) =
-                        display.checked_sub(1).and_then(|i| self.scm.log.get(i))
-                    {
-                        // Row 0 is the " COMMITS" header; commits begin at display 1.
+                    } else if let Some(commit) = self.scm.log.get(display) {
                         self.open_commit(commit.hash.clone());
                     }
                     return;
@@ -507,7 +667,7 @@ impl App {
                 }
                 // Click a field to edit it.
                 if rect_contains(self.search_ui.query_rect, (col, row_y)) {
-                    self.search.field = SearchField::Find;
+                    self.search.field = SearchPanelField::Find;
                     self.search.input = true;
                     self.place_text_field_cursor(TextFieldTarget::SearchFind, col, row_y, shift);
                     self.text_field_drag = Some(TextFieldTarget::SearchFind);
@@ -518,71 +678,62 @@ impl App {
                     .replace_rect
                     .is_some_and(|rect| rect_contains(rect, (col, row_y)))
                 {
-                    self.search.field = SearchField::Replace;
+                    self.search.field = SearchPanelField::Replace;
                     self.search.replace_visible = true;
                     self.search.input = true;
                     self.place_text_field_cursor(TextFieldTarget::SearchReplace, col, row_y, shift);
                     self.text_field_drag = Some(TextFieldTarget::SearchReplace);
                     return;
                 }
+                for (rect, field, target) in [
+                    (
+                        self.search_ui.includes_rect,
+                        SearchPanelField::Includes,
+                        TextFieldTarget::SearchIncludes,
+                    ),
+                    (
+                        self.search_ui.excludes_rect,
+                        SearchPanelField::Excludes,
+                        TextFieldTarget::SearchExcludes,
+                    ),
+                ] {
+                    if rect.is_some_and(|rect| rect_contains(rect, (col, row_y))) {
+                        self.search.field = field;
+                        self.search.input = true;
+                        self.place_text_field_cursor(target, col, row_y, shift);
+                        self.text_field_drag = Some(target);
+                        return;
+                    }
+                }
                 if !rect_contains(self.search_ui.results_rect, (col, row_y)) {
                     return;
                 }
                 let idx = self.search_ui.offset + (row_y - self.search_ui.results_rect.y) as usize;
-                if idx < self.search.results.len() {
-                    self.search.selection.move_to(idx);
-                    self.open_selected_result();
+                if idx >= self.search.rows.len() {
+                    return;
+                }
+                // Taken once, before the branch: the streak counter is shared with
+                // every other click surface, so reading it twice would advance it.
+                let streak = self.click_streak(col, row_y);
+                self.search.selection.move_to(idx);
+                // The click moves the panel's focus onto the results, so the arrow
+                // keys that follow navigate the list rather than the last field.
+                self.search.input = false;
+                // A click on a file heading's chevron toggles the group; anywhere
+                // else on the row opens the file, so the affordance is the glyph.
+                // The chevron renders as glyph-plus-space, so both cells toggle;
+                // a one-cell target is too fine to hit reliably.
+                let on_chevron = col <= self.search_ui.results_rect.x.saturating_add(1);
+                // Double-clicking a heading is the second fold affordance: the first
+                // click has already opened the file, the second folds the group. A
+                // match row is a leaf, so it just opens again.
+                match self.search.rows.get(idx) {
+                    Some(SearchRow::File { .. }) if on_chevron || streak >= 2 => {
+                        self.search_toggle_row();
+                    },
+                    _ => self.open_selected_result(),
                 }
             },
         }
     }
-
-    fn place_text_field_cursor(
-        &mut self,
-        target: TextFieldTarget,
-        column: u16,
-        row: u16,
-        extend: bool,
-    ) {
-        match target {
-            TextFieldTarget::Commit => self.commit_input.place_cursor(
-                column.saturating_sub(self.scm_ui.commit_rect.x),
-                row.saturating_sub(self.scm_ui.commit_rect.y),
-                self.scm_ui.commit_rect.width,
-                extend,
-            ),
-            TextFieldTarget::SearchFind => {
-                let cell = usize::from(
-                    column
-                        .saturating_sub(self.search_ui.query_rect.x)
-                        .saturating_add(self.search.query_edit.scroll),
-                );
-                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.query, cell);
-                self.search
-                    .query_edit
-                    .set_cursor(&self.search.query, cursor, extend);
-            },
-            TextFieldTarget::SearchReplace => {
-                let Some(rect) = self.search_ui.replace_rect else {
-                    return;
-                };
-                let cell = usize::from(
-                    column
-                        .saturating_sub(rect.x)
-                        .saturating_add(self.search.replace_edit.scroll),
-                );
-                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.replace, cell);
-                self.search
-                    .replace_edit
-                    .set_cursor(&self.search.replace, cursor, extend);
-            },
-        }
-    }
-}
-
-pub(super) fn notification_clipboard_text(notification: &Notification) -> String {
-    notification.body.as_ref().map_or_else(
-        || notification.title.clone(),
-        |body| format!("{}\n{body}", notification.title),
-    )
 }

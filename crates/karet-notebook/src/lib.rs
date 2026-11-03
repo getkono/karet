@@ -22,6 +22,7 @@ pub use model::CellKind;
 pub use model::Notebook;
 pub use model::Output;
 pub use model::Source;
+pub use model::StreamName;
 
 /// Errors produced by notebook parsing and serialization.
 #[derive(Debug, thiserror::Error)]

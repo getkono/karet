@@ -21,6 +21,7 @@ use super::wire::ClientFrame;
 use super::wire::Hello;
 use super::wire::ServerFrame;
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::RequestId;
@@ -135,7 +136,7 @@ where
                     // renderer draws from advances at local speed rather than at
                     // the connection's.
                     let mut diverged = None;
-                    if let Command::ApplyChange { doc, change, cause } = &command {
+                    if let Command::Document(DocumentCommand::ApplyChange { doc, change, cause }) = &command {
                         match replicas
                             .get_mut(doc)
                             .and_then(|replica| replica.apply_local(change, *cause))

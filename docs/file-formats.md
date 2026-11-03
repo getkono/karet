@@ -16,7 +16,8 @@ consumes:
   bundled grammar.
 
 To add or change a format, edit the `REGISTRY` table in
-`crates/karet-filetype/src/registry.rs` (one line per type) and, if it should be
+`crates/karet-filetype/src/registry/table.rs` (one row per type, carrying its
+comment tokens and auto-closing pairs) and, if it should be
 highlighted, add a grammar in `crates/karet-treesitter`.
 
 ## Icon styles
@@ -34,7 +35,7 @@ the default is **Nerd Font**.
 
 These extensions highlight via a compiled-in grammar (the `karet` app enables the
 `all-languages` feature). This table mirrors the registry in
-`karet-filetype/src/registry.rs` and the grammar catalog in
+`karet-filetype/src/registry/table.rs` and the grammar catalog in
 `karet-treesitter/src/registry.rs`; changes there must update it in the same
 change.
 
@@ -162,8 +163,8 @@ not advertised yet because the published Gamut versions do not currently provide
 the pure-Rust decode path karet needs (and no C `*-sys` dependency is permitted).
 
 The **Image** and **PDF** renderers are optional, default-on Cargo features
-(`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
-`karet-fileview`). Building the app with `--no-default-features` drops their heavy
+(`images` and `pdf` on the `karet` app; `raster`/`images` on `karet-fileview`,
+which has no `pdf` feature). Building the app with `--no-default-features` drops their heavy
 dependency trees (Gamut, `hayro`) and routes those kinds to the
 placeholder branch instead — see [binary-size.md](binary-size.md). Classification
 (`FileKind`) is unaffected; only rendering degrades.
@@ -177,6 +178,49 @@ so a large `.cbor`, for instance, still decodes to editable diagnostic notation.
 Other office documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, audio,
 and video are given icons and labels but currently open as a binary hex view or
 placeholder.
+
+## Markdown preview
+
+`Markdown: Toggle Preview to the Side` (`Ctrl+K V`) renders CommonMark plus GitHub
+tables, task lists and strikethrough, with fenced code highlighted and
+[mermaid](configuration.md#markdown) diagrams drawn. Embedded HTML maps onto the same
+model through a curated subset; everything else is a deliberate non-goal recorded in
+[scope.md](scope.md#markdown-preview).
+
+| HTML | Renders as |
+|---|---|
+| `b`/`strong`, `i`/`em`, `s`/`del`/`strike`, `code`/`kbd`/`tt`/`samp` | bold, italic, struck-through, inline code |
+| `a href` | a link (Ctrl/Cmd-click, OSC 8) |
+| `img` | an image (below) |
+| `br`, `hr` | a line break, a rule |
+| `h1`–`h6`, `ul`/`ol` (`start`)/`li`, `blockquote` | their markdown equivalents |
+| `p`, `div`, `center`, `section`, `picture`, … with `align="center"`/`"right"` | the enclosed blocks centred or right-aligned (code blocks and tables keep their own layout) |
+| `details` / `summary` | always expanded, under a bold `▾` summary line |
+| `pre` | a code block keeping its whitespace, highlighted when a `<code class="language-…">` (or `lang` attribute) names a bundled grammar |
+| `table` (a line per row), `sub`/`sup`, `span`, any other tag | its text only |
+| `script`, `style`, `iframe`, `object`, comments | nothing |
+
+As in a browser, a `<p>` ends where its HTML block does, so markdown after a blank
+line is not inside it; to align markdown content, wrap it in `<div align="center">`.
+
+An image — markdown `![alt](src)` or `<img>`, whose `width`/`height` are honoured —
+paints as pixels when it stands alone in its paragraph (as a
+`<p align="center"><img …></p>` logo does) and is a **local, decodable** file: a
+relative path to a regular file inside the workspace, in a format from the Gamut table
+above, under 10 MiB and 4096×4096 pixels. It takes its native size on the terminal's
+real cell size — one image pixel per screen pixel — shrinking only to fit the
+preview's width, never enlarged. On a Kitty terminal (not WezTerm, Konsole or inside
+tmux) it is sent once at
+full resolution and drawn through unicode placeholders; elsewhere it is truecolor
+half-blocks, area-averaged, two pixels a cell. Its rows are reserved from the
+file's header at once; the pixels decode off the UI thread once the image is first
+scrolled into view, behind a muted placeholder if that takes longer than a moment.
+Decoded images share a 256 MiB budget; past it, images off screen give their pixels
+back, least recently shown first. Every other image — among text, in a table, remote
+(`http(s)`, never fetched), outside the workspace, or undecodable — is a chip naming
+its alt text and linking to it, led by the image glyph of the configured icon style.
+Ctrl/Cmd-click an image to open it in the image tab. Without the `images` feature every
+image is a chip.
 
 ## Planned / not yet supported
 

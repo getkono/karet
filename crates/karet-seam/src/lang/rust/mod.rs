@@ -14,7 +14,6 @@
 
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
-use karet_treesitter::language_id_from_injection_name;
 
 use super::Attribute;
 use super::Classified;
@@ -30,13 +29,15 @@ use crate::model::Visibility;
 mod api;
 mod boundary;
 mod hazard;
+mod ownership;
 mod substitution;
 mod variation;
 
 #[cfg(test)]
 mod tests;
 
-pub use api::REEXPORT;
+#[cfg(test)]
+use api::REEXPORT;
 
 /// The Rust language mapping.
 #[derive(Debug, Default, Clone, Copy)]
@@ -51,7 +52,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar id for Rust, when the grammar is compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    language_id_from_injection_name("rust")
+    karet_treesitter::languages::RUST
 }
 
 /// Every facet subtype the Rust mapping can emit.
@@ -106,8 +107,8 @@ const SEMANTIC: &[EdgeKind] = &[
 ];
 
 impl SeamLanguage for Rust {
-    fn language(&self) -> LanguageId {
-        language_id().unwrap_or(LanguageId(u16::MAX))
+    fn language(&self) -> Option<LanguageId> {
+        language_id()
     }
 
     fn classify(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classified> {
@@ -131,6 +132,10 @@ impl SeamLanguage for Rust {
         hazard::interior_facets(node, ctx, &mut facets);
         api::interior_facets(node, ctx, &mut facets);
         facets
+    }
+
+    fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<super::Owner> {
+        ownership::owners(node, ctx)
     }
 
     fn is_container(&self, node: &WalkNode<'_>) -> bool {
@@ -190,6 +195,10 @@ impl SeamLanguage for Rust {
             return None;
         }
         node.child_text("name", ctx.text).map(str::to_owned)
+    }
+
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/rust.scm"))
     }
 
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
@@ -259,15 +268,11 @@ fn classify_impl(
     ctx: &FacetContext<'_>,
     visibility: Option<Visibility>,
 ) -> Classified {
-    let self_type = node
-        .child_text("type", ctx.text)
-        .unwrap_or("?")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let trait_name = node
-        .child_text("trait", ctx.text)
-        .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+    let self_type = match node.child_text("type", ctx.text) {
+        Some(text) => joined(text),
+        None => "?".to_owned(),
+    };
+    let trait_name = node.child_text("trait", ctx.text).map(joined);
     let (segment, name) = match &trait_name {
         Some(bound) => (
             format!("{{impl {bound} for {self_type}}}"),
@@ -309,6 +314,13 @@ fn classify_foreign(
         selection: ctx.range(node.span()),
         visibility,
     }
+}
+
+/// Collapse a type expression's whitespace, so a wrapped `where` clause does not become
+/// part of a name.
+#[must_use]
+pub(crate) fn joined(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Read a node's `visibility_modifier`, mapping it onto the neutral levels.

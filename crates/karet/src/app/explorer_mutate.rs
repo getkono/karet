@@ -7,12 +7,20 @@
 
 use std::path::PathBuf;
 
-use karet_session::api::Command as SessionCommand;
+use karet_core::NotificationKind;
+use karet_session::VcsCommand;
+use karet_session::WorkspaceCommand;
 use karet_session::api::PathMutation;
 use karet_session::api::RequestId;
 use karet_widgets::PendingEdit;
 
 use super::App;
+use crate::app::notifications::Report;
+
+/// The notification tag a paste or duplicate's running count shares.
+const PASTE_TAG: &str = "explorer.paste";
+/// The notification tag a delete's running count shares.
+const DELETE_TAG: &str = "explorer.delete";
 
 /// What to do once a mutation lands.
 ///
@@ -61,7 +69,7 @@ pub(super) struct PendingMutation {
 impl App {
     /// Submit `mutation`, remembering what to do when it lands.
     pub(super) fn mutate_path(&mut self, mutation: PathMutation, follow_up: FollowUp) {
-        let Some(id) = self.send(SessionCommand::MutatePath {
+        let Some(id) = self.send(WorkspaceCommand::MutatePath {
             mutation: mutation.clone(),
         }) else {
             return;
@@ -87,7 +95,7 @@ impl App {
             Ok(()) => self.on_mutation_succeeded(pending.follow_up),
             Err(message) => self.on_mutation_failed(pending.follow_up, &message),
         }
-        self.send_command(SessionCommand::RefreshVcs);
+        self.send_command(VcsCommand::Refresh);
     }
 
     fn on_mutation_succeeded(&mut self, follow_up: FollowUp) {
@@ -95,16 +103,30 @@ impl App {
             FollowUp::CreatedFile { path, .. } => self.open_path(&path),
             FollowUp::CreatedFolder { .. } => {},
             FollowUp::Renamed { from, to, .. } => self.retarget_open_paths(&from, &to),
+            // One card per batch, rewritten in place as each item lands, rather
+            // than one per item.
             FollowUp::Deleted => {
                 self.explorer_delete_done += 1;
-                self.status = Some(format!("deleted {} item(s)", self.explorer_delete_done));
+                let message = format!("deleted {} item(s)", self.explorer_delete_done);
+                self.notify_tagged(
+                    Report::Outcome,
+                    NotificationKind::Io,
+                    message,
+                    Some(DELETE_TAG.to_owned()),
+                );
             },
             FollowUp::Pasted { moved } => {
                 if let Some((from, to)) = moved {
                     self.retarget_open_paths(&from, &to);
                 }
                 self.explorer_paste_done += 1;
-                self.status = Some(format!("pasted {} item(s)", self.explorer_paste_done));
+                let message = format!("pasted {} item(s)", self.explorer_paste_done);
+                self.notify_tagged(
+                    Report::Outcome,
+                    NotificationKind::Io,
+                    message,
+                    Some(PASTE_TAG.to_owned()),
+                );
             },
         }
     }
@@ -124,8 +146,8 @@ impl App {
             self.explorer.restore_edit(&edit);
         }
         self.notify(
-            crate::app::Severity::Error,
-            crate::app::NotificationKind::Io,
+            Report::Failure,
+            NotificationKind::Io,
             format!("{verb} failed: {message}"),
         );
     }

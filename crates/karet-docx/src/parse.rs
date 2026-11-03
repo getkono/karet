@@ -626,4 +626,313 @@ mod tests {
         let n = Numbering::default();
         assert!(!n.ordered("1", 0));
     }
+
+    /// Parse `inner` as the contents of a `w:body`, with no rels and no numbering.
+    fn body(inner: &str) -> Result<Vec<Block>, DocxError> {
+        body_with(inner, &Numbering::default())
+    }
+
+    /// Parse `inner` as the contents of a `w:body` against `numbering`.
+    fn body_with(inner: &str, numbering: &Numbering) -> Result<Vec<Block>, DocxError> {
+        let xml = format!("<w:document><w:body>{inner}</w:body></w:document>");
+        parse_body(&xml, &Rels::new(), numbering)
+    }
+
+    /// A normal paragraph holding `spans`.
+    fn normal(spans: Vec<Span>) -> Block {
+        Block::Paragraph {
+            style: ParaStyle::Normal,
+            spans,
+        }
+    }
+
+    /// A numbering part whose `numId` 1 → abstract 0 has level 0 `decimal` and
+    /// level 1 `bullet`; `numId` 2 → abstract 9 is undefined.
+    const NUMBERING: &str = r#"<w:numbering>
+        <w:abstractNum w:abstractNumId="0">
+            <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl>
+            <w:lvl w:ilvl="1"><w:numFmt w:val="bullet"/></w:lvl>
+        </w:abstractNum>
+        <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+        <w:num w:numId="2"><w:abstractNumId w:val="9"/></w:num>
+    </w:numbering>"#;
+
+    #[test]
+    fn numbering_resolves_levels_and_falls_back_to_level_zero() {
+        let n = Numbering::parse(NUMBERING);
+        assert!(n.ordered("1", 0));
+        assert!(!n.ordered("1", 1));
+        // Level 5 is not defined: level 0's `decimal` decides it.
+        assert!(n.ordered("1", 5));
+        // An abstract definition that does not exist, or an unknown numId, is a bullet.
+        assert!(!n.ordered("2", 0));
+        assert!(!n.ordered("3", 0));
+    }
+
+    #[test]
+    fn numbering_parse_tolerates_malformed_xml() {
+        // Everything before the parse error is kept; the error just stops the scan.
+        let n = Numbering::parse(
+            r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></oops>"#,
+        );
+        assert!(n.ordered("1", 0));
+        assert!(!Numbering::parse("<<<not xml").ordered("1", 0));
+    }
+
+    #[test]
+    fn heading_style_wins_over_num_id() -> Result<(), DocxError> {
+        let numbering = Numbering::parse(NUMBERING);
+        let blocks = body_with(
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading2"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>H</w:t></w:r></w:p>"#,
+            &numbering,
+        )?;
+        assert_eq!(
+            blocks,
+            vec![Block::Paragraph {
+                style: ParaStyle::Heading(2),
+                spans: vec![Span::text("H")],
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_heading_style_with_num_id_is_a_list_item() -> Result<(), DocxError> {
+        let numbering = Numbering::parse(NUMBERING);
+        let blocks = body_with(
+            r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="3"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>a</w:t></w:r></w:p><w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:p>"#,
+            &numbering,
+        )?;
+        assert_eq!(
+            blocks,
+            vec![
+                // Level 3 is undefined, so level 0's `decimal` makes it ordered.
+                Block::Paragraph {
+                    style: ParaStyle::ListItem {
+                        ordered: true,
+                        level: 3,
+                    },
+                    spans: vec![Span::text("a")],
+                },
+                // No `w:ilvl` defaults the level to 0.
+                Block::Paragraph {
+                    style: ParaStyle::ListItem {
+                        ordered: true,
+                        level: 0,
+                    },
+                    spans: Vec::new(),
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn self_closed_paragraph_is_an_empty_normal_paragraph() -> Result<(), DocxError> {
+        let blocks = body("<w:p/><w:p><w:r><w:t>x</w:t></w:r></w:p><w:p/>")?;
+        assert_eq!(
+            blocks,
+            vec![
+                normal(Vec::new()),
+                normal(vec![Span::text("x")]),
+                normal(Vec::new())
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn breaks_tabs_and_carriage_returns_become_plain_spans() -> Result<(), DocxError> {
+        let blocks = body(
+            "<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>a</w:t><w:cr/><w:t>b</w:t><w:br/><w:tab/><w:br></w:br></w:r></w:p>",
+        )?;
+        let bold = |t: &str| Span {
+            text: t.into(),
+            bold: true,
+            ..Span::default()
+        };
+        // The break/tab spans carry no formatting even inside a bold run.
+        assert_eq!(
+            blocks,
+            vec![normal(vec![
+                bold("a"),
+                Span::text("\n"),
+                bold("b"),
+                Span::text("\n"),
+                Span::text("\t"),
+                Span::text("\n"),
+            ])]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_toggles_respect_explicit_off_values() -> Result<(), DocxError> {
+        let blocks = body(
+            r#"<w:p>
+                <w:r><w:rPr><w:b w:val="0"/><w:i w:val="off"/><w:strike w:val="false"/><w:u w:val="0"/></w:rPr><w:t>plain</w:t></w:r>
+                <w:r><w:rPr><w:b w:val="1"/><w:i w:val="on"/><w:strike w:val="true"/><w:u w:val="single"/></w:rPr><w:t>all</w:t></w:r>
+                <w:r><w:rPr><w:b/><w:i/><w:strike/><w:u/></w:rPr><w:t>bare</w:t></w:r>
+                <w:r><w:rPr><w:u w:val="false"/></w:rPr><w:t>u-false</w:t></w:r>
+            </w:p>"#,
+        )?;
+        let all = |t: &str| Span {
+            text: t.into(),
+            bold: true,
+            italic: true,
+            underline: true,
+            strike: true,
+            link: None,
+        };
+        assert_eq!(
+            blocks,
+            vec![normal(vec![
+                Span::text("plain"),
+                all("all"),
+                all("bare"),
+                Span::text("u-false"),
+            ])]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn underline_off_spellings() {
+        for (val, on) in [
+            ("none", false),
+            ("false", false),
+            ("0", false),
+            // `off` is a toggle spelling, not an underline value: it stays on.
+            ("off", true),
+            ("double", true),
+        ] {
+            let mut e = BytesStart::new("w:u");
+            e.push_attribute(("w:val", val));
+            assert_eq!(underline_on(&e), on, "w:u w:val={val}");
+        }
+    }
+
+    /// One table row of single-text cells.
+    fn row(cells: &[&str]) -> Vec<Vec<Span>> {
+        cells.iter().map(|c| vec![Span::text(*c)]).collect()
+    }
+
+    #[test]
+    fn cell_paragraphs_join_with_a_single_space() -> Result<(), DocxError> {
+        let blocks = body(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>one</w:t></w:r></w:p><w:p></w:p><w:p/><w:p><w:r><w:t>two</w:t></w:r></w:p></w:tc></w:tr></w:tbl>",
+        )?;
+        // The empty paragraphs between add no separator of their own.
+        assert_eq!(
+            blocks,
+            vec![Block::Table {
+                rows: vec![vec![vec![
+                    Span::text("one"),
+                    Span::text(" "),
+                    Span::text("two"),
+                ]]],
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nested_table_inside_a_cell_is_skipped() -> Result<(), DocxError> {
+        let blocks = body(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>outer</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc><w:tc><w:p><w:r><w:t>next</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>after</w:t></w:r></w:p>",
+        )?;
+        assert_eq!(
+            blocks,
+            vec![
+                Block::Table {
+                    rows: vec![row(&["outer", "next"])],
+                },
+                normal(vec![Span::text("after")]),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ragged_and_empty_tables_keep_their_shape() -> Result<(), DocxError> {
+        let blocks = body(
+            "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc></w:tr><w:tr></w:tr></w:tbl><w:tbl></w:tbl><w:tbl><w:tr><w:tc></w:tc></w:tr></w:tbl>",
+        )?;
+        assert_eq!(
+            blocks,
+            vec![
+                Block::Table {
+                    rows: vec![row(&["a"]), row(&["b", "c"]), Vec::new()],
+                },
+                Block::Table { rows: Vec::new() },
+                Block::Table {
+                    rows: vec![vec![Vec::new()]],
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn truncated_body_degrades_without_error() -> Result<(), DocxError> {
+        // EOF inside a paragraph/run/text keeps what was read so far.
+        assert_eq!(
+            parse_body(
+                "<w:document><w:body><w:p><w:r><w:t>cut off",
+                &Rels::new(),
+                &Numbering::default()
+            )?,
+            vec![normal(vec![Span::text("cut off")])]
+        );
+        // EOF inside a table row, a skipped drawing, and run properties.
+        assert_eq!(
+            parse_body(
+                "<w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r>",
+                &Rels::new(),
+                &Numbering::default()
+            )?,
+            vec![Block::Table {
+                rows: vec![row(&["x"])],
+            }]
+        );
+        assert_eq!(
+            parse_body(
+                "<w:body><w:p><w:r><w:drawing><w:inline>",
+                &Rels::new(),
+                &Numbering::default()
+            )?,
+            vec![normal(vec![Span::text("[image]")])]
+        );
+        assert_eq!(
+            parse_body(
+                "<w:body><w:p><w:r><w:rPr><w:b/>",
+                &Rels::new(),
+                &Numbering::default()
+            )?,
+            vec![normal(Vec::new())]
+        );
+        assert_eq!(
+            parse_body("", &Rels::new(), &Numbering::default())?,
+            Vec::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_body_xml_is_an_xml_error() {
+        for xml in [
+            // A mismatched close tag.
+            "<w:body><w:p><w:r><w:t>x</w:r></w:p></w:body>",
+            // An unterminated attribute value inside a paragraph.
+            r#"<w:body><w:p><w:pPr><w:pStyle w:val="Heading1></w:pPr></w:p></w:body>"#,
+            // A close tag with no matching open.
+            "<w:body></w:p></w:body>",
+        ] {
+            let result = parse_body(xml, &Rels::new(), &Numbering::default());
+            assert!(
+                matches!(result, Err(DocxError::Xml(_))),
+                "{xml}: {result:?}"
+            );
+        }
+    }
 }

@@ -8,17 +8,17 @@ use tokio::io::WriteHalf;
 
 use super::*;
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+pub(crate) type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// The scripted fake server side of an in-memory connection.
-struct FakeServer {
+pub(crate) struct FakeServer {
     reader: BufReader<ReadHalf<DuplexStream>>,
     writer: WriteHalf<DuplexStream>,
 }
 
 /// An in-memory wire: the client's `(read, write)` halves plus the fake
 /// server holding the other end.
-fn wire() -> (
+pub(crate) fn wire() -> (
     (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>),
     FakeServer,
 ) {
@@ -36,38 +36,83 @@ fn wire() -> (
 
 impl FakeServer {
     /// Read one message, or `Null` on EOF/parse failure.
-    async fn recv(&mut self) -> Value {
+    pub(crate) async fn recv(&mut self) -> Value {
         match codec::read_frame(&mut self.reader).await {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             _ => Value::Null,
         }
     }
 
-    async fn send(&mut self, message: &Value) {
+    pub(crate) async fn send(&mut self, message: &Value) {
         let bytes = serde_json::to_vec(message).unwrap_or_default();
         let _ = codec::write_frame(&mut self.writer, &bytes).await;
     }
 
-    async fn respond(&mut self, id: &Value, result: Value) {
+    pub(crate) async fn respond(&mut self, id: &Value, result: Value) {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
             .await;
     }
 
-    /// Serve the `initialize`/`initialized` handshake, returning the
-    /// `initialize` params for assertions.
-    async fn handshake(&mut self) -> Value {
+    /// Serve the `initialize`/`initialized` handshake advertising everything
+    /// karet gates on, returning the `initialize` params for assertions.
+    ///
+    /// Broad on purpose: a test about what `completion` *returns* should not
+    /// have to restate the handshake, while a test about a refusal says
+    /// exactly what it withholds. The old fake advertised `{}` and answered
+    /// every request anyway, which is why nothing noticed that karet issued
+    /// requests no server had agreed to — see `handshake_with`.
+    pub(crate) async fn handshake(&mut self) -> Value {
+        self.handshake_with(everything()).await
+    }
+
+    /// Serve the handshake advertising exactly `capabilities`.
+    pub(crate) async fn handshake_with(&mut self, capabilities: Value) -> Value {
         let init = self.recv().await;
         assert_eq!(init["method"], "initialize");
         let id = init["id"].clone();
-        self.respond(&id, json!({"capabilities": {}})).await;
+        self.respond(&id, json!({ "capabilities": capabilities }))
+            .await;
         let initialized = self.recv().await;
         assert_eq!(initialized["method"], "initialized");
         init["params"].clone()
     }
 }
 
+/// Every capability karet currently gates a request on.
+pub(crate) fn everything() -> Value {
+    json!({
+        "textDocumentSync": 1,
+        "hoverProvider": true,
+        "completionProvider": {"resolveProvider": true, "triggerCharacters": ["."]},
+        "signatureHelpProvider": {"triggerCharacters": ["("]},
+        "declarationProvider": true,
+        "definitionProvider": true,
+        "typeDefinitionProvider": true,
+        "implementationProvider": true,
+        "referencesProvider": true,
+        "documentHighlightProvider": true,
+        "documentSymbolProvider": true,
+        "workspaceSymbolProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
+        "documentFormattingProvider": true,
+        "documentRangeFormattingProvider": true,
+        "renameProvider": {"prepareProvider": true},
+        "foldingRangeProvider": true,
+        "selectionRangeProvider": true,
+        "callHierarchyProvider": true,
+        "typeHierarchyProvider": true,
+        "linkedEditingRangeProvider": true,
+        "inlayHintProvider": {"resolveProvider": true},
+        "inlineValueProvider": true,
+        "executeCommandProvider": {"commands": []},
+    })
+}
+
 #[tokio::test]
-async fn connect_negotiates_utf16_and_no_snippets() -> TestResult {
+async fn connect_negotiates_utf16_and_snippets() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move {
         let params = server.handshake().await;
@@ -77,7 +122,7 @@ async fn connect_negotiates_utf16_and_no_snippets() -> TestResult {
         );
         assert_eq!(
             params["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
-            json!(false)
+            json!(true)
         );
         assert_eq!(params["rootUri"], json!("file:///tmp/ws"));
         assert_eq!(
@@ -177,8 +222,19 @@ async fn server_initiated_requests_are_answered() -> TestResult {
                 "params": {"type": 1, "message": "hi"}
             }))
             .await;
+        // Nobody took the message-request stream: answered "no action chosen".
         let answer = server.recv().await;
         assert_eq!(answer["id"], json!(102));
+        assert_eq!(answer["result"], json!(null));
+
+        server
+            .send(&json!({
+                "jsonrpc": "2.0", "id": 103, "method": "window/showDocument",
+                "params": {"uri": "file:///tmp/ws/a.rs"}
+            }))
+            .await;
+        let answer = server.recv().await;
+        assert_eq!(answer["id"], json!(103));
         assert_eq!(answer["error"]["code"], json!(-32601));
     });
 
@@ -354,7 +410,7 @@ async fn completion_end_to_end() -> TestResult {
     let server_task = tokio::spawn(async move {
         server.handshake().await;
 
-        // 1: a CompletionList (isIncomplete flattened) with a snippet edit.
+        // 1: an incomplete CompletionList with a snippet edit.
         let req = server.recv().await;
         assert_eq!(req["method"], "textDocument/completion");
         assert_eq!(
@@ -406,7 +462,10 @@ async fn completion_end_to_end() -> TestResult {
     let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
     let doc = Path::new("/tmp/ws/a.rs");
 
-    let items = client.completion(doc, LineCol::new(3, 7)).await?;
+    let invoked = karet_core::CompletionTrigger::Invoked;
+    let list = client.completion(doc, LineCol::new(3, 7), invoked).await?;
+    assert!(list.incomplete);
+    let items = list.items;
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].label, "push");
     assert_eq!(items[0].kind, karet_core::CompletionKind::Method);
@@ -415,7 +474,8 @@ async fn completion_end_to_end() -> TestResult {
         Some("fn push(&mut self, ch: char)")
     );
     assert_eq!(items[0].sort_text.as_deref(), Some("0000"));
-    assert_eq!(items[0].insert_text, "push(ch)"); // snippet degraded
+    assert_eq!(items[0].insert_text, "push(ch)"); // snippet expanded
+    assert_eq!(items[0].tabstops.len(), 2); // `${1:ch}` and `$0`
     assert!(items[0].deprecated); // via tag
     let edit = items[0].edit.clone().ok_or("expected a text edit")?;
     assert_eq!(edit.range.start, LineCol::new(3, 5));
@@ -425,12 +485,13 @@ async fn completion_end_to_end() -> TestResult {
     assert_eq!(items[1].insert_text, "plain"); // label fallback
     assert_eq!(items[1].kind, karet_core::CompletionKind::Text);
 
-    let items = client.completion(doc, LineCol::new(0, 0)).await?;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].label, "sole");
+    let list = client.completion(doc, LineCol::new(0, 0), invoked).await?;
+    assert!(!list.incomplete, "a bare array is complete");
+    assert_eq!(list.items.len(), 1);
+    assert_eq!(list.items[0].label, "sole");
 
-    let items = client.completion(doc, LineCol::new(0, 0)).await?;
-    assert!(items.is_empty());
+    let list = client.completion(doc, LineCol::new(0, 0), invoked).await?;
+    assert!(list.items.is_empty());
 
     server_task.await?;
     Ok(())
@@ -510,72 +571,6 @@ async fn implementations_end_to_end() -> TestResult {
 }
 
 #[tokio::test]
-async fn supertypes_takes_two_round_trips_and_keeps_selection_ranges() -> TestResult {
-    let ((read, write), mut server) = wire();
-    let server_task = tokio::spawn(async move {
-        server.handshake().await;
-        let prepare = server.recv().await;
-        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
-        server
-            .respond(
-                &prepare["id"],
-                json!([{
-                    "name": "Widget", "kind": 23, "uri": "file:///tmp/ws/lib.rs",
-                    "range": {"start": {"line": 0, "character": 0},
-                              "end": {"line": 5, "character": 1}},
-                    "selectionRange": {"start": {"line": 0, "character": 7},
-                                       "end": {"line": 0, "character": 13}}
-                }]),
-            )
-            .await;
-        let supertypes = server.recv().await;
-        assert_eq!(supertypes["method"], "typeHierarchy/supertypes");
-        server
-            .respond(
-                &supertypes["id"],
-                json!([{
-                    "name": "Render", "kind": 11, "uri": "file:///tmp/ws/render.rs",
-                    "range": {"start": {"line": 1, "character": 0},
-                              "end": {"line": 4, "character": 1}},
-                    "selectionRange": {"start": {"line": 1, "character": 6},
-                                       "end": {"line": 1, "character": 12}}
-                }]),
-            )
-            .await;
-    });
-    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
-    let found = client
-        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
-        .await?;
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].path, Path::new("/tmp/ws/render.rs"));
-    // The selection range is the navigable one, not the whole body.
-    assert_eq!(found[0].range.start, LineCol::new(1, 6));
-    server_task.await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_server_that_declines_type_hierarchy_yields_no_supertypes() -> TestResult {
-    // Not supporting the request is not a failure — the caller degrades to its
-    // structural answer rather than surfacing an error.
-    let ((read, write), mut server) = wire();
-    let server_task = tokio::spawn(async move {
-        server.handshake().await;
-        let prepare = server.recv().await;
-        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
-        server.respond(&prepare["id"], json!(null)).await;
-    });
-    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
-    let found = client
-        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
-        .await?;
-    assert!(found.is_empty());
-    server_task.await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn shutdown_performs_the_handshake() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move {
@@ -593,15 +588,43 @@ async fn shutdown_performs_the_handshake() -> TestResult {
     Ok(())
 }
 
+/// A missing binary is reported as such, with the argv, so the message can say
+/// what has to end up on PATH rather than "failed to spawn language server".
 #[tokio::test]
-async fn spawn_missing_binary_is_a_spawn_error() {
-    let spec = LspSpec {
-        command: "karet-lsp-test-no-such-binary".into(),
-        args: vec![],
-        languages: vec!["rust".into()],
+async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResult {
+    let spec = LspSpec::new(
+        "karet-lsp-test-no-such-binary",
+        vec!["lsp".into(), "stdio".into()],
+        vec!["rust".into()],
+    );
+    let Err(LspError::Launch(failure)) = LspClient::spawn(spec, Path::new("/tmp")).await else {
+        return Err("a missing binary should be a launch failure".into());
     };
-    let err = LspClient::spawn(spec, Path::new("/tmp")).await;
-    assert!(matches!(err, Err(LspError::Spawn)));
+    assert_eq!(failure.cause, LaunchCause::NotFound);
+    assert_eq!(
+        failure.command_line(),
+        "karet-lsp-test-no-such-binary lsp stdio"
+    );
+    assert!(failure.cause.is_permanent(), "retrying cannot find it");
+    Ok(())
+}
+
+/// A server that prints usage and exits -- bare `taplo` is exactly this -- used
+/// to surface as a bare `Closed`, indistinguishable from a clean shutdown.
+#[tokio::test]
+async fn a_server_that_exits_during_the_handshake_reports_its_last_words() -> TestResult {
+    let mut command = tokio::process::Command::new("sh");
+    command.args(["-c", "echo 'error: unrecognized subcommand' >&2; exit 2"]);
+    let Err(LspError::Launch(failure)) =
+        LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
+    else {
+        return Err("a server that exits should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(2)));
+    assert_eq!(failure.diagnosis(), "error: unrecognized subcommand");
+    assert!(failure.to_string().contains("taplo"), "{failure}");
+    Ok(())
 }
 
 #[test]
@@ -637,6 +660,33 @@ async fn custom_request_round_trips_an_untyped_method() -> TestResult {
         .await?;
     assert_eq!(contents, "class Object {}");
     server_task.await?;
+    Ok(())
+}
+
+/// The caller's bound replaces the standard one in both directions: a reply
+/// inside it arrives, and silence past it is a timeout.
+#[tokio::test]
+async fn custom_request_with_is_bounded_by_its_own_timeout() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let first = server.recv().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        server.respond(&first["id"], json!("late")).await;
+        // The second request is never answered.
+        let _second = server.recv().await;
+        server
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let reply: String = client
+        .custom_request_with("test/slow", Value::Null, Duration::from_secs(30))
+        .await?;
+    assert_eq!(reply, "late");
+    let silent = client
+        .custom_request_with::<_, Value>("test/silent", Value::Null, Duration::from_millis(50))
+        .await;
+    assert!(matches!(silent, Err(LspError::Timeout)), "got {silent:?}");
+    drop(server_task.await?);
     Ok(())
 }
 
@@ -697,3 +747,140 @@ async fn raw_notifications_fan_out_every_server_notification() -> TestResult {
     assert_eq!(second.method, "textDocument/publishDiagnostics");
     Ok(())
 }
+
+/// The dying server's own words used to be a race: the stderr drain ran in a
+/// detached task, so the failure could be described before the pipe had been
+/// read, leaving a bare `exit 2` with no diagnosis about one launch in five.
+///
+/// Made deterministic by a child that exits at once while a background job
+/// still holds the stderr write end for a moment: nothing has been read when
+/// the child is reaped, so only a report that joins the drain can carry the
+/// server's last words. The job's stdout goes to `/dev/null` so the handshake
+/// still fails the instant the server itself exits.
+#[tokio::test]
+async fn a_dying_servers_last_words_are_never_raced_away() -> TestResult {
+    let mut command = tokio::process::Command::new("sh");
+    command.args([
+        "-c",
+        "{ sleep 0.05; echo 'error: unrecognized subcommand' >&2; } >/dev/null & exit 2",
+    ]);
+    let Err(LspError::Launch(failure)) =
+        LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
+    else {
+        return Err("a server that exits should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(2)));
+    assert_eq!(
+        failure.diagnosis(),
+        "error: unrecognized subcommand",
+        "the diagnosis was raced away: {failure}"
+    );
+    Ok(())
+}
+
+// A 30-iteration repeat of the same launch (`echo ... >&2; exit 2`) used to sit
+// here, on the theory that repetition would catch the race a single attempt
+// misses. It was removed rather than kept: it is not a falsifier. Deleting the
+// `STDERR_DRAIN_GRACE` join that the fix added leaves it green through all
+// thirty attempts, because that shape of child has always written and closed
+// its stderr before the reaper looks -- while its deterministic sibling above,
+// which holds the write end open past the exit, fails immediately. A loop that
+// stays green against the unfixed code buys nothing but runtime, and a
+// probabilistic test has no place in the merge gate.
+
+/// How a launch failure is classified when a child running `script` ends its
+/// handshake with `error` — the seam [`LspClient::spawn_command_with`] reaches
+/// once the handshake has failed.
+async fn classify(script: &str, error: LspError) -> Result<LspError, std::io::Error> {
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let tail = launch::StderrTail::default();
+    let drain = child
+        .stderr
+        .take()
+        .map(|stderr| drain_stderr(stderr, "gopls".to_owned(), tail.clone()));
+    Ok(
+        LspClient::launch_failure(child, tail, drain, error, |cause, exit, stderr| {
+            LspError::Launch(Box::new(
+                LaunchFailure::new("gopls", vec!["serve".to_owned()], cause)
+                    .with_exit(exit)
+                    .with_stderr(stderr),
+            ))
+        })
+        .await,
+    )
+}
+
+/// `Exited` is permanent, so it has to mean the process is gone. A server that
+/// is still running and merely slow to answer `initialize` used to be labelled
+/// `Exited` purely because it had logged something, which disabled it for the
+/// rest of the session.
+#[tokio::test]
+async fn a_live_server_that_times_out_is_not_written_off() -> TestResult {
+    let error = classify("echo 'loading packages' >&2; sleep 30", LspError::Timeout).await?;
+    let LspError::Launch(failure) = error else {
+        return Err("a timed-out handshake should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Timeout);
+    assert_eq!(failure.exit, None, "the child is still running");
+    assert!(
+        !failure.cause.is_permanent(),
+        "a slow server may still answer: {failure}"
+    );
+    assert_eq!(failure.diagnosis(), "loading packages");
+    Ok(())
+}
+
+/// A server that closed its stdio but is still running is a protocol failure,
+/// not a launch one -- and above all not `Exited`, whatever it wrote first.
+#[tokio::test]
+async fn a_live_server_that_closes_its_stdio_is_not_reported_as_exited() -> TestResult {
+    let error = classify("echo 'goodbye' >&2; sleep 30", LspError::Closed).await?;
+    assert!(
+        matches!(error, LspError::Closed),
+        "a running child must not be reported as exited: {error}"
+    );
+    Ok(())
+}
+
+/// A child that really did exit still reports its status, with the cause that
+/// stops the runtime from respawning it forever.
+#[tokio::test]
+async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
+    let error = classify("echo 'boom' >&2; exit 3", LspError::Closed).await?;
+    let LspError::Launch(failure) = error else {
+        return Err("a dead child should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(3)));
+    assert!(failure.cause.is_permanent());
+    assert_eq!(failure.diagnosis(), "boom");
+    Ok(())
+}
+
+#[path = "gating_tests.rs"]
+mod gating;
+
+#[path = "hierarchy_tests.rs"]
+mod hierarchy;
+
+#[path = "formatting_tests.rs"]
+mod formatting;
+
+#[path = "registration_tests.rs"]
+mod registration;
+
+#[path = "client_capability_tests.rs"]
+mod client_capability;
+
+#[path = "protocol_tests.rs"]
+mod protocol;
+
+#[path = "sync_tests.rs"]
+mod sync;

@@ -17,47 +17,70 @@
 //!
 //! # Vocabulary map
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
-//! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
-//! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`CompletionItem`],
-//!   [`Hover`], [`InlayHint`], [`SignatureHelp`], [`CodeAction`], ….
+//! - Text coordinates: [`BytePos`], [`BytePoint`], [`LineCol`], [`Span`], [`Range`],
+//!   [`LineIndex`].
+//! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
+//!   [`CompletionItem`], [`Hover`], [`DocumentHighlight`], [`InlayHint`], [`VirtualText`],
+//!   [`SignatureHelp`], [`CodeAction`], ….
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
-//! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
-//!   [`FoldRegions`].
-//! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
+//! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], the line-relative
+//!   [`TokenSpan`], [`FoldRegion`], [`FoldKind`], [`FoldRegions`], plus the span
+//!   helpers [`shift_span`] and [`merge_spans`].
+//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`CompletionOptions`],
+//!   [`SignatureHelpOptions`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
+//! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
+//!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
 //! - Notifications: [`Notification`], [`NotificationKind`], [`severity_role`].
+//! - Debugger inspection: [`StackFrame`], [`DebugScope`], [`DebugVariable`] with
+//!   their [`FrameId`]/[`VariablesRef`] handles, and [`DebugOutputCategory`].
 
 mod blame;
+mod capability;
 mod coord;
+mod debug;
 mod edit;
-mod error;
 mod fs;
 mod graph;
 mod highlight;
 mod model;
 mod notify;
-mod provider;
+mod semantic_token;
 mod token;
 mod word;
 
 pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
+pub use capability::Capabilities;
+pub use capability::CompletionOptions;
+pub use capability::ServerFeature;
+pub use capability::SignatureHelpOptions;
+pub use coord::BytePoint;
 pub use coord::BytePos;
 pub use coord::LineCol;
 pub use coord::LineIndex;
 pub use coord::Range;
 pub use coord::Span;
+pub use debug::DebugOutputCategory;
+pub use debug::DebugScope;
+pub use debug::DebugVariable;
+pub use debug::FrameId;
+pub use debug::StackFrame;
+pub use debug::VariablesRef;
 pub use edit::AppliedEdit;
-pub use edit::BytePoint;
+pub use edit::ApplyWorkspaceEditResult;
 pub use edit::Change;
 pub use edit::CursorState;
+pub use edit::DeleteOptions;
+pub use edit::DocumentChange;
+pub use edit::DocumentEdit;
 pub use edit::EditCause;
+pub use edit::FileOptions;
 pub use edit::Selection;
 pub use edit::TextEdit;
 pub use edit::WorkspaceEdit;
-pub use error::CoreError;
 pub use fs::DirEntry;
 pub use fs::sort_entries;
 pub use graph::GraphEdge;
@@ -65,38 +88,67 @@ pub use graph::GraphEdgeKind;
 pub use graph::GraphNode;
 pub use graph::GraphNodeKind;
 pub use graph::GraphView;
+pub use highlight::FoldKind;
 pub use highlight::FoldRegion;
 pub use highlight::FoldRegions;
 pub use highlight::HighlightSpan;
 pub use highlight::Highlights;
+pub use highlight::SemanticBlock;
+pub use highlight::SemanticBlocks;
+pub use highlight::TokenSpan;
+pub use highlight::merge_spans;
+pub use highlight::shift_span;
 pub use model::CodeAction;
+pub use model::CodeLens;
 pub use model::CommandId;
 pub use model::CompletionItem;
 pub use model::CompletionKind;
+pub use model::CompletionList;
+pub use model::CompletionTrigger;
 pub use model::Decoration;
+pub use model::DecorationColor;
 pub use model::DecorationKind;
 pub use model::Diagnostic;
 pub use model::DiagnosticTag;
+pub use model::DocumentColor;
+pub use model::DocumentHighlight;
+pub use model::DocumentLink;
+pub use model::EolAlign;
+pub use model::HierarchyDirection;
+pub use model::HierarchyItem;
+pub use model::HighlightKind;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;
+pub use model::InlayHintLabelPart;
+pub use model::InlineAsk;
+pub use model::InlineCompletionItem;
+pub use model::InlineCompletionTrigger;
+pub use model::InlineGhost;
 pub use model::Location;
 pub use model::Markup;
 pub use model::MarkupKind;
 pub use model::ParamInfo;
+pub use model::PrepareRename;
 pub use model::RelatedInfo;
 pub use model::Severity;
 pub use model::Signature;
 pub use model::SignatureHelp;
 pub use model::Symbol;
 pub use model::SymbolKind;
+pub use model::Tabstop;
+pub use model::VirtualLine;
+pub use model::VirtualLineSide;
+pub use model::VirtualText;
+pub use model::VirtualTextPlacement;
+pub use model::WorkspaceSymbol;
 pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
-pub use provider::DiagnosticFormatter;
-pub use provider::FormattedDiagnostic;
-pub use provider::SymbolProvider;
+pub use semantic_token::SemanticToken;
+pub use semantic_token::SemanticTokenModifiers;
+pub use semantic_token::SemanticTokenType;
 pub use token::Emphasis;
 pub use token::StandardToken;
 pub use token::ThemeRole;

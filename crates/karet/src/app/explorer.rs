@@ -1,8 +1,43 @@
-use karet_session::api::PathMutation;
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_filetype::IconStyle;
+use karet_session::RequestId;
+use karet_session::VcsCommand;
+use karet_session::api::PathMutation;
+use karet_vcs::RepositorySummary;
+use karet_widgets::PendingEdit;
+use karet_widgets::Spinner;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::describe_paths;
+use crate::app::explorer_mutate::FollowUp;
+use crate::app::notifications::Report;
+use crate::app::state::ContextMenu;
+use crate::app::state::ContextMenuEntry;
+use crate::app::state::ExplorerFileClipboard;
+use crate::app::state::ExplorerFileOp;
+use crate::command::Command;
+use crate::keymap::SidebarPanel;
+use crate::paths::path_under;
+use crate::paths::same_path;
+use crate::pending::Pending;
 
 impl App {
+    /// The absolute explorer row index under the hover cursor, if the mouse is over
+    /// the explorer's content starting at row `top` (accounts for the current
+    /// scroll offset). The painter passes the row it is laying the tree out at,
+    /// which last frame's geometry may not match yet.
+    pub(crate) fn hovered_explorer_row(&self, top: u16) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
+    }
+
     /// Start background status reads for nested repository rows not already cached.
     pub(crate) fn request_nested_repository_statuses(&mut self) {
         self.build_explorer();
@@ -23,7 +58,7 @@ impl App {
                 continue;
             }
             if let Some(request) =
-                self.send(SessionCommand::NestedRepositoryStatus { path: path.clone() })
+                self.send(VcsCommand::NestedRepositoryStatus { path: path.clone() })
             {
                 self.nested_repository_pending
                     .insert(request, (path, Pending::start()));
@@ -95,7 +130,7 @@ impl App {
     pub(super) fn explorer_begin_new(&mut self, folder: bool) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.build_explorer();
         self.explorer.begin_new(folder);
     }
@@ -120,11 +155,12 @@ impl App {
         for request in pending {
             self.cancel_backend_request(request);
         }
-        self.send_command(SessionCommand::RefreshVcs);
+        self.send_command(VcsCommand::Refresh);
     }
 
-    /// Apply the explorer inline edit: create the file/folder or rename on disk, then
-    /// reload the tree (and open a newly-created file).
+    /// Apply the explorer inline edit: ask the backend to create the file/folder
+    /// or rename it; the tree reloads (and a newly-created file opens) when the
+    /// answer lands.
     pub(super) fn explorer_commit_edit(&mut self) {
         let Some(pending) = self.explorer.take_edit() else {
             return;
@@ -138,9 +174,9 @@ impl App {
                     PathMutation::CreateFile { path: path.clone() }
                 };
                 let follow_up = if folder {
-                    crate::app::explorer_mutate::FollowUp::CreatedFolder { edit }
+                    FollowUp::CreatedFolder { edit }
                 } else {
-                    crate::app::explorer_mutate::FollowUp::CreatedFile { path, edit }
+                    FollowUp::CreatedFile { path, edit }
                 };
                 self.mutate_path(mutation, follow_up);
             },
@@ -150,7 +186,7 @@ impl App {
                         from: from.clone(),
                         to: to.clone(),
                     },
-                    crate::app::explorer_mutate::FollowUp::Renamed { from, to, edit },
+                    FollowUp::Renamed { from, to, edit },
                 );
             },
         }
@@ -173,7 +209,11 @@ impl App {
         self.build_explorer();
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("explorer: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "explorer: select a file first",
+            );
             return;
         }
         let count = paths.len();
@@ -182,24 +222,33 @@ impl App {
             ExplorerFileOp::Copy => "copied",
             ExplorerFileOp::Cut => "cut",
         };
-        self.status = Some(format!("{verb} {count} explorer item(s)"));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Io,
+            format!("{verb} {count} explorer item(s)"),
+        );
     }
 
     /// Paste the internal explorer file clipboard into the selected destination.
     ///
     /// Every item is its own request: one failure reports itself and the rest go
-    /// on, which is what the synchronous version did and what a user pasting a
-    /// dozen files expects. The checks that remain here are the ones answerable
-    /// from paths alone; whether a source still exists, and whether a destination
-    /// is free, are the backend's to answer — it refuses to clobber, so a name the
-    /// explorer had not heard of fails loudly instead of overwriting.
+    /// on, which is what a user pasting a dozen files expects. The checks that
+    /// remain here are the ones answerable from paths alone; whether a source
+    /// still exists, and whether a destination is free, are the backend's to
+    /// answer — it refuses to clobber, so a name the explorer had not heard of
+    /// fails loudly instead of overwriting. Each success reports the running
+    /// count on one card (see `explorer_mutate`).
     pub(super) fn explorer_paste_files(&mut self) {
         let Some(clipboard) = self.explorer_clipboard.clone() else {
-            self.status = Some("paste: no explorer files".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "paste: no explorer files",
+            );
             return;
         };
         let dest_dir = self.explorer_paste_destination();
-        let mut taken: std::collections::BTreeSet<PathBuf> = self
+        let mut taken: BTreeSet<PathBuf> = self
             .explorer
             .rows()
             .iter()
@@ -223,7 +272,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if path_contains_or_equals(source, &dest_dir) {
+            if path_under(source, &dest_dir) {
                 first_error.get_or_insert_with(|| {
                     format!(
                         "paste failed: cannot paste {} into itself",
@@ -248,10 +297,7 @@ impl App {
                 },
             };
             let moved = (clipboard.op == ExplorerFileOp::Cut).then(|| (source.clone(), target));
-            self.mutate_path(
-                mutation,
-                crate::app::explorer_mutate::FollowUp::Pasted { moved },
-            );
+            self.mutate_path(mutation, FollowUp::Pasted { moved });
             requested += 1;
         }
 
@@ -259,13 +305,13 @@ impl App {
             self.explorer_clipboard = None;
         }
         if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+            self.notify(Report::Failure, NotificationKind::Io, message);
         } else if requested == 0 && skipped > 0 {
-            self.status = Some("paste: already in target folder".to_string());
-        } else if requested > 0 {
-            // Superseded per answer by the running count; this is what the user
-            // sees while the backend is still working through the list.
-            self.status = Some(format!("pasting {requested} item(s)…"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "paste: already in target folder",
+            );
         }
     }
 
@@ -301,16 +347,19 @@ impl App {
     pub(super) fn explorer_duplicate_files(&mut self) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("duplicate: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "duplicate: select a file first",
+            );
             return;
         }
-        let known: std::collections::BTreeSet<PathBuf> = self
+        let known: BTreeSet<PathBuf> = self
             .explorer
             .rows()
             .iter()
             .map(|row| row.path.clone())
             .collect();
-        let mut requested = 0usize;
         // Reset before submitting, matching paste: the running count belongs to
         // this batch, not the one before it.
         self.explorer_paste_done = 0;
@@ -324,12 +373,8 @@ impl App {
                     from: source.clone(),
                     to: target,
                 },
-                crate::app::explorer_mutate::FollowUp::Pasted { moved: None },
+                FollowUp::Pasted { moved: None },
             );
-            requested += 1;
-        }
-        if requested > 0 {
-            self.status = Some(format!("duplicating {requested} item(s)…"));
         }
     }
 
@@ -337,7 +382,11 @@ impl App {
     pub(super) fn explorer_copy_path(&mut self, relative: bool) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("copy path: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "copy path: select a file first",
+            );
             return;
         }
         let text = paths
@@ -359,44 +408,49 @@ impl App {
     pub(super) fn explorer_arm_delete(&mut self) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("delete: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "delete: select a file first",
+            );
             return;
         }
         if self.has_dirty_tabs_under(&paths) {
             self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::Io,
                 "delete blocked: save or close dirty files first",
             );
             return;
         }
         self.context_menu_clear();
-        self.status = Some(format!(
-            "delete {} item(s)? press y to confirm, any other key to cancel",
-            paths.len()
-        ));
-        self.pending_explorer_delete = Some(paths);
+        let body = format!(
+            "Permanently removes {} from disk. Folders are deleted with everything \
+             inside them. This cannot be undone.",
+            describe_paths(&paths, &self.root)
+        );
+        let title = format!("Delete {} item(s)?", paths.len());
+        self.confirm_action(
+            title,
+            body,
+            "Keep",
+            "Delete",
+            ConfirmAction::DeleteExplorerPaths(paths),
+        );
     }
 
-    /// Resolve a pending explorer delete confirmation.
-    pub(super) fn resolve_explorer_delete(&mut self, confirmed: bool) {
-        let Some(paths) = self.pending_explorer_delete.take() else {
-            return;
-        };
-        if !confirmed {
-            self.status = Some("delete cancelled".to_string());
+    /// Delete `paths` from disk, once confirmed.
+    pub(super) fn delete_explorer_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
             return;
         }
         self.close_tabs_under(&paths);
         // Each path is its own request, so one failure does not abandon the rest —
-        // the same "delete what you can, report what you cannot" behaviour, now
-        // with the reporting arriving per answer.
+        // "delete what you can, report what you cannot", with the reporting
+        // arriving per answer.
         self.explorer_delete_done = 0;
         for path in paths {
-            self.mutate_path(
-                PathMutation::Delete { path },
-                crate::app::explorer_mutate::FollowUp::Deleted,
-            );
+            self.mutate_path(PathMutation::Delete { path }, FollowUp::Deleted);
         }
     }
 
@@ -433,14 +487,10 @@ impl App {
         .collect()
     }
 
-    pub(super) fn context_menu_clear(&mut self) {
-        self.context_menu = None;
-    }
-
     pub(super) fn open_context_menu(&mut self, x: u16, y: u16, row: Option<usize>) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.build_explorer();
         let items = if let Some(row) = row {
             if !self.explorer.is_selected(row) {
@@ -456,125 +506,32 @@ impl App {
     pub(super) fn open_context_menu_for_selection(&mut self) {
         self.sidebar_panel = SidebarPanel::Explorer;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.build_explorer();
         let cursor = self.explorer.cursor();
-        let y = self.sidebar_content_rect.y.saturating_add(
+        let (left, top) = self.explorer_content_origin();
+        let y = top.saturating_add(
             cursor
                 .saturating_sub(self.explorer.offset())
                 .try_into()
                 .unwrap_or(0),
         );
-        let x = self.sidebar_content_rect.x.saturating_add(2);
+        let x = left.saturating_add(2);
         let row = (!self.explorer.rows().is_empty()).then_some(cursor);
         self.open_context_menu(x, y, row);
     }
 
-    /// Open the pane context menu at `(x, y)` for the focused pane's active tab.
-    /// Only file-backed tabs get one; a pathless tab (Welcome, commit graph, …)
-    /// opens nothing.
-    pub(super) fn open_pane_context_menu(&mut self, x: u16, y: u16) {
-        let Some(path) = self
-            .tabs
-            .get(self.active)
-            .and_then(Tab::path)
-            .map(Path::to_path_buf)
-        else {
-            return;
-        };
-        let entries = self.pane_context_entries(&path);
-        self.context_menu = Some(ContextMenu::new(x, y, entries));
-    }
-
-    /// The pane context menu's rows for the active file at `path`. The path items
-    /// always work; the link items are enabled exactly when [`remote::link`] can
-    /// build them (the same call their dispatch runs), with its refusal reason as
-    /// the disabled note.
-    pub(super) fn pane_context_entries(&mut self, path: &Path) -> Vec<ContextMenuEntry> {
-        let mut entries = vec![
-            ContextMenuEntry::enabled(Command::CopyPath),
-            ContextMenuEntry::enabled(Command::CopyRelativePath),
-            ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
-        ];
-        // Owned disabled-notes computed up front, so the facts borrow does not
-        // overlap the &mut calls below. `None` = enabled.
-        let link_notes: [Option<String>; 3] = {
-            let facts = self.cached_remote_facts(path);
-            let note = |kind| match facts {
-                Some(Ok(facts)) => remote::link(&facts.link_target(), kind, None).err(),
-                Some(Err(note)) => Some(note.clone()),
-                None => Some("resolving repository remote…".to_string()),
-            };
-            [
-                note(remote::LinkKind::RemoteFile),
-                note(remote::LinkKind::GithubPermalink),
-                note(remote::LinkKind::GithubHeadLink),
-            ]
-        };
-        let link_entry = |command, note: &Option<String>| match note {
-            None => ContextMenuEntry::enabled(command),
-            Some(note) => ContextMenuEntry::disabled(command, note.clone()),
-        };
-        entries.push(link_entry(Command::CopyRemoteFileUrl, &link_notes[0]));
-        // The Open Changes actions need a repository and a tracked file, but no
-        // remote — their enablement is checked separately from the link rows.
-        let changes_note = self.open_changes_note(path);
-        for command in [
-            Command::OpenChangesWithPrevious,
-            Command::OpenChangesWithRevision,
-            Command::OpenChangesWithBranch,
-        ] {
-            entries.push(match &changes_note {
-                None => ContextMenuEntry::enabled(command),
-                Some(note) => ContextMenuEntry::disabled(command, note.clone()),
-            });
+    /// The cell the explorer tree's first row sits at: where the last frame
+    /// painted it, or, when that frame painted no sidebar, where the next frame
+    /// lays it out — column 0, below the view switcher (absent in Zen Mode) and
+    /// the sidebar's one-row header, as [`ui::draw`] places it.
+    fn explorer_content_origin(&self) -> (u16, u16) {
+        let painted = self.last_frame.sidebar_content_rect;
+        if painted.width > 0 && painted.height > 0 {
+            return (painted.x, painted.y);
         }
-        entries.push(link_entry(Command::CopyGithubPermalink, &link_notes[1]));
-        entries.push(link_entry(Command::CopyGithubHeadLink, &link_notes[2]));
-        entries
-    }
-
-    pub(super) fn context_menu_step(&mut self, delta: i32) {
-        if let Some(menu) = self.context_menu.as_mut() {
-            menu.select_by(delta);
-        }
-    }
-
-    pub(super) fn accept_context_menu(&mut self) {
-        let Some(entry) = self
-            .context_menu
-            .as_ref()
-            .and_then(ContextMenu::selected_entry)
-        else {
-            self.context_menu = None;
-            return;
-        };
-        if !entry.enabled {
-            // Refuse a disabled row: surface its explanatory note (when it has one)
-            // and keep the menu open so another row can be chosen.
-            if let Some(note) = entry.note.clone() {
-                self.status = Some(note);
-            }
-            return;
-        }
-        let action = entry.action.clone();
-        self.context_menu = None;
-        match action {
-            ContextMenuAction::Command(command) => self.dispatch(command),
-            ContextMenuAction::ReplaceSpelling {
-                doc,
-                range,
-                replacement,
-            } => self.replace_spelling(doc, range, replacement),
-            ContextMenuAction::AddSpellingToDictionary { word, target } => match target {
-                DictionaryTarget::Project => self.add_spelling_to_project_dictionary(word),
-                DictionaryTarget::User => self.add_spelling_to_user_dictionary(word),
-            },
-        }
-    }
-
-    pub(super) fn close_context_menu(&mut self) {
-        self.context_menu_clear();
+        let view_switcher = u16::from(self.modes.zen.is_none());
+        (0, view_switcher.saturating_add(1))
     }
 }
 
@@ -598,4 +555,53 @@ fn repository_summary_label(summary: RepositorySummary, icons: IconStyle) -> Str
         parts.push(format!("-{}", summary.removed));
     }
     parts.join(" ")
+}
+
+/// A destination path under `dir`, suffixing when the source name is already
+/// `taken`.
+///
+/// `taken` is what the explorer has been told is in `dir`, not what a probe of the
+/// filesystem would say — the files may be on another machine. A name the tree has
+/// not heard of can still collide, and the backend refuses to clobber rather than
+/// overwrite, so the worst case is a reported failure instead of lost data.
+fn unique_child_path(dir: &Path, source: &Path, taken: &BTreeSet<PathBuf>) -> PathBuf {
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "item".to_string());
+    let first = dir.join(&name);
+    if !taken.contains(&first) {
+        return first;
+    }
+
+    for n in 1usize.. {
+        let candidate = dir.join(copy_name(source, &name, n));
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix search should always return");
+}
+
+/// Build `name copy.ext`, `name copy 2.ext`, or `dir copy` style conflict names.
+fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
+    let suffix = if n == 1 {
+        " copy".to_string()
+    } else {
+        format!(" copy {n}")
+    };
+    if source.is_dir() {
+        return format!("{fallback}{suffix}");
+    }
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    match source.extension().map(|ext| ext.to_string_lossy()) {
+        Some(ext) if !ext.is_empty() => format!("{stem}{suffix}.{ext}"),
+        _ => format!("{stem}{suffix}"),
+    }
 }

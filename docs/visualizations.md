@@ -15,26 +15,27 @@ function usage, plus an orthogonal history lens:
 |---|---|---|---|---|
 | **Workspace dependency map** | package / crate | `dependable-core` (offline, from `Cargo.lock`) | "how do the packages depend on each other?" | ✅ shipped |
 | **Reverse-dependency / impact** | package / crate | `dependable` inverted, rooted at a package | "what breaks if I change this package?" | 🧭 designed |
-| **Symbol usage / call graph** | function / symbol | tree-sitter `tags`, resolved across the workspace | "who calls this / what does this call, downstream?" | 🧭 designed |
+| **Symbol usage / call graph** | function / symbol | `karet-seam`'s per-language call queries, resolved across the workspace | "who calls this / what does this call, downstream?" | 🟡 partial — edges and measures shipped, graph view designed |
 | **Commit-history DAG** | commit / branch | `gix` (parents → lanes) | "how did the branches and merges actually flow?" | ✅ shipped |
 
 `GraphView` already carries the vocabulary for all four — `GraphNodeKind::{Package,
 Module, Symbol, External, Commit}` and `GraphEdgeKind::{Dependency, Call, Contains,
-Parent}` — and the session seam exposes a `GraphKind::{Dependency, Usage}`, so the
-designed lenses are additive: a new producer that emits a `GraphView`, not a new
-renderer.
+Parent}` — and the session seam's `GraphKind` names `Dependency` (produced today) and
+`Usage` (reserved; no producer yet), so the designed lenses are additive: a new
+producer that emits a `GraphView`, not a new renderer.
 
 ## Commit-history DAG (shipped)
 
-The Source-Control panel renders the commit log as a **lane-based DAG** instead of a
-flat list. `karet-vcs` captures each commit's parents; `karet-graph::assign_lanes` walks
-the commits (newest first) and produces one rail gutter per row, drawn to the left of
-the existing hash / summary / age columns.
+The commit log renders as a **lane-based DAG** instead of a flat list. `karet-vcs`
+captures each commit's parents; `karet-graph::assign_lanes` walks the commits (newest
+first) and produces one rail gutter per row, drawn to the left of the hash / refs /
+summary / age columns. One renderer (`ui::commit::list`) paints those rows everywhere
+they appear, so the surfaces cannot drift apart.
 
 Glyphs: `●` a commit, `◉` `HEAD`, `◆` a merge (2+ parents); `│` a rail, `─` a
 connector, `╭ ╮ ╰ ╯` rounded corners where a lane opens (a branch/merge) or folds back.
-Each lane gets a stable colour so parallel branches read apart. A branch-and-merge
-history renders like:
+Each lane gets a stable colour — resolved through the theme, like every other span on
+the row — so parallel branches read apart. A branch-and-merge history renders like:
 
 ```
 ◉─╮  e4f1a2  feat(pdf): page scroll bar          Justin  2h
@@ -43,6 +44,27 @@ history renders like:
 ●─╮  9569303 feat(editor): caret restore on undo   Justin  7h
   ●  37da4ba fix(editor): undo/redo caret          Justin  8h
 ```
+
+It appears on two surfaces:
+
+- **The Source Control panel** — a short pinned region at the bottom, under a `COMMITS`
+  title. The title is a button: hovering it highlights it, and clicking opens the full
+  view. Clicking a commit row opens that commit.
+- **The commit-graph view** — a first-class tab at the same tier as an editor, opened by
+  **Source Control: Commit Graph** (`g` in the Source Control panel), by clicking the
+  `COMMITS` title, or scoped to one file by **Show File History**. Several can be open
+  at once; each owns its own paging cursor.
+
+The view gives the graph the **whole pane** — a branchy history with many lanes and long
+summaries is exactly what a side pane would squeeze — and pans in **both axes**. Its
+header names the branch, its upstream and divergence, any in-progress operation, and the
+tip commit (author, hash, age) with how much history is loaded behind it. Selecting a
+commit and pressing `Enter` opens it as its own commit tab rather than an embedded pane.
+
+History is **prefetched two screens ahead** of the viewport in large pages, and each
+arriving page re-checks, so fetching chains forward on its own: the graph is drawn as
+far as the eye can see, and the trailing `⋯ more` affordance only becomes reachable if
+you scroll faster than the backend answers.
 
 ## Workspace dependency map (shipped)
 
@@ -57,19 +79,19 @@ This is language-agnostic by design: `dependable` supports ~10 ecosystems, and t
 `GraphView` container is ecosystem-neutral. Only the offline *builder* is Rust-specific
 today (see the upstream requests below).
 
-## Symbol usage / call graph (designed)
+## Symbol usage / call graph (partial)
 
 Given a function, this lens shows every function/site that uses it downstream — a
-semantically-aware, language-agnostic view backed by tree-sitter `tags` queries (each
-grammar's `TAGS_QUERY`, which most karet grammars ship). Definitions and references are
-extracted per file and resolved across the workspace into a `GraphView` of
-`GraphNodeKind::Symbol` nodes and `GraphEdgeKind::Call` edges, rendered through the same
-rail/tree renderer rooted at the focused symbol.
+language-agnostic view over the calls [`karet-seam`](seam.md#calls) records. Each
+language contributes one tree-sitter call query; calls are resolved across the workspace
+into `calls` edges tagged with how sure the resolution is, and every function is measured
+by the code it reaches. That half has shipped, with `reach:`/`callers:` query terms and
+per-function measures on the `--seam-query` surface.
 
-The neutral model and the `GraphKind::Usage` seam are in place; landing this lens needs
-a match-grouped tree-sitter query pass in `karet-treesitter` (to pair each `@name`
-capture with its `@definition.*` / `@reference.*`) plus the workspace tags walk — a
-self-contained follow-up on top of this backbone.
+What remains is the drawing: projecting those edges into a `GraphView` of
+`GraphNodeKind::Symbol` nodes and `GraphEdgeKind::Call` edges behind the existing
+`GraphKind::Usage` seam, rendered through the same rail/tree renderer rooted at the
+focused symbol.
 
 ## Upstream `dependable` requests
 

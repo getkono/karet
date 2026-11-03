@@ -8,7 +8,7 @@
 
 /// The marker of a list item.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ListMarker {
+pub(crate) enum ListMarker {
     /// An unordered bullet: `-`, `*`, or `+`.
     Bullet(char),
     /// An ordered marker: the number plus its `.` or `)` delimiter.
@@ -23,7 +23,7 @@ pub enum ListMarker {
 impl ListMarker {
     /// The marker text an item *following* this one carries (`- `, `7. `).
     #[must_use]
-    pub fn next(&self) -> String {
+    pub(crate) fn next(&self) -> String {
         match self {
             Self::Bullet(c) => format!("{c} "),
             Self::Ordered { number, delimiter } => format!("{}{delimiter} ", number + 1),
@@ -33,7 +33,7 @@ impl ListMarker {
 
 /// What a line says about the list item it opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListContext {
+pub(crate) struct ListContext {
     /// The leading whitespace, verbatim.
     pub indent: String,
     /// The marker.
@@ -49,7 +49,7 @@ pub struct ListContext {
 
 /// Parse `line` as a list-item opener, if it is one.
 #[must_use]
-pub fn list_context(line: &str) -> Option<ListContext> {
+pub(crate) fn list_context(line: &str) -> Option<ListContext> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
     while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
@@ -158,7 +158,7 @@ impl FenceScan {
 /// Scans from the top, so a caller walking every line of a document should
 /// drive a [`FenceScan`] instead of calling this once per line.
 #[must_use]
-pub fn in_fenced_code_block(text: &str, line: usize) -> bool {
+pub(crate) fn in_fenced_code_block(text: &str, line: usize) -> bool {
     let mut scan = FenceScan::default();
     for l in text.lines().take(line) {
         scan.feed(l);
@@ -333,7 +333,7 @@ pub fn toggle_surround(line: &str, start: usize, end: usize, marker: &str) -> Op
     }
     if s == e {
         // Expand to the word under the caret.
-        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let is_word = karet_core::is_word_char;
         let mut ws = s;
         while ws > 0 && chars.get(ws - 1).copied().is_some_and(is_word) {
             ws -= 1;

@@ -1,4 +1,83 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use crossterm::event::KeyModifiers;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_filetype::FileKind;
+use karet_filetype::IconStyle;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::ChangeSummary;
+#[cfg(test)]
+use karet_session::ConfigDiagnostic;
+use karet_session::LoadedConfig;
+use karet_session::Settings;
+use karet_session::VcsCommand;
+use karet_theme::Theme;
+use karet_widgets::FileTreeState;
+use karet_widgets::ListSelection;
+use karet_widgets::PaneLayout;
+use karet_widgets::SplitDir;
+
+use crate::app::App;
+use crate::app::DEFAULT_SIDEBAR_WIDTH;
+use crate::app::code_actions;
+use crate::app::code_lens;
+use crate::app::completion;
+use crate::app::debugging;
+use crate::app::diffs;
+use crate::app::editor;
+use crate::app::focus::KeyboardOwner;
+use crate::app::github;
+use crate::app::hierarchy;
+use crate::app::hit::FrameHits;
+use crate::app::inlay;
+use crate::app::inline_completion;
+use crate::app::language_servers;
+use crate::app::link_color;
+use crate::app::notifications::Report;
+use crate::app::occurrences;
+use crate::app::on_type;
+use crate::app::problems::ProblemsChrome;
+use crate::app::problems::ProblemsPanel;
+use crate::app::quick_open;
+use crate::app::review;
+use crate::app::seam;
+use crate::app::search::SearchPanel;
+use crate::app::signature;
+use crate::app::spelling::SpellingPanel;
+use crate::app::state::CommitInput;
+use crate::app::state::DocState;
+use crate::app::state::OutlinePanel;
+use crate::app::state::Scm;
+use crate::app::state::ScmChrome;
+use crate::app::state::ScreenModes;
+use crate::app::state::SearchChrome;
+use crate::app::state::SpellingChrome;
+use crate::app::state::StoredPane;
+use crate::app::state::TerminalCaps;
+use crate::app::state::TodosChrome;
+use crate::app::syntax_select;
+use crate::app::theme_picker;
+use crate::app::todos::TodosPanel;
+use crate::app::vi;
+use crate::clipboard::Clipboard;
+use crate::command::Command;
+use crate::keymap::EditorTab;
+use crate::keymap::Focus;
+use crate::keymap::FocusTarget;
+use crate::keymap::SidebarPanel;
+use crate::notify::NotificationCenter;
+use crate::tab::ChangedFile;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
+use crate::view::View;
+use crate::workspace;
 
 impl App {
     /// Build the shell rooted at `root`, with the staged/working change groups for
@@ -14,6 +93,11 @@ impl App {
         let mut changes = staged;
         changes.extend(working);
         Self {
+            file_index: workspace::FileIndex::new(root.clone()),
+            workspace_symbols: quick_open::WorkspaceSymbolSearch::default(),
+            recent: workspace::RecentStore::in_memory(),
+            relaunch: None,
+            keymap_files: crate::keymap::user::paths(std::slice::from_ref(&root)),
             root,
             settings: Settings::default(),
             loaded_config: LoadedConfig::default(),
@@ -23,7 +107,9 @@ impl App {
             icon_style: IconStyle::default(),
             icon_override: None,
             caps: TerminalCaps::detect(),
-            focus: Focus::Sidebar,
+            view: View::default(),
+            github: github::GithubSurface::default(),
+            keyboard: KeyboardOwner::default(),
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
             explorer: FileTreeState::new(),
@@ -60,73 +146,78 @@ impl App {
             stored: HashMap::new(),
             closed: Vec::new(),
             view_history: Vec::new(),
-            overlay: None,
             find_open: false,
             commit_input: CommitInput::default(),
+            commit_console: crate::app::commit_console::CommitConsole::default(),
+            ai_commit: crate::app::scm::aicommit::AiCommitUi::default(),
             rev_input: None,
-            pending_discard: None,
-            pending_explorer_delete: None,
+            confirm: None,
             pending_close: None,
             operation_blocker: None,
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
+            vi: vi::ViState::default(),
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
             todos: TodosPanel::default(),
             wakatime_status: None,
             review: review::ReviewStore::default(),
             todos_ui: TodosChrome::default(),
-            status: None,
+            problems: ProblemsPanel::default(),
+            problems_ui: ProblemsChrome::default(),
+            hierarchy: hierarchy::HierarchyPanel::default(),
+            hierarchy_ui: hierarchy::HierarchyChrome::default(),
             notifications: NotificationCenter::default(),
-            toast_hits: Vec::new(),
-            sidebar_rect: Rect::default(),
-            main_rect: Rect::default(),
+            last_frame: FrameHits::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
-            sidebar_divider_x: 0,
             sidebar_resizing: false,
             diff_layout: ViewMode::Unified,
-            pane_frames: Vec::new(),
-            pane_dividers: Vec::new(),
             pane_divider_hover: None,
             pane_resize: None,
-            scroll_hits: ScrollHits::default(),
             scroll_drag: None,
             tab_drag: None,
-            sidebar_content_rect: Rect::default(),
             hover: None,
             pane_action_hover: None,
             sidebar_header_hover: None,
-            panel_hits: Vec::new(),
             outline: OutlinePanel::default(),
-            header_action_hits: Vec::new(),
+            modes: ScreenModes::default(),
             nested_repository_status: HashMap::new(),
             nested_repository_pending: HashMap::new(),
             scm_ui: ScmChrome::default(),
             text_field_drag: None,
             search_ui: SearchChrome::default(),
             spelling_ui: SpellingChrome::default(),
-            status_rect: Rect::default(),
-            status_hits: Vec::new(),
-            editor_rect: Rect::default(),
-            markdown_preview_rect: Rect::default(),
-            blame_rect: None,
-            markdown_link_hits: Vec::new(),
             pending_definition: None,
-            definition_jumps: VecDeque::new(),
+            rename: None,
+            pending_rename: None,
+            code_actions: code_actions::CodeActions::default(),
+            inline_completion: inline_completion::InlineCompletions::default(),
+            occurrences: occurrences::Occurrences::default(),
+            nav_history: HashMap::new(),
             definition_hover: None,
             markdown_link_hover: None,
-            commit_badge_rect: None,
-            editor_selecting: false,
+            editor_drag: None,
+            column_select: None,
+            surface_selection: None,
+            surface_selecting: None,
             last_click: None,
             click_streak: 0,
+            click_origin: (editor::ClickSurface::Other, KeyModifiers::NONE),
             clipboard: Clipboard::new(),
-            image_area: None,
+            preview_images: crate::preview_images::PreviewImages::default(),
+            #[cfg(feature = "terminal")]
+            terminals: crate::terminal::TerminalHost::default(),
+            #[cfg(feature = "terminal")]
+            terminal_frame: super::terminal::TerminalFrame::default(),
+            #[cfg(feature = "terminal")]
+            tasks: super::tasks::TaskRuns::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
             graphics_caret_blink_epoch: Instant::now(),
             should_quit: false,
+            farewell: Vec::new(),
             backend: None,
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
@@ -134,22 +225,25 @@ impl App {
             docs: DocState::default(),
             lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
             auto_save_pending: HashMap::new(),
-            pending_completion: None,
-            completion: None,
-            completion_matcher: karet_fuzzy::Matcher::new(),
+            auto_closers: None,
+            completion: completion::Completion::default(),
             pending_hover: None,
+            pending_expand: None,
+            pending_linked: None,
+            on_type: on_type::OnTypeState::default(),
+            theme_ui: theme_picker::ThemeUi::default(),
             hover_ui: None,
+            signature: signature::SignatureState::default(),
+            inlay_ui: inlay::InlayUi::default(),
+            code_lenses: code_lens::CodeLensState::default(),
+            links_colors: link_color::LinkColorState::default(),
             diagnostic_view: None,
-            debug_state: karet_session::DebugSessionState::Idle,
-            debug_detail: String::new(),
+            debugger: debugging::Debugger::default(),
             breakpoints: std::collections::HashMap::new(),
-            debug_output: std::collections::VecDeque::new(),
-            debug_panel: DebugPanel::default(),
-            debug_ui: DebugChrome::default(),
-            debug_stopped: None,
             startup_commands: Vec::new(),
-            inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
+            layered_trees: syntax_select::LayeredTreeCache::default(),
             pending_commit_detail: HashMap::new(),
+            pending_compare: HashMap::new(),
             latex_previews: HashMap::new(),
             pending_prepared_diffs: HashMap::new(),
             pending_conversions: HashMap::new(),
@@ -157,22 +251,21 @@ impl App {
             pending_bytes: HashMap::new(),
             file_list_req: None,
             pending_listings: HashMap::new(),
-            markdownlint_config: None,
-            markdownlint_requests: Vec::new(),
             presentation: None,
             reported_viewports: HashMap::new(),
             pending_reveal: None,
             pending_mutations: HashMap::new(),
             explorer_delete_done: 0,
             explorer_paste_done: 0,
-            pending_goto: HashMap::new(),
             pending_startup_diffs: Vec::new(),
+            startup_surface_requested: false,
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
-            graph_log_req: None,
+            graph_log_reqs: HashMap::new(),
             seam_index_req: None,
             seam_query_req: None,
             seam_node_req: None,
+            seam_discovery: seam::roots::RootDiscovery::default(),
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
@@ -237,15 +330,9 @@ impl App {
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;
 
-        // Theme: the built-in "dark", or a path to a VS Code .json theme.
-        match load_theme(&settings.workbench.color_theme) {
-            Ok(theme) => self.theme = theme,
-            Err(message) => self.config_diagnostics.push(ConfigDiagnostic {
-                path: PathBuf::from(&settings.workbench.color_theme),
-                message,
-                severity: Severity::Warning,
-            }),
-        }
+        // Theme: the built-in "dark", or a path to a VS Code .json theme —
+        // unless the theme picker chose one this session.
+        self.apply_configured_theme(&settings.workbench.color_theme);
 
         if self.icon_override.is_none() {
             self.icon_style = settings.workbench.icon_style.into();
@@ -269,7 +356,29 @@ impl App {
             }
         }
 
+        // A changed hint setting is the user's latest word: it ends any flip
+        // the toggle key made against the old one.
+        let inlay_changed = settings.editor.inlay_hints != self.settings.editor.inlay_hints;
+        let decorations_turned_on = settings.git.decorations && !self.settings.git.decorations;
+        if !settings.git.decorations {
+            self.forget_line_changes(None);
+        }
+        // Changed `lsp` settings reconfigure the language servers, so what a
+        // document's old server said it formats on no longer holds.
+        if settings.lsp != self.settings.lsp {
+            self.forget_on_type_triggers();
+        }
         self.settings = settings;
+        #[cfg(feature = "terminal")]
+        self.forget_removed_tasks();
+        if inlay_changed {
+            self.inlay_ui.flipped = false;
+        }
+        self.apply_inlay_visibility();
+        self.apply_code_lens_visibility();
+        if decorations_turned_on {
+            self.request_all_line_changes();
+        }
         self.reconcile_auto_save_settings(Instant::now());
     }
 
@@ -293,8 +402,7 @@ impl App {
         // `line`/`col` are 1-based with a minimum of 1; `saturating_sub` maps them to
         // the editor's 0-based coordinates, and `goto` clamps into the buffer.
         let pos = LineCol::new(line.saturating_sub(1), col.saturating_sub(1));
-        self.focus_by_file_line(path, pos);
-        self.focus = Focus::Editor;
+        self.focus_by_file_line(path, pos, true);
     }
 
     /// Open `path` in a new right split at startup (from the `--split` flag): the
@@ -306,21 +414,24 @@ impl App {
     /// warning notification says so — automation gets its file either way.
     pub fn open_startup_split(&mut self, path: &Path) {
         let from = self.focus_pane();
-        if !self.layout.can_split(from, SplitDir::Right, self.main_rect) {
+        if !self
+            .layout
+            .can_split(from, SplitDir::Right, self.last_frame.main_rect)
+        {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("file")
                 .to_string();
             self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::System,
                 format!("--split: no room for another pane; opened {name} in the current pane"),
             );
             self.open_path(path);
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);
@@ -335,7 +446,7 @@ impl App {
         // the new pane's tabs live and register its document with the backend.
         self.layout.set_focus(new_pane);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.register_doc(self.active);
     }
 
@@ -382,7 +493,7 @@ impl App {
                     .push((view, new.to_path_buf(), old_text, new_text));
                 return;
             },
-            _ => Box::new(FileView::new(diffs::binary_prepared_change(new))),
+            _ => Box::new(ChangedFile::new(diffs::binary_prepared_change(new))),
         };
         self.push_tab(Tab::diff(
             title,
@@ -397,9 +508,9 @@ impl App {
     /// right after the backend attaches (the tabs were reserved at CLI time).
     pub(super) fn request_pending_startup_diffs(&mut self) {
         for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
-            match self.send(SessionCommand::PrepareDiff { path, old, new }) {
+            match self.send(VcsCommand::PrepareDiff { path, old, new }) {
                 Some(request) => {
-                    self.pending_prepared_diffs.insert(request, view);
+                    self.pending_prepared_diffs.insert(request, (view, None));
                 },
                 None => self.fail_diff_tab(view, "diff backend is unavailable"),
             }
@@ -417,7 +528,8 @@ impl App {
     /// Run the queued `--command` palette commands, once the backend can serve
     /// them.
     ///
-    /// They wait for the active tab's document id. A command that queries or
+    /// They wait for the active tab's document id and for the first snapshot
+    /// that fills it with the document's text. A command that queries or
     /// edits a document — Show Hover, Trigger Suggest, the markdown edits —
     /// returns early without one, so running them while the tab is still
     /// pending silently dropped them. A session whose active tab is not a
@@ -426,10 +538,12 @@ impl App {
         if self.startup_commands.is_empty() {
             return;
         }
-        let pending = matches!(
-            self.tabs.get(self.active).map(|tab| &tab.kind),
-            Some(TabKind::Code { doc: None, .. })
-        );
+        // Waiting on the document id, or on the text it fills the tab with: a
+        // command run against the empty placeholder would act on nothing, at
+        // the top of the file.
+        let pending = self.tabs.get(self.active).is_some_and(|tab| {
+            matches!(&tab.kind, TabKind::Code { doc, .. } if doc.is_none() || tab.fill_caret.is_some())
+        });
         if pending {
             return;
         }
@@ -439,11 +553,20 @@ impl App {
     }
 
     /// Apply the CLI's startup focus override after startup tabs are opened.
+    /// Show the `--view` surface at startup, before `--focus` is applied so an
+    /// explicit focus request still has the last word.
+    pub fn apply_startup_view(&mut self, view: crate::cli::ViewChoice) {
+        self.select_view(view.into());
+        self.startup_surface_requested = true;
+    }
+
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
-        self.focus = match focus {
+        let focus = match focus {
             crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
             crate::cli::FocusChoice::Sidebar | crate::cli::FocusChoice::Editor => Focus::Editor,
         };
+        self.keyboard.focus_on(focus);
+        self.startup_surface_requested = true;
     }
 
     /// Whether the active tab is a diff (enables diff-specific keys).
@@ -464,40 +587,61 @@ impl App {
                 | TabKind::Commit { .. }
                 | TabKind::Compare { .. }
                 | TabKind::StashPreview { .. }
+                | TabKind::ServerLog { .. }
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }
                 | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
-            Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Seam(_)) => EditorTab::Seam,
+            #[cfg(feature = "terminal")]
+            Some(TabKind::Terminal(_)) => EditorTab::Terminal,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..
             }) => EditorTab::Oversize,
-            _ => EditorTab::Plain,
+            None | Some(TabKind::Welcome | TabKind::Code { .. } | TabKind::Placeholder { .. }) => {
+                EditorTab::Plain
+            },
+            #[cfg(feature = "images")]
+            Some(TabKind::Image { .. }) => EditorTab::Plain,
+            #[cfg(feature = "pdf")]
+            Some(TabKind::Document { .. }) => EditorTab::Plain,
         }
     }
 
     /// The pane that currently holds keyboard focus — the single value that
     /// determines which keybinding layer is live.
     pub(crate) fn focus_target(&self) -> FocusTarget {
-        FocusTarget::from(self.focus, self.sidebar_panel, self.active_editor_tab())
+        FocusTarget::from(
+            self.keyboard.focus(),
+            self.sidebar_panel,
+            self.active_editor_tab(),
+            self.view,
+        )
     }
 
     /// Whether the active frame should suppress the editor's cell caret because the
     /// app will draw the Kitty graphics caret after ratatui flushes the frame.
     pub(crate) fn graphical_cursor_enabled(&self) -> bool {
+        // A modal preset's Normal mode puts the cursor *on* a character, which
+        // the cell caret's block shows and the graphical bar would not.
+        if matches!(
+            self.vi_editing(),
+            crate::keymap::Editing::VimNormal | crate::keymap::Editing::HelixNormal
+        ) {
+            return false;
+        }
         let configured =
             self.tabs
                 .get(self.active)
                 .map_or(self.settings.editor.graphical_cursor, |tab| {
                     self.settings
                         .editor
-                        .for_language(tab_language(tab))
+                        .for_language(tab.config_file_type())
                         .graphical_cursor()
                 });
         match configured {
@@ -511,5 +655,35 @@ impl App {
         self.caps.kitty_keyboard
             && self.caps.kitty_graphics
             && self.caps.graphics == GraphicsProtocol::Kitty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::support::app;
+    use crate::cli::FocusChoice;
+    use crate::keymap::Focus;
+
+    /// `--focus sidebar` lands on the sidebar only when it is showing; a hidden
+    /// sidebar, or `--focus editor`, leaves the editor focused whatever had focus.
+    #[test]
+    fn startup_focus_honours_a_visible_sidebar_only() {
+        let rows = [
+            (FocusChoice::Sidebar, true, Focus::Editor, Focus::Sidebar),
+            (FocusChoice::Sidebar, false, Focus::Sidebar, Focus::Editor),
+            (FocusChoice::Editor, true, Focus::Sidebar, Focus::Editor),
+            (FocusChoice::Editor, false, Focus::Editor, Focus::Editor),
+        ];
+        for (choice, visible, before, expect) in rows {
+            let mut app = app();
+            app.sidebar_visible = visible;
+            app.keyboard.focus_on(before);
+            app.apply_startup_focus(choice);
+            assert_eq!(
+                app.keyboard.focus(),
+                expect,
+                "{choice:?} with sidebar visible={visible}"
+            );
+        }
     }
 }

@@ -1,6 +1,18 @@
 //! GitHub creation-form state, keyboard editing, and submission.
 
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::GithubNewIssue;
+use karet_session::GithubNewPullRequest;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::github::state::GithubFormField;
+use crate::app::github::state::GithubViewState;
+use crate::app::notifications::Report;
 
 /// New-issue editor state.
 #[derive(Debug, Default)]
@@ -224,8 +236,7 @@ impl App {
         {
             return false;
         }
-        let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        else {
+        let Some(view) = self.github.active_page_mut() else {
             return false;
         };
         match view {
@@ -244,10 +255,14 @@ impl App {
             Issue(GithubNewIssue),
             PullRequest(GithubNewPullRequest),
         }
-        let submission = match self.tabs.get(self.active).map(|tab| &tab.kind) {
-            Some(TabKind::Github(GithubViewState::NewIssue { form, .. })) => {
+        let submission = match self.github.active_page() {
+            Some(GithubViewState::NewIssue { form, .. }) => {
                 if form.title.trim().is_empty() {
-                    self.status = Some("issue title is required".to_string());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "issue title is required",
+                    );
                     return;
                 }
                 Submission::Issue(GithubNewIssue {
@@ -259,13 +274,16 @@ impl App {
                     issue_type: nonempty(&form.issue_type),
                 })
             },
-            Some(TabKind::Github(GithubViewState::NewPullRequest { form, .. })) => {
+            Some(GithubViewState::NewPullRequest { form, .. }) => {
                 if form.title.trim().is_empty()
                     || form.head.trim().is_empty()
                     || form.base.trim().is_empty()
                 {
-                    self.status =
-                        Some("pull request title, head, and base are required".to_string());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "pull request title, head, and base are required",
+                    );
                     return;
                 }
                 Submission::PullRequest(GithubNewPullRequest {
@@ -280,14 +298,13 @@ impl App {
             _ => return,
         };
         let command = match submission {
-            Submission::Issue(issue) => SessionCommand::GithubCreateIssue { issue },
+            Submission::Issue(issue) => GithubCommand::CreateIssue { issue },
             Submission::PullRequest(pull_request) => {
-                SessionCommand::GithubCreatePullRequest { pull_request }
+                GithubCommand::CreatePullRequest { pull_request }
             },
         };
         let request = self.send(command);
-        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(view) = self.github.active_page_mut() {
             match view {
                 GithubViewState::NewIssue { form, .. } => form.submitting = request,
                 GithubViewState::NewPullRequest { form, .. } => form.submitting = request,

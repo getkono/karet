@@ -1,4 +1,8 @@
-use karet_core::Span;
+//! What the session keeps on disk across restarts: crash-recovery swaps (and
+//! the timer that writes them) and persisted undo history.
+//!
+//! This module decides when to write, recover, or discard; the on-disk formats
+//! and the store itself belong to [`crate::backup`].
 
 use super::*;
 
@@ -29,7 +33,7 @@ impl Session {
     /// opened is left on disk for a later attempt.
     pub(super) fn recover_swaps(&mut self, id: RequestId) {
         for record in std::mem::take(&mut self.pending_swaps) {
-            self.open(id, record.meta.original.clone(), None);
+            self.open(Some(id), record.meta.original.clone(), None);
             let Some(&doc_id) = self.store.by_path.get(&record.meta.original) else {
                 continue;
             };
@@ -37,7 +41,7 @@ impl Session {
                 .store
                 .docs
                 .get(&doc_id)
-                .and_then(|doc| whole_document_change(doc, record.content.clone()));
+                .map(|doc| whole_document_change(doc, record.content.clone()));
             if let Some(change) = change {
                 self.apply(id, doc_id, &change, EditCause::Replace);
                 discard(&record.swap_path);
@@ -52,43 +56,55 @@ impl Session {
         }
     }
 
-    // --- visualizations ---------------------------------------------------
+    // --- persisted undo ---------------------------------------------------
 
-    /// Build the workspace package-dependency graph and emit it, or surface a failure
-    /// (no lockfile / parse error) as a notification.
-    #[cfg(feature = "viz")]
-    pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
-        let Some(root) = self.config.roots.first() else {
+    /// Give a freshly loaded `buffer` for `path` the configured undo cap, and —
+    /// with `files.persistentUndo` on — the undo history a previous session
+    /// left for it. A history whose content fingerprint no longer matches the
+    /// file (it was edited elsewhere since) is deleted rather than restored.
+    pub(super) fn prepare_undo(&self, path: &Path, buffer: &mut TextBuffer) {
+        buffer.set_undo_limit(self.config.settings().files.undo_cap());
+        if !self.config.settings().files.persistent_undo {
+            return;
+        }
+        let Some(store) = self.swaps.as_ref() else {
             return;
         };
-        match crate::viz::dependency_graph(root) {
-            Ok(view) => {
-                let title = root
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("workspace")
-                    .to_string();
-                self.emit(
-                    Some(id),
-                    Event::GraphReady {
-                        kind: crate::api::GraphKind::Dependency,
-                        title,
-                        view,
-                    },
-                );
-            },
-            Err(e) => self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::System,
-                    message: format!("dependency graph: {e}"),
-                },
-            ),
+        if let Some(history) = store.read_undo(path)
+            && buffer.restore_history(history).is_err()
+        {
+            store.remove_undo(path);
         }
     }
 
-    /// Write a crash-recovery swap for `doc_id` immediately (used when a save fails).
+    /// Persist `doc_id`'s undo history, if its buffer matches what is on disk.
+    /// Called after a successful save and when a clean document closes — the
+    /// two moments the history describes the file's text. With
+    /// `files.persistentUndo` off, any history kept earlier is deleted instead,
+    /// so switching it off does not leave old edits on disk.
+    pub(super) fn persist_undo(&self, doc_id: DocumentId) {
+        let (Some(store), Some(doc)) = (self.swaps.as_ref(), self.store.docs.get(&doc_id)) else {
+            return;
+        };
+        if !self.config.settings().files.persistent_undo {
+            store.remove_undo(&doc.path);
+            return;
+        }
+        if doc.must_create || doc.buffer.is_dirty() {
+            return;
+        }
+        // A failed write only costs undo across the next restart.
+        let _ = store.write_undo(&doc.path, &doc.buffer.history_snapshot());
+    }
+
+    // --- crash-recovery backups -------------------------------------------
+
+    /// Write a crash-recovery swap for `doc_id` now, whatever the buffer's state.
+    ///
+    /// The one place a swap is actually written. A failed save calls it directly
+    /// — that is a data-loss event, and the backup is the whole of the recovery
+    /// — while every routine backup arrives through [`Self::back_up_document`],
+    /// which asks the settings and staleness questions this deliberately does not.
     pub(super) fn write_swap(&mut self, doc_id: DocumentId) {
         let Session { swaps, store, .. } = self;
         let Some(swap_store) = swaps.as_ref() else {
@@ -113,114 +129,69 @@ impl Session {
 
     /// Back up every document that has been dirty past the configured backup interval
     /// (and changed since its last swap). Called on a timer by the backend actor.
-    pub(crate) fn backup_tick(&mut self) {
-        let Session {
-            swaps,
-            store,
-            config,
-            clock,
-            ..
-        } = self;
-        if !config.settings.files.backup {
-            return;
-        }
-        let Some(store_ref) = swaps.as_ref() else {
-            return;
-        };
-        let interval = config.settings.files.backup_interval;
-        let now = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
-        for doc in store.docs.values_mut() {
-            if !doc.buffer.is_dirty() {
-                continue;
-            }
-            let Some(since) = doc.dirty_since else {
-                continue;
-            };
-            if now.saturating_sub(since) < interval {
-                continue;
-            }
-            let version = doc.buffer.version();
-            if doc.backed_up_version == Some(version) {
-                continue; // already backed up at this version
-            }
-            let (hash, size) = doc
-                .buffer
-                .saved_state()
-                .map(|s| (Some(s.hash), Some(s.size)))
-                .unwrap_or((None, None));
-            if store_ref
-                .write(&doc.path, &doc.buffer.text(), hash, size, version)
-                .is_ok()
-            {
-                doc.backed_up_version = Some(version);
-            }
-        }
+    /// One period of the session's own clock: every sweep that has to happen
+    /// whether or not the user is typing.
+    ///
+    /// The format-on-save deadline runs first and unconditionally — it is not
+    /// part of crash recovery, and [`Self::backup_tick`] declines to do anything
+    /// at all when backups are switched off.
+    pub(crate) fn tick(&mut self) {
+        self.tick_at(self.elapsed_ms());
     }
 
-    /// Decide what an external change to `doc_id`'s file means: ignore our own
-    /// write, reload a clean buffer, or flag a conflict on a dirty one.
-    pub(super) fn on_external_change(&mut self, doc_id: DocumentId, path: &Path) {
-        // Our own save? Compare the on-disk stat to the fingerprint we recorded when
-        // we last read or wrote the file (match on size + mtime, never inode — an
-        // atomic save renames a new inode over the target).
-        let our_write = match (std::fs::metadata(path), self.store.docs.get(&doc_id)) {
-            (Ok(meta), Some(doc)) => doc.buffer.saved_state().is_some_and(|saved| {
-                meta.len() == saved.size && meta.modified().is_ok_and(|m| m == saved.mtime)
-            }),
-            _ => false,
-        };
-        if our_write {
+    /// [`Self::tick`] against a given clock reading, so a test can reach the
+    /// format-on-save deadline without waiting out its wall-clock duration —
+    /// the same seam, and for the same reason, as
+    /// [`Self::expire_format_on_save`].
+    pub(crate) fn tick_at(&mut self, now: u64) {
+        self.expire_format_on_save(now);
+        self.backup_tick();
+    }
+
+    pub(crate) fn backup_tick(&mut self) {
+        // Cheap short-circuits for a sweep that usually has nothing to do.
+        // [`Self::back_up_document`] asks the same two questions per document,
+        // so a swap is never written past them whichever way it is reached.
+        if !self.config.settings().files.backup || self.swaps.is_none() {
             return;
         }
-        if self
+        let interval = self.config.settings().files.backup_interval;
+        let now = self.elapsed_ms();
+        let due: Vec<DocumentId> = self
             .store
             .docs
-            .get(&doc_id)
-            .is_some_and(|d| d.buffer.is_dirty())
-        {
-            self.emit(None, Event::ExternalConflict { doc: doc_id });
-        } else {
-            self.reload(doc_id);
+            .iter()
+            .filter(|(_, doc)| {
+                doc.dirty_since
+                    .is_some_and(|since| now.saturating_sub(since) >= interval)
+            })
+            .map(|(doc_id, _)| *doc_id)
+            .collect();
+        for doc_id in due {
+            self.back_up_document(doc_id);
         }
     }
 
-    /// Reload a clean document from disk (history reset, version bumped), then emit
-    /// [`Event::Reloaded`] and publish the fresh snapshot.
-    pub(super) fn reload(&mut self, doc_id: DocumentId) {
-        let (version, spell_without_syntax) = {
-            let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
-            let lsp = &mut self.lsp;
-            let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                return;
-            };
-            let Ok((fresh, _)) = load_document(&doc.path) else {
-                return; // file vanished or became unreadable; leave the buffer as-is
-            };
-            doc.buffer.adopt_content(fresh);
-            apply_serialization_settings(&mut doc.buffer, doc.settings);
-            // The buffer was replaced wholesale, so the worker's retained tree is void:
-            // `None` edits force it to start over.
-            let spell_without_syntax = update_syntax(settings, highlight_tx, doc_id, doc, None);
-            // The on-disk content is the new truth; keep the server in sync.
-            lsp.document_changed(
-                doc.language_selector,
-                &doc.path,
-                doc.buffer.version(),
-                || doc.buffer.text(),
-            );
-            (doc.buffer.version(), spell_without_syntax)
-        };
-        self.emit(
-            None,
-            Event::Reloaded {
-                doc: doc_id,
-                version,
-            },
-        );
-        self.publish(doc_id, None);
-        if spell_without_syntax {
-            self.schedule_spell(doc_id);
+    /// Back `doc_id` up now, regardless of how long it has been dirty.
+    ///
+    /// The interval is the only thing this skips. A swap still needs backups to
+    /// be switched on, a store to write to, and a dirty buffer that has changed
+    /// since its last swap — backing up an unchanged one would only rewrite the
+    /// swap it already has.
+    ///
+    /// Called by [`Self::backup_tick`] for every document whose interval has
+    /// come due, and by a save that parks on a formatter: that save's disk write
+    /// is deferred for as long as the formatter takes, and for that whole window
+    /// the swap is the only other copy of the buffer there is.
+    pub(super) fn back_up_document(&mut self, doc_id: DocumentId) {
+        if !self.config.settings().files.backup {
+            return;
+        }
+        let due = self.store.docs.get(&doc_id).is_some_and(|doc| {
+            doc.buffer.is_dirty() && doc.backed_up_version != Some(doc.buffer.version())
+        });
+        if due {
+            self.write_swap(doc_id);
         }
     }
 
@@ -228,143 +199,5 @@ impl Session {
 
     pub(super) fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
-    }
-
-    /// Persist a dictionary word to the requested settings layer and adopt it
-    /// into the live settings so the spell-checker accepts it immediately.
-    pub(super) fn add_dictionary_word(
-        &mut self,
-        id: RequestId,
-        word: String,
-        scope: crate::api::DictionaryScope,
-        create_project: bool,
-    ) {
-        let result = match scope {
-            crate::api::DictionaryScope::User => crate::config::add_user_dictionary_word(&word),
-            crate::api::DictionaryScope::Project => crate::config::add_project_dictionary_word(
-                &self.config.roots,
-                &word,
-                create_project,
-            ),
-        };
-        match result {
-            Ok(path) => {
-                let words = &mut self.config.settings.spellcheck.words;
-                if !words.iter().any(|existing| existing == &word) {
-                    words.push(word.clone());
-                }
-                // Re-check now rather than waiting for the settings write to
-                // round-trip through the file watcher: the user just told us the
-                // word is fine, so the squiggle should go on that keystroke — and
-                // a session with no config watcher would never be told at all.
-                let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
-                for doc_id in docs {
-                    self.schedule_spell(doc_id);
-                }
-                self.emit(Some(id), Event::DictionaryWordAdded { word, path });
-            },
-            Err(crate::config::ConfigWriteError::ProjectCreationRequiresConfirmation(path)) => {
-                self.emit(
-                    Some(id),
-                    Event::ProjectSettingsCreationRequired { word, path },
-                );
-            },
-            Err(error) => self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::System,
-                    message: format!("dictionary: {error}"),
-                },
-            ),
-        }
-    }
-
-    /// Persist the inline-blame toggle and adopt it into the live settings.
-    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
-        self.config.settings.git.blame = enabled;
-        if let Err(error) = crate::config::set_user_blame(enabled) {
-            self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::System,
-                    message: format!("settings: {error}"),
-                },
-            );
-        }
-    }
-
-    pub(super) fn emit(&self, id: Option<RequestId>, event: Event) {
-        self.events.send((id, event)).ok();
-    }
-
-    /// Push a render-only snapshot of `doc_id` on the snapshot stream. `cursor` is
-    /// `Some` only for undo/redo, carrying the caret the editor should jump to; every
-    /// other publish passes `None` and leaves the UI's cursor untouched.
-    pub(super) fn publish(&self, doc_id: DocumentId, cursor: Option<CursorState>) {
-        if let Some(doc) = self.store.docs.get(&doc_id) {
-            let snapshot = Arc::new(DocSnapshot {
-                version: doc.buffer.version(),
-                buffer: doc.buffer.content_snapshot(),
-                highlights: self.viewport_highlights(doc_id, doc),
-                folds: doc.folds.clone(),
-                semantic_blocks: doc.semantic_blocks.clone(),
-                decorations: Arc::new(doc.decorations.clone()),
-                syntax_error_lines: doc.error_lines.clone(),
-                language: doc.language,
-                dirty: doc.buffer.is_dirty(),
-                cursor,
-            });
-            self.snapshots.send((doc_id, snapshot)).ok();
-        }
-    }
-
-    /// The highlight spans a snapshot of `doc` should carry.
-    ///
-    /// A view resolves highlights per rendered line, so spans outside what a
-    /// client is displaying are never read. When a client has declared a
-    /// viewport, narrowing to it is what keeps the answer to a keystroke about a
-    /// screenful rather than a whole file's worth of spans — the difference
-    /// between a usable and an unusable connection once the two are not on the
-    /// same machine.
-    ///
-    /// With no viewport declared the whole set is shared as-is, at no cost:
-    /// that is the local default, and the `Arc` clone is free.
-    fn viewport_highlights(&self, doc_id: DocumentId, doc: &Document) -> Arc<Highlights> {
-        let Some((first, last)) = self.viewport_lines(doc_id) else {
-            return doc.highlights.clone();
-        };
-        let buffer = &doc.buffer;
-        let last_line = buffer.line_count().saturating_sub(1);
-        // A viewport can outrun the buffer when an edit shortened the document
-        // before the client's next scroll; clamping is what keeps that a
-        // no-highlight frame instead of an empty one.
-        let Some(start) = buffer.line_to_byte_range(first.min(last_line as u32) as usize) else {
-            return doc.highlights.clone();
-        };
-        let Some(end) = buffer.line_to_byte_range(last.min(last_line as u32) as usize) else {
-            return doc.highlights.clone();
-        };
-        let Ok(span) = Span::new(start.start, end.end) else {
-            return doc.highlights.clone();
-        };
-        Arc::new(Highlights::from_sorted_spans(
-            doc.highlights.spans_in(span).to_vec(),
-        ))
-    }
-
-    /// Without the `viz` feature the dependency-graph lens is absent; say so
-    /// instead of silently ignoring the request.
-    #[cfg(not(feature = "viz"))]
-    pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
-        self.emit(
-            Some(id),
-            Event::Notification {
-                severity: Severity::Error,
-                kind: karet_core::NotificationKind::System,
-                message: "dependency graph support is not compiled in (feature `viz`)".to_string(),
-            },
-        );
     }
 }

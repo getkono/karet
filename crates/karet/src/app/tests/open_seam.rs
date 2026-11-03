@@ -6,12 +6,56 @@
 //! which is the property that lets the shell render a workspace on another
 //! machine.
 
-use karet_fileview::viewer::FileKind;
+use karet_filetype::FileKind;
+use karet_session::DocumentCommand;
+use karet_session::WorkspaceCommand;
 use karet_session::api::FileChunk;
 use karet_session::api::PathClass;
 
 use super::support::*;
 use crate::app::*;
+
+/// Whether `command` registers a document.
+fn is_open(command: &SessionCommand) -> bool {
+    matches!(
+        command,
+        SessionCommand::Document(DocumentCommand::Open { .. })
+    )
+}
+
+/// Whether `command` asks for a classification.
+fn is_classify(command: &SessionCommand) -> bool {
+    matches!(
+        command,
+        SessionCommand::Workspace(WorkspaceCommand::ClassifyPath { .. })
+    )
+}
+
+/// Whether `command` reads a file's bytes.
+fn is_read(command: &SessionCommand) -> bool {
+    matches!(
+        command,
+        SessionCommand::Workspace(WorkspaceCommand::ReadFileBytes { .. })
+    )
+}
+
+/// Whether `command` walks the workspace for quick-open.
+fn is_list(command: &SessionCommand) -> bool {
+    matches!(
+        command,
+        SessionCommand::Workspace(WorkspaceCommand::ListFiles { .. })
+    )
+}
+
+/// The first visible line a viewport report declares, if `command` is one.
+fn viewport_first_line(command: &SessionCommand) -> Option<u32> {
+    match command {
+        SessionCommand::Document(DocumentCommand::SetViewport { first_line, .. }) => {
+            Some(*first_line)
+        },
+        _ => None,
+    }
+}
 
 /// An app with a recording backend, rooted at a path that does not exist here.
 ///
@@ -60,7 +104,7 @@ fn opening_a_source_file_reserves_a_tab_and_registers_the_document() {
     assert!(
         find_request(&backend, |command| matches!(
             command,
-            SessionCommand::OpenDocument { path: asked, .. } if asked == &path
+            SessionCommand::Document(DocumentCommand::Open { path: asked, .. }) if asked == &path
         ))
         .is_some(),
         "the document is registered with the backend, not read from disk"
@@ -80,7 +124,8 @@ fn opening_media_asks_the_backend_what_it_really_is() {
     assert!(
         find_request(&backend, |command| matches!(
             command,
-            SessionCommand::ClassifyPath { path: asked, .. } if asked == &path
+            SessionCommand::Workspace(WorkspaceCommand::ClassifyPath { path: asked, .. })
+                if asked == &path
         ))
         .is_some(),
         "only the machine holding the file can classify its bytes"
@@ -96,13 +141,7 @@ fn opening_a_text_shaped_file_costs_no_classification_round_trip() {
     app.open_path(Path::new("/not/on/this/machine/blob.bin"));
     app.register_open_tabs();
 
-    assert!(
-        find_request(&backend, |command| matches!(
-            command,
-            SessionCommand::ClassifyPath { .. }
-        ))
-        .is_none()
-    );
+    assert!(find_request(&backend, is_classify).is_none());
 }
 
 /// Attaching a backend re-walks every open tab, and a user can reopen a file
@@ -117,7 +156,7 @@ fn a_second_registration_does_not_ask_again() {
 
     let asks = sent(&backend)
         .iter()
-        .filter(|(_, command)| matches!(command, SessionCommand::ClassifyPath { .. }))
+        .filter(|(_, command)| is_classify(command))
         .count();
     assert_eq!(asks, 1);
 }
@@ -128,9 +167,7 @@ fn a_classified_binary_file_has_its_bytes_requested_and_rendered() {
     let path = PathBuf::from("/not/on/this/machine/logo.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ClassifyPath { .. })
-    }) else {
+    let Some(classify) = find_request(&backend, is_classify) else {
         return;
     };
 
@@ -145,9 +182,7 @@ fn a_classified_binary_file_has_its_bytes_requested_and_rendered() {
             }),
         },
     );
-    let Some(read) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ReadFileBytes { .. })
-    }) else {
+    let Some(read) = find_request(&backend, is_read) else {
         return;
     };
     app.on_backend_event(
@@ -176,9 +211,7 @@ fn a_chunked_file_assembles_across_reads() {
     let path = PathBuf::from("/not/on/this/machine/logo.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ClassifyPath { .. })
-    }) else {
+    let Some(classify) = find_request(&backend, is_classify) else {
         return;
     };
     app.on_backend_event(
@@ -198,7 +231,7 @@ fn a_chunked_file_assembles_across_reads() {
         let Some(read) = sent(&backend)
             .into_iter()
             .rev()
-            .find(|(_, command)| matches!(command, SessionCommand::ReadFileBytes { .. }))
+            .find(|(_, command)| is_read(command))
             .map(|(id, _)| id)
         else {
             return;
@@ -231,9 +264,7 @@ fn a_lying_extension_is_corrected_by_the_backends_verdict() {
     let path = PathBuf::from("/not/on/this/machine/report.pdf");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ClassifyPath { .. })
-    }) else {
+    let Some(classify) = find_request(&backend, is_classify) else {
         return;
     };
 
@@ -248,9 +279,7 @@ fn a_lying_extension_is_corrected_by_the_backends_verdict() {
             }),
         },
     );
-    let Some(read) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ReadFileBytes { .. })
-    }) else {
+    let Some(read) = find_request(&backend, is_read) else {
         return;
     };
     app.on_backend_event(
@@ -276,9 +305,7 @@ fn an_unreadable_file_keeps_its_placeholder() {
     let path = PathBuf::from("/not/on/this/machine/gone.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ClassifyPath { .. })
-    }) else {
+    let Some(classify) = find_request(&backend, is_classify) else {
         return;
     };
 
@@ -296,30 +323,49 @@ fn an_unreadable_file_keeps_its_placeholder() {
     ));
 }
 
+/// The rows of the open overlay, if one is open.
+fn overlay_rows(app: &App) -> Vec<String> {
+    app.keyboard
+        .overlay()
+        .map(|overlay| overlay.rows().into_iter().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// A remote session's file index, opened in quick-open, with its walk sent.
+fn remote_quick_open() -> (Arc<RecordingBackend>, App) {
+    let (backend, mut app) = remote_app();
+    app.file_index.walk_through_backend();
+    app.open_quick_open();
+    app.dispatch_file_index_walk();
+    (backend, app)
+}
+
 #[test]
 fn quick_open_shows_its_picker_before_the_file_list_arrives() {
-    let (backend, mut app) = remote_app();
+    let (backend, app) = remote_quick_open();
 
-    app.open_quick_open();
-
-    assert!(app.overlay.is_some(), "the picker opens at once");
+    assert!(app.keyboard.overlay().is_some(), "the picker opens at once");
     assert!(
-        find_request(&backend, |command| matches!(
-            command,
-            SessionCommand::ListFiles { .. }
-        ))
-        .is_some(),
+        find_request(&backend, is_list).is_some(),
         "the workspace walk runs on the machine holding the files"
     );
 }
 
+/// A local session walks its own disk, off the UI thread; only a remote one
+/// asks the backend.
 #[test]
-fn the_file_list_fills_the_open_picker_with_workspace_relative_rows() {
+fn a_local_quick_open_asks_the_backend_for_no_walk() {
     let (backend, mut app) = remote_app();
     app.open_quick_open();
-    let Some(request) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ListFiles { .. })
-    }) else {
+    app.dispatch_file_index_walk();
+
+    assert!(find_request(&backend, is_list).is_none());
+}
+
+#[test]
+fn the_file_list_fills_the_open_picker_with_workspace_relative_rows() {
+    let (backend, mut app) = remote_quick_open();
+    let Some(request) = find_request(&backend, is_list) else {
         return;
     };
 
@@ -334,25 +380,24 @@ fn the_file_list_fills_the_open_picker_with_workspace_relative_rows() {
         },
     );
 
-    let Some(overlay) = app.overlay.as_ref() else {
-        return;
-    };
-    assert_eq!(overlay.rows(), vec!["src/main.rs", "README.md"]);
+    assert_eq!(overlay_rows(&app), ["README.md", "src/main.rs"]);
 }
 
-/// A stale answer must not repopulate a picker the user has already moved past —
-/// the same rule every other request in the shell follows.
+/// An answer to a superseded walk must not stand in for the one the index is
+/// still owed — the same rule every other request in the shell follows.
 #[test]
 fn a_stale_file_list_is_ignored() {
-    let (backend, mut app) = remote_app();
-    app.open_quick_open();
-    let Some(request) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::ListFiles { .. })
-    }) else {
+    let (backend, mut app) = remote_quick_open();
+    let Some(request) = find_request(&backend, is_list) else {
         return;
     };
-    // The user reopened quick-open, superseding the first request.
-    app.open_quick_open();
+    // The backend named a different workspace, superseding the first walk.
+    app.on_backend_event(
+        None,
+        SessionEvent::WorkspaceRoots {
+            roots: vec![PathBuf::from("/elsewhere")],
+        },
+    );
 
     app.on_backend_event(
         Some(request),
@@ -362,10 +407,7 @@ fn a_stale_file_list_is_ignored() {
         },
     );
 
-    let Some(overlay) = app.overlay.as_ref() else {
-        return;
-    };
-    assert!(overlay.rows().is_empty(), "{:?}", overlay.rows());
+    assert!(overlay_rows(&app).is_empty(), "{:?}", overlay_rows(&app));
 }
 
 /// Highlights are scoped to what a client can see, and the backend only knows
@@ -377,9 +419,7 @@ fn a_laid_out_editor_reports_its_visible_lines() {
     let path = PathBuf::from("/not/on/this/machine/main.rs");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(open) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::OpenDocument { .. })
-    }) else {
+    let Some(open) = find_request(&backend, is_open) else {
         return;
     };
     app.on_backend_event(
@@ -395,7 +435,8 @@ fn a_laid_out_editor_reports_its_visible_lines() {
     assert!(
         find_request(&backend, |command| matches!(
             command,
-            SessionCommand::SetViewport { doc, .. } if *doc == DocumentId(1)
+            SessionCommand::Document(DocumentCommand::SetViewport { doc, .. })
+                if *doc == DocumentId(1)
         ))
         .is_some(),
         "the backend cannot scope highlights to a viewport it was never told"
@@ -410,9 +451,7 @@ fn an_unmoved_viewport_is_not_reported_again() {
     let path = PathBuf::from("/not/on/this/machine/main.rs");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(open) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::OpenDocument { .. })
-    }) else {
+    let Some(open) = find_request(&backend, is_open) else {
         return;
     };
     app.on_backend_event(
@@ -429,7 +468,7 @@ fn an_unmoved_viewport_is_not_reported_again() {
 
     let reports = sent(&backend)
         .iter()
-        .filter(|(_, command)| matches!(command, SessionCommand::SetViewport { .. }))
+        .filter(|(_, command)| viewport_first_line(command).is_some())
         .count();
     assert_eq!(reports, 1);
 }
@@ -442,9 +481,7 @@ fn scrolling_reports_the_new_viewport() {
     let path = PathBuf::from("/not/on/this/machine/main.rs");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(open) = find_request(&backend, |command| {
-        matches!(command, SessionCommand::OpenDocument { .. })
-    }) else {
+    let Some(open) = find_request(&backend, is_open) else {
         return;
     };
     app.on_backend_event(
@@ -462,10 +499,7 @@ fn scrolling_reports_the_new_viewport() {
 
     let reports: Vec<u32> = sent(&backend)
         .iter()
-        .filter_map(|(_, command)| match command {
-            SessionCommand::SetViewport { first_line, .. } => Some(*first_line),
-            _ => None,
-        })
+        .filter_map(|(_, command)| viewport_first_line(command))
         .collect();
     assert_eq!(reports, vec![0, 400]);
 }

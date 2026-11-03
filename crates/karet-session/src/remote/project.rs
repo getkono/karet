@@ -12,12 +12,12 @@
 //! backend moved it.
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use karet_core::Decoration;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_text::TextBuffer;
 
 use super::delta::minimal_change;
@@ -37,8 +37,8 @@ struct Sent {
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
     semantic_blocks: Arc<SemanticBlocks>,
-    decorations: Arc<Vec<Decoration>>,
     syntax_error_lines: Arc<Vec<(u32, u32)>>,
+    table_lines: Arc<Vec<RangeInclusive<u32>>>,
     language: Option<&'static str>,
     dirty: bool,
 }
@@ -107,14 +107,14 @@ impl Projection {
                 &snapshot.semantic_blocks,
             )
             .map(|blocks| blocks.as_ref().clone()),
-            decorations: changed_arc(
-                previous.map(|sent| &sent.decorations),
-                &snapshot.decorations,
-            )
-            .map(|decorations| decorations.as_ref().clone()),
             syntax_error_lines: changed_arc(
                 previous.map(|sent| &sent.syntax_error_lines),
                 &snapshot.syntax_error_lines,
+            )
+            .map(|lines| lines.as_ref().clone()),
+            table_lines: changed_arc(
+                previous.map(|sent| &sent.table_lines),
+                &snapshot.table_lines,
             )
             .map(|lines| lines.as_ref().clone()),
             // Sent only when it changed, and able to say "changed to nothing" —
@@ -170,8 +170,8 @@ impl Projection {
                 highlights: snapshot.highlights.clone(),
                 folds: snapshot.folds.clone(),
                 semantic_blocks: snapshot.semantic_blocks.clone(),
-                decorations: snapshot.decorations.clone(),
                 syntax_error_lines: snapshot.syntax_error_lines.clone(),
+                table_lines: snapshot.table_lines.clone(),
                 language: snapshot.language,
                 dirty: snapshot.dirty,
             },
@@ -206,8 +206,8 @@ mod tests {
             highlights: Arc::default(),
             folds: Arc::default(),
             semantic_blocks: Arc::default(),
-            decorations: Arc::default(),
             syntax_error_lines: Arc::default(),
+            table_lines: Arc::default(),
             language: None,
             dirty: false,
             cursor: None,
@@ -242,8 +242,8 @@ mod tests {
             highlights: first.highlights.clone(),
             folds: first.folds.clone(),
             semantic_blocks: first.semantic_blocks.clone(),
-            decorations: first.decorations.clone(),
             syntax_error_lines: first.syntax_error_lines.clone(),
+            table_lines: first.table_lines.clone(),
             ..snapshot(1, "alpha\n")
         };
 
@@ -306,8 +306,8 @@ mod tests {
                 highlights: first.highlights.clone(),
                 folds: first.folds.clone(),
                 semantic_blocks: first.semantic_blocks.clone(),
-                decorations: first.decorations.clone(),
                 syntax_error_lines: first.syntax_error_lines.clone(),
+                table_lines: first.table_lines.clone(),
                 dirty: false,
                 ..snapshot(1, "alpha\n")
             },
@@ -390,8 +390,8 @@ mod tests {
                 highlights: rust.highlights.clone(),
                 folds: rust.folds.clone(),
                 semantic_blocks: rust.semantic_blocks.clone(),
-                decorations: rust.decorations.clone(),
                 syntax_error_lines: rust.syntax_error_lines.clone(),
+                table_lines: rust.table_lines.clone(),
                 ..snapshot(1, "fn main() {}\n")
             },
         );
@@ -421,8 +421,8 @@ mod tests {
                 highlights: rust.highlights.clone(),
                 folds: rust.folds.clone(),
                 semantic_blocks: rust.semantic_blocks.clone(),
-                decorations: rust.decorations.clone(),
                 syntax_error_lines: rust.syntax_error_lines.clone(),
+                table_lines: rust.table_lines.clone(),
                 ..snapshot(1, "fn main() {}\n")
             },
         );

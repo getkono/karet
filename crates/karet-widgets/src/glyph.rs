@@ -9,6 +9,7 @@
 //! letters so the bar is never a row of ambiguous digits.
 
 use karet_filetype::IconStyle;
+use unicode_width::UnicodeWidthChar;
 
 /// A semantic UI icon, rendered to a glyph by [`UiIcon::glyph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +27,10 @@ pub enum UiIcon {
     Todos,
     /// The debugger activity-bar entry.
     Debug,
+    /// The problems (diagnostics) activity-bar entry.
+    Problems,
+    /// The call/type hierarchy activity-bar entry.
+    Hierarchy,
     /// A close ("×") affordance, e.g. on a tab.
     Close,
     /// A right-pointing chevron, e.g. a breadcrumb separator.
@@ -44,6 +49,8 @@ pub enum UiIcon {
     Preview,
     /// Format a source table.
     FormatTable,
+    /// An image shown as a labelled chip rather than pixels, e.g. in a markdown preview.
+    Image,
     /// Seam lens: what is visible from outside.
     SeamApi,
     /// Seam lens: what behavior can be swapped.
@@ -58,6 +65,12 @@ pub enum UiIcon {
     SeamHasChildren,
     /// A node excluded by the active configuration — present, but not built.
     SeamInactive,
+    /// The Editor entry in the top-level view switcher.
+    ViewEditor,
+    /// The GitHub entry in the top-level view switcher.
+    ViewGithub,
+    // #211: /// The Agents entry in the top-level view switcher.
+    // #211: ViewAgents,
 }
 
 impl UiIcon {
@@ -80,6 +93,8 @@ impl UiIcon {
             Self::Spelling => '\u{f02d}',      // book (dictionary)
             Self::Todos => '\u{f00c}',         // check mark (tasks)
             Self::Debug => '\u{f188}',         // bug
+            Self::Problems => '\u{f06a}',      // exclamation-circle
+            Self::Hierarchy => '\u{f0e8}',     // sitemap (a tree)
             Self::Close => '\u{f00d}',         // times
             Self::ChevronRight => '\u{f054}',  // chevron-right
             Self::NewFile => '\u{f15b}',       // file
@@ -89,6 +104,7 @@ impl UiIcon {
             Self::Symlink => '\u{f0c1}',       // link
             Self::Preview => '\u{f06e}',       // eye
             Self::FormatTable => '\u{f0ce}',   // table
+            Self::Image => '\u{f03e}',         // image (picture)
             // Seam lenses. Distinct silhouettes matter more than literal depiction —
             // these are read side by side on one row.
             Self::SeamApi => '\u{f06e}', // eye — visible from outside
@@ -98,10 +114,19 @@ impl UiIcon {
             Self::SeamHazard => '\u{f071}', // warning — dangerous to substitute
             Self::SeamHasChildren => '\u{f054}', // chevron-right
             Self::SeamInactive => '\u{f111}', // small circle
+            // The top-level view switcher, read as a group of three on the chrome row.
+            Self::ViewEditor => '\u{f044}', // pencil-square (edit)
+            Self::ViewGithub => '\u{f09b}', // the GitHub mark
+                                             // #211: Self::ViewAgents => '\u{f086}', // comments (agent conversations)
         }
     }
 
     /// Widely-supported 1-cell BMP symbol for the Unicode tier.
+    ///
+    /// Every one is `East_Asian_Width=Neutral` and carries no emoji presentation, so it
+    /// measures one cell in every terminal. That is a hard requirement rather than a
+    /// preference: these are read as a group, and one glyph two cells wide pushes
+    /// everything after it out of line with the row above.
     fn unicode(self) -> char {
         match self {
             Self::Explorer => '\u{2630}',         // ☰ trigram (list)
@@ -110,6 +135,8 @@ impl UiIcon {
             Self::Spelling => '\u{00b6}',         // ¶ pilcrow (prose)
             Self::Todos => '\u{2713}',            // ✓ check mark (tasks)
             Self::Debug => '\u{25f4}',            // ◴ (dial: run state)
+            Self::Problems => '\u{2297}',         // ⊗ circled times (an error mark)
+            Self::Hierarchy => '\u{22d4}',        // ⋔ pitchfork (a branching tree)
             Self::Close => '\u{00d7}',            // ×
             Self::ChevronRight => '\u{203a}',     // ›
             Self::NewFile => '\u{25A4}',          // ▤ (file-ish lines)
@@ -119,13 +146,17 @@ impl UiIcon {
             Self::Symlink => '\u{2197}',          // ↗ (redirect / link)
             Self::Preview => '\u{25c9}',          // ◉ (preview)
             Self::FormatTable => '\u{25a6}',      // ▦ (grid)
-            Self::SeamApi => '\u{2b24}',          // ⬤ filled circle
-            Self::SeamSubstitution => '\u{25c7}', // ◇ open diamond
+            Self::Image => '\u{29c8}',            // ⧈ squared square (a framed picture)
+            Self::SeamApi => '\u{25c9}',          // ◉ fisheye (a filled eye)
+            Self::SeamSubstitution => '\u{25ca}', // ◊ lozenge
             Self::SeamVariation => '\u{2325}',    // ⌥ option key
             Self::SeamBoundary => '\u{21e5}',     // ⇥ rightwards arrow to bar
-            Self::SeamHazard => '\u{26a1}',       // ⚡ high voltage
+            Self::SeamHazard => '\u{2621}',       // ☡ caution sign
             Self::SeamHasChildren => '\u{25b8}',  // ▸ small right triangle
-            Self::SeamInactive => '\u{00b7}',     // · middle dot
+            Self::SeamInactive => '\u{2219}',     // ∙ bullet operator
+            Self::ViewEditor => '\u{270e}',       // ✎ lower right pencil
+            Self::ViewGithub => '\u{2388}',       // ⎈ helm (a hub)
+                                                   // #211: Self::ViewAgents => '\u{2042}', // ⁂ asterism (a cluster)
         }
     }
 
@@ -138,6 +169,8 @@ impl UiIcon {
             Self::Spelling => 'W',      // words
             Self::Todos => 'T',         // todos
             Self::Debug => 'G',         // debuG (D is taken by new directory)
+            Self::Problems => 'P',      // problems
+            Self::Hierarchy => 'H',     // hierarchy
             Self::Close => 'x',
             Self::ChevronRight => '>',
             Self::NewFile => '+',
@@ -147,6 +180,7 @@ impl UiIcon {
             Self::Symlink => '@',
             Self::Preview => 'P',
             Self::FormatTable => 'T',
+            Self::Image => 'I',
             // Mnemonic and unambiguous side by side; no digits, which read as counts.
             Self::SeamApi => '*',
             Self::SeamSubstitution => '#',
@@ -155,8 +189,55 @@ impl UiIcon {
             Self::SeamHazard => '!',
             Self::SeamHasChildren => '>',
             Self::SeamInactive => '.',
+            // The switcher's three letters are read against each other, so they are
+            // distinct within the group even where they repeat a mark used elsewhere.
+            Self::ViewEditor => 'E',
+            Self::ViewGithub => 'H', // hub
+                                     // #211: Self::ViewAgents => 'A',
         }
     }
+}
+
+/// The cells one marker glyph is given in `style`, whatever it measures.
+///
+/// Marker glyphs are read as a group — five lenses side by side on a spine row, the same
+/// five in the legend above. One glyph measuring two cells where its neighbour measures
+/// one stops the group being a column of aligned marks, and the count on the row below no
+/// longer lines up with the one above it.
+///
+/// Two cells for the Nerd tier, because its codepoints sit in the Private Use Area, which
+/// `East_Asian_Width` calls *ambiguous*: `unicode-width` answers one, and a terminal
+/// configured for double-width ambiguous characters paints two. No measurement settles
+/// that, so the slot is reserved wide and the glyph padded into it — a glyph the font
+/// draws wide then overruns its own padding rather than the row. One cell for the Unicode
+/// and ASCII tiers, whose glyphs are chosen to be unambiguously narrow.
+#[must_use]
+pub const fn glyph_slot(style: IconStyle) -> usize {
+    match style {
+        IconStyle::NerdFont => 2,
+        IconStyle::Unicode | IconStyle::Ascii => 1,
+    }
+}
+
+/// `glyph` padded with trailing spaces to exactly [`glyph_slot`] cells.
+///
+/// Trailing, never leading: the glyph stays on its slot's left edge, so a run of them
+/// reads as a column rather than as marks drifting rightwards.
+#[must_use]
+pub fn slot(glyph: char, style: IconStyle) -> String {
+    let width = UnicodeWidthChar::width(glyph).unwrap_or(0);
+    let mut out = String::with_capacity(glyph.len_utf8() + 1);
+    out.push(glyph);
+    for _ in 0..glyph_slot(style).saturating_sub(width) {
+        out.push(' ');
+    }
+    out
+}
+
+/// A run of glyphs, each in its own slot: `n` of them always occupy `n * glyph_slot` cells.
+#[must_use]
+pub fn slots(glyphs: impl IntoIterator<Item = char>, style: IconStyle) -> String {
+    glyphs.into_iter().map(|glyph| slot(glyph, style)).collect()
 }
 
 #[cfg(test)]
@@ -186,12 +267,60 @@ mod tests {
             UiIcon::Symlink,
             UiIcon::Preview,
             UiIcon::FormatTable,
+            UiIcon::Image,
         ] {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }
         for icon in SEAM_ICONS {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }
+    }
+
+    /// The sidebar activity-bar switcher, read as a group on the header row.
+    const ACTIVITY_ICONS: [UiIcon; 8] = [
+        UiIcon::Explorer,
+        UiIcon::Search,
+        UiIcon::SourceControl,
+        UiIcon::Spelling,
+        UiIcon::Todos,
+        UiIcon::Debug,
+        UiIcon::Problems,
+        UiIcon::Hierarchy,
+    ];
+
+    #[test]
+    fn activity_bar_glyphs_are_distinct_in_every_style() {
+        // One button per panel on one row: a shared glyph makes two panels
+        // indistinguishable.
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            let mut seen: Vec<char> = ACTIVITY_ICONS.iter().map(|i| i.glyph(style)).collect();
+            let total = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), total, "duplicate activity glyph in {style:?}");
+        }
+        for icon in ACTIVITY_ICONS {
+            assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic(), "{icon:?}");
+        }
+    }
+
+    #[test]
+    fn the_problems_glyph_is_one_narrow_non_emoji_cell_in_the_unicode_tier() {
+        // Pinned by codepoint (East_Asian_Width=Neutral, no emoji presentation):
+        // the switcher's hit regions march in two-cell steps, so a wide glyph
+        // would shift the button after it off its click target.
+        let glyph = UiIcon::Problems.glyph(IconStyle::Unicode);
+        assert_eq!(glyph, '\u{2297}');
+        assert_eq!(unicode_width::UnicodeWidthChar::width(glyph), Some(1));
+    }
+
+    #[test]
+    fn the_hierarchy_glyph_is_one_narrow_non_emoji_cell_in_the_unicode_tier() {
+        // Same pin as Problems: it sits last in the switcher, whose hit
+        // regions march in two-cell steps.
+        let glyph = UiIcon::Hierarchy.glyph(IconStyle::Unicode);
+        assert_eq!(glyph, '\u{22d4}');
+        assert_eq!(unicode_width::UnicodeWidthChar::width(glyph), Some(1));
     }
 
     /// The seam legend, which is read as a group on a single row.
@@ -205,6 +334,34 @@ mod tests {
         UiIcon::SeamInactive,
     ];
 
+    /// The top-level view switcher, which is read as a group on the chrome row.
+    const VIEW_ICONS: [UiIcon; 2] = [UiIcon::ViewEditor, UiIcon::ViewGithub];
+    // #211: const VIEW_ICONS: [UiIcon; 3] =
+    // #211:     [UiIcon::ViewEditor, UiIcon::ViewGithub, UiIcon::ViewAgents];
+
+    #[test]
+    fn view_switcher_glyphs_are_distinct_and_fill_one_slot_in_every_style() {
+        // Same contract as the seam legend, and for the same reason: they sit side by
+        // side on one row, so a shared glyph or an over-wide one breaks the row.
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            let mut seen: Vec<char> = VIEW_ICONS.iter().map(|icon| icon.glyph(style)).collect();
+            let total = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), total, "duplicate view glyph in {style:?}");
+            for icon in VIEW_ICONS {
+                assert_eq!(
+                    crate::text::width(&slot(icon.glyph(style), style)),
+                    glyph_slot(style),
+                    "{icon:?} in {style:?}"
+                );
+            }
+        }
+        for icon in VIEW_ICONS {
+            assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
+        }
+    }
+
     #[test]
     fn seam_glyphs_stay_distinct_within_every_style() {
         // These appear side by side on one row, so two lenses sharing a glyph would make
@@ -215,6 +372,100 @@ mod tests {
             seen.sort_unstable();
             seen.dedup();
             assert_eq!(seen.len(), total, "duplicate seam glyph in {style:?}");
+        }
+    }
+
+    #[test]
+    fn every_seam_glyph_fills_exactly_one_slot_in_every_tier() {
+        // The whole point: n glyphs occupy n slots, so a row of markers is a column of
+        // aligned marks and the count beside them never drifts.
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            for icon in SEAM_ICONS {
+                let painted = slot(icon.glyph(style), style);
+                assert_eq!(
+                    crate::text::width(&painted),
+                    glyph_slot(style),
+                    "{icon:?} in {style:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_seam_glyph_measures_wider_than_its_slot() {
+        // What makes `slot`'s saturating pad safe: over-wide would silently under-pad.
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            for icon in SEAM_ICONS {
+                let glyph = icon.glyph(style);
+                let width = unicode_width::UnicodeWidthChar::width(glyph).unwrap_or(0);
+                assert!(width <= glyph_slot(style), "{icon:?} in {style:?}: {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_of_glyphs_occupies_one_slot_each() {
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            let run = slots(SEAM_ICONS.iter().map(|icon| icon.glyph(style)), style);
+            assert_eq!(
+                crate::text::width(&run),
+                SEAM_ICONS.len() * glyph_slot(style),
+                "{style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_nerd_tier_reserves_two_cells_because_its_codepoints_are_ambiguous() {
+        // The reservation is only justified while the glyphs really are Private Use.
+        assert_eq!(glyph_slot(IconStyle::NerdFont), 2);
+        for icon in SEAM_ICONS {
+            let glyph = icon.glyph(IconStyle::NerdFont);
+            assert!(
+                ('\u{e000}'..='\u{f8ff}').contains(&glyph),
+                "{icon:?} is not a Private Use codepoint: {glyph:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unicode_tier_is_pinned_to_narrow_non_emoji_codepoints() {
+        // Each is East_Asian_Width=Neutral with no emoji presentation. Pinned by
+        // codepoint so swapping one forces re-checking that class.
+        assert_eq!(UiIcon::SeamApi.glyph(IconStyle::Unicode), '\u{25c9}');
+        assert_eq!(
+            UiIcon::SeamSubstitution.glyph(IconStyle::Unicode),
+            '\u{25ca}'
+        );
+        assert_eq!(UiIcon::SeamVariation.glyph(IconStyle::Unicode), '\u{2325}');
+        assert_eq!(UiIcon::SeamBoundary.glyph(IconStyle::Unicode), '\u{21e5}');
+        assert_eq!(UiIcon::SeamHazard.glyph(IconStyle::Unicode), '\u{2621}');
+        assert_eq!(
+            UiIcon::SeamHasChildren.glyph(IconStyle::Unicode),
+            '\u{25b8}'
+        );
+        assert_eq!(UiIcon::SeamInactive.glyph(IconStyle::Unicode), '\u{2219}');
+        assert_eq!(UiIcon::ViewEditor.glyph(IconStyle::Unicode), '\u{270e}');
+        assert_eq!(UiIcon::ViewGithub.glyph(IconStyle::Unicode), '\u{2388}');
+        // #211: assert_eq!(UiIcon::ViewAgents.glyph(IconStyle::Unicode), '\u{2042}');
+    }
+
+    #[test]
+    fn the_image_glyph_is_one_narrow_non_emoji_cell_outside_the_nerd_tier() {
+        // It leads a chip inside running prose, so it must not be the wide, non-BMP
+        // emoji it replaces: pinned by codepoint (East_Asian_Width=Neutral, no emoji
+        // presentation) so a swap forces re-checking that class.
+        assert_eq!(UiIcon::Image.glyph(IconStyle::NerdFont), '\u{f03e}');
+        assert_eq!(UiIcon::Image.glyph(IconStyle::Unicode), '\u{29c8}');
+        assert_eq!(UiIcon::Image.glyph(IconStyle::Ascii), 'I');
+        for style in [IconStyle::Unicode, IconStyle::Ascii] {
+            let glyph = UiIcon::Image.glyph(style);
+            assert_eq!(UnicodeWidthChar::width(glyph), Some(1), "{style:?}");
+            assert_eq!(
+                UnicodeWidthChar::width_cjk(glyph),
+                Some(1),
+                "{style:?} is ambiguous-width"
+            );
         }
     }
 

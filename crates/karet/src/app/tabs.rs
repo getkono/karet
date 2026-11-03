@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_filetype::FileKind;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_widgets::PaneId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::StoredPane;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::path_under;
+use crate::paths::rebase_path;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// The activation history's hard ceiling. It only bounds memory in a very long
 /// session: entries this old are far past any "put me back where I was" reach, and
@@ -11,6 +33,7 @@ impl App {
     /// duplicate. This is the single entry point for every "open a file" flow
     /// (explorer, quick-open, search result, startup, reopen-closed).
     pub(super) fn open_path(&mut self, path: &Path) {
+        self.note_recent_file(path);
         let target = canonical(path);
         // Focus an existing editor view for this file, but not a diff tab — a diff
         // is a distinct view of the same path, so opening the file still opens it.
@@ -22,7 +45,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = workspace::open_file(path);
+        let tab = Tab::open(path);
         self.push_tab(tab);
     }
 
@@ -39,6 +62,11 @@ impl App {
     /// selection-follows-preview passes `false` so the sidebar keeps focus and
     /// the user can keep arrowing.
     pub(super) fn open_path_preview(&mut self, path: &Path, steal_focus: bool) {
+        // Only an explicit open (Enter / click) counts as opening the file:
+        // arrowing through the tree previews files the user is passing over.
+        if steal_focus {
+            self.note_recent_file(path);
+        }
         let target = canonical(path);
         if let Some(idx) = self
             .tabs
@@ -48,11 +76,11 @@ impl App {
             self.set_active(idx);
             self.find_open = false;
             if steal_focus {
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -63,43 +91,47 @@ impl App {
     /// underlying file, `--goto` at startup, and the Spelling panel.
     ///
     /// A relative `path` resolves against the workspace root, so a VCS-relative
-    /// change path opens and dedups like any explorer open. Focus follows
-    /// [`open_path`](Self::open_path) to the editor. `position` is in the editor's
-    /// 0-based coordinates and [`goto`](karet_editor::EditorState::goto) clamps it
-    /// into the buffer; a non-text tab (image, binary, placeholder) simply has no
-    /// caret to place.
+    /// change path opens and dedups like any explorer open. `position` is in the
+    /// editor's 0-based coordinates and [`goto`](karet_editor::EditorState::goto)
+    /// clamps it into the buffer; a non-text tab (image, binary, placeholder)
+    /// simply has no caret to place.
+    ///
+    /// `steal_focus` says whether the keyboard follows the jump, the same seam
+    /// [`open_path_preview`](Self::open_path_preview) offers: `true` reproduces
+    /// [`open_path`](Self::open_path)'s move to the editor, while `false` leaves
+    /// focus where it was, so a result list keeps it and the user can go on
+    /// arrowing through the rest of the hits.
     ///
     /// Callers keep their own pre-checks: this deliberately does *not* require the
     /// path to exist, because `--goto` on a missing file is how karet opens a new
     /// one.
-    pub(super) fn focus_by_file_line(&mut self, path: &Path, position: LineCol) {
+    pub(super) fn focus_by_file_line(&mut self, path: &Path, position: LineCol, steal_focus: bool) {
         let target = if path.is_absolute() {
             path.to_path_buf()
         } else {
             self.root.join(path)
         };
+        // Restored rather than suppressed: the move to the editor is spread across
+        // `select_tab`/`push_tab`, so the one place that must not keep it is here.
+        let previous = self.keyboard.focus();
         self.open_path(&target);
+        if !steal_focus {
+            self.keyboard.focus_on(previous);
+        }
         // The buffer is cloned out first (an O(1) rope share) so the tab can be
         // borrowed mutably to move its caret.
         let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {
             Some(TabKind::Code { buffer, .. }) => Some(buffer.clone()),
             _ => None,
         };
-        // A file whose content has not arrived cannot be positioned in yet:
-        // `goto` clamps into the buffer, and clamping into an empty one lands at
-        // the top. Remember where the caret was asked to go and apply it when the
-        // document's first snapshot lands, so a jump to a line survives however
-        // long the content takes to arrive.
-        if let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) {
-            let ready = buffer
-                .as_ref()
-                .is_some_and(|buffer| buffer.line_count() > 1);
-            if !ready {
-                self.pending_goto.insert(view, position);
-            }
-        }
         if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
             tab.editor.goto(&buffer, position);
+            // A tab still waiting for its text would clamp the jump to the top
+            // of the empty buffer; the first snapshot places the caret instead.
+            if tab.fill_caret.is_some() {
+                tab.fill_caret = Some(position);
+                tab.fill_view = None;
+            }
         }
     }
 
@@ -111,17 +143,13 @@ impl App {
     /// current focus is preserved (selection-follows-preview).
     pub(super) fn install_preview_tab(&mut self, mut tab: Tab, steal_focus: bool) {
         tab.view = self.alloc_view();
-        match self
-            .tabs
-            .iter()
-            .position(|t| t.is_preview && !t.is_github_dashboard())
-        {
+        match self.tabs.iter().position(|t| t.is_preview) {
             Some(idx) => {
                 self.tabs[idx] = tab;
                 self.set_active(idx);
                 self.find_open = false;
                 if steal_focus {
-                    self.focus = Focus::Editor;
+                    self.show_editor();
                 }
                 self.register_doc(self.active);
                 // The replaced tab's document (if any) is no longer referenced by
@@ -138,7 +166,7 @@ impl App {
                 }
                 self.find_open = false;
                 if steal_focus {
-                    self.focus = Focus::Editor;
+                    self.show_editor();
                 }
                 self.register_doc(self.active);
             },
@@ -162,14 +190,29 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = workspace::open_file_ignoring_size(&path);
+        let mut tab = Tab::open_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
+        // Asked before registering: the reserved tab's own classification would
+        // apply the size guard again, and finding this one in flight it asks
+        // for nothing more.
+        if !crate::tab::open::is_text_kind(crate::tab::open::kind_from_path(&path)) {
+            self.request_classification(&path, true);
+        }
         self.register_doc(self.active);
     }
 
-    /// Add a tab, replacing a lone Welcome tab, and focus the editor.
+    /// Add a tab, replacing a lone Welcome tab, and show it.
+    ///
+    /// Showing it includes switching to the editor view. `push_tab` already means
+    /// "put this in front" — it sets the active tab and moves focus — and a caller
+    /// from another view is asking for exactly that. The GitHub view's "Files
+    /// changed" is the case that forced it: it opens a range diff as a tab, and
+    /// without the switch the user presses the button and nothing appears to happen.
+    ///
+    /// Startup is unaffected: `apply_startup_view` runs after every `open_*`, so
+    /// `--view github` still wins.
     pub(super) fn push_tab(&mut self, mut tab: Tab) {
         tab.view = self.alloc_view();
         if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
@@ -179,10 +222,21 @@ impl App {
             self.tabs.push(tab);
             self.set_active(self.tabs.len() - 1);
         }
-        self.focus = Focus::Editor;
+        self.show_editor();
         // A newly-focused tab never inherits another tab's open find bar.
         self.find_open = false;
         self.register_doc(self.active);
+    }
+
+    /// Bring the editor shell forward and put the keyboard in it.
+    ///
+    /// Every deliberate "open this tab" goes through here. Setting focus without the
+    /// view is what strands a caller from another view: the tab becomes active and
+    /// takes the keyboard while staying invisible, and `FocusTarget::from` then routes
+    /// keys to whatever view is still on screen.
+    pub(super) fn show_editor(&mut self) {
+        self.view = View::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Allocate a fresh [`ViewId`] for a newly-opened view.
@@ -321,7 +375,7 @@ impl App {
                 continue;
             };
             let doc = Self::tab_doc(tab);
-            retarget_tab_path(tab, &next);
+            tab.retarget(&next);
             if let Some(doc) = doc {
                 docs.push((doc, next));
             }
@@ -329,7 +383,10 @@ impl App {
         docs.sort_by_key(|(doc, _)| *doc);
         docs.dedup_by_key(|(doc, _)| *doc);
         for (doc, path) in docs {
-            self.send_command(SessionCommand::RetargetDocument { doc, path });
+            // The session may hand the moved document to another language's
+            // server, so what the old one said it formats on no longer holds.
+            self.on_type.triggers.remove(&doc);
+            self.send_command(DocumentCommand::Retarget { doc, path });
         }
     }
 
@@ -341,9 +398,12 @@ impl App {
         for doc in stale {
             self.open_docs.remove(&doc);
             self.auto_save_pending.remove(&doc);
+            self.completion.chars.remove(&doc);
+            self.signature.chars.remove(&doc);
+            self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
-                let _ = backend.send(id, SessionCommand::CloseDocument { doc });
+                let _ = backend.send(id, DocumentCommand::Close { doc }.into());
             }
         }
     }
@@ -361,7 +421,13 @@ impl App {
     /// momentarily empty tab list) still moves `active` but records nothing.
     pub(super) fn set_active(&mut self, index: usize) {
         self.active = index;
-        if let Some(view) = self.tabs.get(index).map(|tab| tab.view) {
+        let view = self.tabs.get(index).map(|tab| tab.view);
+        // A pointer drag belongs to the tab it began in; it must never go on
+        // extending (or autoscrolling) whichever tab replaced it.
+        if self.editor_drag.is_some_and(|drag| Some(drag.view) != view) {
+            self.editor_drag = None;
+        }
+        if let Some(view) = view {
             self.note_activation(view);
         }
     }
@@ -450,7 +516,7 @@ impl App {
     pub(super) fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.set_active(index);
-            self.focus = Focus::Editor;
+            self.show_editor();
             // The find bar is keyed to whichever tab it was opened over; switching
             // tabs must not show it over a different file.
             self.find_open = false;
@@ -489,9 +555,6 @@ impl App {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
         }
-        if self.tabs[from].is_github_dashboard() || self.tabs[to].is_github_dashboard() {
-            return;
-        }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
         self.set_active(to);
@@ -511,9 +574,6 @@ impl App {
     /// Close the focused pane's active tab, routed through the unsaved-changes guard.
     pub(super) fn request_close_active_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active) {
-            if tab.is_github_dashboard() {
-                return;
-            }
             self.guarded_close(CloseRequest::Tab { view: tab.view });
         }
     }
@@ -522,9 +582,6 @@ impl App {
     /// guard (the tab is captured by its stable view id).
     pub(super) fn request_close_tab_at(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get(index) {
-            if tab.is_github_dashboard() {
-                return;
-            }
             self.guarded_close(CloseRequest::Tab { view: tab.view });
         }
     }
@@ -536,7 +593,7 @@ impl App {
     /// that is still open — not to whichever tab happens to slide into the vacated
     /// slot. Collapsing a pane picks the surviving pane the same way.
     pub(super) fn close_tab_at(&mut self, index: usize) {
-        if index >= self.tabs.len() || self.tabs[index].is_github_dashboard() {
+        if index >= self.tabs.len() {
             return;
         }
         self.remember_closed(index);
@@ -549,12 +606,12 @@ impl App {
                 // both the layout and `stored`: the moment `focus_recent_pane` needs.
                 self.focus_recent_pane();
                 self.load_focused();
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
         } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.set_active(0);
-            self.focus = Focus::Sidebar;
+            self.keyboard.focus_sidebar();
         } else if index == self.active {
             // The tab in front is going. Fall back to the neighbour that slides into
             // its slot only when the history knows none of the survivors.
@@ -585,13 +642,12 @@ impl App {
             return;
         }
         for i in (0..self.tabs.len()).rev() {
-            if i != self.active && !self.tabs[i].is_github_dashboard() {
+            if i != self.active {
                 self.remember_closed(i);
             }
         }
         let active_view = self.tabs[self.active].view;
-        self.tabs
-            .retain(|tab| tab.view == active_view || tab.is_github_dashboard());
+        self.tabs.retain(|tab| tab.view == active_view);
         let kept = self
             .tabs
             .iter()
@@ -607,27 +663,21 @@ impl App {
         for i in (self.active + 1..self.tabs.len()).rev() {
             self.remember_closed(i);
         }
-        self.tabs.truncate(self.active + 1);
+        // Truncate rather than retain: everything at or left of `active` is
+        // untouched, so `active` stays correct.
+        self.tabs.truncate(self.active.saturating_add(1));
         self.reconcile_open_docs();
     }
 
     /// Close all tabs, leaving a Welcome tab.
     pub(super) fn close_all_tabs(&mut self) {
         for i in (0..self.tabs.len()).rev() {
-            if !self.tabs[i].is_github_dashboard() {
-                self.remember_closed(i);
-            }
+            self.remember_closed(i);
         }
-        self.tabs.retain(Tab::is_github_dashboard);
-        if self.tabs.is_empty() {
-            self.tabs.push(Tab::welcome());
-        }
+        self.tabs.clear();
+        self.tabs.push(Tab::welcome());
         self.set_active(0);
-        self.focus = if self.tabs[0].is_github_dashboard() {
-            Focus::Editor
-        } else {
-            Focus::Sidebar
-        };
+        self.keyboard.focus_sidebar();
         self.find_open = false;
         self.reconcile_open_docs();
     }
@@ -640,6 +690,26 @@ impl App {
                 return;
             }
         }
+    }
+
+    /// Set the active document tab's current page (clamped to the page range). A
+    /// no-op without the `pdf` feature, where no document tab exists.
+    pub(super) fn set_document_page(&mut self, page: usize) {
+        #[cfg(feature = "pdf")]
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
+        #[cfg(not(feature = "pdf"))]
+        let _ = page;
     }
 
     /// Fill the reserved DOCX preview owned by the answering conversion request
@@ -693,17 +763,11 @@ impl App {
                 },
                 Err(message) => {
                     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                    let kind = if path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-                    {
-                        FileKind::Notebook
-                    } else {
-                        FileKind::Docx
-                    };
+                    // The registry routes DOCX and notebooks by extension
+                    // alone, so no bytes are needed to name what failed.
                     tab.kind = TabKind::Placeholder {
                         path: path.to_path_buf(),
-                        kind,
+                        kind: karet_filetype::classify_ignoring_size(path, &[]),
                         dims: None,
                         len,
                     };
@@ -713,7 +777,7 @@ impl App {
             break;
         }
         if let Some(message) = failure {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+            self.notify(Report::Failure, NotificationKind::Io, message);
         }
     }
 }

@@ -9,13 +9,13 @@
 //! [`DocSnapshot`]s the presentation layer already renders from. That is what
 //! keeps remote mode additive: the rendering code cannot tell which mode it is in.
 
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use karet_core::CursorState;
-use karet_core::Decoration;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_text::TextBuffer;
 
 use crate::api::RenderUpdate;
@@ -39,8 +39,8 @@ pub(super) struct Replica {
     highlights: Arc<Highlights>,
     folds: Arc<FoldRegions>,
     semantic_blocks: Arc<SemanticBlocks>,
-    decorations: Arc<Vec<Decoration>>,
     syntax_error_lines: Arc<Vec<(u32, u32)>>,
+    table_lines: Arc<Vec<RangeInclusive<u32>>>,
     /// Interned so the snapshot can carry the `&'static str` the renderer wants.
     language: Option<&'static str>,
     dirty: bool,
@@ -82,11 +82,11 @@ impl Replica {
         if let Some(blocks) = update.semantic_blocks {
             self.semantic_blocks = Arc::new(blocks);
         }
-        if let Some(decorations) = update.decorations {
-            self.decorations = Arc::new(decorations);
-        }
         if let Some(lines) = update.syntax_error_lines {
             self.syntax_error_lines = Arc::new(lines);
+        }
+        if let Some(lines) = update.table_lines {
+            self.table_lines = Arc::new(lines);
         }
         if let Some(language) = update.language {
             self.language = language.as_deref().and_then(intern_language);
@@ -108,7 +108,7 @@ impl Replica {
     pub(super) fn apply_local(
         &mut self,
         change: &karet_core::Change,
-        cause: karet_text::EditCause,
+        cause: karet_core::EditCause,
     ) -> Option<Arc<DocSnapshot>> {
         let applied = self
             .buffer
@@ -131,8 +131,8 @@ impl Replica {
             highlights: self.highlights.clone(),
             folds: self.folds.clone(),
             semantic_blocks: self.semantic_blocks.clone(),
-            decorations: self.decorations.clone(),
             syntax_error_lines: self.syntax_error_lines.clone(),
+            table_lines: self.table_lines.clone(),
             language: self.language,
             dirty: self.dirty,
             cursor,
@@ -261,7 +261,7 @@ mod tests {
             return;
         };
 
-        let snapshot = replica.apply_local(&change, karet_text::EditCause::Type);
+        let snapshot = replica.apply_local(&change, karet_core::EditCause::Type);
 
         let Some(snapshot) = snapshot else {
             return;
@@ -280,9 +280,7 @@ mod tests {
 
         let mut replica = Replica::default();
         let _ = replica.apply(full(1, "fn main() {}\n"));
-        let Ok(span) = Span::new(karet_core::BytePos(0), karet_core::BytePos(2)) else {
-            return;
-        };
+        let span = Span::new(karet_core::BytePos(0), karet_core::BytePos(2));
         let _ = replica.apply(RenderUpdate {
             highlights: Some(HighlightSlice {
                 range: None,
@@ -317,6 +315,7 @@ mod tests {
             folds: Some(FoldRegions::from_sorted_regions(vec![FoldRegion {
                 start: 0,
                 end: 1,
+                kind: karet_core::FoldKind::Code,
             }])),
             ..RenderUpdate::at(1)
         });
@@ -415,7 +414,7 @@ mod tests {
             return;
         };
 
-        let snapshot = replica.apply_local(&change, karet_text::EditCause::Type);
+        let snapshot = replica.apply_local(&change, karet_core::EditCause::Type);
 
         assert!(
             snapshot.is_some(),

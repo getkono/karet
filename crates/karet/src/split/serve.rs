@@ -15,7 +15,7 @@ use crate::split::kmux;
 /// Nothing is written to stdout but the protocol: the stream *is* stdout, so a
 /// stray `println!` would corrupt the session. Diagnostics go to the log file,
 /// which is why logging is initialized before this runs.
-pub(crate) fn run_stdio(config: karet_session::session::SessionConfig) -> color_eyre::Result<()> {
+pub(crate) fn run_stdio(config: karet_session::SessionConfig) -> color_eyre::Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().map_err(|error| eyre!("tokio runtime: {error}"))?;
     runtime.block_on(async move {
@@ -31,7 +31,7 @@ pub(crate) fn run_stdio(config: karet_session::session::SessionConfig) -> color_
 /// Identical to [`run_stdio`] but for where the bytes come from — which is the
 /// property the whole design rests on.
 pub(crate) fn run_forwarded(
-    config: karet_session::session::SessionConfig,
+    config: karet_session::SessionConfig,
     channel: &kmux::Channel,
 ) -> color_eyre::Result<()> {
     let runtime =

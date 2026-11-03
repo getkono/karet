@@ -10,10 +10,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::*;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::PathMutation;
 use crate::api::ViewId;
+use crate::api::WorkspaceCommand;
 use crate::session::Session;
 use crate::session::SessionConfig;
 
@@ -21,9 +23,13 @@ use crate::session::SessionConfig;
 ///
 /// Startup producers (VCS status, language-server inventory) publish unsolicited
 /// events, so correlating by id is the only reliable way to find an answer.
-async fn answer(backend: &LocalBackend, events: &mut EventRx, command: Command) -> Option<Event> {
+async fn answer(
+    backend: &LocalBackend,
+    events: &mut EventRx,
+    command: impl Into<Command>,
+) -> Option<Event> {
     let id = backend.next_id();
-    backend.send(id, command).ok()?;
+    backend.send(id, command.into()).ok()?;
     tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((event_id, event)) = events.recv().await {
             if event_id == Some(id) {
@@ -60,7 +66,7 @@ fn workspace(files: &[(&str, &[u8])]) -> Option<(tempfile::TempDir, LocalBackend
 fn open_document(session: &mut Session, events: &mut EventRx, path: PathBuf) -> Option<DocumentId> {
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -82,7 +88,7 @@ async fn classifying_a_path_answers_the_submitting_request() {
     let event = answer(
         &backend,
         &mut events,
-        Command::ClassifyPath {
+        WorkspaceCommand::ClassifyPath {
             path: dir.path().join("main.rs"),
             ignore_size: false,
         },
@@ -107,7 +113,7 @@ async fn reading_bytes_answers_with_a_chunk() {
     let event = answer(
         &backend,
         &mut events,
-        Command::ReadFileBytes {
+        WorkspaceCommand::ReadFileBytes {
             path: dir.path().join("data.bin"),
             offset: 0,
             len: 4,
@@ -131,7 +137,12 @@ async fn listing_files_walks_the_session_root_without_being_told_it() {
         return;
     };
 
-    let event = answer(&backend, &mut events, Command::ListFiles { limit: 100 }).await;
+    let event = answer(
+        &backend,
+        &mut events,
+        WorkspaceCommand::ListFiles { limit: 100 },
+    )
+    .await;
 
     let Some(Event::FilesListed { files, truncated }) = event else {
         return;
@@ -147,7 +158,12 @@ async fn listing_files_without_a_root_still_answers() {
     let (session, mut events, _snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
 
-    let event = answer(&backend, &mut events, Command::ListFiles { limit: 100 }).await;
+    let event = answer(
+        &backend,
+        &mut events,
+        WorkspaceCommand::ListFiles { limit: 100 },
+    )
+    .await;
 
     let Some(Event::FilesListed { files, truncated }) = event else {
         return;
@@ -166,7 +182,7 @@ async fn reading_a_directory_answers_with_its_children() {
     let event = answer(
         &backend,
         &mut events,
-        Command::ReadDirectory {
+        WorkspaceCommand::ReadDirectory {
             path: dir.path().to_path_buf(),
             show_hidden: false,
             respect_gitignore: false,
@@ -199,7 +215,7 @@ async fn a_mutation_is_echoed_back_with_its_result() {
     let event = answer(
         &backend,
         &mut events,
-        Command::MutatePath {
+        WorkspaceCommand::MutatePath {
             mutation: PathMutation::CreateFile { path: path.clone() },
         },
     )
@@ -222,7 +238,7 @@ async fn a_failed_mutation_reports_why_rather_than_going_silent() {
     let event = answer(
         &backend,
         &mut events,
-        Command::MutatePath {
+        WorkspaceCommand::MutatePath {
             mutation: PathMutation::Delete {
                 path: dir.path().join("never-existed.rs"),
             },
@@ -248,18 +264,24 @@ async fn setting_a_viewport_for_an_unknown_document_is_harmless() {
         backend
             .send(
                 id,
-                Command::SetViewport {
+                DocumentCommand::SetViewport {
                     doc: DocumentId(9999),
                     view: ViewId(1),
                     first_line: 0,
                     last_line: 40,
-                },
+                }
+                .into(),
             )
             .is_ok()
     );
 
     // The session must still serve the next command.
-    let event = answer(&backend, &mut events, Command::ListFiles { limit: 8 }).await;
+    let event = answer(
+        &backend,
+        &mut events,
+        WorkspaceCommand::ListFiles { limit: 8 },
+    )
+    .await;
 
     assert!(
         matches!(event, Some(Event::FilesListed { .. })),
@@ -276,7 +298,7 @@ fn checkpointed_view_state_is_stored_verbatim() {
     assert!(session.view_state().is_empty());
     session.handle(
         RequestId(1),
-        Command::CheckpointViewState {
+        WorkspaceCommand::CheckpointViewState {
             blob: b"\x00\xffnot utf-8".to_vec(),
         },
     );
@@ -290,13 +312,13 @@ fn a_later_checkpoint_replaces_the_earlier_one() {
 
     session.handle(
         RequestId(1),
-        Command::CheckpointViewState {
+        WorkspaceCommand::CheckpointViewState {
             blob: b"first".to_vec(),
         },
     );
     session.handle(
         RequestId(2),
-        Command::CheckpointViewState {
+        WorkspaceCommand::CheckpointViewState {
             blob: b"second".to_vec(),
         },
     );
@@ -329,7 +351,7 @@ fn two_views_of_one_document_widen_the_range_to_their_union() {
 
     session.handle(
         RequestId(2),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
             first_line: 1_000,
@@ -338,7 +360,7 @@ fn two_views_of_one_document_widen_the_range_to_their_union() {
     );
     session.handle(
         RequestId(3),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(2),
             first_line: 2_000,
@@ -371,7 +393,7 @@ fn a_viewport_at_the_top_of_a_file_clamps_its_margin() {
 
     session.handle(
         RequestId(2),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
             first_line: 0,
@@ -402,7 +424,7 @@ fn declaring_a_new_viewport_republishes_the_document() {
 
     session.handle(
         RequestId(2),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
             first_line: 0,
@@ -432,7 +454,7 @@ fn re_declaring_an_unchanged_viewport_does_not_republish() {
     let Some(doc) = open_document(&mut session, &mut events, path) else {
         return;
     };
-    let viewport = Command::SetViewport {
+    let viewport = DocumentCommand::SetViewport {
         doc,
         view: ViewId(1),
         first_line: 10,
@@ -464,7 +486,7 @@ fn a_reversed_viewport_is_normalized_rather_than_empty() {
 
     session.handle(
         RequestId(2),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
             first_line: 900,
@@ -496,7 +518,7 @@ fn closing_a_document_forgets_its_viewport() {
     };
     session.handle(
         RequestId(2),
-        Command::SetViewport {
+        DocumentCommand::SetViewport {
             doc,
             view: ViewId(1),
             first_line: 0,
@@ -505,7 +527,7 @@ fn closing_a_document_forgets_its_viewport() {
     );
     assert!(session.viewport_lines(doc).is_some());
 
-    session.handle(RequestId(3), Command::CloseDocument { doc });
+    session.handle(RequestId(3), DocumentCommand::Close { doc });
 
     assert_eq!(session.viewport_lines(doc), None);
 }

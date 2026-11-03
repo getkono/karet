@@ -1,68 +1,22 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::PendingRemoteAction;
+use crate::app::state::RemoteFacts;
+use crate::overlay::DiffTarget;
+use crate::overlay::Overlay;
+use crate::remote;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::ui;
 
 impl App {
-    /// Copy `text` to the clipboard, reporting the outcome in the status bar.
-    pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
-        self.status = Some(match self.clipboard.set(&text) {
-            Ok(()) => format!("copied {what}"),
-            Err(e) => format!("copy failed: {e}"),
-        });
-    }
-
-    /// Copy the active code tab's selection, or its cursor line when nothing is
-    /// selected (VS Code behavior).
-    pub(super) fn copy_selection(&mut self) {
-        if matches!(
-            self.input_context().modal,
-            Some(Modal::SearchInput | Modal::CommitInput)
-        ) {
-            if let Some(text) = self.modal_selection_text() {
-                self.copy_to_clipboard(text, "selection");
-            } else {
-                self.status = Some("copy: no text selected".to_string());
-            }
-            return;
-        }
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_copy_files();
-            return;
-        }
-        let text = match self.tabs.get(self.active) {
-            Some(Tab {
-                kind: TabKind::Code { buffer, text, .. },
-                editor,
-                ..
-            }) => editor.selection_range().map_or_else(
-                || {
-                    buffer
-                        .line(editor.cursor().line as usize)
-                        .map(|l| format!("{l}\n"))
-                },
-                |range| selection_text(buffer, text, range),
-            ),
-            _ => None,
-        };
-        match text {
-            Some(text) => self.copy_to_clipboard(text, "selection"),
-            None => self.status = Some("copy: open a text file".to_string()),
-        }
-    }
-
-    /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
-    pub(super) fn copy_path(&mut self, relative: bool) {
-        let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
-            self.status = Some("copy path: no file".to_string());
-            return;
-        };
-        let path = if relative {
-            path.strip_prefix(&self.root).unwrap_or(path)
-        } else {
-            path
-        };
-        let text = path.to_string_lossy().into_owned();
-        self.copy_to_clipboard(text, "path");
-    }
-
     /// Reveal the active tab's file in the explorer.
     pub(super) fn reveal_active_in_explorer(&mut self) {
         let Some(path) = self
@@ -71,7 +25,7 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("reveal: no file".to_string());
+            self.notify(Report::Refusal, NotificationKind::System, "reveal: no file");
             return;
         };
         self.reveal_in_explorer(&path);
@@ -100,7 +54,7 @@ impl App {
             return;
         }
         self.remote_facts_pending.insert(abs.to_path_buf());
-        self.send_command(SessionCommand::RemoteFacts {
+        self.send_command(VcsCommand::RemoteFacts {
             path: abs.to_path_buf(),
         });
     }
@@ -114,8 +68,11 @@ impl App {
         facts: Result<karet_session::RemoteFacts, String>,
     ) {
         self.remote_facts_pending.remove(&path);
+        // The facts arriving end the "resolving repository remote…" wait, whether
+        // they resolved or failed — the parked actions below report either way.
+        self.notifications.dismiss_tagged(Self::REMOTE_FACTS_TAG);
         let adopted = facts.and_then(|facts| {
-            let remote = remote::parse_remote(&facts.origin_url)
+            let remote = karet_vcs::parse_remote(&facts.origin_url)
                 .ok_or_else(|| format!("unrecognized origin remote URL: {}", facts.origin_url))?;
             Ok(RemoteFacts {
                 remote,
@@ -154,7 +111,11 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("copy link: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy link: no file",
+            );
             return;
         };
         // The caret line only anchors a permalink over a code tab (1-based).
@@ -186,13 +147,21 @@ impl App {
                     path: abs,
                     line,
                 });
-            self.status = Some("resolving repository remote…".to_string());
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::REMOTE_FACTS_TAG.to_string(),
+                "resolving repository remote…",
+                None,
+            );
             return;
         };
         let facts = match facts {
             Ok(facts) => facts,
             Err(reason) => {
-                self.status = Some(reason.clone());
+                // Copied out before reporting: the notification needs `&mut self`,
+                // which the borrow behind `reason` would otherwise still hold.
+                let reason = reason.clone();
+                self.notify(Report::Failure, NotificationKind::Vcs, reason);
                 return;
             },
         };
@@ -205,7 +174,7 @@ impl App {
                 };
                 self.copy_to_clipboard(url, what);
             },
-            Err(reason) => self.status = Some(reason.clone()),
+            Err(reason) => self.notify(Report::Failure, NotificationKind::Vcs, reason.clone()),
         }
     }
 
@@ -214,7 +183,7 @@ impl App {
         let tab = self.tabs.get(self.active)?;
         let path = tab.path()?.to_path_buf();
         let live = match &tab.kind {
-            TabKind::Code { text, .. } => Some(text.clone()),
+            TabKind::Code { text, .. } => Some(text.as_str().to_owned()),
             _ => None,
         };
         Some((path, live))
@@ -236,12 +205,30 @@ impl App {
     /// Reserve a diff tab and ask the backend to diff the active file at `rev`
     /// against its current content (the live buffer for a code tab, the file on
     /// disk otherwise); the answering [`SessionEvent::DiffPrepared`] fills the
-    /// tab. `label` names the old side in the tab title.
+    /// tab. `label` names the old side in the tab title. The filled tab opens
+    /// at its top.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
+        self.open_changes_landing(rev, label, None);
+    }
+
+    /// [`Self::open_changes_with`], landing the filled tab on the hunk that
+    /// covers 0-based editor row `landing` (or the deletion just below it)
+    /// when one is given, as a change-marker click does.
+    pub(super) fn open_changes_landing(&mut self, rev: &str, label: &str, landing: Option<u32>) {
         let Some((path, live)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no file",
+            );
             return;
         };
+        // The backend diffs the raw live text, so the clicked editor row is
+        // carried as the diff line it starts on.
+        let landing = landing.map(|row| {
+            live.as_deref()
+                .map_or(row, |text| super::diffs::diff_line_of_row(text, row))
+        });
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
         let name = abs
             .file_name()
@@ -256,13 +243,13 @@ impl App {
             self.diff_layout,
         ));
         let view = self.tabs[self.active].view;
-        match self.send(SessionCommand::DiffWithRev {
+        match self.send(VcsCommand::DiffWithRev {
             path: abs,
             rev: rev.to_string(),
             live,
         }) {
             Some(request) => {
-                self.pending_prepared_diffs.insert(request, view);
+                self.pending_prepared_diffs.insert(request, (view, landing));
             },
             None => self.fail_diff_tab(view, "diff backend is unavailable"),
         }
@@ -276,24 +263,36 @@ impl App {
     /// diff-target picker, for "Open Changes: With Revision…".
     pub(super) fn open_changes_pick_revision(&mut self) {
         let Some((path, _)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no file",
+            );
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        self.pending_history_picker = self.send(SessionCommand::FileHistory {
+        self.pending_history_picker = self.send(VcsCommand::FileHistory {
             path: abs,
             skip: 0,
             limit: Self::OPEN_CHANGES_HISTORY_CAP,
         });
         if self.pending_history_picker.is_none() {
-            self.status = Some("open changes: backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "open changes: backend is unavailable",
+            );
         }
     }
 
     /// Open the With Revision diff-target picker from the backend's file history.
     pub(super) fn apply_history_picker(&mut self, commits: Vec<karet_vcs::Commit>) {
         if commits.is_empty() {
-            self.status = Some("open changes: no commits touch this file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no commits touch this file",
+            );
             return;
         }
         let items = commits
@@ -301,18 +300,18 @@ impl App {
             .map(|c| {
                 let display = format!(
                     "{} {} \u{2014} {}",
-                    c.short_hash,
+                    c.short_hash(),
                     c.summary,
                     ui::relative_time(c.time)
                 );
                 let target = DiffTarget {
+                    label: c.short_hash().to_string(),
                     rev: c.hash,
-                    label: c.short_hash,
                 };
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
     /// Open the diff-target picker over the workspace repository's local
@@ -322,11 +321,19 @@ impl App {
         let Some(snapshot) = self.scm.repository.as_ref() else {
             // Fetch the snapshot so a retry (or the SCM panel) has it.
             self.request_repository_snapshot();
-            self.status = Some("open changes: loading branches, try again".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: loading branches, try again",
+            );
             return;
         };
         if snapshot.branches.is_empty() {
-            self.status = Some("open changes: no branches".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no branches",
+            );
             return;
         }
         let items = snapshot
@@ -345,6 +352,6 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Branch", items));
     }
 }

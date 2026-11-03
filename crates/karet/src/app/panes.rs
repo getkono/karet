@@ -1,18 +1,58 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Selection;
+use karet_session::layout;
+use karet_session::layout::LayoutAxis;
+use karet_session::layout::LayoutNode;
+use karet_session::layout::LayoutPane;
+use karet_session::layout::LayoutTab;
+use karet_session::layout::WorkspaceLayout;
+use karet_widgets::DropZone;
+use karet_widgets::PaneId;
+use karet_widgets::PaneLayout;
+use karet_widgets::SplitAxis;
+use karet_widgets::SplitDir;
+use karet_widgets::drop_zone;
+use karet_widgets::pane::tree::PaneTree;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::hit::tab_at;
+use crate::app::notifications::Report;
+use crate::app::state::StoredPane;
+use crate::tab::FillView;
+use crate::tab::MarkdownPreviewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::place_fill;
+use crate::workspace;
 
 impl App {
     /// Grow the focused pane toward `dir` by the keyboard resize step.
+    ///
+    /// A no-op while a pane is maximised: the tiled layout is hidden, so a
+    /// resize would change nothing visible yet leave altered split ratios
+    /// behind for when the layout tiles again.
     pub(super) fn resize_focused_pane(&mut self, dir: SplitDir) {
         const STEP: u16 = 2;
+        if self.maximized_pane().is_some() {
+            return;
+        }
         self.layout
-            .resize_pane(self.focus_pane(), dir, STEP, self.main_rect);
+            .resize_pane(self.focus_pane(), dir, STEP, self.last_frame.main_rect);
     }
 
     /// While dragging, move the active tab under column `x` within the focused pane.
     pub(super) fn drag_tab_to(&mut self, x: u16) {
         let focused = self.focus_pane();
         let hit = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == focused)
             .and_then(|f| tab_at(&f.tab_hits, x));
@@ -25,7 +65,8 @@ impl App {
 
     /// The pane whose *content* area contains `(x, y)`, and that content rect.
     pub(super) fn pane_at_content(&self, x: u16, y: u16) -> Option<(PaneId, Rect)> {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|f| rect_contains(f.content_rect, (x, y)))
             .map(|f| (f.pane, f.content_rect))
@@ -39,7 +80,8 @@ impl App {
         };
         // Over the origin pane's own tab strip: reorder in place, no drop target.
         let on_from_strip = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == drag.from_pane)
             .is_some_and(|f| rect_contains(f.tabstrip_rect, (x, y)));
@@ -77,9 +119,6 @@ impl App {
             return;
         }
         let idx = self.active.min(self.tabs.len().saturating_sub(1));
-        if self.tabs[idx].is_github_dashboard() {
-            return;
-        }
         let tab = self.tabs.remove(idx);
         // The dragged tab leaves this pane, so the origin needs a new tab in front:
         // the one that was active here most recently. A plain write, not
@@ -116,7 +155,7 @@ impl App {
         }
         self.layout.set_focus(dest);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.reconcile_open_docs();
     }
 
@@ -128,16 +167,12 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let is_markdown = match &tab.kind {
-            TabKind::Code { path, text, .. } => {
-                let head = text.as_bytes();
-                let head = head.get(..crate::workspace::HEAD_BYTES).unwrap_or(head);
-                karet_filetype::classify_ignoring_size(path, head) == FileKind::Markdown
-            },
-            _ => false,
-        };
-        if !is_markdown {
-            self.status = Some("markdown preview: not a Markdown file".to_string());
+        if !tab.is_markdown() {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "markdown preview: not a Markdown file",
+            );
             return;
         }
         tab.markdown_preview = tab
@@ -145,7 +180,7 @@ impl App {
             .take()
             .is_none()
             .then(MarkdownPreviewState::default);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Split the focused pane in `dir` via the keyboard, opening a second view of the
@@ -165,7 +200,11 @@ impl App {
         );
         self.layout.set_focus(new_pane);
         self.load_focused();
-        self.focus = Focus::Editor;
+        // A copy of a tab whose open the session has not answered yet has no
+        // document, and the answer binds only the source's view: the copy asks
+        // for its own, or it would never fill.
+        self.register_doc(self.active);
+        self.keyboard.focus_editor();
     }
 
     /// Build a second view of the active tab for a new pane: the same document
@@ -177,7 +216,7 @@ impl App {
             Some(t) => match &t.kind {
                 TabKind::Code {
                     path,
-                    language,
+                    file_type,
                     doc,
                     next_version,
                     buffer,
@@ -189,24 +228,38 @@ impl App {
                     decos,
                     search_decos,
                     syntax_errors,
-                } => Tab::new(
-                    t.title.clone(),
-                    TabKind::Code {
-                        path: path.clone(),
-                        language,
-                        doc: *doc,
-                        next_version: *next_version,
-                        buffer: buffer.clone(),
-                        text: text.clone(),
-                        highlights: highlights.clone(),
-                        semantic_blocks: semantic_blocks.clone(),
-                        folds: folds.clone(),
-                        folded: folded.clone(),
-                        decos: decos.clone(),
-                        search_decos: search_decos.clone(),
-                        syntax_errors: syntax_errors.clone(),
-                    },
-                ),
+                } => Tab {
+                    // The worker's table lines for this document, so the new view
+                    // keeps them until the next snapshot rather than losing them.
+                    markdown_table_lines: t.markdown_table_lines.clone(),
+                    // A source still waiting for its text leaves the copy waiting
+                    // too: edits stay refused against the empty placeholder, the
+                    // loading placeholder (or the open's failure) shows, and the
+                    // first fill puts the held caret and view back.
+                    fill_caret: t.fill_caret,
+                    fill_since: t.fill_since,
+                    fill_view: t.fill_view.clone(),
+                    fill_error: t.fill_error.clone(),
+                    ..Tab::new(
+                        t.title.clone(),
+                        TabKind::Code {
+                            path: path.clone(),
+                            file_type: *file_type,
+                            doc: *doc,
+                            next_version: *next_version,
+                            // The same buffer, not a copy of it.
+                            buffer: std::sync::Arc::clone(buffer),
+                            text: text.clone(),
+                            highlights: highlights.clone(),
+                            semantic_blocks: semantic_blocks.clone(),
+                            folds: folds.clone(),
+                            folded: folded.clone(),
+                            decos: decos.clone(),
+                            search_decos: search_decos.clone(),
+                            syntax_errors: syntax_errors.clone(),
+                        },
+                    )
+                },
                 _ => Tab::welcome(),
             },
             None => Tab::welcome(),
@@ -234,15 +287,352 @@ impl App {
     }
 
     /// Move the active tab one slot left (`-1`) or right (`+1`), clamped (no wrap).
+    ///
+    /// The pinned GitHub dashboard keeps the leftmost slot: it neither moves nor is
+    /// displaced by a neighbour, the same refusal [`App::move_tab`] makes for a drag.
     pub(super) fn move_active_tab(&mut self, delta: i32) {
         let n = self.tabs.len() as i64;
         if n < 2 {
             return;
         }
         let target = (self.active as i64 + i64::from(delta)).clamp(0, n - 1) as usize;
-        if target != self.active {
-            self.tabs.swap(self.active, target);
-            self.set_active(target);
+        if target == self.active {
+            return;
         }
+        self.tabs.swap(self.active, target);
+        self.set_active(target);
+    }
+}
+
+// The saved workspace layout (`workbench.restoreLayout`): written on a clean
+// exit, reopened by the next start on the same root that has nothing to open.
+impl App {
+    /// Save this workspace's layout under `dir`, or delete the saved one when
+    /// the setting is off or no pane shows a file.
+    ///
+    /// # Errors
+    /// Returns an [`std::io::Error`] if the layout cannot be written.
+    pub(super) fn save_workspace_layout(&self, dir: &Path) -> std::io::Result<()> {
+        let layout = self
+            .settings
+            .workbench
+            .restore_layout
+            .then(|| self.workspace_layout())
+            .flatten();
+        match layout {
+            Some(layout) => layout::write_layout(dir, &self.layout_root(), &layout),
+            None => {
+                layout::remove_layout(dir, &self.layout_root());
+                Ok(())
+            },
+        }
+    }
+
+    /// Reopen the layout saved under `dir` for this workspace, when the
+    /// setting is on and startup opened nothing the user asked for.
+    pub(super) fn restore_workspace_layout(&mut self, dir: &Path) {
+        if !self.settings.workbench.restore_layout || !self.startup_is_pristine() {
+            return;
+        }
+        if let Some(layout) = layout::read_layout(dir, &self.layout_root()) {
+            self.apply_workspace_layout(layout);
+        }
+    }
+
+    /// The root a saved layout is keyed by: the workspace root made absolute.
+    /// The root as given is usually the default `.`, which would key every
+    /// directory karet is started in to one shared layout.
+    fn layout_root(&self) -> PathBuf {
+        workspace::absolute(&self.root)
+    }
+
+    /// A saved (absolute) tab path in the form this session's own tabs use: a
+    /// file under the root is joined onto the root as given, as startup and the
+    /// explorer open it, so the same file never shows up under two spellings.
+    fn session_path(&self, saved: &Path) -> PathBuf {
+        let saved = workspace::absolute(saved);
+        match saved.strip_prefix(self.layout_root()) {
+            Ok(rel) => self.root.join(rel),
+            Err(_) => saved,
+        }
+    }
+
+    /// Whether startup left only what karet shows unasked: one pane holding a
+    /// Welcome tab or the repository README preview. Any file, split, diff, or
+    /// `--goto` the command line opened means the user chose this session's
+    /// surface, and a saved layout must not replace it.
+    fn startup_is_pristine(&self) -> bool {
+        let unasked = |tab: &Tab| {
+            matches!(tab.kind, TabKind::Welcome)
+                || (tab.is_preview && tab.path().is_some_and(|path| self.is_root_readme(path)))
+        };
+        self.layout.pane_count() == 1
+            && self.stored.is_empty()
+            && self.pending_startup_diffs.is_empty()
+            && self.tabs.iter().all(unasked)
+    }
+
+    /// Whether `path` is a README at the workspace root, the file startup
+    /// previews when nothing else is opened.
+    fn is_root_readme(&self, path: &Path) -> bool {
+        path.parent() == Some(self.root.as_path())
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("readme"))
+    }
+
+    /// The current layout as it would be saved: every pane with at least one
+    /// file tab, or `None` when there is none.
+    pub(super) fn workspace_layout(&self) -> Option<WorkspaceLayout> {
+        let mut kept = Vec::new();
+        let root = self.saved_node(&self.layout.tree(), &mut kept)?;
+        let focused = self.focus_pane();
+        let focus = kept.iter().position(|pane| *pane == focused).unwrap_or(0);
+        Some(WorkspaceLayout { root, focus })
+    }
+
+    /// The saved form of `tree`, appending each pane it keeps to `kept`.
+    fn saved_node(&self, tree: &PaneTree, kept: &mut Vec<PaneId>) -> Option<LayoutNode> {
+        match tree {
+            PaneTree::Pane(pane) => {
+                let (tabs, active) = if *pane == self.focus_pane() {
+                    (self.tabs.as_slice(), self.active)
+                } else {
+                    let stored = self.stored.get(pane)?;
+                    (stored.tabs.as_slice(), stored.active)
+                };
+                let saved = self.saved_pane(tabs, active)?;
+                kept.push(*pane);
+                Some(LayoutNode::Pane(saved))
+            },
+            PaneTree::Split {
+                axis,
+                children,
+                weights,
+            } => {
+                let mut nodes = Vec::new();
+                let mut shares = Vec::new();
+                for (index, child) in children.iter().enumerate() {
+                    if let Some(node) = self.saved_node(child, kept) {
+                        nodes.push(node);
+                        shares.push(weights.get(index).copied().unwrap_or(1.0));
+                    }
+                }
+                match nodes.len() {
+                    0 => None,
+                    1 => nodes.pop(),
+                    _ => Some(LayoutNode::Split {
+                        axis: match axis {
+                            SplitAxis::Cols => LayoutAxis::Cols,
+                            SplitAxis::Rows => LayoutAxis::Rows,
+                        },
+                        children: nodes,
+                        weights: shares,
+                    }),
+                }
+            },
+        }
+    }
+
+    /// The saved form of one pane's tabs: each file it shows once, in strip
+    /// order, with the front tab (or the nearest file tab before it) active.
+    fn saved_pane(&self, tabs: &[Tab], active: usize) -> Option<LayoutPane> {
+        let mut saved: Vec<LayoutTab> = Vec::new();
+        let mut front = 0;
+        for (index, tab) in tabs.iter().enumerate() {
+            let Some(entry) = self.saved_tab(tab) else {
+                continue;
+            };
+            let slot = match saved.iter().position(|kept| kept.path == entry.path) {
+                Some(slot) => slot,
+                None => {
+                    saved.push(entry);
+                    saved.len() - 1
+                },
+            };
+            if index <= active {
+                front = slot;
+            }
+        }
+        (!saved.is_empty()).then_some(LayoutPane {
+            tabs: saved,
+            active: front,
+        })
+    }
+
+    /// The saved form of `tab`, when it shows a file (a diff does not: it is a
+    /// view of a change, not of the file).
+    fn saved_tab(&self, tab: &Tab) -> Option<LayoutTab> {
+        if tab.is_diff() {
+            return None;
+        }
+        // A relative tab path is relative to the current directory (the root
+        // as given is joined onto it), so it is made absolute the same way.
+        let path = workspace::absolute(tab.path()?);
+        let (cursors, scroll_line, scroll_col) = match &tab.kind {
+            // A tab still waiting for its text keeps what it will be given, so
+            // quitting before it fills does not save the empty buffer's top.
+            TabKind::Code { .. } if tab.fill_caret.is_some() => match &tab.fill_view {
+                Some(view) => (view.cursors.clone(), view.scroll_line, view.scroll_col),
+                None => (
+                    CursorState::single(Selection::caret(tab.fill_caret.unwrap_or_default())),
+                    0,
+                    0,
+                ),
+            },
+            TabKind::Code { .. } => (
+                tab.editor.cursors().clone(),
+                tab.editor.scroll_line(),
+                tab.editor.scroll_col(),
+            ),
+            _ => (
+                CursorState::single(Selection::caret(LineCol::new(0, 0))),
+                0,
+                0,
+            ),
+        };
+        Some(LayoutTab {
+            path,
+            cursors,
+            scroll_line,
+            scroll_col,
+            preview: tab.is_preview,
+        })
+    }
+
+    /// Replace the startup surface with `layout`. Files gone since it was saved
+    /// are skipped and a pane left with none is dropped; with nothing left, the
+    /// startup surface stays.
+    pub(super) fn apply_workspace_layout(&mut self, layout: WorkspaceLayout) {
+        let mut panes = Vec::new();
+        let mut focus = None;
+        let mut leaf = 0;
+        let Some(tree) =
+            self.restored_node(layout.root, layout.focus, &mut leaf, &mut panes, &mut focus)
+        else {
+            return;
+        };
+        let Some(restored) = PaneLayout::from_tree(tree, focus.unwrap_or(PaneId(0))) else {
+            return;
+        };
+        let focused = restored.focus();
+        let mut front = None;
+        self.stored.clear();
+        for (pane, stored) in panes {
+            if pane == focused {
+                front = Some(stored);
+            } else {
+                self.stored.insert(pane, stored);
+            }
+        }
+        let Some(front) = front else {
+            return;
+        };
+        self.layout = restored;
+        self.tabs = front.tabs;
+        self.set_active(front.active);
+        self.find_open = false;
+        // Resuming work: the keyboard goes to the restored editor, as it does
+        // for any file the user opens, not to the startup sidebar panel. An
+        // explicit `--view` or `--focus` was applied first and keeps its say.
+        if !self.startup_surface_requested {
+            self.show_editor();
+        }
+    }
+
+    /// The live tree for a saved `node`, opening each pane's tabs into `panes`.
+    /// `leaf` counts saved panes in tree order, so the one at `saved_focus`
+    /// sets `focus`.
+    fn restored_node(
+        &mut self,
+        node: LayoutNode,
+        saved_focus: usize,
+        leaf: &mut usize,
+        panes: &mut Vec<(PaneId, StoredPane)>,
+        focus: &mut Option<PaneId>,
+    ) -> Option<PaneTree> {
+        match node {
+            LayoutNode::Pane(saved) => {
+                let index = *leaf;
+                *leaf += 1;
+                let pane = self.restored_pane(saved)?;
+                let id = PaneId(u64::try_from(panes.len()).unwrap_or(u64::MAX));
+                if index == saved_focus {
+                    *focus = Some(id);
+                }
+                panes.push((id, pane));
+                Some(PaneTree::Pane(id))
+            },
+            LayoutNode::Split {
+                axis,
+                children,
+                weights,
+            } => {
+                let mut kept = Vec::new();
+                let mut shares = Vec::new();
+                for (index, child) in children.into_iter().enumerate() {
+                    if let Some(tree) = self.restored_node(child, saved_focus, leaf, panes, focus) {
+                        kept.push(tree);
+                        // A missing weight makes the split unsound, so
+                        // `from_tree` sizes its children equally.
+                        shares.push(weights.get(index).copied().unwrap_or(f32::NAN));
+                    }
+                }
+                Some(PaneTree::Split {
+                    axis: match axis {
+                        LayoutAxis::Cols => SplitAxis::Cols,
+                        LayoutAxis::Rows => SplitAxis::Rows,
+                    },
+                    children: kept,
+                    weights: shares,
+                })
+            },
+        }
+    }
+
+    /// Open a saved pane's tabs that still exist on disk, putting each code
+    /// tab's cursors and viewport back. `None` when none of them does.
+    fn restored_pane(&mut self, saved: LayoutPane) -> Option<StoredPane> {
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        let mut has_preview = false;
+        for (index, entry) in saved.tabs.into_iter().enumerate() {
+            let path = self.session_path(&entry.path);
+            if !path.is_file() {
+                continue;
+            }
+            let mut tab = Tab::open(&path);
+            tab.view = self.alloc_view();
+            // One preview slot per pane.
+            tab.is_preview = entry.preview && !has_preview;
+            has_preview |= tab.is_preview;
+            let view = FillView {
+                cursors: entry.cursors,
+                scroll_line: entry.scroll_line,
+                scroll_col: entry.scroll_col,
+            };
+            if let Tab {
+                kind: TabKind::Code { buffer, .. },
+                editor,
+                fill_caret,
+                fill_view,
+                ..
+            } = &mut tab
+            {
+                if fill_caret.is_some() {
+                    // Still waiting for its text: an empty buffer would clamp
+                    // the view to the top, so it is put back on the first fill.
+                    *fill_view = Some(view);
+                } else {
+                    place_fill(editor, buffer, LineCol::default(), Some(view));
+                }
+            }
+            if index <= saved.active {
+                active = tabs.len();
+            }
+            tabs.push(tab);
+        }
+        (!tabs.is_empty()).then_some(StoredPane { tabs, active })
     }
 }

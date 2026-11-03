@@ -1,54 +1,11 @@
 //! Additional programming-language grammar entries.
 
 use super::GrammarInfo;
-#[cfg(any(
-    feature = "lang-kotlin",
-    feature = "lang-swift",
-    feature = "lang-scala",
-    feature = "lang-lua",
-    feature = "lang-haskell",
-    feature = "lang-ocaml",
-    feature = "lang-elixir",
-    feature = "lang-erlang",
-    feature = "lang-dart",
-    feature = "lang-r",
-    feature = "lang-perl",
-    feature = "lang-clojure",
-    feature = "lang-elisp",
-    feature = "lang-vim"
-))]
-use crate::LanguageId;
-
-#[cfg(feature = "lang-kotlin")]
-pub(super) const KOTLIN: LanguageId = LanguageId(39);
-#[cfg(feature = "lang-swift")]
-pub(super) const SWIFT: LanguageId = LanguageId(40);
-#[cfg(feature = "lang-scala")]
-pub(super) const SCALA: LanguageId = LanguageId(41);
-#[cfg(feature = "lang-lua")]
-pub(super) const LUA: LanguageId = LanguageId(42);
-#[cfg(feature = "lang-haskell")]
-pub(super) const HASKELL: LanguageId = LanguageId(43);
-#[cfg(feature = "lang-ocaml")]
-pub(super) const OCAML: LanguageId = LanguageId(44);
-#[cfg(feature = "lang-ocaml")]
-pub(super) const OCAML_INTERFACE: LanguageId = LanguageId(45);
-#[cfg(feature = "lang-elixir")]
-pub(super) const ELIXIR: LanguageId = LanguageId(46);
-#[cfg(feature = "lang-erlang")]
-pub(super) const ERLANG: LanguageId = LanguageId(47);
-#[cfg(feature = "lang-dart")]
-pub(super) const DART: LanguageId = LanguageId(48);
-#[cfg(feature = "lang-r")]
-pub(super) const R: LanguageId = LanguageId(49);
-#[cfg(feature = "lang-perl")]
-pub(super) const PERL: LanguageId = LanguageId(50);
-#[cfg(feature = "lang-clojure")]
-pub(super) const CLOJURE: LanguageId = LanguageId(51);
-#[cfg(feature = "lang-elisp")]
-pub(super) const ELISP: LanguageId = LanguageId(52);
-#[cfg(feature = "lang-vim")]
-pub(super) const VIM: LanguageId = LanguageId(53);
+#[allow(
+    unused_imports,
+    reason = "a build with none of these grammars compiles no constant to import"
+)]
+use crate::languages::ids::*;
 
 #[cfg(feature = "lang-kotlin")]
 const KOTLIN_HIGHLIGHTS: &str = r#"
@@ -117,6 +74,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: KOTLIN_HIGHLIGHTS,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-swift")]
     grammars.push(GrammarInfo {
@@ -128,6 +88,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_swift::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_swift::INJECTIONS_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-scala")]
     grammars.push(GrammarInfo {
@@ -139,6 +102,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_scala::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-lua")]
     grammars.push(GrammarInfo {
@@ -150,6 +116,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_lua::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_lua::INJECTIONS_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: Some(include_str!("../../queries/folds/lua.scm")),
+        indents: Some(include_str!("../../queries/indents/lua.scm")),
     });
     #[cfg(feature = "lang-haskell")]
     grammars.push(GrammarInfo {
@@ -161,6 +130,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_haskell::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_haskell::INJECTIONS_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-ocaml")]
     grammars.push(GrammarInfo {
@@ -172,6 +144,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_ocaml::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-ocaml")]
     grammars.push(GrammarInfo {
@@ -183,6 +158,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: OCAML_INTERFACE_HIGHLIGHTS,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-elixir")]
     grammars.push(GrammarInfo {
@@ -194,6 +172,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_elixir::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_elixir::INJECTIONS_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-erlang")]
     grammars.push(GrammarInfo {
@@ -205,6 +186,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_erlang::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-dart")]
     grammars.push(GrammarInfo {
@@ -216,6 +200,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_dart::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-r")]
     grammars.push(GrammarInfo {
@@ -227,6 +214,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_r::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-perl")]
     grammars.push(GrammarInfo {
@@ -238,6 +228,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: PERL_HIGHLIGHTS,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-clojure")]
     grammars.push(GrammarInfo {
@@ -249,6 +242,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_clojure_orchard::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-elisp")]
     grammars.push(GrammarInfo {
@@ -260,6 +256,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_elisp::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-vim")]
     grammars.push(GrammarInfo {
@@ -271,5 +270,8 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_vim::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_vim::INJECTIONS_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
 }

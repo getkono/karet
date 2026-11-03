@@ -8,6 +8,8 @@
 
 use ratatui::layout::Rect;
 
+pub mod tree;
+
 /// Identifies a pane (a leaf window) within a [`PaneLayout`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PaneId(pub u64);

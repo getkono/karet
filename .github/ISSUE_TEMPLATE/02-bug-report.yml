@@ -33,10 +33,29 @@ body:
       required: true
 
   - type: textarea
+    id: karet-version
+    attributes:
+      label: karet -V output
+      description: |
+        Paste the full output of `karet -V`. It names the exact commit the binary was
+        built from, which is needed to reproduce the problem. If the problem is in a
+        library crate rather than the `karet` app, give the crate version and the commit
+        you depend on instead.
+      placeholder: |
+        karet X.Y.Z
+        commit:  <short sha>[ (dirty)] (<commit time>)
+        profile: ...
+        rustc:   ...
+        built:   ...
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
     id: relevant-context
     attributes:
       label: Relevant environment or context
       description: Include anything that may help diagnose the problem.
-      placeholder: karet or crate version, commit, OS, terminal, configuration, logs, screenshots, or related links
+      placeholder: OS, terminal, configuration, logs, screenshots, or related links
     validations:
       required: false

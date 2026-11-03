@@ -5,6 +5,8 @@
 //! walked most-specific-first: the first layer holding a matching binding wins.
 //! Precedence is therefore explicit data, not the order of the binding table.
 
+use crate::view::View;
+
 /// Which area currently has keyboard focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Focus {
@@ -33,6 +35,10 @@ pub enum SidebarPanel {
     Todos,
     /// The debugger: call stack, variables, console.
     Debug,
+    /// The diagnostics published for open documents, grouped by file.
+    Problems,
+    /// A call or type hierarchy, walked one level at a time.
+    Hierarchy,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -53,12 +59,15 @@ pub enum EditorTab {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// GitHub dashboard, detail, or form tab.
-    Github,
     /// Language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
+    /// An integrated terminal, which takes nearly every key for its shell.
+    // Built only with the `terminal` feature; the keymap keeps the variant (and
+    // its layer id) in lean builds so a keymap file naming the layer still parses.
+    #[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+    Terminal,
 }
 
 /// The single pane that currently holds keyboard focus.
@@ -80,12 +89,14 @@ pub enum FocusTarget {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// A GitHub dashboard, detail, or form.
+    /// The GitHub view's dashboard, detail, and form pages.
     Github,
     /// The language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
+    /// An integrated terminal tab.
+    Terminal,
     /// The file explorer panel.
     Explorer,
     /// The workspace search panel.
@@ -98,25 +109,36 @@ pub enum FocusTarget {
     Todos,
     /// The debugger panel.
     Debug,
+    /// The Problems (diagnostics) panel.
+    Problems,
+    /// The call/type Hierarchy panel.
+    Hierarchy,
     /// The right-side outline panel.
     Outline,
 }
 
 impl FocusTarget {
     /// Derive the focused pane from the stored focus, the active sidebar panel,
-    /// and the content kind of the active editor tab.
+    /// the content kind of the active editor tab, and the top-level view.
+    ///
+    /// The view is consulted only for [`Focus::Editor`] — the content area is the
+    /// part of the screen a view owns. Sidebar and outline focus resolve the same
+    /// way whatever view is showing, so the stored fields stay orthogonal.
     #[must_use]
-    pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab) -> Self {
+    pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab, view: View) -> Self {
         match focus {
             Focus::Outline => FocusTarget::Outline,
+            // A non-editor view owns the content area outright: the active tab is
+            // still there, but it is not what the keys are aimed at.
+            Focus::Editor if view == View::GitHub => FocusTarget::Github,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Seam => FocusTarget::Seam,
-                EditorTab::Github => FocusTarget::Github,
                 EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
+                EditorTab::Terminal => FocusTarget::Terminal,
                 EditorTab::Plain => FocusTarget::Editor,
             },
             Focus::Sidebar => match panel {
@@ -126,6 +148,8 @@ impl FocusTarget {
                 SidebarPanel::Spelling => FocusTarget::Spelling,
                 SidebarPanel::Todos => FocusTarget::Todos,
                 SidebarPanel::Debug => FocusTarget::Debug,
+                SidebarPanel::Problems => FocusTarget::Problems,
+                SidebarPanel::Hierarchy => FocusTarget::Hierarchy,
             },
         }
     }
@@ -145,8 +169,25 @@ pub enum Layer {
     SourceControl,
     /// Active when the right-side outline panel has focus.
     Outline,
+    /// Active when the Problems panel has focus (filter, severity).
+    Problems,
+    /// Active while editing the Problems panel's text filter.
+    ProblemsFilter,
+    /// Active when the Hierarchy panel has focus (Right expands a node, where
+    /// the shared sidebar verbs would open it).
+    Hierarchy,
     /// Active when a code or diff editor tab has focus.
     Editor,
+    /// Active over [`Editor`](Layer::Editor) in vim's Normal and Visual modes
+    /// (`editor.keymap: "vim"`). Its plain keys are the modal grammar's
+    /// commands; see [`super::vi`].
+    VimNormal,
+    /// Active over [`Editor`](Layer::Editor) in helix's Normal and Select
+    /// modes (`editor.keymap: "helix"`).
+    HelixNormal,
+    /// Active over [`Editor`](Layer::Editor) in a modal preset's Insert mode;
+    /// its `Esc` returns to Normal mode.
+    Insert,
     /// Active when a diff editor tab has focus.
     DiffEditor,
     /// Active when a read-only scrollable view (commit / compare / blame / graph /
@@ -156,7 +197,7 @@ pub enum Layer {
     CommitGraph,
     /// Active when the full-screen Seam view has focus.
     Seam,
-    /// Active on GitHub dashboard, detail, and form tabs.
+    /// Active on the GitHub view's dashboard, detail, and form pages.
     Github,
     /// Active on the language-server manager tab.
     LanguageServers,
@@ -164,6 +205,11 @@ pub enum Layer {
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
     Oversize,
+    /// Active when an integrated terminal has focus. It stacks over nothing: a
+    /// key it does not bind goes to the shell, so the few app keys that must
+    /// still work there (toggle, copy/paste, scrollback, the palette, tab
+    /// switching) are bound in this layer itself.
+    Terminal,
     /// Active while the quick-open / command-palette overlay is open.
     Overlay,
     /// Active while the in-file find bar is open.
@@ -174,21 +220,188 @@ pub enum Layer {
     SearchList,
     /// Active while the commit-message input is open.
     CommitInput,
+    /// Active while the commit console is open.
+    CommitConsole,
     /// Active while the go-to-commit (revision) input is open.
     RevInput,
-    /// Active while the discard-confirmation prompt is up.
-    DiscardConfirm,
-    /// Active while the explorer delete-confirmation prompt is up.
-    ExplorerDeleteConfirm,
+    /// Active while the inline rename-symbol prompt is open.
+    Rename,
     /// Active while a context menu is open.
     ContextMenu,
-    /// Active while the unsaved-changes close-confirmation prompt (quit or tab/pane
-    /// close) is up.
-    CloseConfirm,
-    /// Active while the startup crash-recovery prompt is up.
-    SwapRecover,
+    /// Active while a confirmation dialog is open.
+    Confirm,
     /// Active while the explorer inline name editor is open.
     ExplorerEdit,
+}
+
+impl Layer {
+    /// Every layer, in declaration order.
+    pub(super) const ALL: &'static [Layer] = &[
+        Layer::Global,
+        Layer::Sidebar,
+        Layer::Explorer,
+        Layer::SourceControl,
+        Layer::Outline,
+        Layer::Problems,
+        Layer::ProblemsFilter,
+        Layer::Hierarchy,
+        Layer::Editor,
+        Layer::VimNormal,
+        Layer::HelixNormal,
+        Layer::Insert,
+        Layer::DiffEditor,
+        Layer::Pager,
+        Layer::CommitGraph,
+        Layer::Seam,
+        Layer::Github,
+        Layer::LanguageServers,
+        Layer::Oversize,
+        Layer::Terminal,
+        Layer::Overlay,
+        Layer::Find,
+        Layer::SearchInput,
+        Layer::SearchList,
+        Layer::CommitInput,
+        Layer::CommitConsole,
+        Layer::RevInput,
+        Layer::Rename,
+        Layer::ContextMenu,
+        Layer::Confirm,
+        Layer::ExplorerEdit,
+    ];
+
+    /// The stable name a keymap file's `when` uses for this layer (lowerCamelCase,
+    /// like command ids). Spelled out rather than derived so a variant rename never
+    /// breaks a user's keymap.
+    #[must_use]
+    pub(super) const fn id(self) -> &'static str {
+        match self {
+            Layer::Global => "global",
+            Layer::Sidebar => "sidebar",
+            Layer::Explorer => "explorer",
+            Layer::SourceControl => "sourceControl",
+            Layer::Outline => "outline",
+            Layer::Problems => "problems",
+            Layer::ProblemsFilter => "problemsFilter",
+            Layer::Hierarchy => "hierarchy",
+            Layer::Editor => "editor",
+            Layer::VimNormal => "vimNormal",
+            Layer::HelixNormal => "helixNormal",
+            Layer::Insert => "insert",
+            Layer::DiffEditor => "diffEditor",
+            Layer::Pager => "pager",
+            Layer::CommitGraph => "commitGraph",
+            Layer::Seam => "seam",
+            Layer::Github => "github",
+            Layer::LanguageServers => "languageServers",
+            Layer::Oversize => "oversize",
+            Layer::Terminal => "terminal",
+            Layer::Overlay => "overlay",
+            Layer::Find => "find",
+            Layer::SearchInput => "searchInput",
+            Layer::SearchList => "searchList",
+            Layer::CommitInput => "commitInput",
+            Layer::CommitConsole => "commitConsole",
+            Layer::RevInput => "revInput",
+            Layer::Rename => "rename",
+            Layer::ContextMenu => "contextMenu",
+            Layer::Confirm => "confirm",
+            Layer::ExplorerEdit => "explorerEdit",
+        }
+    }
+
+    /// The layer a keymap file's `when` names, if any.
+    #[must_use]
+    pub(super) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|layer| layer.id() == id)
+    }
+}
+
+/// Every focus target, for walking the contexts a binding can be live in.
+const TARGETS: [FocusTarget; 18] = [
+    FocusTarget::Editor,
+    FocusTarget::DiffEditor,
+    FocusTarget::Pager,
+    FocusTarget::CommitGraph,
+    FocusTarget::Seam,
+    FocusTarget::Github,
+    FocusTarget::LanguageServers,
+    FocusTarget::Oversize,
+    FocusTarget::Terminal,
+    FocusTarget::Explorer,
+    FocusTarget::Search,
+    FocusTarget::SourceControl,
+    FocusTarget::Spelling,
+    FocusTarget::Todos,
+    FocusTarget::Debug,
+    FocusTarget::Problems,
+    FocusTarget::Hierarchy,
+    FocusTarget::Outline,
+];
+
+/// Whether a key sequence bound in `layer` can ever fire: only when the layer is
+/// live in some focus context. A modal resolves one chord at a time (an unbound
+/// chord is the modal's text input), so a layer live only under a modal never
+/// sees a sequence's second chord. The terminal is the same: every key it does
+/// not bind goes to the shell, one chord at a time, so a sequence's first chord
+/// would never wait for its second.
+#[must_use]
+pub(super) fn takes_sequences(layer: Layer) -> bool {
+    layer != Layer::Terminal && focus_contexts().any(|ctx| active_layers(ctx).contains(&layer))
+}
+
+/// Every modal editing state a focused code editor can be in.
+const EDITING: [Editing; 4] = [
+    Editing::Modeless,
+    Editing::Insert,
+    Editing::VimNormal,
+    Editing::HelixNormal,
+];
+
+/// Every context without a modal: each focus target, and the code editor in
+/// each editing state.
+fn focus_contexts() -> impl Iterator<Item = Context> {
+    TARGETS.into_iter().map(Context::focus).chain(
+        EDITING
+            .into_iter()
+            .map(|editing| Context::focus(FocusTarget::Editor).with_editing(editing)),
+    )
+}
+
+/// Every distinct layer stack [`active_layers`] can return — the contexts in which
+/// two bindings can meet, which is what a conflict check needs to walk.
+#[must_use]
+pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
+    let modals = [
+        Modal::Overlay,
+        Modal::Find,
+        Modal::SearchInput,
+        Modal::SearchList,
+        Modal::ProblemsFilter,
+        Modal::CommitInput,
+        Modal::RevInput,
+        Modal::Rename,
+        Modal::ContextMenu,
+        Modal::Confirm,
+        Modal::CommitConsole,
+        Modal::ExplorerEdit,
+    ];
+    let mut stacks: Vec<&'static [Layer]> = Vec::new();
+    let contexts = modals
+        .into_iter()
+        .map(|modal| Context {
+            modal: Some(modal),
+            target: FocusTarget::Editor,
+            editing: Editing::Modeless,
+        })
+        .chain(focus_contexts());
+    for ctx in contexts {
+        let stack = active_layers(ctx);
+        if !stacks.contains(&stack) {
+            stacks.push(stack);
+        }
+    }
+    stacks
 }
 
 /// A text-capturing or transient context that shadows the focus layers. When one
@@ -204,23 +417,37 @@ pub enum Modal {
     SearchInput,
     /// The workspace Search panel while navigating results.
     SearchList,
+    /// The Problems panel while editing its text filter.
+    ProblemsFilter,
     /// The Source-Control commit-message input.
     CommitInput,
     /// The go-to-commit (revision) input.
     RevInput,
-    /// The discard-confirmation prompt.
-    DiscardConfirm,
-    /// The explorer delete-confirmation prompt.
-    ExplorerDeleteConfirm,
+    /// The inline rename-symbol prompt.
+    Rename,
     /// A context menu.
     ContextMenu,
-    /// The unsaved-changes confirmation prompt shown before an irreversible close
-    /// (quit or closing a tab/pane).
-    CloseConfirm,
-    /// The startup prompt to recover crash-recovery backups.
-    SwapRecover,
+    /// A confirmation dialog awaiting a choice.
+    Confirm,
+    /// The commit console showing a running or finished commit's hook output.
+    CommitConsole,
     /// The explorer inline name editor (new file/folder or rename).
     ExplorerEdit,
+}
+
+/// The modal editing state of a focused code editor (`editor.keymap`), which
+/// decides the layer stacked over [`Layer::Editor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Editing {
+    /// The default keymap: no modal layer.
+    #[default]
+    Modeless,
+    /// A modal preset's Insert mode.
+    Insert,
+    /// Vim's Normal or Visual mode.
+    VimNormal,
+    /// Helix's Normal or Select mode.
+    HelixNormal,
 }
 
 /// The full input context: an optional exclusive [`Modal`] over the focused pane.
@@ -230,6 +457,8 @@ pub struct Context {
     pub modal: Option<Modal>,
     /// The focused pane (still tracked so a modal can layer over it if wanted).
     pub target: FocusTarget,
+    /// The modal editing state, which matters only for a focused code editor.
+    pub editing: Editing,
 }
 
 impl Context {
@@ -239,7 +468,14 @@ impl Context {
         Self {
             modal: None,
             target,
+            editing: Editing::Modeless,
         }
+    }
+
+    /// This context with the code editor in `editing` state.
+    #[must_use]
+    pub fn with_editing(self, editing: Editing) -> Self {
+        Self { editing, ..self }
     }
 
     /// A modal context over `target` (test construction helper; production code
@@ -250,6 +486,7 @@ impl Context {
         Self {
             modal: Some(modal),
             target,
+            editing: Editing::Modeless,
         }
     }
 }
@@ -265,18 +502,29 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Overlay) => &[L::Overlay],
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
+        Some(Modal::CommitConsole) => &[L::CommitConsole],
         Some(Modal::RevInput) => &[L::RevInput],
-        Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
-        Some(Modal::ExplorerDeleteConfirm) => &[L::ExplorerDeleteConfirm],
+        Some(Modal::Rename) => &[L::Rename],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
-        Some(Modal::CloseConfirm) => &[L::CloseConfirm],
-        Some(Modal::SwapRecover) => &[L::SwapRecover],
+        Some(Modal::Confirm) => &[L::Confirm],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],
+        // Like the Search query: typing is captured, but the global chords (and
+        // F8 / Shift+F8 among them) still reach the app.
+        Some(Modal::ProblemsFilter) => &[L::ProblemsFilter, L::Global],
         None => match ctx.target {
             FocusTarget::Outline => &[L::Outline, L::Global],
-            FocusTarget::Editor => &[L::Editor, L::Global],
+            // A modal preset stacks its mode's layer over the editor's: in
+            // Normal mode the resolver lets only that layer's plain keys
+            // through, so the editor's Enter or Backspace never edits there
+            // (see `super::resolve_normal`).
+            FocusTarget::Editor => match ctx.editing {
+                Editing::Modeless => &[L::Editor, L::Global],
+                Editing::Insert => &[L::Insert, L::Editor, L::Global],
+                Editing::VimNormal => &[L::VimNormal, L::Editor, L::Global],
+                Editing::HelixNormal => &[L::HelixNormal, L::Editor, L::Global],
+            },
             // A diff is read-only: its own keys (layout toggle, next/prev change) stack
             // over the shared Pager scroll keys, never the editor's editing/motion keys.
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Pager, L::Global],
@@ -292,6 +540,10 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Github => &[L::Github, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
+            // The shell owns the keyboard: Global is deliberately not stacked, so
+            // Ctrl+P, Tab, Ctrl+B and the rest reach the program as they would in
+            // any terminal.
+            FocusTarget::Terminal => &[L::Terminal],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],
             // A results list with no text input of its own: the shared sidebar
@@ -301,6 +553,12 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Todos => &[L::Sidebar, L::Global],
             // Same shape again: rows, expand/collapse, activate.
             FocusTarget::Debug => &[L::Sidebar, L::Global],
+            // A results list with two panel keys of its own (filter, severity)
+            // over the shared sidebar verbs.
+            FocusTarget::Problems => &[L::Problems, L::Sidebar, L::Global],
+            // A tree over the shared sidebar verbs: its own layer takes Right
+            // to expand, so Enter alone opens the selected item.
+            FocusTarget::Hierarchy => &[L::Hierarchy, L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }
@@ -321,6 +579,24 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_shadows_sidebar_shadows_global() {
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Sidebar,
+                SidebarPanel::Hierarchy,
+                EditorTab::Plain,
+                View::Editor
+            ),
+            FocusTarget::Hierarchy
+        );
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Hierarchy)),
+            &[Layer::Hierarchy, Layer::Sidebar, Layer::Global]
+        );
+        assert!(takes_sequences(Layer::Hierarchy));
+    }
+
+    #[test]
     fn diff_editor_falls_through_to_pager() {
         // A diff stacks its own keys over the shared Pager scroll keys, not the
         // editor's editing/motion keys (it is read-only).
@@ -335,6 +611,39 @@ mod tests {
     }
 
     #[test]
+    fn a_modal_preset_stacks_its_mode_layer_over_the_editor() {
+        let editor = Context::focus(FocusTarget::Editor);
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::VimNormal)),
+            &[Layer::VimNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::HelixNormal)),
+            &[Layer::HelixNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::Insert)),
+            &[Layer::Insert, Layer::Editor, Layer::Global]
+        );
+        // The editing state means nothing away from a code editor, and a
+        // modal (the palette over a Normal-mode editor) still shadows it.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Pager).with_editing(Editing::VimNormal)),
+            &[Layer::Pager, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(
+                Context::modal(Modal::Overlay, FocusTarget::Editor)
+                    .with_editing(Editing::VimNormal)
+            ),
+            &[Layer::Overlay]
+        );
+        // The Normal layers resolve sequences (`g d`).
+        assert!(takes_sequences(Layer::VimNormal));
+        assert!(takes_sequences(Layer::HelixNormal));
+    }
+
+    #[test]
     fn pager_stacks_straight_onto_global() {
         // A pager view scrolls with its own layer over Global — no caret motion.
         assert_eq!(
@@ -342,7 +651,12 @@ mod tests {
             &[Layer::Pager, Layer::Global]
         );
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Pager),
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Pager,
+                View::Editor
+            ),
             FocusTarget::Pager
         );
     }
@@ -357,7 +671,12 @@ mod tests {
         );
         // A too-large placeholder tab in the editor resolves to the Oversize target.
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Oversize,
+                View::Editor
+            ),
             FocusTarget::Oversize
         );
     }
@@ -372,10 +691,51 @@ mod tests {
             FocusTarget::from(
                 Focus::Editor,
                 SidebarPanel::Explorer,
-                EditorTab::LanguageServers
+                EditorTab::LanguageServers,
+                View::Editor
             ),
             FocusTarget::LanguageServers
         );
+    }
+
+    #[test]
+    fn a_terminal_stacks_only_its_own_layer() {
+        // Global is not stacked: its Tab, Ctrl+P, Ctrl+B… belong to the shell.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Terminal)),
+            &[Layer::Terminal]
+        );
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Terminal,
+                View::Editor
+            ),
+            FocusTarget::Terminal
+        );
+    }
+
+    #[test]
+    fn only_focus_layers_take_sequences() {
+        // A focus layer (Global included) sees a sequence's later chords; a layer
+        // live only under a modal resolves one chord at a time.
+        for layer in [Layer::Global, Layer::Sidebar, Layer::Editor, Layer::Pager] {
+            assert!(takes_sequences(layer), "{layer:?}");
+        }
+        for layer in [
+            Layer::Overlay,
+            Layer::Find,
+            Layer::SearchInput,
+            Layer::SearchList,
+            Layer::ProblemsFilter,
+            Layer::Confirm,
+            Layer::ExplorerEdit,
+            // A focus layer, but its unbound keys go to the shell one at a time.
+            Layer::Terminal,
+        ] {
+            assert!(!takes_sequences(layer), "{layer:?}");
+        }
     }
 
     #[test]
@@ -395,6 +755,20 @@ mod tests {
                 Some(&Layer::Global)
             );
         }
+    }
+
+    #[test]
+    fn layer_ids_round_trip_and_every_layer_is_reachable() {
+        let stacks = all_stacks();
+        for &layer in Layer::ALL {
+            assert_eq!(Layer::from_id(layer.id()), Some(layer));
+            // A layer no stack holds could never fire a user binding.
+            assert!(
+                stacks.iter().any(|stack| stack.contains(&layer)),
+                "{layer:?} is in no stack"
+            );
+        }
+        assert_eq!(Layer::from_id("Editor"), None);
     }
 
     #[test]

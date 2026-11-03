@@ -1,4 +1,41 @@
+//! The open-document lifecycle on the actor: open, edit, undo/redo, save,
+//! retarget, close, and conversion of read-only formats to text.
+//!
+//! This module owns the document store and the save pipeline, including
+//! format-on-save and its deadline. Reading and writing the file itself is
+//! delegated to `docfile`, server sync to the LSP manager, and swap removal to
+//! the backup store.
+
 use super::*;
+
+/// Answer to a save abandoned because its document was closed first.
+const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
+
+/// Answer to a save abandoned by a [`Command::Cancel`] naming it.
+const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
+
+impl Document {
+    /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
+    /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
+    /// pending backup) once the buffer is clean again (e.g. undone to the save point).
+    pub(super) fn sync_dirty_since(&mut self, tick: u64) {
+        if self.buffer.is_dirty() {
+            if self.dirty_since.is_none() {
+                self.dirty_since = Some(tick);
+            }
+        } else {
+            self.mark_saved();
+        }
+    }
+
+    /// Disarm the backup bookkeeping because the buffer matches what is on
+    /// disk: either a save just wrote it or an edit returned it to the save
+    /// point. The next edit that dirties it starts the backup clock afresh.
+    pub(super) fn mark_saved(&mut self) {
+        self.dirty_since = None;
+        self.backed_up_version = None;
+    }
+}
 
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
@@ -34,14 +71,14 @@ impl Session {
 impl Session {
     // --- command handlers -------------------------------------------------
 
-    pub(super) fn open(&mut self, id: RequestId, path: PathBuf, language: Option<&str>) {
+    pub(super) fn open(&mut self, id: Option<RequestId>, path: PathBuf, language: Option<&str>) {
         if let Some(&existing) = self.store.by_path.get(&path) {
             if let Some(doc) = self.store.docs.get_mut(&existing) {
                 doc.refs += 1;
                 let version = doc.buffer.version();
                 let settings = doc.settings;
                 self.emit(
-                    Some(id),
+                    id,
                     Event::Opened {
                         doc: existing,
                         version,
@@ -68,12 +105,12 @@ impl Session {
                 // text form); tell the client so it can fall back to a read-only
                 // view instead of leaving this path's tab registered with no
                 // document forever.
-                self.emit(Some(id), Event::NotUtf8 { path });
+                self.emit(id, Event::NotUtf8 { path });
                 return;
             },
             Err(e) => {
                 self.emit(
-                    Some(id),
+                    id,
                     Event::Notification {
                         severity: Severity::Error,
                         kind: NotificationKind::Io,
@@ -83,18 +120,29 @@ impl Session {
                 return;
             },
         };
-        let lang_id = language_id_from_path(&path);
-        let language = language
-            .and_then(name_for_language)
-            .or_else(|| language_name_for_path(&path));
-        let language_selector = language_selector_for_path(&path);
-        let lsp_language_id = lsp_language_id_for_path(&path);
+        // A decoded CBOR document is CBOR; otherwise an explicit id the registry
+        // knows overrides detection, and anything else, including an id it does
+        // not know, falls back to the path.
+        let detected = DocumentLanguage::for_format(&path, format, language);
+        let DocumentLanguage {
+            lang_id,
+            name: language,
+            file_type,
+            lsp_id: lsp_language_id,
+        } = detected;
+        let language_selector = detected.selector();
         let (document_settings, editorconfig_error) =
-            resolve_document_settings(&path, language_selector, &self.config.settings);
+            resolve_document_settings(&path, Some(file_type), self.config.settings());
         apply_serialization_settings(&mut buffer, document_settings);
+        if must_create {
+            // No file, so no history of it to restore.
+            buffer.set_undo_limit(self.config.settings().files.undo_cap());
+        } else {
+            self.prepare_undo(&path, &mut buffer);
+        }
         if let Some(message) = editorconfig_error {
             self.emit(
-                Some(id),
+                id,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Io,
@@ -107,6 +155,7 @@ impl Session {
         let mut doc = Document {
             path: path.clone(),
             language,
+            file_type,
             language_selector,
             lsp_language_id,
             lang_id,
@@ -114,21 +163,20 @@ impl Session {
             format,
             must_create,
             settings: document_settings,
-            highlights: Arc::new(Highlights::default()),
-            folds: Arc::new(FoldRegions::default()),
-            semantic_blocks: Arc::new(SemanticBlocks::default()),
-            syntax_symbols: Arc::default(),
-            error_lines: Arc::default(),
+            syntax: SyntaxState::default(),
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
-            decorations: Vec::new(),
+            semantic_tokens: None,
+            server_folds: None,
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
+            reported_cursor: None,
+            formatted_version: None,
         };
         let spell_without_syntax = update_syntax(
-            &self.config.settings,
+            self.config.settings(),
             &self.highlight_tx,
             doc_id,
             &mut doc,
@@ -136,7 +184,7 @@ impl Session {
         );
         let version = doc.buffer.version();
         // Lazily start (or address) this language's server and announce the open.
-        self.lsp.document_opened(
+        let retired = self.lsp.document_opened(
             doc.language_selector,
             doc.lsp_language_id,
             &doc.path,
@@ -145,8 +193,12 @@ impl Session {
         );
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
+        // After the store insert, not before: adopting a retirement republishes
+        // the inventory, which derives the roots it reports from the open
+        // documents. Adopting first hid the root of the file being opened.
+        self.adopt_retirement(retired);
         self.emit(
-            Some(id),
+            id,
             Event::Opened {
                 doc: doc_id,
                 version,
@@ -173,19 +225,20 @@ impl Session {
         cause: EditCause,
     ) {
         let tick = self.elapsed_ms();
-        let ctx = edit_context(tick, cause, change);
         // `None` means the change was stale or overlapping (the client's local
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
+        let mut retired = crate::lsp::Retired::default();
         let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                self.events.send((Some(id), unknown_document(doc_id))).ok();
+                self.events.emit(Some(id), unknown_document(doc_id));
                 return;
             };
+            let ctx = edit_context(tick, cause, doc, change);
             let version = match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
                     let _ =
@@ -193,18 +246,22 @@ impl Session {
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
-                    // The single LSP apply site: forward the new full text
-                    // (debounced by the server task). A no-op while no server is
-                    // attached for this language.
-                    lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                        doc.buffer.text()
-                    });
+                    // The single LSP apply site: forward the edit (debounced by
+                    // the server task). A no-op while no server is attached for
+                    // this language.
+                    retired.absorb(lsp.document_changed(
+                        doc.language_selector,
+                        &doc.path,
+                        &doc.buffer,
+                        Some(&applied),
+                    ));
                     Some(applied.version)
                 },
                 Err(_) => None,
             };
             (version, doc.lang_id.is_none())
         };
+        self.adopt_retirement(retired);
         match version {
             Some(version) => self.emit(
                 Some(id),
@@ -230,10 +287,12 @@ impl Session {
 
     pub(super) fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
+        let mut retired = crate::lsp::Retired::default();
         let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
+            let retired = &mut retired;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -249,13 +308,22 @@ impl Session {
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
-            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                doc.buffer.text()
-            });
-            // Jump the caret to the change: undo restores the exact pre-edit cursor;
-            // redo (which records none) lands at the end of the re-applied edit that
-            // reaches furthest into the document.
-            let cursor = applied.restored_cursor.clone().or_else(|| {
+            retired.absorb(lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                &doc.buffer,
+                Some(&applied),
+            ));
+            // Jump the caret to the change: undo restores the whole pre-edit
+            // selection set, redo the set the client reported right after the
+            // edit. A redo with no report lands at the end of the re-applied
+            // edit that reaches furthest into the document.
+            let restored = applied
+                .restored_cursor
+                .clone()
+                .filter(|cursor| !cursor.selections.is_empty())
+                .map(|cursor| clamp_cursor(&doc.buffer, cursor));
+            let cursor = restored.or_else(|| {
                 applied
                     .edits
                     .iter()
@@ -267,6 +335,7 @@ impl Session {
             });
             (applied.version, cursor, doc.lang_id.is_none())
         };
+        self.adopt_retirement(retired);
         self.emit(
             Some(id),
             Event::Applied {
@@ -280,7 +349,239 @@ impl Session {
         }
     }
 
-    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
+    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
+        if cause.may_format() && self.begin_format_on_save(id, doc_id, cause) {
+            return;
+        }
+        self.commit_save(id, doc_id);
+    }
+
+    /// What a formatting request for `doc` asks of its server beyond `scope`.
+    ///
+    /// The server is told how this buffer is actually indented rather than
+    /// guessing: a formatter that honours `FormattingOptions` reindents the
+    /// whole file to whatever the request says, so a constant here would undo
+    /// the user's indentation on every save. Read from the document's own
+    /// resolved settings -- the layer `.editorconfig` lands on, and the one the
+    /// editor itself types by -- because telling a formatter something the
+    /// buffer does not believe is how a save comes to fight its project.
+    /// `tabSize` is a width in columns either way: the indent step when that is
+    /// spaces, the tab stop when it is not.
+    pub(super) fn formatting_ask(
+        &self,
+        doc: &Document,
+        scope: crate::lsp::FormattingScope,
+    ) -> FormattingAsk {
+        let indentation = karet_lsp::Indentation {
+            tab_size: u32::from(if doc.settings.insert_spaces {
+                doc.settings.indent_size
+            } else {
+                doc.settings.tab_width
+            }),
+            insert_spaces: doc.settings.insert_spaces,
+        };
+        FormattingAsk {
+            scope,
+            indentation,
+            will_save: None,
+            save_timeout: std::time::Duration::from_millis(
+                self.config.settings().editor.format_on_save_timeout,
+            ),
+        }
+    }
+
+    /// Whether the session formats `doc` itself when no language server does:
+    /// TOML, through the built-in formatter, unless `toml.format` is off.
+    pub(super) fn has_builtin_formatter(&self, doc: &Document) -> bool {
+        cfg!(feature = "toml-format")
+            && doc.language_selector == Some("toml")
+            && self.config.settings().toml.format
+    }
+
+    /// Built-in formatter edits when no language server offered formatting.
+    pub(super) fn builtin_format_edits(&self, doc_id: DocumentId) -> Option<Vec<TextEdit>> {
+        #[cfg(feature = "toml-format")]
+        {
+            let doc = self.store.docs.get(&doc_id)?;
+            if self.has_builtin_formatter(doc)
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                return Some(whole_document_change(doc, formatted).edits);
+            }
+        }
+        #[cfg(not(feature = "toml-format"))]
+        let _ = doc_id;
+        None
+    }
+
+    /// Apply formatter edits in place as one undoable change; `false` when the
+    /// document is gone or the edits do not apply (they overlap).
+    ///
+    /// `for_save` marks the change as the save's own, so the cleanup the save
+    /// then makes joins its undo step; a format asked for by hand stands alone.
+    pub(super) fn apply_format_edits(
+        &mut self,
+        doc_id: DocumentId,
+        edits: Vec<TextEdit>,
+        for_save: bool,
+    ) -> bool {
+        let tick = self.elapsed_ms();
+        let (spell_without_syntax, retired) = {
+            let highlight_tx = &self.highlight_tx;
+            let settings = self.config.settings();
+            let lsp = &mut self.lsp;
+            let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+                return false;
+            };
+            let change = Change::new(doc.buffer.version(), edits);
+            let ctx = save_edit_context(tick, doc, &change);
+            let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+                return false;
+            };
+            doc.formatted_version = for_save.then_some(applied.version);
+            let spell_without_syntax =
+                update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+            doc.sync_dirty_since(tick);
+            let retired = lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                &doc.buffer,
+                Some(&applied),
+            );
+            (spell_without_syntax, retired)
+        };
+        // Formatter edits are a document change like any other, so the same
+        // retirement a plain edit can trigger has to be adopted here too -- a
+        // slot retired while its layer stands would badge a server that is gone.
+        self.adopt_retirement(retired);
+        self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
+        true
+    }
+
+    /// Adopt an LSP formatting reply that belongs to a pending save, then write.
+    pub(super) fn finish_format_on_save(
+        &mut self,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        edits: Vec<TextEdit>,
+    ) -> bool {
+        let Some(pending) = self
+            .pending_format_saves
+            .remove(&request)
+            .map(|save| save.doc)
+        else {
+            return false;
+        };
+        // A closed document cannot be found here: `close` drains this map before
+        // it removes the document, and that is the only place documents are
+        // removed. A cancelled save is reported there, once.
+        if pending == doc
+            && self
+                .store
+                .docs
+                .get(&doc)
+                .is_some_and(|document| document.buffer.version() == version)
+            && !edits.is_empty()
+        {
+            let _ = self.apply_format_edits(doc, edits, true);
+        }
+        self.commit_save(request, pending);
+        true
+    }
+
+    /// Write out every save still waiting on a formatting answer, unformatted.
+    ///
+    /// Called when the answers those saves depend on are about to become
+    /// undeliverable — today, when an `lsp` settings change retires the server
+    /// generation that owes them. The alternative is a file that is never
+    /// written and a request nothing ever answers, which reads to the user as a
+    /// save that silently did nothing.
+    ///
+    /// The drain is global because the retirement is: [`LspManager::reconfigure`]
+    /// retires every slot and bumps the generation, so no parked save is owed by
+    /// a server that survives the reload, and waiting on one would buy nothing --
+    /// a late answer from the old generation is refused its edits and only
+    /// finishes the save unformatted. Narrow this only together with that.
+    ///
+    /// [`LspManager::reconfigure`]: crate::lsp::LspManager::reconfigure
+    pub(super) fn commit_pending_format_saves(&mut self) {
+        let stranded: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .drain()
+            .map(|(request, save)| (request, save.doc))
+            .collect();
+        for (request, doc_id) in stranded {
+            self.commit_save(request, doc_id);
+        }
+    }
+
+    /// Abandon a save still waiting on its formatting answer, writing nothing.
+    ///
+    /// The [`Command::Cancel`] half of a parked save. A cancelled save is not
+    /// written unformatted: the peer asked for the write not to happen, and
+    /// `close` already settled that an abandoned save leaves the file as it was
+    /// last written. The buffer stays dirty and its swap stays in place, so
+    /// nothing the user typed is lost. The formatting answer, when it arrives,
+    /// finds no pending entry and is dropped, and so does the deadline sweep.
+    pub(super) fn cancel_format_on_save(&mut self, request: RequestId) {
+        if self.pending_format_saves.remove(&request).is_some() {
+            self.report_save_cancelled(request, SAVE_CANCELLED_REQUESTED);
+        }
+    }
+
+    /// Answer a save request that will never be written.
+    fn report_save_cancelled(&mut self, request: RequestId, message: &str) {
+        self.emit(
+            Some(request),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::Io,
+                message: message.to_owned(),
+            },
+        );
+    }
+
+    /// Write out any save whose formatter has taken too long.
+    ///
+    /// A server is free to accept `textDocument/formatting` and then never
+    /// answer; the only other bound is the JSON-RPC request timeout, which is
+    /// tens of seconds. A save that slow is indistinguishable from a broken one,
+    /// so past `editor.formatOnSaveTimeout` the buffer goes to disk unformatted
+    /// rather than waiting on a formatter that may never come back.
+    ///
+    /// The setting is read at the sweep, not when the save was parked, so a
+    /// timeout changed while a save waits governs that save too. The server task
+    /// keeps the bound it was handed; whichever gives up first, the save lands.
+    ///
+    /// Takes `now` rather than reading the clock, so the deadline is reachable
+    /// from a unit test without waiting out its wall-clock duration.
+    pub(super) fn expire_format_on_save(&mut self, now: u64) {
+        let deadline = self.config.settings().editor.format_on_save_timeout;
+        let expired: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .iter()
+            .filter(|(_, save)| now.saturating_sub(save.issued_ms) >= deadline)
+            .map(|(request, save)| (*request, save.doc))
+            .collect();
+        for (request, doc_id) in expired {
+            self.pending_format_saves.remove(&request);
+            self.commit_save(request, doc_id);
+        }
+    }
+
+    fn commit_save(&mut self, id: RequestId, doc_id: DocumentId) {
+        // Trailing whitespace and the final newline are settled here, against the
+        // text actually about to be written, rather than before the formatter ran
+        // against text it was about to replace. `editor.trimTrailingWhitespace`
+        // and `editor.insertFinalNewline` are documented without qualification,
+        // so they have to hold over formatter output too -- and every ending of
+        // the formatter wait, including the ones that give up on it, arrives
+        // here.
         if self.apply_save_cleanup(doc_id) {
             self.publish(doc_id, None);
         }
@@ -289,8 +590,7 @@ impl Session {
             Some(Ok(_)) => {
                 // The file is safely on disk: drop the backup and disarm the clock.
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     let path = doc.path.clone();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&path);
@@ -298,10 +598,11 @@ impl Session {
                     self.lsp
                         .document_saved(doc.language_selector, &doc.path, || doc.buffer.text());
                 }
+                self.persist_undo(doc_id);
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
                 self.wakatime_beat(doc_id, true);
-                if self.config.settings.latex.build_on_save
+                if self.config.settings().latex.build_on_save
                     && self.store.docs.get(&doc_id).is_some_and(|doc| {
                         doc.path
                             .extension()
@@ -320,7 +621,7 @@ impl Session {
                     );
                 }
             },
-            Some(Err(TextError::Conflict)) => {
+            Some(Err(SaveError::Text(TextError::Conflict))) => {
                 // The file changed on disk since it was last read — writing now would
                 // silently clobber someone else's change. Back up the in-memory edits
                 // (same as any other failed save) and let the client prompt the user,
@@ -372,16 +673,16 @@ impl Session {
         match result {
             Some(Ok(())) => {
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&doc.path);
                     }
                 }
+                self.persist_undo(doc_id);
                 self.publish(doc_id, None);
                 Ok(path)
             },
-            Some(Err(TextError::Conflict)) => Err(
+            Some(Err(SaveError::Text(TextError::Conflict))) => Err(
                 "LaTeX build cancelled: the source changed on disk; resolve the save conflict first"
                     .to_owned(),
             ),
@@ -393,63 +694,92 @@ impl Session {
     fn apply_save_cleanup(&mut self, doc_id: DocumentId) -> bool {
         let tick = self.elapsed_ms();
         let highlight_tx = &self.highlight_tx;
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let lsp = &mut self.lsp;
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             return false;
         };
+        // A save that formatted and then cleaned up is one user action, so it is
+        // one undo step: the cleanup joins the formatter's step when nothing has
+        // landed between them. Taken unconditionally, so the marker never
+        // outlives the save that set it.
+        let join = doc.formatted_version.take() == Some(doc.buffer.version());
         let current = doc.buffer.text();
         let normalized = normalize_text_for_save(&current, doc.settings);
         if normalized == current {
             return false;
         }
-        let Some(change) = whole_document_change(doc, normalized) else {
-            return false;
+        let change = whole_document_change(doc, normalized);
+        let ctx = save_edit_context(tick, doc, &change);
+        let applied = if join {
+            doc.buffer.apply_joined(&change, ctx)
+        } else {
+            doc.buffer.apply(&change, ctx)
         };
-        let ctx = edit_context(tick, EditCause::Replace, &change);
-        let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+        let Ok(applied) = applied else {
             return false;
         };
         let spell_without_syntax =
             update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
-        lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-            doc.buffer.text()
-        });
+        let retired = lsp.document_changed(
+            doc.language_selector,
+            &doc.path,
+            &doc.buffer,
+            Some(&applied),
+        );
+        self.adopt_retirement(retired);
         if spell_without_syntax {
             self.schedule_spell(doc_id);
         }
         true
     }
 
-    pub(super) fn retarget(&mut self, id: RequestId, doc_id: DocumentId, path: PathBuf) {
+    pub(super) fn retarget(&mut self, id: Option<RequestId>, doc_id: DocumentId, path: PathBuf) {
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+            self.emit(id, unknown_document(doc_id));
             return;
         };
         let old = doc.path.clone();
         let old_language = doc.language_selector;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
-        doc.lang_id = language_id_from_path(&path);
-        doc.language = language_name_for_path(&path);
-        doc.language_selector = language_selector_for_path(&path);
-        doc.lsp_language_id = lsp_language_id_for_path(&path);
+        let old_lsp_language = doc.lsp_language_id;
+        // The new path decides the language, within the document's format.
+        let detected = DocumentLanguage::for_rename(doc, &path);
+        doc.lang_id = detected.lang_id;
+        doc.language = detected.name;
+        doc.file_type = detected.file_type;
+        doc.language_selector = detected.selector();
+        doc.lsp_language_id = detected.lsp_id;
+        // A new language is served by another server, or none: the old one's
+        // overlay does not describe it, and the version did not move, so
+        // `update_syntax` would keep it.
+        if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
+            doc.semantic_tokens = None;
+            doc.server_folds = None;
+        }
         // The language may have changed with the extension; re-highlight from scratch.
-        let spell_without_syntax =
-            update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
+        let spell_without_syntax = update_syntax(
+            self.config.settings(),
+            &self.highlight_tx,
+            doc_id,
+            doc,
+            None,
+        );
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
-        self.lsp.document_closed(old_language, &old);
-        self.lsp.document_opened(
+        let mut retired = self.lsp.document_closed(old_language, &old);
+        retired.absorb(self.lsp.document_opened(
             doc.language_selector,
             doc.lsp_language_id,
             &doc.path,
             doc.buffer.version(),
             || doc.buffer.text(),
-        );
+        ));
+        self.adopt_retirement(retired);
         self.store.by_path.insert(path.clone(), doc_id);
-        self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
+        self.emit(id, Event::Retargeted { doc: doc_id, path });
         self.refresh_document_settings(&[doc_id]);
         self.publish(doc_id, None);
         if spell_without_syntax {
@@ -466,9 +796,23 @@ impl Session {
             None => return,
         };
         if removed {
+            let cancelled: Vec<RequestId> = self
+                .pending_format_saves
+                .iter()
+                .filter(|(_, pending)| pending.doc == doc_id)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in cancelled {
+                self.pending_format_saves.remove(&id);
+                self.report_save_cancelled(id, SAVE_CANCELLED_CLOSED);
+            }
+            // Before the document leaves the store: undo and redo since the last
+            // save still describe the file on disk when it closes clean.
+            self.persist_undo(doc_id);
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
-                self.lsp.document_closed(doc.language_selector, &doc.path);
+                let retired = self.lsp.document_closed(doc.language_selector, &doc.path);
+                self.adopt_retirement(retired);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 self.spell_errors.remove(&doc_id);
@@ -493,7 +837,7 @@ impl Session {
         let events = self.events.clone();
         std::thread::spawn(move || {
             let markdown = convert_document_file(&path);
-            let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
+            events.emit(Some(id), Event::DocumentConverted { path, markdown });
         });
     }
 
@@ -559,7 +903,7 @@ impl Session {
     /// Send one WakaTime heartbeat for `doc_id`, spawning the worker on first
     /// use. Inert unless `wakatime.enabled` is set.
     pub(super) fn wakatime_beat(&mut self, doc_id: DocumentId, is_write: bool) {
-        if !self.config.settings.wakatime.enabled {
+        if !self.config.settings().wakatime.enabled {
             return;
         }
         let Some(doc) = self.store.docs.get(&doc_id) else {

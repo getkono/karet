@@ -2,6 +2,15 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 
 use super::*;
+use crate::view::View;
+
+mod carets;
+mod context;
+mod gestures;
+mod hints;
+mod modal;
+mod navigation;
+mod search;
 
 fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, mods)
@@ -21,6 +30,43 @@ fn bindings_are_authored_in_canonical_form() {
     }
 }
 
+#[test]
+fn comment_toggles_bind_in_the_editor_under_both_terminal_encodings() {
+    let editor = |code, mods| res(Focus::Editor, false, key(code, mods));
+    // Kitty-protocol terminals report Ctrl+/; legacy ones send 0x1F, read as Ctrl+7.
+    assert_eq!(
+        editor(KeyCode::Char('/'), KeyModifiers::CONTROL),
+        Some(Command::ToggleLineComment)
+    );
+    assert_eq!(
+        editor(KeyCode::Char('7'), KeyModifiers::CONTROL),
+        Some(Command::ToggleLineComment)
+    );
+    assert_eq!(
+        editor(KeyCode::Char('A'), KeyModifiers::SHIFT | KeyModifiers::ALT),
+        Some(Command::ToggleBlockComment)
+    );
+}
+
+#[test]
+fn quick_fix_binds_in_the_editor_with_a_legacy_terminal_fallback() {
+    let editor = |code, mods| res(Focus::Editor, false, key(code, mods));
+    // Ctrl+. reaches the app only through the kitty keyboard protocol.
+    assert_eq!(
+        editor(KeyCode::Char('.'), KeyModifiers::CONTROL),
+        Some(Command::CodeActions)
+    );
+    assert_eq!(
+        editor(KeyCode::Enter, KeyModifiers::ALT),
+        Some(Command::CodeActions)
+    );
+    // A plain Enter still breaks the line.
+    assert_eq!(
+        editor(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Command::InsertNewline)
+    );
+}
+
 /// Resolve a single key press in a focus context to its command. `is_diff` maps
 /// to the diff editor tab; every other editor tab is treated as plain here.
 fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
@@ -29,7 +75,7 @@ fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Op
     } else {
         EditorTab::Plain
     };
-    let ctx = Context::focus(FocusTarget::from(focus, panel, tab));
+    let ctx = Context::focus(FocusTarget::from(focus, panel, tab, View::Editor));
     match resolve(ctx, &[KeyChord::from_event(key)]) {
         Resolved::Command(c) => Some(c),
         _ => None,
@@ -67,6 +113,31 @@ fn ctrl_p_variants() {
     assert_eq!(
         res(Focus::Editor, false, key(KeyCode::F(1), KeyModifiers::NONE)),
         Some(Command::OpenCommandPalette)
+    );
+}
+
+#[test]
+fn ctrl_shift_o_goes_to_a_symbol_and_ctrl_k_o_toggles_the_outline() {
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(
+                KeyCode::Char('O'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+        ),
+        Some(Command::GoToSymbolInEditor)
+    );
+    let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    let o = KeyChord::from_event(key(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert_eq!(
+        resolve(Context::focus(FocusTarget::Editor), &[ctrl_k, o]),
+        Resolved::Command(Command::ToggleOutline)
+    );
+    assert_eq!(
+        hint_for(Command::ToggleOutline, ChordStyle::Verbose).as_deref(),
+        Some("Ctrl+K O")
     );
 }
 
@@ -130,6 +201,47 @@ fn diff_only_bindings() {
         res(Focus::Sidebar, true, key(KeyCode::Tab, KeyModifiers::NONE)),
         Some(Command::ToggleFocus)
     );
+    // The read-only diff keeps Tab as the focus toggle; only the editor indents.
+    assert_eq!(
+        res(Focus::Editor, true, key(KeyCode::Tab, KeyModifiers::NONE)),
+        Some(Command::ToggleFocus)
+    );
+}
+
+#[test]
+fn editor_tab_indents_and_focus_moves_to_ctrl_shift_e() {
+    let tab = key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(res(Focus::Editor, false, tab), Some(Command::Indent));
+    for outdent in [
+        key(KeyCode::Tab, KeyModifiers::SHIFT),
+        key(KeyCode::BackTab, KeyModifiers::NONE),
+        key(KeyCode::BackTab, KeyModifiers::SHIFT),
+    ] {
+        assert_eq!(res(Focus::Editor, false, outdent), Some(Command::Outdent));
+    }
+    // Ctrl+Tab still walks the tabs from the editor.
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Tab, KeyModifiers::CONTROL)
+        ),
+        Some(Command::NextTab)
+    );
+    let focus = key(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(res(Focus::Editor, false, focus), Some(Command::ToggleFocus));
+    assert_eq!(
+        res(Focus::Sidebar, false, focus),
+        Some(Command::ToggleFocus)
+    );
+    assert_eq!(res(Focus::Sidebar, false, tab), Some(Command::ToggleFocus));
+    // The editor's hints bar advertises the focus key that works there.
+    let editor = hints_for(Context::focus(FocusTarget::Editor), ChordStyle::Verbose);
+    let hint = editor.iter().find(|h| h.command == Command::ToggleFocus);
+    assert_eq!(hint.map(|h| h.chord.as_str()), Some("Ctrl+Shift+E"));
 }
 
 #[test]
@@ -198,13 +310,14 @@ fn word_motion_and_select_all_bind_in_editor() {
         res(Focus::Editor, false, key(KeyCode::Left, KeyModifiers::ALT)),
         Some(Command::CaretWordLeft)
     );
+    // Expand Selection, not word selection (app::tests::syntax_select).
     assert_eq!(
         res(
             Focus::Editor,
             false,
             key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
         ),
-        Some(Command::SelectWordRight)
+        Some(Command::ExpandSelection)
     );
     assert_eq!(
         res(
@@ -297,6 +410,34 @@ fn multi_cursor_chords_bind_in_editor() {
 }
 
 #[test]
+fn bracket_chords_bind_in_editor_under_both_shift_encodings() {
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    for ch in ['|', '\\'] {
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::Char(ch), ctrl_shift)),
+            Some(Command::GoToBracket)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char(ch), ctrl_shift | KeyModifiers::ALT)
+            ),
+            Some(Command::SelectToBracket)
+        );
+    }
+    // Ctrl+\ alone still splits the pane.
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Char('\\'), KeyModifiers::CONTROL)
+        ),
+        Some(Command::SplitRight)
+    );
+}
+
+#[test]
 fn panel_selection_and_quit() {
     assert_eq!(
         res(
@@ -313,39 +454,6 @@ fn panel_selection_and_quit() {
             key(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ),
         Some(Command::Quit)
-    );
-}
-
-#[test]
-fn focus_target_derivation() {
-    assert_eq!(
-        FocusTarget::from(
-            Focus::Sidebar,
-            SidebarPanel::SourceControl,
-            EditorTab::Plain
-        ),
-        FocusTarget::SourceControl
-    );
-    assert_eq!(
-        FocusTarget::from(Focus::Sidebar, SidebarPanel::Explorer, EditorTab::Plain),
-        FocusTarget::Explorer
-    );
-    // Opening a diff moves focus to the editor: the active layer becomes
-    // DiffEditor, NOT SourceControl, even while the SCM panel is still the
-    // underlying sidebar panel. This is the fact behind the "SCM keys do
-    // nothing after previewing a diff" bug.
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::SourceControl, EditorTab::Diff),
-        FocusTarget::DiffEditor
-    );
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Plain),
-        FocusTarget::Editor
-    );
-    // A too-large placeholder in the editor resolves to its override target.
-    assert_eq!(
-        FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
-        FocusTarget::Oversize
     );
 }
 
@@ -569,57 +677,6 @@ fn explorer_copy_path_bindings_are_scoped_and_advertised() {
 }
 
 #[test]
-fn search_modal_still_resolves_global_chords() {
-    // The Search modals layer their own keys over Global, so Ctrl+B still toggles
-    // the sidebar while a bare 'j' navigates the results rather than typing.
-    let list = Context::modal(Modal::SearchList, FocusTarget::Search);
-    assert_eq!(
-        resolve(
-            list,
-            &[KeyChord::from_event(key(
-                KeyCode::Char('b'),
-                KeyModifiers::CONTROL
-            ))]
-        ),
-        Resolved::Command(Command::ToggleSidebar)
-    );
-    let input = Context::modal(Modal::SearchInput, FocusTarget::Search);
-    assert_eq!(
-        resolve(
-            input,
-            &[KeyChord::from_event(key(
-                KeyCode::Char('x'),
-                KeyModifiers::CONTROL
-            ))]
-        ),
-        Resolved::Command(Command::Cut)
-    );
-    let commit = Context::modal(Modal::CommitInput, FocusTarget::SourceControl);
-    assert_eq!(
-        resolve(
-            commit,
-            &[KeyChord::from_event(key(
-                KeyCode::Char('a'),
-                KeyModifiers::SUPER
-            ))]
-        ),
-        Resolved::Command(Command::EditorSelectAll)
-    );
-    // A plain overlay is exclusive: Ctrl+B does not leak through to Global.
-    let overlay = Context::modal(Modal::Overlay, FocusTarget::Editor);
-    assert_eq!(
-        resolve(
-            overlay,
-            &[KeyChord::from_event(key(
-                KeyCode::Char('b'),
-                KeyModifiers::CONTROL
-            ))]
-        ),
-        Resolved::None
-    );
-}
-
-#[test]
 fn editor_editing_chords() {
     assert_eq!(
         res(
@@ -666,138 +723,6 @@ fn editor_editing_chords() {
 }
 
 #[test]
-fn hint_for_formats_chords() {
-    assert_eq!(
-        hint_for(Command::CloseTab, ChordStyle::Verbose).as_deref(),
-        Some("Ctrl+W")
-    );
-    assert_eq!(
-        hint_for(Command::OpenCommandPalette, ChordStyle::Verbose).as_deref(),
-        Some("Ctrl+Shift+P")
-    );
-    assert_eq!(
-        hint_for(Command::ToggleFocus, ChordStyle::Verbose).as_deref(),
-        Some("Tab")
-    );
-    // The same binding renders compactly for the status bar.
-    assert_eq!(
-        hint_for(Command::CloseTab, ChordStyle::Caret).as_deref(),
-        Some("^W")
-    );
-}
-
-#[test]
-fn hint_renders_multi_key_sequence() {
-    assert_eq!(
-        hint_for(Command::CloseAllTabs, ChordStyle::Verbose).as_deref(),
-        Some("Ctrl+K Ctrl+W")
-    );
-}
-
-#[test]
-fn hints_for_is_context_aware_and_deduped() {
-    let editor = hints_for(Context::focus(FocusTarget::Editor), ChordStyle::Caret);
-    let cmds: Vec<Command> = editor.iter().map(|h| h.command).collect();
-    // Editor-context commands are advertised…
-    assert!(cmds.contains(&Command::Save));
-    assert!(cmds.contains(&Command::Undo));
-    assert!(cmds.contains(&Command::Cut));
-    assert!(cmds.contains(&Command::Copy));
-    assert!(cmds.contains(&Command::OpenFind));
-    // …while self-evident motion and text-editing keys are omitted.
-    assert!(!cmds.contains(&Command::CaretDown));
-    assert!(!cmds.contains(&Command::PageDown));
-    assert!(!cmds.contains(&Command::DeleteBackward));
-    // Every command appears at most once (dedup across layers).
-    for &cmd in &cmds {
-        assert_eq!(cmds.iter().filter(|c| **c == cmd).count(), 1);
-    }
-    // The most-specific layer wins ordering: an Editor-layer verb (Save) precedes
-    // a Global one (Quit).
-    let save = cmds.iter().position(|c| *c == Command::Save);
-    let quit = cmds.iter().position(|c| *c == Command::Quit);
-    assert!(save < quit);
-}
-
-#[test]
-fn hints_for_reflects_the_active_modal() {
-    let find = hints_for(
-        Context::modal(Modal::Find, FocusTarget::Editor),
-        ChordStyle::Caret,
-    );
-    let cmds: Vec<Command> = find.iter().map(|h| h.command).collect();
-    assert!(cmds.contains(&Command::FindNext));
-    assert!(cmds.contains(&Command::FindPrev));
-    assert!(cmds.contains(&Command::FindCancel));
-    // The Find modal is exclusive, so editor commands don't leak into the bar.
-    assert!(!cmds.contains(&Command::Save));
-}
-
-#[test]
-fn completions_for_renders_only_the_remaining_chord() {
-    let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
-    let comps = completions_for(
-        Context::focus(FocusTarget::Editor),
-        &[ctrl_k],
-        ChordStyle::Caret,
-    );
-    let by_cmd = |cmd| comps.iter().find(|h| h.command == cmd);
-    // Only the chord AFTER the pending `^K` prefix is rendered.
-    assert_eq!(
-        by_cmd(Command::CloseAllTabs).map(|h| h.chord.as_str()),
-        Some("^W")
-    );
-    assert_eq!(
-        by_cmd(Command::CloseOtherTabs).map(|h| h.chord.as_str()),
-        Some("W")
-    );
-    // Each completion carries a verb so the pending-chord bar is self-explanatory.
-    assert!(by_cmd(Command::CloseAllTabs).is_some_and(|h| !h.verb.is_empty()));
-}
-
-#[test]
-fn chord_sequences_resolve_through_a_pending_prefix() {
-    let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
-    let ctrl_w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
-    let w = KeyChord::from_event(key(KeyCode::Char('w'), KeyModifiers::NONE));
-    let esc = KeyChord::from_event(key(KeyCode::Esc, KeyModifiers::NONE));
-    let ed = Context::focus(FocusTarget::Editor);
-    // Ctrl+K alone is a prefix of a longer binding — the resolver waits.
-    assert_eq!(resolve(ed, &[ctrl_k]), Resolved::Pending);
-    // Completing the sequence fires the command; the second chord disambiguates.
-    assert_eq!(
-        resolve(ed, &[ctrl_k, ctrl_w]),
-        Resolved::Command(Command::CloseAllTabs)
-    );
-    assert_eq!(
-        resolve(ed, &[ctrl_k, w]),
-        Resolved::Command(Command::CloseOtherTabs)
-    );
-    // A key that continues nothing breaks the sequence.
-    assert_eq!(resolve(ed, &[ctrl_k, esc]), Resolved::None);
-}
-
-#[test]
-fn no_terminal_binding_is_a_prefix_of_another() {
-    // The resolver commits on the first full match, so a binding must never also
-    // be a strict prefix of a longer one (which it would shadow). This invariant
-    // is what lets resolution stay deterministic without a timeout.
-    for a in BINDINGS {
-        for b in BINDINGS {
-            if a.seq_len() >= b.seq_len() {
-                continue;
-            }
-            let a_prefixes_b = (0..a.seq_len()).all(|i| a.chord_at(i) == b.chord_at(i));
-            assert!(
-                !a_prefixes_b,
-                "{:?} is a prefix of {:?}",
-                a.command, b.command
-            );
-        }
-    }
-}
-
-#[test]
 fn ctrl_k_then_v_opens_the_markdown_preview() {
     let ctx = Context::focus(FocusTarget::Editor);
     let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
@@ -828,20 +753,32 @@ fn ctrl_shift_i_formats_markdown_tables() {
 }
 
 #[test]
-fn ctrl_alt_shift_arrows_resize_panes() {
-    let ctx = Context::focus(FocusTarget::Editor);
-    for (key_code, command) in [
-        (KeyCode::Left, Command::ResizePaneLeft),
-        (KeyCode::Right, Command::ResizePaneRight),
-        (KeyCode::Up, Command::ResizePaneUp),
-        (KeyCode::Down, Command::ResizePaneDown),
-    ] {
-        let chord = KeyChord::from_event(key(
-            key_code,
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
-        ));
-        assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+fn ctrl_alt_shift_arrows_resize_panes_outside_the_text_editor() {
+    for focus in [FocusTarget::Explorer, FocusTarget::Pager] {
+        let ctx = Context::focus(focus);
+        for (key_code, command) in [
+            (KeyCode::Left, Command::ResizePaneLeft),
+            (KeyCode::Right, Command::ResizePaneRight),
+            (KeyCode::Up, Command::ResizePaneUp),
+            (KeyCode::Down, Command::ResizePaneDown),
+        ] {
+            let chord = KeyChord::from_event(key(
+                key_code,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ));
+            assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+        }
     }
+    // In the text editor the chord is box selection, so the palette resizes.
+    let chord = KeyChord::from_event(key(
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(
+        resolve(Context::focus(FocusTarget::Editor), &[chord]),
+        Resolved::Command(Command::ColumnSelectLeft)
+    );
+    assert!(crate::command::palette().contains(&Command::ResizePaneLeft));
 }
 
 #[test]
@@ -878,6 +815,14 @@ fn ctrl_alt_left_goes_back_from_any_focus() {
                 key(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::ALT)
             ),
             Some(Command::JumpBack)
+        );
+        assert_eq!(
+            res(
+                focus,
+                false,
+                key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::JumpForward)
         );
     }
 }

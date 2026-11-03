@@ -8,6 +8,8 @@ use clap::ValueEnum;
 use karet_filetype::IconStyle;
 use karet_session::config::schema::StartupPanel;
 
+use crate::view::View;
+
 /// Full multi-line text shown by `karet -V` / `--version`, assembled at compile
 /// time from the build-script env vars (see `build.rs`). clap prefixes it with the
 /// binary name, so the first line renders as `karet <version>`, followed by the
@@ -61,6 +63,10 @@ pub struct Cli {
     /// Sidebar panel to show at startup, overriding `workbench.startupPanel`.
     #[arg(long, value_enum)]
     pub startup_panel: Option<StartupPanelChoice>,
+
+    /// Top-level view to show at startup.
+    #[arg(long, value_enum)]
+    pub view: Option<ViewChoice>,
 
     /// Area to focus after startup views are opened.
     #[arg(long, value_enum)]
@@ -266,40 +272,69 @@ pub struct GotoSpec {
 /// absent, so a bare path targets line 1, column 1.
 #[must_use]
 pub fn parse_goto_spec(spec: &str) -> GotoSpec {
+    let (path, at) = split_goto_suffix(spec);
+    let (line, col) = at.unwrap_or((1, 1));
+    GotoSpec {
+        path: PathBuf::from(path),
+        line,
+        col,
+    }
+}
+
+/// Split a `PATH[:LINE[:COL]]` spec into its path and, when at least `:LINE` was
+/// given, its 1-based `(line, col)` target (`col` defaulting to 1).
+///
+/// The rules are [`parse_goto_spec`]'s: groups are peeled from the right, only a
+/// run of ASCII digits that fits a `u32` is a coordinate, `0` is clamped up to 1,
+/// and a group whose removal would leave an empty path stays part of the path.
+/// Quick-open uses it to read `main.rs:42` as "this file, at line 42".
+#[must_use]
+pub fn split_goto_suffix(spec: &str) -> (&str, Option<(u32, u32)>) {
     // Peel the rightmost `:<digits>` group. `None` when there is no colon, the tail
     // is empty or non-numeric, the value overflows `u32`, or peeling would leave an
     // empty path (`:5`) — in every such case the colon belongs to the path.
     fn peel(s: &str) -> Option<(&str, u32)> {
-        let idx = s.rfind(':')?;
-        let head = &s[..idx];
-        let tail = &s[idx + 1..];
-        if head.is_empty() || tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        let (head, tail) = s.rsplit_once(':')?;
+        if head.is_empty() {
             return None;
         }
-        Some((head, tail.parse::<u32>().ok()?))
+        Some((head, coordinate(tail)?))
     }
 
     // The first peel yields the rightmost number: the column when a second number
     // precedes it (`PATH:LINE:COL`), otherwise the line (`PATH:LINE`).
     match peel(spec) {
-        None => GotoSpec {
-            path: PathBuf::from(spec),
-            line: 1,
-            col: 1,
-        },
+        None => (spec, None),
         Some((rest, first)) => match peel(rest) {
-            Some((rest2, second)) => GotoSpec {
-                path: PathBuf::from(rest2),
-                line: second.max(1),
-                col: first.max(1),
-            },
-            None => GotoSpec {
-                path: PathBuf::from(rest),
-                line: first.max(1),
-                col: 1,
-            },
+            Some((path, second)) => (path, Some((second, first))),
+            None => (rest, Some((first, 1))),
         },
     }
+}
+
+/// Parse a bare `LINE[:COL]` target (the text after quick-open's `:` sigil)
+/// into a 1-based `(line, col)`, `col` defaulting to 1.
+///
+/// Each part must be a run of ASCII digits that fits a `u32`; `0` is clamped up
+/// to 1, as [`parse_goto_spec`] does. Leading and trailing whitespace is
+/// ignored; anything else (empty text, a sign, a third group, inner spaces) is
+/// `None`.
+#[must_use]
+pub fn parse_line_col(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim();
+    match text.split_once(':') {
+        Some((line, col)) => Some((coordinate(line)?, coordinate(col)?)),
+        None => Some((coordinate(text)?, 1)),
+    }
+}
+
+/// One 1-based coordinate: a non-empty run of ASCII digits that fits a `u32`,
+/// with `0` clamped up to 1.
+fn coordinate(digits: &str) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(digits.parse::<u32>().ok()?.max(1))
 }
 
 /// Default `--capture` grid width in columns.
@@ -381,6 +416,15 @@ pub enum StartupPanelChoice {
     None,
 }
 
+/// CLI choices for the startup top-level view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ViewChoice {
+    /// Start in the editor shell (panes and tabs).
+    Editor,
+    /// Start in the GitHub view.
+    Github,
+}
+
 /// CLI choices for startup focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FocusChoice {
@@ -400,6 +444,15 @@ impl From<IconChoice> for IconStyle {
     }
 }
 
+impl From<ViewChoice> for View {
+    fn from(choice: ViewChoice) -> Self {
+        match choice {
+            ViewChoice::Editor => Self::Editor,
+            ViewChoice::Github => Self::GitHub,
+        }
+    }
+}
+
 impl From<StartupPanelChoice> for StartupPanel {
     fn from(choice: StartupPanelChoice) -> Self {
         match choice {
@@ -412,9 +465,6 @@ impl From<StartupPanelChoice> for StartupPanel {
 }
 
 impl Cli {
-    /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
-    /// `KARET_ICONS` env var. `None` when neither is set, so the configured
-    /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
     /// Resolve the `--capture*` flags into a [`CaptureSpec`], filling every unset
     /// flag from the `CAPTURE_DEFAULT_*` constants.
     ///
@@ -436,13 +486,19 @@ impl Cli {
         })
     }
 
+    /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
+    /// `KARET_ICONS` env var. `None` when neither is set, so the configured
+    /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
     #[must_use]
     pub fn explicit_icon_style(&self) -> Option<IconStyle> {
-        self.icons.map(IconStyle::from).or_else(|| {
-            std::env::var("KARET_ICONS")
-                .ok()
-                .and_then(|v| IconStyle::from_name(&v))
-        })
+        self.explicit_icon_style_in(|key| std::env::var(key).ok())
+    }
+
+    /// [`Cli::explicit_icon_style`], reading the environment through `var`.
+    fn explicit_icon_style_in(&self, var: impl Fn(&str) -> Option<String>) -> Option<IconStyle> {
+        self.icons
+            .map(IconStyle::from)
+            .or_else(|| var("KARET_ICONS").as_deref().and_then(IconStyle::from_name))
     }
 }
 
@@ -454,6 +510,10 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+    use super::FocusChoice;
+    use super::IconStyle;
+    use super::StartupPanelChoice;
+    use super::ViewChoice;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -676,6 +736,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_capture_size_names_a_missing_dimension_as_not_a_number() {
+        assert_eq!(
+            super::parse_capture_size("x34"),
+            Err("columns must be a number, got \"\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn every_startup_panel_choice_maps_to_its_panel() {
+        use karet_session::config::schema::StartupPanel;
+
+        use super::StartupPanelChoice;
+        for (choice, panel) in [
+            (StartupPanelChoice::Explorer, StartupPanel::Explorer),
+            (StartupPanelChoice::Search, StartupPanel::Search),
+            (
+                StartupPanelChoice::SourceControl,
+                StartupPanel::SourceControl,
+            ),
+            (StartupPanelChoice::None, StartupPanel::None),
+        ] {
+            assert_eq!(StartupPanel::from(choice), panel, "{choice:?}");
+        }
+    }
+
+    #[test]
     fn parse_goto_spec_path_only() {
         let spec = super::parse_goto_spec("src/main.rs");
         assert_eq!(spec.path, PathBuf::from("src/main.rs"));
@@ -735,5 +821,156 @@ mod tests {
         let spec = super::parse_goto_spec("main.rs:99999999999999999999");
         assert_eq!(spec.path, PathBuf::from("main.rs:99999999999999999999"));
         assert_eq!((spec.line, spec.col), (1, 1));
+    }
+
+    #[test]
+    fn split_goto_suffix_reports_whether_a_target_was_given() {
+        use super::split_goto_suffix;
+        assert_eq!(split_goto_suffix("main.rs"), ("main.rs", None));
+        assert_eq!(split_goto_suffix("main.rs:42"), ("main.rs", Some((42, 1))));
+        assert_eq!(
+            split_goto_suffix("src/a.rs:4:9"),
+            ("src/a.rs", Some((4, 9)))
+        );
+        // `main.rs:1` is a target even though it equals the default.
+        assert_eq!(split_goto_suffix("main.rs:1"), ("main.rs", Some((1, 1))));
+        // An unfinished suffix is not a target yet.
+        assert_eq!(split_goto_suffix("main.rs:"), ("main.rs:", None));
+        assert_eq!(split_goto_suffix(":5"), (":5", None));
+    }
+
+    #[test]
+    fn parse_line_col_reads_a_bare_target() {
+        use super::parse_line_col;
+        assert_eq!(parse_line_col("42"), Some((42, 1)));
+        assert_eq!(parse_line_col("42:7"), Some((42, 7)));
+        assert_eq!(parse_line_col(" 42 "), Some((42, 1)));
+        assert_eq!(parse_line_col("0:0"), Some((1, 1)), "zero clamps up to 1");
+        for junk in [
+            "",
+            "x",
+            "-3",
+            "+3",
+            "4:",
+            ":4",
+            "4:5:6",
+            "4 5",
+            "99999999999",
+        ] {
+            assert_eq!(parse_line_col(junk), None, "{junk:?}");
+        }
+    }
+
+    /// The explicit icon style over an environment holding only `karet_icons`.
+    fn icons_with(args: &[&str], karet_icons: Option<&str>) -> Option<IconStyle> {
+        let cli = Cli::try_parse_from(args).ok()?;
+        cli.explicit_icon_style_in(|key| {
+            (key == "KARET_ICONS")
+                .then_some(karet_icons)
+                .flatten()
+                .map(str::to_owned)
+        })
+    }
+
+    #[test]
+    fn icons_flag_beats_env_which_beats_nothing() {
+        use IconStyle::*;
+        let rows: [(&[&str], Option<&str>, Option<IconStyle>); 7] = [
+            (&["karet", "--icons", "ascii"], Some("unicode"), Some(Ascii)),
+            (&["karet", "--icons", "nerd"], None, Some(NerdFont)),
+            (
+                &["karet", "--icons", "unicode"],
+                Some("bogus"),
+                Some(Unicode),
+            ),
+            (&["karet"], Some("unicode"), Some(Unicode)),
+            (&["karet"], Some(" ASCII "), Some(Ascii)),
+            (&["karet"], Some("bogus"), None),
+            (&["karet"], None, None),
+        ];
+        for (args, env, expect) in rows {
+            assert_eq!(
+                icons_with(args, env),
+                expect,
+                "{args:?} KARET_ICONS={env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_process_environment_reader_still_lets_the_flag_win() -> Result<(), clap::Error> {
+        // The flag outranks any `KARET_ICONS` the test process may carry.
+        let cli = Cli::try_parse_from(["karet", "--icons", "ascii"])?;
+        assert_eq!(cli.explicit_icon_style(), Some(IconStyle::Ascii));
+        Ok(())
+    }
+
+    #[test]
+    fn icons_flag_rejects_an_unknown_style() {
+        assert!(Cli::try_parse_from(["karet", "--icons", "emoji"]).is_err());
+    }
+
+    #[test]
+    fn startup_choice_flags_parse_and_default_to_none() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "karet",
+            "--startup-panel",
+            "source-control",
+            "--view",
+            "github",
+            "--focus",
+            "sidebar",
+        ])?;
+        assert_eq!(cli.startup_panel, Some(StartupPanelChoice::SourceControl));
+        assert_eq!(cli.view, Some(ViewChoice::Github));
+        assert_eq!(cli.focus, Some(FocusChoice::Sidebar));
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert_eq!((cli.startup_panel, cli.view, cli.focus), (None, None, None));
+        for bad in [
+            ["--startup-panel", "outline"],
+            ["--view", "agents"],
+            ["--focus", "terminal"],
+        ] {
+            let args = ["karet", bad[0], bad[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{bad:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn open_is_repeatable_and_preview_and_path_are_single() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "karet",
+            "root",
+            "--open",
+            "a.rs",
+            "--open",
+            "b.rs",
+            "--preview",
+            "README.md",
+        ])?;
+        assert_eq!(cli.path, Some(PathBuf::from("root")));
+        assert_eq!(cli.open, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+        assert_eq!(cli.preview, Some(PathBuf::from("README.md")));
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(cli.path.is_none() && cli.open.is_empty() && cli.preview.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn no_syntax_flag_parses_and_defaults_to_off() -> Result<(), clap::Error> {
+        assert!(Cli::try_parse_from(["karet", "--no-syntax"])?.no_syntax);
+        assert!(!Cli::try_parse_from(["karet"])?.no_syntax);
+        Ok(())
+    }
+
+    #[test]
+    fn seam_config_requires_seam_query() -> Result<(), clap::Error> {
+        let cli =
+            Cli::try_parse_from(["karet", "--seam-query", "kind:fn", "--seam-config", "test"])?;
+        assert_eq!(cli.seam_query.as_deref(), Some("kind:fn"));
+        assert_eq!(cli.seam_config.as_deref(), Some("test"));
+        assert!(Cli::try_parse_from(["karet", "--seam-config", "test"]).is_err());
+        Ok(())
     }
 }

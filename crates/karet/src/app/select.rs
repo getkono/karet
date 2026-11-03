@@ -1,0 +1,268 @@
+//! Pointer text selection on the read-only surfaces.
+//!
+//! The editor selects over a document model, because it is editable and the
+//! selection has to survive edits. The read-only surfaces have no such model:
+//! they paint rows they assemble themselves. They share this one instead — a
+//! [`RowSelection`] over absolute row indices, plus the last-frame geometry
+//! saying where those rows landed on screen.
+//!
+//! Row text is never retained between frames. A surface reports the copyable
+//! text of a row on demand through [`App::surface_row`], which is what lets a
+//! selection cover rows that have since scrolled out of view, and what keeps a
+//! diff's line-number gutter and `+`/`-` marker out of the clipboard.
+
+use karet_widgets::RowGeometry;
+use karet_widgets::RowPos;
+use karet_widgets::RowSelection;
+use ratatui::layout::Rect;
+
+use super::App;
+use crate::app::hit::rect_contains;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
+use crate::tab::rows::DiffColumn;
+use crate::tab::rows::SurfaceRow;
+use crate::tab::rows::diff_row;
+use crate::tab::rows::hex_row;
+use crate::tab::rows::markdown_row;
+
+/// A read-only surface whose rows can be selected with the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectSurface {
+    /// The diff tab's unified column.
+    Unified,
+    /// The old (left) column of the side-by-side diff.
+    OldColumn,
+    /// The new (right) column of the side-by-side diff.
+    NewColumn,
+    /// The hex dump's byte and ASCII columns.
+    Hex,
+    /// The markdown preview, whether split beside a source pane or standalone.
+    MarkdownPreview,
+    /// The commit / compare view's file cards.
+    CommitCards {
+        /// Rows of summary and file index painted before the first card. The
+        /// stacked and wide layouts differ here, so it is part of the surface's
+        /// identity: a selection made under one layout cannot resolve under the
+        /// other.
+        prefix_rows: u16,
+    },
+}
+
+/// Where a selectable surface painted its rows last frame.
+///
+/// Recorded per pane, the way every other hit-testable rect is, so a click can
+/// be routed to a surface in a pane that does not hold the focus yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectRegion {
+    /// Which surface these rows belong to.
+    pub(crate) surface: SelectSurface,
+    /// The rect the surface actually painted its rows into, scrollbar tracks
+    /// already subtracted.
+    pub(crate) area: Rect,
+    /// The absolute row index painted at `area.y`.
+    pub(crate) first_row: usize,
+    /// Display columns of row text scrolled off the left edge.
+    pub(crate) hscroll: usize,
+}
+
+/// A live pointer selection on one surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SurfaceSelection {
+    /// The surface the drag began on; a drag never leaves it.
+    pub(crate) surface: SelectSurface,
+    /// The selected span, in absolute rows and byte offsets.
+    pub(crate) selection: RowSelection,
+}
+
+impl SelectSurface {
+    /// The diff column this surface paints, or `None` for a surface that is not
+    /// a diff column.
+    pub(crate) fn diff_column(self) -> Option<DiffColumn> {
+        match self {
+            Self::Unified => Some(DiffColumn::Unified),
+            Self::OldColumn => Some(DiffColumn::Old),
+            Self::NewColumn => Some(DiffColumn::New),
+            Self::Hex | Self::MarkdownPreview | Self::CommitCards { .. } => None,
+        }
+    }
+}
+
+impl App {
+    /// The copyable content of `region`'s row `row` in the active tab.
+    ///
+    /// The region travels with the query because a row's chrome width is part of
+    /// the layout that painted it, not of the row itself.
+    pub(crate) fn surface_row(&self, region: &SelectRegion, row: usize) -> Option<SurfaceRow> {
+        let tab = self.tabs.get(self.active)?;
+        let kind = &tab.kind;
+        let surface = region.surface;
+        if let SelectSurface::CommitCards { prefix_rows } = surface {
+            let (TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) = kind
+            else {
+                return None;
+            };
+            return crate::ui::commit_document_row(
+                &self.theme,
+                &files.files,
+                region.area.width,
+                usize::from(prefix_rows),
+                &view.toggled_files,
+                row,
+            );
+        }
+        if surface == SelectSurface::MarkdownPreview {
+            return match kind {
+                TabKind::MarkdownPreview { wrapped, .. } => markdown_row(wrapped, row),
+                // The split preview beside a source pane keeps its model on the tab.
+                _ => markdown_row(&tab.markdown_preview.as_ref()?.wrapped, row),
+            };
+        }
+        if surface == SelectSurface::Hex {
+            let TabKind::Hex { bytes, .. } = kind else {
+                return None;
+            };
+            return hex_row(bytes, row);
+        }
+        let TabKind::Diff {
+            file: Some(file),
+            view,
+            ..
+        } = kind
+        else {
+            return None;
+        };
+        // A surface only answers in the view mode that paints it, so a stale
+        // selection from the other mode cannot resolve against these rows.
+        let painted = matches!(
+            (view, surface),
+            (ViewMode::Unified, SelectSurface::Unified)
+                | (
+                    ViewMode::SideBySide,
+                    SelectSurface::OldColumn | SelectSurface::NewColumn
+                )
+        );
+        let column = surface.diff_column().filter(|_| painted)?;
+        diff_row(file, column, row)
+    }
+
+    /// The selectable region under `(col, row)`, with the pane holding it.
+    fn select_region_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<(karet_widgets::PaneId, SelectRegion)> {
+        self.last_frame.panes.iter().find_map(|frame| {
+            frame
+                .select_regions
+                .iter()
+                .find(|region| rect_contains(region.area, (col, row)))
+                .map(|region| (frame.pane, *region))
+        })
+    }
+
+    /// The focused pane's recorded region for `surface`.
+    pub(crate) fn select_region(&self, surface: SelectSurface) -> Option<SelectRegion> {
+        let focused = self.focus_pane();
+        self.last_frame
+            .panes
+            .iter()
+            .find(|frame| frame.pane == focused)?
+            .select_regions
+            .iter()
+            .find(|region| region.surface == surface)
+            .copied()
+    }
+
+    /// Resolve a screen cell to a position in `region`'s surface.
+    ///
+    /// A cell above or below the painted rows clamps onto the nearest visible
+    /// one, so a drag that leaves the surface keeps extending along its edge.
+    fn surface_pos_at(&self, region: &SelectRegion, col: u16, row: u16) -> RowPos {
+        let last = usize::from(region.area.height.saturating_sub(1));
+        let offset = usize::from(row.saturating_sub(region.area.y)).min(last);
+        let index = region.first_row.saturating_add(offset);
+        let Some(painted) = self.surface_row(region, index) else {
+            return RowPos::new(index, 0);
+        };
+        let geometry = RowGeometry::new(region.area, painted.content_x).hscroll(region.hscroll);
+        RowPos::new(index, geometry.byte_at(&painted.text, col))
+    }
+
+    /// Whether `(col, row)` is on a commit view's changed-file index row.
+    ///
+    /// In the stacked layout the index is painted *inside* the card region, so
+    /// without this the region would swallow every press on it — the rows are
+    /// chrome carrying an action (fold a directory, jump to a file), not text to
+    /// select. The wide layout's rail sits outside the region entirely, so this
+    /// only ever answers for the stacked one.
+    fn on_commit_index_row(&self, col: u16, row: u16) -> bool {
+        let point = (col, row);
+        self.last_frame.panes.iter().any(|frame| {
+            frame
+                .commit_file_hits
+                .iter()
+                .any(|hit| rect_contains(hit.rect, point))
+                || frame
+                    .commit_dir_hits
+                    .iter()
+                    .any(|hit| rect_contains(hit.rect, point))
+        })
+    }
+
+    /// Begin a pointer selection at `(col, row)`; whether one started there.
+    pub(super) fn begin_surface_selection(&mut self, col: u16, row: u16) -> bool {
+        let Some((pane, region)) = self.select_region_at(col, row) else {
+            self.surface_selection = None;
+            return false;
+        };
+        if self.on_commit_index_row(col, row) {
+            self.surface_selection = None;
+            return false;
+        }
+        self.focus_pane_switch(pane);
+        self.keyboard.focus_editor();
+        let at = self.surface_pos_at(&region, col, row);
+        self.surface_selection = Some(SurfaceSelection {
+            surface: region.surface,
+            selection: RowSelection::new(at),
+        });
+        self.surface_selecting = Some(region.surface);
+        true
+    }
+
+    /// Extend the live selection to `(col, row)` while the button is held.
+    pub(super) fn drag_surface_selection(&mut self, col: u16, row: u16) {
+        let Some(surface) = self.surface_selecting else {
+            return;
+        };
+        let Some(region) = self.select_region(surface) else {
+            return;
+        };
+        let to = self.surface_pos_at(&region, col, row);
+        if let Some(active) = self.surface_selection.as_mut() {
+            active.selection.extend_to(to);
+        }
+    }
+
+    /// The text of the live surface selection, if one covers anything.
+    ///
+    /// Rows are re-derived here rather than remembered, so a selection dragged
+    /// past the viewport copies the rows that scrolled out of sight too.
+    pub(super) fn surface_selection_text(&self) -> Option<String> {
+        let active = self.surface_selection.as_ref()?;
+        if active.selection.is_empty() {
+            return None;
+        }
+        let region = self.select_region(active.surface)?;
+        let (start, end) = active.selection.bounds();
+        let rows: Vec<String> = (start.row..=end.row)
+            .map(|row| {
+                self.surface_row(&region, row)
+                    .map(|painted| painted.text)
+                    .unwrap_or_default()
+            })
+            .collect();
+        Some(active.selection.text(start.row, &rows))
+    }
+}

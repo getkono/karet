@@ -1,4 +1,41 @@
-use super::*;
+pub(crate) mod aicommit;
+mod branches;
+pub(crate) mod commit_box;
+
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::NotificationKind;
+use karet_session::ChangeSummary;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentId;
+use karet_session::RangeSpec;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_vcs::Commit;
+
+use crate::app::App;
+use crate::app::GRAPH_LOG_PAGE;
+use crate::app::SCM_LOG_PAGE;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::describe_paths;
+use crate::app::notifications::Report;
+use crate::app::state::CommitInput;
+use crate::app::state::LiveBlame;
+use crate::command::Command;
+use crate::keymap::SidebarPanel;
+use crate::overlay::Overlay;
+use crate::paths::canonical_nearest as canonical;
+use crate::pending::Pending;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
@@ -7,13 +44,13 @@ impl App {
             return;
         }
         self.scm.repository_loading_since = Some(Pending::start());
-        self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
+        self.scm.repository_request = self.send(VcsCommand::RepositorySnapshot);
     }
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
         if self
-            .send(SessionCommand::VcsAction {
+            .send(VcsCommand::Action {
                 action: action.clone(),
             })
             .is_some()
@@ -25,11 +62,16 @@ impl App {
     /// Refuse to change the worktree while any editor has unsaved content, offering
     /// the explicit save-all path instead.
     pub(super) fn guard_branch_switch(&mut self, target: karet_vcs::BranchTarget) {
-        if self.all_tabs().any(|tab| tab.dirty) {
-            self.overlay = Some(Overlay::text(
-                "Unsaved editors · type save to save all and switch",
-                TextPurpose::SaveAndSwitch { target },
-            ));
+        let dirty = self.all_tabs().filter(|tab| tab.dirty).count();
+        if dirty > 0 {
+            self.confirm_action(
+                format!("Switch branch with {dirty} unsaved editor(s)?"),
+                "Switching moves the worktree under your unsaved edits. Saving \
+                 first writes every dirty editor to disk, then switches.",
+                "Stay here",
+                "Save all and switch",
+                ConfirmAction::SaveAndSwitch(target),
+            );
         } else {
             self.run_vcs_action(VcsAction::SwitchBranch(target));
         }
@@ -45,11 +87,16 @@ impl App {
         docs.sort();
         docs.dedup();
         let action = VcsAction::SwitchBranch(target);
-        if self.save_docs(&docs) == 0 {
+        if self.save_docs(&docs, SaveCause::Manual) == 0 {
             self.run_vcs_action(action);
         } else {
             self.vcs_after_save = Some(action);
-            self.status = Some(format!("saving {} editor(s) before switching…", docs.len()));
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::SAVE_BATCH_TAG.to_string(),
+                format!("saving {} editor(s) before switching…", docs.len()),
+                None,
+            );
         }
     }
 
@@ -82,198 +129,7 @@ impl App {
                 commands.insert(2, Command::ScmSkip);
             }
         }
-        self.overlay = Some(Overlay::commands("Source Control", commands));
-    }
-
-    /// Open a combined local/remote branch picker.
-    pub(super) fn open_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            self.status = Some("branches: loading repository state".to_string());
-            return;
-        };
-        let mut items = Vec::new();
-        for branch in &snapshot.branches {
-            let head = if branch.is_head { "✓ " } else { "  " };
-            items.push((
-                format!("{head}{}", branch.name),
-                karet_vcs::BranchTarget::Local(branch.name.clone()),
-            ));
-        }
-        for branch in &snapshot.remote_branches {
-            let local_name = branch.name.clone();
-            items.push((
-                format!("  {}/{}", branch.remote, branch.name),
-                karet_vcs::BranchTarget::Remote {
-                    remote: branch.remote.clone(),
-                    branch: branch.name.clone(),
-                    local_name,
-                },
-            ));
-        }
-        self.overlay = Some(Overlay::branches(items));
-    }
-
-    /// Open the full branch-creation form with every configured remote available.
-    pub(super) fn open_create_branch_form(&mut self) {
-        let remotes = self
-            .scm
-            .repository
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .map(|remote| remote.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.overlay = Some(Overlay::create_branch(remotes));
-    }
-
-    /// Query open pull requests for the upstream-aware primary remote.
-    pub(super) fn open_pull_request_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            self.status = Some("pull requests: loading repository state".to_string());
-            return;
-        };
-        let preferred = snapshot
-            .state
-            .upstream
-            .as_deref()
-            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
-        let remote = preferred
-            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
-            .or_else(|| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .find(|remote| remote.name == "origin")
-            })
-            .or_else(|| snapshot.remotes.first())
-            .map(|remote| remote.name.clone());
-        let Some(remote) = remote else {
-            self.status = Some("pull requests: no remote is configured".to_string());
-            return;
-        };
-        self.status = Some(format!("loading open pull requests from {remote}"));
-        self.pull_request_items.clear();
-        self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
-            remote,
-            page: 1,
-            per_page: 100,
-        });
-    }
-
-    /// Open stash creation controls.
-    pub(super) fn open_stash_form(&mut self) {
-        self.overlay = Some(Overlay::stash_form());
-    }
-
-    /// Open actions for every current stash entry.
-    pub(super) fn open_stash_manager(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        if snapshot.stashes.is_empty() {
-            self.status = Some("stashes: none".to_string());
-            return;
-        }
-        self.overlay = Some(Overlay::stashes(&snapshot.stashes));
-    }
-
-    /// Publish the current branch to its upstream remote, `origin`, or first remote.
-    pub(super) fn publish_current_branch(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let Some(branch) = snapshot.state.branch.clone() else {
-            self.status = Some("publish: HEAD is detached".to_string());
-            return;
-        };
-        let preferred = snapshot
-            .state
-            .upstream
-            .as_deref()
-            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
-        let remote = preferred
-            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
-            .or_else(|| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .find(|remote| remote.name == "origin")
-            })
-            .or_else(|| snapshot.remotes.first())
-            .map(|remote| remote.name.clone());
-        let Some(remote) = remote else {
-            self.status = Some("publish: no remote is configured".to_string());
-            return;
-        };
-        self.run_vcs_action(VcsAction::PublishBranch {
-            remote,
-            branch,
-            set_upstream: true,
-        });
-    }
-
-    /// Prompt for a replacement name for the current local branch.
-    pub(super) fn prompt_rename_current_branch(&mut self) {
-        let current = self
-            .scm
-            .repository
-            .as_ref()
-            .and_then(|snapshot| snapshot.state.branch.clone());
-        let Some(old) = current else {
-            self.status = Some("rename branch: HEAD is detached".to_string());
-            return;
-        };
-        self.overlay = Some(Overlay::text(
-            format!("Rename {old}"),
-            TextPurpose::RenameBranch { old },
-        ));
-    }
-
-    /// Pick a non-current local branch for safe (`git branch -d`) deletion.
-    pub(super) fn open_delete_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let items: Vec<String> = snapshot
-            .branches
-            .iter()
-            .filter(|branch| !branch.is_head)
-            .map(|branch| branch.name.clone())
-            .collect();
-        if items.is_empty() {
-            self.status = Some("delete branch: no eligible local branches".to_string());
-        } else {
-            self.overlay = Some(Overlay::delete_local_branches(items));
-        }
-    }
-
-    /// Pick a non-default remote branch, then require its exact name as confirmation.
-    pub(super) fn open_delete_remote_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let items: Vec<(String, String)> = snapshot
-            .remote_branches
-            .iter()
-            .filter(|branch| !branch.is_default)
-            .map(|branch| (branch.remote.clone(), branch.name.clone()))
-            .collect();
-        if items.is_empty() {
-            self.status = Some("delete remote branch: no eligible branches".to_string());
-        } else {
-            self.overlay = Some(Overlay::delete_remote_branches(items));
-        }
+        self.open_overlay(Overlay::commands("Source Control", commands));
     }
 
     /// Request live blame when its document/version/cursor anchor changed.
@@ -316,7 +172,7 @@ impl App {
         if self.pending_blame.is_some() {
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Blame { doc, version, line }) {
+        if let Some(id) = self.send(VcsCommand::Blame { doc, version, line }) {
             self.pending_blame = Some((id, doc, version, line));
         }
     }
@@ -343,13 +199,17 @@ impl App {
         self.loaded_config.settings.git.blame = enabled;
         // The persistent write runs on the backend; a failure comes back as an
         // ordinary notification event.
-        self.send_command(SessionCommand::SetBlameEnabled { enabled });
+        self.send_command(VcsCommand::SetBlameEnabled { enabled });
         self.pending_blame = None;
         self.failed_blame = None;
         self.live_blame = None;
         self.request_live_blame();
         let label = if enabled { "on" } else { "off" };
-        self.status = Some(format!("inline blame: {label}"));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            format!("inline blame: {label}"),
+        );
     }
 
     // --- source control ---------------------------------------------------
@@ -362,7 +222,7 @@ impl App {
         }
         self.scm.log_loading = true;
         self.scm.log_loading_since = Some(Pending::start());
-        self.send_command(SessionCommand::VcsLog {
+        self.send_command(VcsCommand::Log {
             skip,
             limit: SCM_LOG_PAGE,
         });
@@ -382,9 +242,8 @@ impl App {
     pub(super) fn open_commit(&mut self, rev: String) {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
-            self.pending_commit_detail
-                .insert(id, CommitDest::Tab { view });
+        if let Some(id) = self.send(VcsCommand::CommitDetail { rev }) {
+            self.pending_commit_detail.insert(id, view);
         }
     }
 
@@ -392,12 +251,14 @@ impl App {
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
-        self.graph_log_req = self
-            .send(SessionCommand::VcsLog {
-                skip: 0,
-                limit: SCM_LOG_PAGE,
-            })
-            .map(|id| (id, view));
+        if let Some(id) = self.send(VcsCommand::Log {
+            skip: 0,
+            limit: GRAPH_LOG_PAGE,
+        }) {
+            self.graph_log_reqs.insert(id, view);
+        }
+        // The header reads branch/upstream/divergence from the repository snapshot.
+        self.request_repository_snapshot();
     }
 
     /// Open the graph browser scoped to the active file's history (`git log -- file`).
@@ -408,7 +269,11 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("file history: open a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "file history: open a file first",
+            );
             return;
         };
         let name = path
@@ -418,13 +283,14 @@ impl App {
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
-        self.graph_log_req = self
-            .send(SessionCommand::FileHistory {
-                path,
-                skip: 0,
-                limit: SCM_LOG_PAGE,
-            })
-            .map(|id| (id, view));
+        if let Some(id) = self.send(VcsCommand::FileHistory {
+            path,
+            skip: 0,
+            limit: GRAPH_LOG_PAGE,
+        }) {
+            self.graph_log_reqs.insert(id, view);
+        }
+        self.request_repository_snapshot();
     }
 
     /// Open the go-to-commit input; the typed revision resolves via [`open_commit`].
@@ -435,7 +301,11 @@ impl App {
     /// Cancel the go-to-commit input.
     pub(super) fn rev_cancel(&mut self) {
         self.rev_input = None;
-        self.status = Some("go to commit cancelled".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "go to commit cancelled",
+        );
     }
 
     /// Submit the typed revision: open a range when it contains `..`/`...`, otherwise the
@@ -444,15 +314,16 @@ impl App {
         let rev = self.rev_input.take().unwrap_or_default().trim().to_string();
         if rev.is_empty() {
             self.rev_input = Some(String::new());
-            self.status =
-                Some("go to commit: enter a hash, ref, or range (a..b, a...b)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "go to commit: enter a hash, ref, or range (a..b, a...b)",
+            );
         } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
-            self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base,
-                },
+            self.open_range(RangeSpec::Between {
+                base,
+                head,
+                merge_base,
             });
         } else {
             self.open_commit(rev);
@@ -483,11 +354,11 @@ impl App {
     /// Submit a backend command and return its [`RequestId`], so the answering
     /// event can be correlated — the one submission primitive (a failed or
     /// backend-less submission notifies and returns `None`).
-    pub(super) fn send(&mut self, command: SessionCommand) -> Option<RequestId> {
+    pub(super) fn send(&mut self, command: impl Into<SessionCommand>) -> Option<RequestId> {
         let (id, result) = {
             let backend = self.backend.as_ref()?;
             let id = backend.next_id();
-            (id, backend.send(id, command))
+            (id, backend.send(id, command.into()))
         };
         match result {
             Ok(()) => Some(id),
@@ -499,12 +370,12 @@ impl App {
     }
 
     /// Submit a backend command whose answer needs no correlation.
-    pub(super) fn send_command(&mut self, command: SessionCommand) {
+    pub(super) fn send_command(&mut self, command: impl Into<SessionCommand>) {
         let _ = self.send(command);
     }
 
     /// Send a path-scoped Source-Control command for the current selection.
-    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> SessionCommand) {
+    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> VcsCommand) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
@@ -528,10 +399,10 @@ impl App {
             }
         }
         if !to_unstage.is_empty() {
-            self.send_command(SessionCommand::Unstage { paths: to_unstage });
+            self.send_command(VcsCommand::Unstage { paths: to_unstage });
         }
         if !to_stage.is_empty() {
-            self.send_command(SessionCommand::Stage { paths: to_stage });
+            self.send_command(VcsCommand::Stage { paths: to_stage });
         }
     }
 
@@ -546,7 +417,9 @@ impl App {
             SidebarPanel::Search
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
-            | SidebarPanel::Debug => {},
+            | SidebarPanel::Debug
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -561,7 +434,9 @@ impl App {
             SidebarPanel::Search
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
-            | SidebarPanel::Debug => {},
+            | SidebarPanel::Debug
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -576,7 +451,9 @@ impl App {
             SidebarPanel::Search
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
-            | SidebarPanel::Debug => {},
+            | SidebarPanel::Debug
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -584,57 +461,84 @@ impl App {
     pub(super) fn scm_open_commit_input(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::SourceControl;
-        self.focus = Focus::Sidebar;
-        self.commit_input.focused = true;
+        self.keyboard.focus_commit_box();
     }
 
-    /// Arm a discard confirmation for the current selection.
+    /// Ask before throwing away the working-tree changes to the selection.
     pub(super) fn scm_arm_discard(&mut self) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
         }
-        self.status = Some(format!(
-            "discard {} file(s)? press y to confirm, any other key to cancel",
-            paths.len()
-        ));
-        self.pending_discard = Some(paths);
+        let body = format!(
+            "Throws away every uncommitted change to {}. This cannot be undone.",
+            describe_paths(&paths, &self.root)
+        );
+        let title = format!("Discard changes to {} file(s)?", paths.len());
+        self.confirm_action(
+            title,
+            body,
+            "Keep changes",
+            "Discard",
+            ConfirmAction::DiscardPaths(paths),
+        );
     }
 
     /// Blur the commit editor while preserving its draft.
     pub(super) fn commit_cancel(&mut self) {
-        self.commit_input.focused = false;
-        self.status = Some("commit message kept as a draft".to_string());
+        // Esc stops a running generation before it blurs the field: while an
+        // agent is working, "stop that" is what the key is reaching for, and the
+        // draft is not going anywhere.
+        if self.commit_generate_cancel() {
+            return;
+        }
+        self.keyboard.release_commit_box();
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "commit message kept as a draft",
+        );
     }
 
     /// Submit the commit message (or report that one is required).
     pub(super) fn commit_submit(&mut self) {
         if self.commit_input.pending.is_some() {
-            self.status = Some("commit already in progress".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit already in progress",
+            );
             return;
         }
         if self.scm.staged_count == 0 {
-            self.status = Some("commit: stage changes first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit: stage changes first",
+            );
             return;
         }
         let message = self.commit_input.text.trim().to_string();
         if message.is_empty() {
-            self.status = Some("commit: message required".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit: message required",
+            );
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Commit { message }) {
+        if let Some(id) = self.send(VcsCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
-            self.status = Some("committing…".to_string());
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::VCS_COMMIT_TAG.to_string(),
+                "committing…",
+                None,
+            );
+            // A fresh log per commit. The console itself stays shut until there
+            // is something in it — see `app::commit_console`.
+            self.commit_console_reset();
         }
-    }
-
-    /// Ask the backend to draft a commit message from the staged diff. The result
-    /// arrives asynchronously as [`SessionEvent::CommitMessageGenerated`] and replaces
-    /// the input; problems (nothing staged, disabled, generator error) come back as a
-    /// notification.
-    pub(super) fn commit_generate(&mut self) {
-        self.status = Some("generating commit message…".to_string());
-        self.send_command(SessionCommand::GenerateCommitMessage);
     }
 
     /// Edit the multiline commit message with an unbound text-field key.
@@ -643,6 +547,9 @@ impl App {
             self.commit_submit();
             return;
         }
+        // Any key that moves the caret re-engages caret-following, ending a
+        // deliberate scroll away from it.
+        self.commit_input.scrolled_away = false;
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -679,26 +586,28 @@ impl App {
 
     /// Insert pasted text at the commit editor's caret, normalizing line endings.
     pub(super) fn commit_paste(&mut self, text: &str) {
+        self.commit_input.scrolled_away = false;
         self.commit_input
             .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
-    /// Resolve a pending discard: `confirmed` discards the armed paths, otherwise
-    /// the prompt is cancelled. Any key without a `DiscardConfirm` binding cancels.
-    pub(super) fn resolve_discard(&mut self, confirmed: bool) {
-        let paths = self.pending_discard.take();
-        if confirmed {
-            if let Some(paths) = paths {
-                self.send_command(SessionCommand::Discard { paths });
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::Vcs,
-                    "discarded changes",
-                );
-            }
-        } else {
-            self.status = Some("discard cancelled".to_string());
+    /// Discard the working-tree changes to `paths`, once confirmed.
+    pub(super) fn discard_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
         }
+        let count = paths.len();
+        self.send_command(VcsCommand::Discard { paths });
+        // Its own tag, not the shared operation one: a discard answers with a
+        // status refresh rather than an operation-finished event, so it is retired
+        // from `on_vcs_status` — and that fires for unrelated worktree changes too,
+        // which must not take a running fetch's card with it.
+        self.notify_progress(
+            NotificationKind::Vcs,
+            Self::VCS_DISCARD_TAG.to_string(),
+            format!("discarding changes to {count} file(s)…"),
+            None,
+        );
     }
 
     /// Replace the Source-Control panel state from a fresh backend status,
@@ -766,12 +675,55 @@ impl App {
         if inserted == 0 {
             return;
         }
+        let fresh = commits.clone();
         commits.append(&mut self.scm.log);
         self.scm.log = commits;
         // If the user had scrolled into the log, shift down so the same commits stay
         // put; at the top (offset 0) keep them at the newest.
         if self.scm_ui.commits_offset > 0 {
             self.scm_ui.commits_offset += inserted;
+        }
+        self.prepend_graph_commits(&fresh);
+    }
+
+    /// Mirror newly-observed commits into every open whole-repository graph view, so a
+    /// commit made elsewhere shows up without reopening the view.
+    ///
+    /// File-history views are left alone: their log is `git log -- <path>`, and a new
+    /// tip only belongs there if it touched that file — which this event doesn't say.
+    fn prepend_graph_commits(&mut self, fresh: &[Commit]) {
+        for tab in self.all_tabs_mut() {
+            let TabKind::CommitGraph {
+                history_path: None,
+                commits,
+                rails,
+                selected,
+                list_offset,
+                ..
+            } = &mut tab.kind
+            else {
+                continue;
+            };
+            let known: HashSet<&str> = commits.iter().map(|c| c.hash.as_str()).collect();
+            let add: Vec<Commit> = fresh
+                .iter()
+                .filter(|c| !known.contains(c.hash.as_str()))
+                .cloned()
+                .collect();
+            if add.is_empty() {
+                continue;
+            }
+            let inserted = add.len();
+            let mut merged = add;
+            merged.append(commits);
+            *commits = merged;
+            // The lane layout is sequential from the tip, so a new tip invalidates it.
+            *rails = crate::tab::commit_rails(commits);
+            // Keep the viewport and the selection on the same commits they were on.
+            if *list_offset > 0 {
+                *list_offset = list_offset.saturating_add(u16::try_from(inserted).unwrap_or(0));
+            }
+            *selected = selected.saturating_add(inserted);
         }
     }
 }
@@ -834,7 +786,30 @@ impl CommitInput {
     }
 
     pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16, extend: bool) {
+        self.scrolled_away = false;
         self.edit
             .place_cursor(&self.text, column, row, width, extend);
     }
+}
+
+/// Parse a revision-range spec typed into the go-to-commit input into
+/// `(base, head, merge_base)`, or `None` when it is a single revision.
+///
+/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
+/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
+pub(super) fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
+    // Three-dot first: "..." also contains "..".
+    let (sep, merge_base) = if input.contains("...") {
+        ("...", true)
+    } else if input.contains("..") {
+        ("..", false)
+    } else {
+        return None;
+    };
+    let (base, head) = input.split_once(sep)?;
+    let side = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() { "HEAD" } else { s }.to_string()
+    };
+    Some((side(base), side(head), merge_base))
 }

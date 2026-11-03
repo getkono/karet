@@ -6,10 +6,7 @@
 //! metadata | content | buffers…` — the signature covers exactly the four
 //! JSON frames.
 
-use std::future::Future;
-
 use hmac::Mac;
-use jupyter_protocol::ConnectionInfo;
 use jupyter_protocol::Header;
 use jupyter_protocol::JupyterMessage;
 use jupyter_protocol::messaging::JupyterMessageContent;
@@ -18,6 +15,7 @@ use zeromq::SocketRecv;
 use zeromq::SocketSend;
 use zeromq::ZmqMessage;
 
+use super::Connection;
 use super::KernelError;
 
 /// The delimiter separating routing identities from the signed payload.
@@ -36,21 +34,40 @@ pub enum KernelChannel {
     Iopub,
 }
 
-/// The transport seam: production is [`ZmqTransport`]; tests script an
-/// in-process fake. Implementations merge every inbound channel into one
-/// `recv` stream.
-pub trait KernelTransport: Send {
-    /// Send one message on `channel`.
-    fn send(
-        &mut self,
-        channel: KernelChannel,
-        message: JupyterMessage,
-    ) -> impl Future<Output = Result<(), KernelError>> + Send;
+/// The transport a [`KernelClient`](super::KernelClient) drives: production is
+/// [`ZmqTransport`]; this crate's tests script an in-process fake.
+///
+/// Sealed: its methods carry `jupyter-protocol` messages, which are not part of
+/// this crate's API, so they live on a supertrait no other crate can name or
+/// implement.
+pub trait KernelTransport: sealed::Transport {}
 
-    /// The next inbound message from any channel.
-    fn recv(
-        &mut self,
-    ) -> impl Future<Output = Result<(KernelChannel, JupyterMessage), KernelError>> + Send;
+impl<T: sealed::Transport> KernelTransport for T {}
+
+/// The unnameable half of [`KernelTransport`].
+pub(crate) mod sealed {
+    use std::future::Future;
+
+    use jupyter_protocol::JupyterMessage;
+
+    use super::KernelChannel;
+    use crate::kernel::KernelError;
+
+    /// The wire seam. Implementations merge every inbound channel into one
+    /// `recv` stream.
+    pub trait Transport: Send {
+        /// Send one message on `channel`.
+        fn send(
+            &mut self,
+            channel: KernelChannel,
+            message: JupyterMessage,
+        ) -> impl Future<Output = Result<(), KernelError>> + Send;
+
+        /// The next inbound message from any channel.
+        fn recv(
+            &mut self,
+        ) -> impl Future<Output = Result<(KernelChannel, JupyterMessage), KernelError>> + Send;
+    }
 }
 
 /// The production transport: DEALER shell/control, SUB iopub, all loopback.
@@ -62,11 +79,12 @@ pub struct ZmqTransport {
 }
 
 impl ZmqTransport {
-    /// Connect the three sockets to the endpoints in `info`.
+    /// Connect the three sockets to the endpoints in `connection`.
     ///
     /// # Errors
     /// Returns [`KernelError::Transport`] when a socket cannot connect.
-    pub async fn connect(info: &ConnectionInfo) -> Result<Self, KernelError> {
+    pub async fn connect(connection: &Connection) -> Result<Self, KernelError> {
+        let info = connection.info();
         let url = |port: u16| format!("tcp://{}:{port}", info.ip);
         let fail = |error: zeromq::ZmqError| KernelError::Transport(error.to_string());
         let mut shell = zeromq::DealerSocket::new();
@@ -88,7 +106,7 @@ impl ZmqTransport {
     }
 }
 
-impl KernelTransport for ZmqTransport {
+impl sealed::Transport for ZmqTransport {
     async fn send(
         &mut self,
         channel: KernelChannel,
@@ -236,81 +254,12 @@ fn sign<'a>(key: &str, frames: impl IntoIterator<Item = &'a [u8]>) -> String {
     hex
 }
 
-/// An out-of-band control connection: its own DEALER to the control port, so
-/// an interrupt reaches a kernel whose shell traffic is busy running a cell.
-pub struct KernelControl {
-    key: String,
-    socket: zeromq::DealerSocket,
-}
-
-/// How long control requests may wait for their reply.
-const CONTROL_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-impl KernelControl {
-    /// Connect to the kernel's control port.
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Transport`] when the socket cannot connect.
-    pub async fn connect(info: &ConnectionInfo) -> Result<Self, KernelError> {
-        let mut socket = zeromq::DealerSocket::new();
-        socket
-            .connect(&format!("tcp://{}:{}", info.ip, info.control_port))
-            .await
-            .map_err(|error| KernelError::Transport(error.to_string()))?;
-        Ok(Self {
-            key: info.key.clone(),
-            socket,
-        })
-    }
-
-    /// Interrupt the running cell (message mode).
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Timeout`] if the kernel never acknowledges.
-    pub async fn interrupt(&mut self) -> Result<(), KernelError> {
-        self.request(jupyter_protocol::messaging::InterruptRequest {}.into())
-            .await
-    }
-
-    /// Ask the kernel to exit (or restart itself when `restart`).
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Timeout`] if the kernel never acknowledges.
-    pub async fn shutdown(&mut self, restart: bool) -> Result<(), KernelError> {
-        self.request(jupyter_protocol::messaging::ShutdownRequest { restart }.into())
-            .await
-    }
-
-    async fn request(&mut self, content: JupyterMessageContent) -> Result<(), KernelError> {
-        let message = JupyterMessage::new(content, None);
-        let request_id = message.header.msg_id.clone();
-        let wire = encode(&message, &self.key)?;
-        self.socket
-            .send(wire)
-            .await
-            .map_err(|error| KernelError::Transport(error.to_string()))?;
-        let deadline = tokio::time::Instant::now() + CONTROL_REPLY_TIMEOUT;
-        loop {
-            let wire = tokio::time::timeout_at(deadline, self.socket.recv())
-                .await
-                .map_err(|_| KernelError::Timeout)?
-                .map_err(|error| KernelError::Transport(error.to_string()))?;
-            let reply = decode(wire, &self.key)?;
-            if reply
-                .parent_header
-                .as_ref()
-                .is_some_and(|header| header.msg_id == request_id)
-            {
-                return Ok(());
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use jupyter_protocol::ConnectionInfo;
     use jupyter_protocol::messaging::KernelInfoRequest;
 
+    use super::sealed::Transport as _;
     use super::*;
 
     #[test]
@@ -396,5 +345,267 @@ mod tests {
             Some(parent.header.msg_id)
         );
         Ok(())
+    }
+
+    /// A wire message assembled frame by frame.
+    fn frames(parts: &[&[u8]]) -> Result<ZmqMessage, KernelError> {
+        let frames: Vec<bytes::Bytes> = parts
+            .iter()
+            .map(|part| bytes::Bytes::copy_from_slice(part))
+            .collect();
+        ZmqMessage::try_from(frames).map_err(|_| KernelError::Protocol("empty".to_owned()))
+    }
+
+    /// A correctly signed message whose four JSON frames are given verbatim.
+    fn signed(key: &str, json: [&[u8]; 4]) -> Result<ZmqMessage, KernelError> {
+        let signature = sign(key, json);
+        frames(&[
+            DELIMITER,
+            signature.as_bytes(),
+            json[0],
+            json[1],
+            json[2],
+            json[3],
+        ])
+    }
+
+    #[test]
+    fn identities_and_buffers_survive_the_frame_layout() -> Result<(), KernelError> {
+        let mut message = JupyterMessage::new(KernelInfoRequest {}, None);
+        message.zmq_identities = vec![
+            bytes::Bytes::from_static(b"peer-a"),
+            bytes::Bytes::from_static(b"peer-b"),
+        ];
+        message.buffers = vec![bytes::Bytes::from_static(b"\x00raw")];
+        let wire = encode(&message, "k")?;
+        assert_eq!(wire.get(2).map(AsRef::as_ref), Some(DELIMITER));
+        let decoded = decode(wire, "k")?;
+        assert_eq!(decoded.zmq_identities, message.zmq_identities);
+        assert_eq!(decoded.buffers, message.buffers);
+        Ok(())
+    }
+
+    #[test]
+    fn frames_without_a_delimiter_or_payload_are_protocol_errors() -> Result<(), KernelError> {
+        let no_delimiter = frames(&[b"id", b"sig", b"{}", b"{}", b"{}", b"{}"])?;
+        assert!(matches!(
+            decode(no_delimiter, "k"),
+            Err(KernelError::Protocol(reason)) if reason.contains("delimiter")
+        ));
+        // Delimiter, signature, and only three of the four JSON frames.
+        let truncated = frames(&[DELIMITER, b"sig", b"{}", b"{}", b"{}"])?;
+        assert!(matches!(
+            decode(truncated, "k"),
+            Err(KernelError::Protocol(reason)) if reason.contains("truncated")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn signed_but_malformed_frames_are_protocol_errors() -> Result<(), KernelError> {
+        let header = serde_json::to_vec(&JupyterMessage::new(KernelInfoRequest {}, None).header)
+            .map_err(|error| KernelError::Protocol(error.to_string()))?;
+        let bad_header = signed("k", [b"not json", b"{}", b"{}", b"{}"])?;
+        assert!(matches!(
+            decode(bad_header, "k"),
+            Err(KernelError::Protocol(reason)) if reason.starts_with("bad header")
+        ));
+        let bad_content = signed("k", [&header, b"{}", b"{}", b"[oops"])?;
+        assert!(matches!(
+            decode(bad_content, "k"),
+            Err(KernelError::Protocol(reason)) if reason.starts_with("bad content")
+        ));
+        // Valid JSON that does not fit the header's msg_type.
+        let header_value = serde_json::json!({
+            "msg_id": "m", "username": "u", "session": "s",
+            "date": "2024-01-01T00:00:00Z", "msg_type": "execute_reply", "version": "5.3"
+        })
+        .to_string();
+        let wrong_shape = signed("k", [header_value.as_bytes(), b"{}", b"{}", b"[1]"])?;
+        assert!(matches!(
+            decode(wrong_shape, "k"),
+            Err(KernelError::Protocol(reason)) if reason.starts_with("bad execute_reply")
+        ));
+        // Lenient frames: a non-object parent reads as no parent, and garbage
+        // metadata reads as `null`, rather than failing the message.
+        let lenient = signed("k", [&header, b"null", b"not json", b"{}"])?;
+        let decoded = decode(lenient, "k")?;
+        assert!(decoded.parent_header.is_none());
+        assert_eq!(decoded.metadata, serde_json::Value::Null);
+        Ok(())
+    }
+
+    /// The kernel side of a loopback session: ROUTER shell and control, PUB
+    /// iopub, all bound to OS-assigned loopback ports.
+    struct LoopbackKernel {
+        info: Connection,
+        shell: zeromq::RouterSocket,
+        control: zeromq::RouterSocket,
+        _iopub: zeromq::PubSocket,
+    }
+
+    const KEY: &str = "loopback-key";
+
+    /// Bound the whole loopback exchange, so a hung socket fails the test.
+    const LOOPBACK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+    async fn loopback() -> Result<LoopbackKernel, KernelError> {
+        let fail = |error: zeromq::ZmqError| KernelError::Transport(error.to_string());
+        let port = |endpoint: zeromq::Endpoint| match endpoint {
+            zeromq::Endpoint::Tcp(_, port) => Ok(port),
+            other => Err(KernelError::Transport(format!("not tcp: {other}"))),
+        };
+        let mut shell = zeromq::RouterSocket::new();
+        let shell_port = port(shell.bind("tcp://127.0.0.1:0").await.map_err(fail)?)?;
+        let mut control = zeromq::RouterSocket::new();
+        let control_port = port(control.bind("tcp://127.0.0.1:0").await.map_err(fail)?)?;
+        let mut iopub = zeromq::PubSocket::new();
+        let iopub_port = port(iopub.bind("tcp://127.0.0.1:0").await.map_err(fail)?)?;
+        Ok(LoopbackKernel {
+            info: Connection::from_info(ConnectionInfo {
+                ip: "127.0.0.1".to_owned(),
+                transport: jupyter_protocol::connection_info::Transport::TCP,
+                shell_port,
+                iopub_port,
+                stdin_port: 0,
+                control_port,
+                hb_port: 0,
+                key: KEY.to_owned(),
+                signature_scheme: "hmac-sha256".to_owned(),
+                kernel_name: None,
+            }),
+            shell,
+            control,
+            _iopub: iopub,
+        })
+    }
+
+    /// Receive one request on a ROUTER and answer it with `reply` (signed
+    /// with `key`), returning the decoded request.
+    async fn answer(
+        socket: &mut zeromq::RouterSocket,
+        key: &str,
+        reply: impl Fn(&JupyterMessage) -> Vec<JupyterMessage>,
+    ) -> Result<JupyterMessage, KernelError> {
+        let fail = |error: zeromq::ZmqError| KernelError::Transport(error.to_string());
+        let request = decode(socket.recv().await.map_err(fail)?, KEY)?;
+        for message in reply(&request) {
+            socket.send(encode(&message, key)?).await.map_err(fail)?;
+        }
+        Ok(request)
+    }
+
+    fn reply_to(request: &JupyterMessage) -> Vec<JupyterMessage> {
+        vec![JupyterMessage::new(
+            jupyter_protocol::messaging::InterruptReply::default(),
+            Some(request),
+        )]
+    }
+
+    #[tokio::test]
+    async fn zmq_transport_routes_shell_and_control_replies_by_channel() -> Result<(), KernelError>
+    {
+        tokio::time::timeout(LOOPBACK_BOUND, async {
+            let mut kernel = loopback().await?;
+            let mut transport = ZmqTransport::connect(&kernel.info).await?;
+
+            for (channel, socket) in [
+                (KernelChannel::Shell, &mut kernel.shell),
+                (KernelChannel::Control, &mut kernel.control),
+            ] {
+                let request = JupyterMessage::new(KernelInfoRequest {}, None);
+                transport.send(channel, request.clone()).await?;
+                let seen = answer(socket, KEY, reply_to).await?;
+                assert_eq!(seen.header.msg_id, request.header.msg_id);
+                // The ROUTER saw the dealer's routing identity.
+                assert_eq!(seen.zmq_identities.len(), 1);
+                let (from, reply) = transport.recv().await?;
+                assert_eq!(from, channel);
+                assert_eq!(
+                    reply.parent_header.map(|header| header.msg_id),
+                    Some(request.header.msg_id)
+                );
+            }
+
+            let refused = transport
+                .send(
+                    KernelChannel::Iopub,
+                    JupyterMessage::new(KernelInfoRequest {}, None),
+                )
+                .await;
+            assert!(
+                matches!(refused, Err(KernelError::Protocol(_))),
+                "{refused:?}"
+            );
+            Ok(())
+        })
+        .await
+        .map_err(|_| KernelError::Timeout)?
+    }
+
+    #[tokio::test]
+    async fn zmq_transport_refuses_a_reply_signed_with_another_key() -> Result<(), KernelError> {
+        tokio::time::timeout(LOOPBACK_BOUND, async {
+            let mut kernel = loopback().await?;
+            let mut transport = ZmqTransport::connect(&kernel.info).await?;
+            transport
+                .send(
+                    KernelChannel::Shell,
+                    JupyterMessage::new(KernelInfoRequest {}, None),
+                )
+                .await?;
+            answer(&mut kernel.shell, "forged-key", reply_to).await?;
+            let received = transport.recv().await;
+            assert!(
+                matches!(received, Err(KernelError::Transport(ref reason)) if reason == "signature mismatch"),
+                "{received:?}"
+            );
+            Ok(())
+        })
+        .await
+        .map_err(|_| KernelError::Timeout)?
+    }
+
+    #[tokio::test]
+    async fn kernel_control_skips_unrelated_replies_and_rejects_forged_ones()
+    -> Result<(), KernelError> {
+        tokio::time::timeout(LOOPBACK_BOUND, async {
+            let mut kernel = loopback().await?;
+            let mut control = crate::kernel::KernelControl::connect(&kernel.info).await?;
+
+            // A stale reply to some other request arrives first; interrupt
+            // must keep waiting for its own.
+            let stale_then_real = |request: &JupyterMessage| {
+                let stranger = JupyterMessage::new(KernelInfoRequest {}, None);
+                let mut stale = JupyterMessage::new(
+                    jupyter_protocol::messaging::InterruptReply::default(),
+                    Some(&stranger),
+                );
+                stale.zmq_identities = request.zmq_identities.clone();
+                let mut replies = vec![stale];
+                replies.extend(reply_to(request));
+                replies
+            };
+            let (interrupted, seen) = tokio::join!(
+                control.interrupt(),
+                answer(&mut kernel.control, KEY, stale_then_real)
+            );
+            interrupted?;
+            assert_eq!(seen?.header.msg_type, "interrupt_request");
+
+            // A forged reply surfaces as a transport error, not a hang.
+            let (forged, seen) = tokio::join!(
+                control.interrupt(),
+                answer(&mut kernel.control, "forged-key", reply_to)
+            );
+            seen?;
+            assert!(
+                matches!(forged, Err(KernelError::Transport(_))),
+                "{forged:?}"
+            );
+            Ok(())
+        })
+        .await
+        .map_err(|_| KernelError::Timeout)?
     }
 }

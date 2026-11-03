@@ -1,27 +1,27 @@
 //! Dashboard accessors, section requests, navigation, and sign-in.
 
-use super::*;
+use karet_session::GithubCommand;
+
+use crate::app::App;
+use crate::app::github::state::GithubDashboard;
+use crate::app::github::state::GithubSection;
+use crate::pending::Pending;
 
 impl App {
+    /// The dashboard, but only while it is the page in front — what a key or a click
+    /// means. `n` on an issue page must not open a form for the dashboard's hidden
+    /// cursor row.
     pub(super) fn active_dashboard_mut(&mut self) -> Option<&mut GithubDashboard> {
-        self.dashboard_at_mut(self.active)
+        self.github.active_dashboard_mut()
     }
 
-    /// The dashboard at `index` in the focused pane, if that tab is one. Used to
-    /// drive the dashboard that was just installed, before it is the active tab.
-    pub(super) fn dashboard_at_mut(&mut self, index: usize) -> Option<&mut GithubDashboard> {
-        match self.tabs.get_mut(index).map(|tab| &mut tab.kind) {
-            Some(TabKind::Github(GithubViewState::Dashboard(dashboard))) => Some(dashboard),
-            _ => None,
-        }
+    /// The dashboard wherever the user currently is — what a reply means.
+    pub(super) fn dashboard_mut(&mut self) -> Option<&mut GithubDashboard> {
+        self.github.dashboard_mut()
     }
 
     pub(super) fn request_github_section(&mut self) {
-        self.request_dashboard_section(self.active);
-    }
-
-    pub(super) fn request_dashboard_section(&mut self, index: usize) {
-        let Some((section, query)) = self.dashboard_at_mut(index).map(|dashboard| {
+        let Some((section, query)) = self.dashboard_mut().map(|dashboard| {
             dashboard.loading_since = Some(Pending::start());
             dashboard.error = None;
             (dashboard.section, dashboard.query.clone())
@@ -29,14 +29,12 @@ impl App {
             return;
         };
         let command = match section {
-            GithubSection::Issues => SessionCommand::GithubSearchIssues { query, page: 1 },
-            GithubSection::PullRequests => {
-                SessionCommand::GithubSearchPullRequests { query, page: 1 }
-            },
-            GithubSection::Actions => SessionCommand::GithubActions { page: 1 },
+            GithubSection::Issues => GithubCommand::SearchIssues { query, page: 1 },
+            GithubSection::PullRequests => GithubCommand::SearchPullRequests { query, page: 1 },
+            GithubSection::Actions => GithubCommand::Actions { page: 1 },
         };
         let request = self.send(command);
-        if let Some(dashboard) = self.dashboard_at_mut(index) {
+        if let Some(dashboard) = self.dashboard_mut() {
             dashboard.pending = request;
         }
     }
@@ -67,7 +65,7 @@ impl App {
             }
             return;
         }
-        let request = self.send(SessionCommand::GithubLogin {
+        let request = self.send(GithubCommand::Login {
             token: karet_session::GithubToken::new(token),
         });
         if let Some(dashboard) = self.active_dashboard_mut() {

@@ -1,17 +1,53 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::BytePos;
+use karet_core::Change;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_core::ThemeRole;
+use karet_editor::editing;
+use karet_search::SearchQuery;
+use karet_search::search_chunks;
+use karet_session::Command as SessionCommand;
+use karet_session::RequestId;
+use karet_session::SearchHit;
+use karet_session::WorkspaceCommand;
+
+use crate::app::App;
+use crate::app::SEARCH_AUTO_EXPAND;
+use crate::app::SEARCH_MATCH_CAP;
+use crate::app::SEARCH_RESULT_CAP;
+use crate::app::notifications::Report;
+use crate::app::state::SearchOption;
+use crate::keymap::SidebarPanel;
+use crate::pending::Pending;
+use crate::tab::FindState;
+use crate::tab::SearchField;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+
+mod find;
+mod panel;
+
+use find::in_scope;
+use find::map_scope;
+use find::mark_current;
+use find::match_at_or_after;
+use find::planned_replacements;
+pub(crate) use panel::SearchPanel;
+pub(crate) use panel::SearchPanelField;
+pub(crate) use panel::SearchRow;
 
 impl App {
-    /// Open the quick-open (go-to-file) overlay.
-    ///
-    /// The picker appears at once and its rows land behind it: walking a
-    /// workspace is filesystem-bound work that belongs on the backend, and on a
-    /// large tree it is slow enough that doing it first would be felt as the
-    /// overlay refusing to open.
-    pub(super) fn open_quick_open(&mut self) {
-        self.overlay = Some(Overlay::quick_open(Vec::new()));
-        self.request_file_list();
-    }
-
     /// Open the find-in-file bar (only over a text/code tab). Restores this tab's
     /// last query/toggles if it has one (from a previous open-then-Esc on the same
     /// tab) instead of always starting blank.
@@ -22,14 +58,28 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            find.get_or_insert_with(FindState::default);
+            let find = find.get_or_insert_with(FindState::default);
+            let field = find.field;
+            // A bar that was closed by any path — Esc, a tab switch, a tab
+            // close, a preview install — reopens without the Search in
+            // Selection scope it had: the selection it was captured from is
+            // gone. Re-focusing a bar that is still open keeps it.
+            if !self.find_open {
+                find.scope = None;
+            }
             self.find_open = true;
-            self.focus = Focus::Editor;
+            self.focus_find(field);
             // Rebuild decorations against the current buffer — cheap no-op for a
-            // blank query, necessary to refresh a restored non-empty one.
-            self.run_find();
+            // blank query, necessary to refresh a restored non-empty one. Opening
+            // (or re-focusing) the bar is not a motion: the caret stays put, and
+            // the next Enter moves from it.
+            self.refresh_find();
         } else {
-            self.status = Some("find: open a text file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Search,
+                "find: open a text file first",
+            );
         }
     }
 
@@ -37,6 +87,11 @@ impl App {
     /// clear the active tab's match highlights (cheap to rebuild on reopen).
     pub(super) fn close_find(&mut self) {
         self.find_open = false;
+        // The selection a scope was captured from is gone by the time the bar
+        // reopens, so Search in Selection does not outlive the bar.
+        if let Some(find) = self.active_find_mut() {
+            find.scope = None;
+        }
         if let Some(Tab {
             kind: TabKind::Code { decos, .. },
             ..
@@ -46,31 +101,50 @@ impl App {
         }
     }
 
-    /// Edit the find query with an unbound key (backspace / printable), re-running
-    /// the search. Command keys (Esc / Enter / Ctrl+G / arrows) resolve via the
-    /// keymap's `Find` layer instead.
+    /// Edit the active find field with the same GUI-style cursor and selection
+    /// behavior as the Search panel. Command keys (Esc / Enter / Ctrl+G) resolve
+    /// via the keymap's `Find` layer instead.
     pub(super) fn find_input(&mut self, key: KeyEvent) {
         let Some(find) = self.active_find_mut() else {
             return;
         };
         let editing_query = find.field == SearchField::Find;
-        let target = if editing_query {
-            &mut find.query
+        let (target, edit) = if editing_query {
+            (&mut find.query, &mut find.query_edit)
         } else {
-            &mut find.replace
+            (&mut find.replace, &mut find.replace_edit)
         };
+        // Compared rather than inferred from the key: replacing a selection with
+        // text of the same length still changes what matches.
+        let before = target.clone();
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let command = key.modifiers.contains(KeyModifiers::SUPER);
         match key.code {
-            KeyCode::Backspace => {
-                target.pop();
-            },
+            KeyCode::Backspace => edit.backspace(target, alt || ctrl),
+            KeyCode::Delete => edit.delete(target, alt || ctrl),
+            KeyCode::Left if command => edit.move_start(target, false, shift),
+            KeyCode::Right if command => edit.move_end(target, false, shift),
+            KeyCode::Left if alt || ctrl => edit.move_word_left(target, shift),
+            KeyCode::Right if alt || ctrl => edit.move_word_right(target, shift),
+            KeyCode::Left => edit.move_left(target, shift),
+            KeyCode::Right => edit.move_right(target, shift),
+            KeyCode::Home => edit.move_start(target, ctrl, shift),
+            KeyCode::End => edit.move_end(target, ctrl, shift),
+            KeyCode::Char('a' | 'A') if ctrl || command => edit.select_all(target),
             KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
-                target.push(c);
+                edit.insert(target, &c.to_string());
             },
             _ => return,
+        }
+        // Motions leave the text alone; only an edit changes what matches.
+        if *target == before {
+            return;
         }
         // Only re-run the search when the query changed (the replacement doesn't
         // affect what matches).
@@ -79,21 +153,32 @@ impl App {
         }
     }
 
-    /// Re-run the in-file search and rebuild the active tab's match decorations.
+    /// Re-run the in-file search after the query or its options changed, and move
+    /// to the first match at or after the caret (wrapping to the first): the
+    /// user is searching, so the caret follows what they typed.
     pub(super) fn run_find(&mut self) {
-        let q = match self.active_find() {
-            Some(find) => find.query_spec(),
-            None => return,
+        self.seek_find(true);
+    }
+
+    /// Rebuild the match highlights against the current text without moving the
+    /// caret; the counter points at the match at or after the caret. What a
+    /// snapshot (an auto-save, a reload, an edit) and opening the bar do: neither
+    /// is a motion, so neither may move the caret, collapse a multi-caret, or
+    /// drop a selection.
+    pub(super) fn refresh_find(&mut self) {
+        self.seek_find(false);
+    }
+
+    /// Rebuild the active tab's match decorations and point the bar's counter at
+    /// the match at or after the caret. With `jump`, also move the caret there.
+    fn seek_find(&mut self, jump: bool) {
+        let Some((q, scope)) = self.active_find().map(|f| (f.query_spec(), f.scope)) else {
+            return;
         };
         let mut count = 0;
+        let mut current = 0;
         if let Some(Tab {
-            kind:
-                TabKind::Code {
-                    buffer,
-                    text,
-                    decos,
-                    ..
-                },
+            kind: TabKind::Code { buffer, decos, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
@@ -101,53 +186,80 @@ impl App {
             if q.pattern.is_empty() {
                 decos.clear();
             } else {
-                let matches = search_in_file(text, &q).unwrap_or_default();
+                // Over the rope's chunks, so a find bar left open while typing
+                // never copies the whole document per keystroke (#420).
+                let matches = search_chunks(buffer.chunks(), &q).unwrap_or_default();
+                let end = buffer.byte_to_line_col(BytePos(buffer.len_bytes()));
                 *decos = matches
                     .iter()
-                    .map(|m| Decoration {
-                        range: Range {
-                            start: buffer.byte_to_line_col(BytePos(m.start)),
-                            end: buffer.byte_to_line_col(BytePos(m.end)),
-                        },
-                        kind: DecorationKind::TextBackground,
-                        role: Some(ThemeRole::SearchMatch),
+                    .map(|m| {
+                        Decoration::new(
+                            Range {
+                                start: buffer.byte_to_line_col(BytePos(m.start)),
+                                end: buffer.byte_to_line_col(BytePos(m.end)),
+                            },
+                            DecorationKind::TextBackground,
+                            Some(ThemeRole::SearchMatch),
+                        )
                     })
+                    .filter(|deco| in_scope(scope, deco.range, end))
                     .collect();
                 count = decos.len();
-                if let Some(first) = decos.first() {
-                    let pos = first.range.start;
+                // Resolved from the caret in both cases, never carried over by
+                // index: an edit that adds or removes a match earlier in the
+                // file shifts every index after it, while the caret moves with
+                // the text it sits in. The counter, the next Replace and the
+                // caret therefore always agree on which match is current.
+                let caret = editor.cursors().primary().range().start;
+                current = match_at_or_after(decos, caret);
+                mark_current(decos, current);
+                if jump && let Some(deco) = decos.get(current) {
+                    let pos = deco.range.start;
                     editor.goto(buffer, pos);
                 }
             }
         }
         if let Some(find) = self.active_find_mut() {
             find.count = count;
-            find.current = 0;
+            find.current = current;
         }
     }
 
-    /// Move to the next/previous match (wrapping) and scroll it into view.
+    /// Move to the next (`delta > 0`) or previous match from the caret, wrapping,
+    /// and scroll it into view. Measured from the caret rather than from the
+    /// counter, so stepping continues from wherever the user — or a Replace —
+    /// left it.
     pub(super) fn find_step(&mut self, delta: i32) {
-        let (count, current) = match self.active_find() {
-            Some(find) => (find.count, find.current),
-            None => return,
-        };
-        if count == 0 {
+        if self.active_find().is_none_or(|find| find.count == 0) {
             return;
         }
-        let next = (current as i64 + i64::from(delta)).rem_euclid(count as i64) as usize;
-        if let Some(find) = self.active_find_mut() {
-            find.current = next;
-        }
-        if let Some(Tab {
+        let Some(Tab {
             kind: TabKind::Code { buffer, decos, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
-            && let Some(deco) = decos.get(next)
-        {
-            let pos = deco.range.start;
-            editor.goto(buffer, pos);
+        else {
+            return;
+        };
+        let caret = editor.cursor();
+        let next = if delta >= 0 {
+            decos
+                .iter()
+                .position(|deco| deco.range.start > caret)
+                .unwrap_or(0)
+        } else {
+            decos
+                .iter()
+                .rposition(|deco| deco.range.start < caret)
+                .unwrap_or(decos.len().saturating_sub(1))
+        };
+        let Some(pos) = decos.get(next).map(|deco| deco.range.start) else {
+            return;
+        };
+        mark_current(decos, next);
+        editor.goto(buffer, pos);
+        if let Some(find) = self.active_find_mut() {
+            find.current = next;
         }
     }
 
@@ -161,9 +273,15 @@ impl App {
         }
     }
 
-    /// Replace the current in-file match with the replacement text. The edit is
-    /// applied through the document (undoable); find re-runs when the snapshot lands.
+    /// Replace the current in-file match with the replacement text, then move to
+    /// the next match (VS Code behaviour). The edit is applied through the document
+    /// (undoable) and locally at once, so the matches are rebuilt against the new
+    /// text here rather than waiting for the snapshot.
     pub(super) fn find_replace_current(&mut self) {
+        // Measured against the text as it is now, and resolved from the caret:
+        // an edit since the last search would otherwise leave the counter on a
+        // stale range, or on an index that now names a different match.
+        self.refresh_find();
         let Some(find) = self.active_find() else {
             return;
         };
@@ -171,54 +289,153 @@ impl App {
             return;
         }
         let current = find.current;
-        let replacement = find.replace.clone();
-        let range = match self.tabs.get(self.active) {
+        let query = find.query_spec();
+        let (replace, preserve) = (find.replace.clone(), find.preserve_case);
+        let planned = match self.tabs.get(self.active) {
             Some(Tab {
-                kind: TabKind::Code { decos, .. },
+                kind:
+                    TabKind::Code {
+                        decos,
+                        text,
+                        buffer,
+                        ..
+                    },
                 ..
-            }) => decos.get(current).map(|d| d.range),
+            }) => decos.get(current).map(|d| {
+                // The same plan Replace All builds, so `$1` expands and the
+                // case is preserved exactly as it would be there.
+                let text = planned_replacements(text, buffer, &query, &replace, preserve)
+                    .into_iter()
+                    .find(|edit| edit.range == d.range)
+                    .map_or_else(|| replace.clone(), |edit| edit.new_text);
+                (d.range, text)
+            }),
             _ => None,
         };
-        let Some(range) = range else {
+        let Some((range, replacement)) = planned else {
             return;
         };
+        let edit = TextEdit {
+            range,
+            new_text: replacement.clone(),
+        };
+        if let Some(find) = self.active_find_mut() {
+            find.scope = map_scope(find.scope, &[edit]);
+        }
+        // One caret, at the match: the edit is built once per caret, and every
+        // other caret would replace the same range again.
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.goto(buffer, range.start);
+        }
         self.submit_edit(move |caret, _sel, _buf, base| {
             Some(editing::insert(caret, Some(range), base, &replacement))
         });
+        // The caret sits after the replacement, so this lands on the match after
+        // it — never on replacement text that happens to match the query too.
+        self.run_find();
     }
 
-    /// Replace every in-file match at once by rewriting the whole buffer through a
-    /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
+    /// Replace every in-file match at once, as one undoable batch with an edit per
+    /// match. Every caret and selection stays on the text it was on, moved through
+    /// the replacements.
     pub(super) fn find_replace_all(&mut self) {
         let Some(find) = self.active_find() else {
             return;
         };
         let query = find.query_spec();
         let replacement = find.replace.clone();
+        let (preserve, scope) = (find.preserve_case, find.scope);
         if query.pattern.is_empty() {
             return;
         }
-        let (text, whole) = match self.tabs.get(self.active) {
+        let edit = match self.tabs.get(self.active) {
             Some(Tab {
-                kind: TabKind::Code { text, buffer, .. },
+                kind:
+                    TabKind::Code {
+                        text,
+                        buffer,
+                        next_version,
+                        ..
+                    },
+                editor,
                 ..
-            }) => (
-                text.clone(),
-                Range {
-                    start: LineCol::new(0, 0),
-                    end: buffer.byte_to_line_col(BytePos(text.len())),
-                },
-            ),
+            }) => {
+                let end = buffer.byte_to_line_col(BytePos(buffer.len_bytes()));
+                let edits: Vec<TextEdit> =
+                    planned_replacements(text, buffer, &query, &replacement, preserve)
+                        .into_iter()
+                        .filter(|edit| in_scope(scope, edit.range, end))
+                        .collect();
+                if edits.is_empty() {
+                    return;
+                }
+                let mut cursors = editor.cursors().clone();
+                for selection in &mut cursors.selections {
+                    *selection = editing::map_selection(*selection, &edits);
+                }
+                let scope = map_scope(scope, &edits);
+                let edit = editing::MultiEdit {
+                    change: Change::new(*next_version, edits),
+                    cursors,
+                };
+                (edit, scope)
+            },
             _ => return,
         };
-        let plan = karet_search::plan_replacements(&text, &query, &replacement).unwrap_or_default();
-        if plan.is_empty() {
+        let (edit, scope) = edit;
+        self.submit_multi_edit(EditCause::Replace, edit);
+        if let Some(find) = self.active_find_mut() {
+            find.scope = scope;
+        }
+    }
+
+    /// Alt+Enter in the find bar: in the query field, turn every match into a
+    /// selection (one caret per match, the current match primary) and hand the
+    /// keyboard to the text, so typing edits them all (VS Code's *Select All
+    /// Matches*); in the replace field, replace every match.
+    pub(super) fn find_select_all_matches(&mut self) {
+        if self.active_find().map(|f| f.field) == Some(SearchField::Replace) {
+            self.find_replace_all();
             return;
         }
-        let updated = karet_search::apply_replacements(&text, &plan);
-        self.submit_edit(move |caret, _sel, _buf, base| {
-            Some(editing::insert(caret, Some(whole), base, &updated))
-        });
+        self.refresh_find();
+        let Some(current) = self.active_find().map(|f| f.current) else {
+            return;
+        };
+        let Some(Tab {
+            kind: TabKind::Code { buffer, decos, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        else {
+            return;
+        };
+        if decos.is_empty() {
+            return;
+        }
+        let selections = decos
+            .iter()
+            .map(|deco| karet_core::Selection {
+                anchor: deco.range.start,
+                head: deco.range.end,
+            })
+            .collect();
+        editor.set_cursor_state(
+            buffer,
+            karet_core::CursorState {
+                selections,
+                primary: current,
+            },
+        );
+        if let Some(find) = self.active_find_mut() {
+            find.focused = false;
+        }
+        self.keyboard.focus_editor();
     }
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).
@@ -244,23 +461,61 @@ impl App {
         }
     }
 
-    /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
+    /// Toggle a find-bar option and refresh matches. Preserve Case changes no
+    /// match, so it leaves the caret alone; the others re-run the search.
     pub(super) fn find_toggle_option(&mut self, option: SearchOption) {
+        let scope = (option == SearchOption::InSelection)
+            .then(|| self.selection_scope())
+            .flatten();
         if let Some(find) = self.active_find_mut() {
             match option {
                 SearchOption::Regex => find.regex = !find.regex,
                 SearchOption::Case => find.case_sensitive = !find.case_sensitive,
                 SearchOption::Word => find.whole_word = !find.whole_word,
+                SearchOption::PreserveCase => {
+                    find.preserve_case = !find.preserve_case;
+                    return;
+                },
+                SearchOption::InSelection => {
+                    find.scope = if find.scope.is_some() { None } else { scope };
+                },
             }
         }
         self.run_find();
+    }
+
+    /// The range Search in Selection scopes to: the primary selection, or the
+    /// caret's whole line (its line break included) when nothing is selected.
+    fn selection_scope(&self) -> Option<Range> {
+        let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get(self.active)
+        else {
+            return None;
+        };
+        let range = editor.cursors().primary().range();
+        if !range.is_empty() {
+            return Some(range);
+        }
+        let line = range.start.line;
+        let end = if (line as usize) + 1 < buffer.line_count() {
+            LineCol::new(line + 1, 0)
+        } else {
+            buffer.byte_to_line_col(BytePos(buffer.len_bytes()))
+        };
+        Some(Range {
+            start: LineCol::new(line, 0),
+            end,
+        })
     }
 
     /// Focus the Search panel and (re)start the query input.
     pub(super) fn start_global_search(&mut self) {
         self.sidebar_panel = SidebarPanel::Search;
         self.sidebar_visible = true;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.search.input = true;
         self.search
             .query_edit
@@ -269,10 +524,7 @@ impl App {
 
     /// Edit the active Search field with GUI-style cursor and selection behavior.
     pub(super) fn search_edit(&mut self, key: KeyEvent) {
-        let (target, edit) = match self.search.field {
-            SearchField::Find => (&mut self.search.query, &mut self.search.query_edit),
-            SearchField::Replace => (&mut self.search.replace, &mut self.search.replace_edit),
-        };
+        let (target, edit) = self.search.active_field();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -306,7 +558,7 @@ impl App {
     pub(super) fn run_search_query(&mut self) {
         // Enter runs the find search; while editing the replace field it applies the
         // replacement across the current matches instead.
-        if self.search.field == SearchField::Replace {
+        if self.search.field == SearchPanelField::Replace {
             self.search_replace_all();
         } else {
             self.run_global_search();
@@ -321,7 +573,8 @@ impl App {
             regex: self.search.regex,
             case_sensitive: self.search.case_sensitive,
             whole_word: self.search.whole_word,
-            ..Default::default()
+            includes: SearchPanel::globs(&self.search.includes),
+            excludes: SearchPanel::globs(&self.search.excludes),
         }
     }
 
@@ -330,26 +583,62 @@ impl App {
     pub(super) fn search_toggle_replace(&mut self) {
         self.search.replace_visible = !self.search.replace_visible;
         if !self.search.replace_visible {
-            self.search.field = SearchField::Find;
+            self.search.field = SearchPanelField::Find;
         }
     }
 
-    /// Switch the edited field between find and replace (revealing the replace field
-    /// when moving to it), keeping the panel in input mode.
+    /// Cycle the edited field, revealing whichever section the next field lives in
+    /// and keeping the panel in input mode.
+    ///
+    /// Hidden sections are skipped rather than silently focused, so Tab never
+    /// parks the cursor on a field the user cannot see.
     pub(super) fn search_toggle_field(&mut self) {
-        self.search.input = true;
-        self.search.field = match self.search.field {
-            SearchField::Find => {
+        let next = match self.search.field {
+            SearchPanelField::Find => {
                 self.search.replace_visible = true;
-                SearchField::Replace
+                SearchPanelField::Replace
             },
-            SearchField::Replace => SearchField::Find,
+            SearchPanelField::Replace if self.search.filters_visible => SearchPanelField::Includes,
+            SearchPanelField::Includes => SearchPanelField::Excludes,
+            SearchPanelField::Replace | SearchPanelField::Excludes => SearchPanelField::Find,
         };
-        let (text, edit) = match self.search.field {
-            SearchField::Find => (&self.search.query, &mut self.search.query_edit),
-            SearchField::Replace => (&self.search.replace, &mut self.search.replace_edit),
-        };
-        edit.set_cursor(text, text.len(), false);
+        self.search_focus_field(next);
+    }
+
+    /// Put the panel's focus in `field`, with the caret at the end of its text and
+    /// nothing selected — where typing continues rather than replaces.
+    pub(super) fn search_focus_field(&mut self, field: SearchPanelField) {
+        self.search.input = true;
+        self.search.field = field;
+        let (text, edit) = self.search.active_field();
+        let len = text.len();
+        let owned = text.clone();
+        edit.set_cursor(&owned, len, false);
+    }
+
+    /// Show or hide the include/exclude glob fields (collapsing them returns focus
+    /// to the query).
+    pub(super) fn search_toggle_filters(&mut self) {
+        self.search.filters_visible = !self.search.filters_visible;
+        if !self.search.filters_visible {
+            if matches!(
+                self.search.field,
+                SearchPanelField::Includes | SearchPanelField::Excludes
+            ) {
+                self.search.field = SearchPanelField::Find;
+            }
+            // Hiding the fields must also stop them filtering, or a search would
+            // stay narrowed by globs no longer on screen.
+            let had_globs = !self.search.includes.is_empty() || !self.search.excludes.is_empty();
+            self.search.includes.clear();
+            self.search.excludes.clear();
+            if had_globs {
+                self.rerun_search();
+            }
+        } else {
+            self.search.field = SearchPanelField::Includes;
+            self.search.input = true;
+        }
     }
 
     /// Ask the backend to apply the replacement across every workspace match;
@@ -361,7 +650,7 @@ impl App {
         }
         let query = self.build_search_query();
         let replacement = self.search.replace.clone();
-        self.send_command(SessionCommand::SearchReplaceAll { query, replacement });
+        self.send_command(WorkspaceCommand::ReplaceAll { query, replacement });
         self.search.input = false;
     }
 
@@ -392,29 +681,99 @@ impl App {
     }
 
     /// Ask the backend for the workspace search results (the walk runs on the
-    /// backend's search worker, never this thread); [`SessionEvent::SearchResults`]
-    /// answers and fills the panel. A newer query supersedes an unstarted one.
+    /// backend's search worker, never this thread); [`SessionEvent::SearchProgress`]
+    /// batches stream in and one [`SessionEvent::SearchFinished`] closes the run.
     pub(super) fn run_global_search(&mut self) {
-        self.search.results.clear();
-        self.search.selection.set_len(0);
+        // Cancel the previous run before starting another: without this a long
+        // walk over a huge tree keeps burning a worker thread for results that
+        // are already superseded.
+        if let Some(previous) = self.search.searching.take() {
+            self.send_command(SessionCommand::Cancel { request: previous });
+        }
+        // A re-run must not cost the reader their place: any file save re-runs the
+        // live search through the watcher, and `clear` would send the cursor back
+        // to the top and unfold everything. Carried across and re-clamped by
+        // `rebuild_rows`; a genuinely new query's folds are recomputed when it
+        // finishes anyway.
+        let cursor = self.search.selection.cursor();
+        let collapsed = std::mem::take(&mut self.search.collapsed);
+        let folds_touched = self.search.folds_touched;
+        self.search.clear();
+        self.search.collapsed = collapsed;
+        self.search.folds_touched = folds_touched;
+        self.search.pending_cursor = Some(cursor);
         if self.search.query.is_empty() {
             self.refresh_search_decorations();
             return;
         }
         let query = self.build_search_query();
-        self.send_command(SessionCommand::Search {
+        self.search.started = Some(Pending::start());
+        self.search.searching = self.send(WorkspaceCommand::Search {
             query,
-            limit: SEARCH_RESULT_CAP,
+            file_limit: SEARCH_RESULT_CAP,
+            match_limit: SEARCH_MATCH_CAP,
         });
         self.refresh_search_decorations();
     }
 
-    /// Adopt the backend's workspace search results into the panel.
-    pub(super) fn apply_search_results(&mut self, hits: Vec<karet_search::FileHit>) {
-        self.search.results = hits;
-        // set_len clamps the cursor into the fresh result list.
-        let len = self.search.results.len();
-        self.search.selection.set_len(len);
+    /// Adopt one streamed batch of workspace search results.
+    ///
+    /// Results for anything but the in-flight request are dropped: cancelling
+    /// cannot recall a batch already in the event channel, so a stale answer
+    /// would otherwise overwrite a newer query's results.
+    pub(super) fn search_progress(
+        &mut self,
+        request: Option<RequestId>,
+        hits: Vec<SearchHit>,
+        files_scanned: usize,
+        matches_found: usize,
+    ) {
+        if request.is_none() || self.search.searching != request {
+            return;
+        }
+        self.search.hits.extend(hits);
+        self.search.files_scanned = files_scanned;
+        self.search.matches_found = matches_found;
+        self.search.rebuild_rows();
+        self.refresh_search_decorations();
+    }
+
+    /// Adopt a search's terminal state.
+    pub(super) fn search_finished(
+        &mut self,
+        request: Option<RequestId>,
+        files_scanned: usize,
+        matches_found: usize,
+        truncated: bool,
+        error: Option<String>,
+    ) {
+        if request.is_none() || self.search.searching != request {
+            return;
+        }
+        self.search.searching = None;
+        self.search.started = None;
+        self.search.files_scanned = files_scanned;
+        self.search.matches_found = matches_found;
+        self.search.truncated = truncated;
+        self.search.error = error;
+        self.search.searched = true;
+        // Adaptive expansion, applied only now that the size is known — collapsing
+        // mid-stream would snap groups shut under the cursor while the user reads.
+        // Skipped once the user has folded something themselves: an automatic
+        // default may pick the starting state, but it must not undo a decision.
+        if !self.search.folds_touched {
+            self.search
+                .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
+        }
+        // A settled search with nothing in it leaves the results holding a focus
+        // with no row under it — and no arrow key crosses back out of the list —
+        // so hand the focus to the query, which is the thing you go on to edit.
+        // Only here, never on the re-run that empties the list: any file save
+        // re-runs a live search through the watcher, and pulling focus into a text
+        // field mid-stream would turn a reader's next arrow press into typing.
+        if !self.search.input && self.search.rows.is_empty() {
+            self.search_focus_field(SearchPanelField::Find);
+        }
         self.refresh_search_decorations();
     }
 
@@ -427,29 +786,29 @@ impl App {
     pub(super) fn refresh_search_decorations(&mut self) {
         let query = self.build_search_query();
         // Owned, not borrowed: `all_tabs_mut()` below needs `&mut self`, which a
-        // set of `&Path` borrowed from `self.search.results` would conflict with.
-        let hit_paths: HashSet<PathBuf> =
-            self.search.results.iter().map(|h| h.path.clone()).collect();
+        // set of `&Path` borrowed from `self.search.hits` would conflict with.
+        let hit_paths: HashSet<PathBuf> = self.search.hits.iter().map(|h| h.path.clone()).collect();
         for tab in self.all_tabs_mut() {
             if let TabKind::Code {
                 path,
                 buffer,
-                text,
                 search_decos,
                 ..
             } = &mut tab.kind
             {
                 *search_decos = if !query.pattern.is_empty() && hit_paths.contains(path.as_path()) {
-                    search_in_file(text, &query)
+                    search_chunks(buffer.chunks(), &query)
                         .unwrap_or_default()
                         .iter()
-                        .map(|m| Decoration {
-                            range: Range {
-                                start: buffer.byte_to_line_col(BytePos(m.start)),
-                                end: buffer.byte_to_line_col(BytePos(m.end)),
-                            },
-                            kind: DecorationKind::TextBackground,
-                            role: Some(ThemeRole::SearchMatch),
+                        .map(|m| {
+                            Decoration::new(
+                                Range {
+                                    start: buffer.byte_to_line_col(BytePos(m.start)),
+                                    end: buffer.byte_to_line_col(BytePos(m.end)),
+                                },
+                                DecorationKind::TextBackground,
+                                Some(ThemeRole::SearchMatch),
+                            )
                         })
                         .collect()
                 } else {
@@ -464,13 +823,119 @@ impl App {
         self.search.selection.move_by(delta);
     }
 
-    /// Open the selected result, scrolling to its first match.
+    /// Open the selected row: a match row jumps to that exact match, a file
+    /// heading to the file's first one.
+    ///
+    /// The panel keeps the keyboard. Opening a hit is a step *through* a result
+    /// list, not out of it — the next arrow should reach the next hit, so the file
+    /// appears in the editor while the focus stays where the reader put it. `Esc`
+    /// is what hands the keyboard to the editor.
     pub(super) fn open_selected_result(&mut self) {
-        let Some(hit) = self.search.results.get(self.search.selection.cursor()) else {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
             return;
         };
+        let Some(hit) = self.search.hits.get(row.hit()) else {
+            return;
+        };
+        let index = match row {
+            SearchRow::Match { index, .. } => index,
+            SearchRow::File { .. } => 0,
+        };
         let path = hit.path.clone();
-        let line = hit.matches.first().map_or(0, |m| m.line);
-        self.focus_by_file_line(&path, LineCol::new(line, 0));
+        // The backend already converted the engine's *byte* column to a character
+        // column, so this lands on the match rather than the start of the line.
+        let position = hit
+            .matches
+            .get(index)
+            .map_or(LineCol::new(0, 0), |m| m.range.start);
+        self.focus_by_file_line(&path, position, false);
+    }
+
+    /// Expand or collapse the selected file group.
+    pub(super) fn search_toggle_row(&mut self) {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
+            return;
+        };
+        let Some(path) = self.search.hits.get(row.hit()).map(|hit| hit.path.clone()) else {
+            return;
+        };
+        self.search.folds_touched = true;
+        self.search.toggle_file(&path);
+    }
+
+    /// Expand the selected group, or step into it when it is already open.
+    ///
+    /// A match row is a leaf, so it absorbs the key rather than stepping on: a
+    /// `Right` that quietly acts as a `Down` reads as the list losing the press.
+    pub(super) fn search_expand(&mut self) {
+        let Some(row) = self
+            .search
+            .rows
+            .get(self.search.selection.cursor())
+            .copied()
+        else {
+            return;
+        };
+        match row {
+            SearchRow::File {
+                expanded: false, ..
+            } => self.search_toggle_row(),
+            SearchRow::File { .. } => self.search.selection.move_by(1),
+            SearchRow::Match { .. } => {},
+        }
+    }
+
+    /// Collapse the selected group, or walk up out of it: from a match row to its
+    /// heading, and from an already-collapsed heading to the previous file's.
+    pub(super) fn search_collapse(&mut self) {
+        let cursor = self.search.selection.cursor();
+        let Some(row) = self.search.rows.get(cursor).copied() else {
+            return;
+        };
+        // From a match, collapsing walks up to the file it belongs to, which is
+        // where a second press then collapses; from a heading that is already
+        // shut, a third walks back to the file above it, so repeated presses step
+        // through the result set a file at a time.
+        let heading_of = |hit: Option<usize>| {
+            self.search.rows[..cursor]
+                .iter()
+                .rposition(|row| match (row, hit) {
+                    (SearchRow::File { hit: h, .. }, Some(hit)) => *h == hit,
+                    (SearchRow::File { .. }, None) => true,
+                    _ => false,
+                })
+        };
+        let target = match row {
+            SearchRow::File { expanded: true, .. } => {
+                self.search_toggle_row();
+                return;
+            },
+            SearchRow::File { .. } => heading_of(None),
+            SearchRow::Match { hit, .. } => heading_of(Some(hit)),
+        };
+        if let Some(heading) = target {
+            self.search.selection.move_to(heading);
+        }
+    }
+
+    /// Collapse every file group, or expand them all when none are collapsed.
+    pub(super) fn search_toggle_all(&mut self) {
+        let any_open = self
+            .search
+            .hits
+            .iter()
+            .any(|hit| !self.search.collapsed.contains(&hit.path));
+        self.search.folds_touched = true;
+        self.search.set_all_collapsed(any_open);
     }
 }

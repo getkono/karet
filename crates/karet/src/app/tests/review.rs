@@ -29,14 +29,14 @@ fn toggling_marks_the_current_file_and_reports_progress() {
     app.commit_toggle_reviewed();
 
     assert_eq!(flags(&app), vec![true, false, false]);
-    let status = app.status.clone().unwrap_or_default();
+    let status = last_message(&app).unwrap_or_default();
     assert!(status.contains("reviewed"), "{status}");
     assert!(status.contains("(1/3 reviewed)"), "{status}");
 
     // The mark is its own inverse.
     app.commit_toggle_reviewed();
     assert_eq!(flags(&app), vec![false, false, false]);
-    let status = app.status.clone().unwrap_or_default();
+    let status = last_message(&app).unwrap_or_default();
     assert!(status.contains("unreviewed"), "{status}");
 }
 

@@ -1,5 +1,6 @@
 //! Turning query text into terms, with positioned failures.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use super::Query;
@@ -8,7 +9,6 @@ use super::Term;
 use super::TermKind;
 use crate::edge::EdgeKind;
 use crate::id::SeamPath;
-use crate::lang::SeamLanguage;
 use crate::model::LENSES;
 use crate::model::Lens;
 use crate::model::NodeKind;
@@ -25,18 +25,64 @@ fn tokenize(text: &str) -> Vec<(Range<usize>, &str)> {
             continue;
         }
         let start = index;
-        let mut in_quotes = false;
-        while index < bytes.len() {
-            match bytes[index] {
-                b'"' => in_quotes = !in_quotes,
-                b if b.is_ascii_whitespace() && !in_quotes => break,
-                _ => {},
-            }
-            index += 1;
-        }
+        index = scan_token(bytes, start).0;
         tokens.push((start..index, &text[start..index]));
     }
     tokens
+}
+
+/// Where the token starting at `start` ends, and whether it left a quote open.
+///
+/// Unquoted ASCII whitespace ends a token. Inside quotes a backslash escapes a following
+/// `"` or `\`, so an escaped quote neither closes the quoted run nor ends the token.
+fn scan_token(bytes: &[u8], start: usize) -> (usize, bool) {
+    let mut index = start;
+    let mut in_quotes = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' if in_quotes && matches!(bytes.get(index + 1), Some(b'"' | b'\\')) => {
+                index += 1;
+            },
+            b'"' => in_quotes = !in_quotes,
+            b if b.is_ascii_whitespace() && !in_quotes => break,
+            _ => {},
+        }
+        index += 1;
+    }
+    (index, in_quotes)
+}
+
+/// Whether `value` must be written in the quoting form to read back as itself.
+///
+/// A value written bare survives when it holds no whitespace, does not open with the
+/// quote that marks the quoting form, and closes every quote it opens — so
+/// `cfg:feature="view"` keeps its bare form, while `all(unix, windows)` does not.
+pub(super) fn needs_quotes(value: &str) -> bool {
+    value.starts_with('"')
+        || value.bytes().any(|byte| byte.is_ascii_whitespace())
+        || scan_token(value.as_bytes(), 0).1
+}
+
+/// A value as written, reading a leading `"` as the quoting form: the quotes are dropped
+/// and `\"` and `\\` stand for `"` and `\`.
+///
+/// Any other backslash, and a quote short of the end, is literal, and a missing closing
+/// quote is tolerated — so a phrase typed before the quoting form existed reads as it
+/// always did.
+fn unquote(text: &str) -> Cow<'_, str> {
+    let Some(inner) = text.strip_prefix('"') else {
+        return Cow::Borrowed(text);
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if matches!(chars.peek(), Some('"' | '\\')) => out.extend(chars.next()),
+            '"' if chars.peek().is_none() => {},
+            _ => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Parse query text into a [`Query`].
@@ -77,6 +123,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
                     body_span,
                 ));
             }
+            let name = unquote(name);
             if name.is_empty() {
                 return Err(QueryError::new(
                     "`config:` needs a configuration name",
@@ -84,7 +131,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
                 ));
             }
             config_span = Some(body_span);
-            query.configuration = Some(name.to_owned());
+            query.configuration = Some(name.into_owned());
             continue;
         }
 
@@ -99,10 +146,8 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
 
 /// Parse one non-`config:` term.
 fn parse_term(body: &str, span: &Range<usize>) -> Result<TermKind, QueryError> {
-    if let Some(phrase) = body.strip_prefix('"') {
-        return Ok(TermKind::Phrase(
-            phrase.strip_suffix('"').unwrap_or(phrase).to_owned(),
-        ));
+    if body.starts_with('"') {
+        return Ok(TermKind::Phrase(unquote(body).into_owned()));
     }
 
     let Some((prefix, value)) = body.split_once(':') else {
@@ -110,6 +155,13 @@ fn parse_term(body: &str, span: &Range<usize>) -> Result<TermKind, QueryError> {
         return Ok(TermKind::Name(body.to_owned()));
     };
 
+    // `pivot:` quotes only its node path, after the edge kind, so it unquotes its own.
+    let value = if prefix == "pivot" {
+        Cow::Borrowed(value)
+    } else {
+        unquote(value)
+    };
+    let value = value.as_ref();
     if value.is_empty() {
         return Err(QueryError::new(
             format!("`{prefix}:` needs a value"),
@@ -154,6 +206,18 @@ fn parse_term(body: &str, span: &Range<usize>) -> Result<TermKind, QueryError> {
             }),
         "cfg" => Ok(TermKind::Cfg(value.to_owned())),
         "pivot" => parse_pivot(value, span),
+        "reach" | "callers" => value
+            .parse::<SeamPath>()
+            .map(|path| match prefix {
+                "reach" => TermKind::Reach(path),
+                _ => TermKind::Callers(path),
+            })
+            .map_err(|error| {
+                QueryError::new(
+                    format!("`{prefix}:` needs a node path ({error})"),
+                    span.clone(),
+                )
+            }),
         // `<lens>:<subtype>` — the lens name doubles as a prefix.
         other => match Lens::from_name(other) {
             Some(lens) => {
@@ -196,7 +260,7 @@ fn parse_pivot(value: &str, span: &Range<usize>) -> Result<TermKind, QueryError>
             EdgeKind::all().iter().map(|k| k.name().to_owned()),
         )
     })?;
-    let target = target.parse::<SeamPath>().map_err(|error| {
+    let target = unquote(target).parse::<SeamPath>().map_err(|error| {
         QueryError::new(
             format!("`pivot:` needs a node path ({error})"),
             span.clone(),
@@ -207,10 +271,12 @@ fn parse_pivot(value: &str, span: &Range<usize>) -> Result<TermKind, QueryError>
 
 /// Every prefix a term may start with, for suggestions.
 fn known_prefixes() -> impl Iterator<Item = String> {
-    ["lens", "vis", "kind", "in", "cfg", "config", "pivot"]
-        .into_iter()
-        .map(str::to_owned)
-        .chain(LENSES.iter().map(|lens| lens.name().to_owned()))
+    [
+        "lens", "vis", "kind", "in", "cfg", "config", "pivot", "reach", "callers",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(LENSES.iter().map(|lens| lens.name().to_owned()))
 }
 
 /// An "unrecognized X" failure carrying the nearest valid names.
@@ -275,17 +341,6 @@ fn edit_distance(a: &str, b: &str) -> usize {
     previous.last().copied().unwrap_or(0)
 }
 
-/// One language's subtypes for a lens.
-#[allow(dead_code, reason = "unused when no language feature is enabled")]
-fn subtypes_of(language: &dyn SeamLanguage, lens: Lens) -> Vec<String> {
-    language
-        .subtypes()
-        .iter()
-        .filter(|(l, _)| *l == lens)
-        .map(|(_, subtype)| subtype.name().to_owned())
-        .collect()
-}
-
 /// Every facet subtype *any* registered language can emit, for `<lens>:<subtype>`
 /// suggestions and validation.
 ///
@@ -294,13 +349,55 @@ fn subtypes_of(language: &dyn SeamLanguage, lens: Lens) -> Vec<String> {
 /// reject the other language's own vocabulary.
 #[must_use]
 pub fn known_subtypes(lens: Lens) -> Vec<String> {
-    let mut out = Vec::new();
-    #[cfg(feature = "lang-rust")]
-    out.extend(subtypes_of(&crate::lang::rust::Rust, lens));
-    #[cfg(feature = "lang-python")]
-    out.extend(subtypes_of(&crate::lang::python::Python, lens));
-    let _ = lens;
+    let mut out: Vec<String> = crate::lang::all_subtypes()
+        .into_iter()
+        .filter(|(candidate, _)| *candidate == lens)
+        .map(|(_, subtype)| subtype.name().to_owned())
+        .collect();
     out.sort();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::closest;
+    use super::edit_distance;
+
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn edit_distance_counts_insertions_deletions_and_substitutions() {
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("abc", "ab"), 1);
+        assert_eq!(edit_distance("ab", "abc"), 1);
+        assert_eq!(edit_distance("abc", "axc"), 1);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("flaw", "lawn"), 2);
+    }
+
+    #[test]
+    fn a_one_way_prefix_outranks_a_substring() {
+        // `lens` is a prefix of the typed `lensx`; `alensxa` merely contains it.
+        assert_eq!(
+            closest("lensx", &names(&["alensxa", "lens"])),
+            ["lens", "alensxa"]
+        );
+    }
+
+    #[test]
+    fn a_one_way_substring_outranks_a_near_miss() {
+        // `lens` contains the typed `ens`; `ans` is one edit away from it.
+        assert_eq!(closest("ens", &names(&["ans", "lens"])), ["lens", "ans"]);
+    }
+
+    #[test]
+    fn suggestions_stop_at_three_edits() {
+        assert_eq!(closest("abc", &names(&["xyz"])), ["xyz"]);
+        assert!(closest("abcd", &names(&["wxyz"])).is_empty());
+    }
 }

@@ -1,7 +1,34 @@
 //! VCS-domain backend-event handlers: status, operations, blame, logs, and
 //! the commit family. Called only from the [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+
+use karet_core::BlameAttribution;
+use karet_core::Decoration;
+use karet_core::NotificationKind;
+use karet_session::ChangeSummary;
+use karet_session::DocumentId;
+use karet_session::GithubCommand;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubVerification;
+use karet_session::PreparedChange;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_session::VcsOutcome;
+use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::CommitInput;
+use crate::app::state::LiveBlame;
+use crate::overlay::Overlay;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Adopt a fresh working-tree status, dropping every cache it invalidates.
@@ -13,11 +40,81 @@ impl App {
         // Commits and branch switches change every cached repository
         // fact (head, tracked-ness); drop them and re-resolve on demand.
         self.remote_facts.clear();
+        // A fresh status is how a write with no outcome event of its own (a
+        // discard) reports that it finished. Only the discard tag: this also fires
+        // for unrelated worktree changes, and a fetch or a rebase still running
+        // must keep its card.
+        self.notifications.dismiss_tagged(Self::VCS_DISCARD_TAG);
 
         self.live_blame = None;
         self.pending_blame = None;
         self.failed_blame = None;
+        // A commit, stage, or checkout moves `HEAD` under every open buffer.
+        self.request_all_line_changes();
         self.apply_vcs_status(staged, working);
+    }
+
+    /// Ask for `doc`'s uncommitted-line gutter markers, keeping at most one
+    /// request in flight per document: one asked for while another runs is
+    /// re-sent when that answers, so a burst of edits costs two comparisons.
+    pub(in crate::app) fn request_line_changes(&mut self, doc: DocumentId) {
+        if !self.settings.git.decorations {
+            return;
+        }
+        if self.docs.line_changes_pending.contains_key(&doc) {
+            self.docs.line_changes_rerun.insert(doc);
+            return;
+        }
+        if let Some(id) = self.send(VcsCommand::LineChanges { doc }) {
+            self.docs.line_changes_pending.insert(doc, id);
+        }
+    }
+
+    /// Refresh the gutter markers of every open document.
+    pub(in crate::app) fn request_all_line_changes(&mut self) {
+        let mut docs: Vec<DocumentId> = self.all_tabs().filter_map(Self::tab_doc).collect();
+        docs.sort();
+        docs.dedup();
+        for doc in docs {
+            self.request_line_changes(doc);
+        }
+    }
+
+    /// Adopt the markers answering this document's in-flight request; an answer
+    /// to anything else (a closed document, a superseded request) is dropped.
+    pub(super) fn on_line_changes(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        markers: Vec<Decoration>,
+    ) {
+        if id.is_none() || self.docs.line_changes_pending.get(&doc) != id.as_ref() {
+            return;
+        }
+        self.docs.line_changes_pending.remove(&doc);
+        if self.settings.git.decorations {
+            self.docs.line_changes.insert(doc, markers);
+        }
+        if self.docs.line_changes_rerun.remove(&doc) {
+            self.request_line_changes(doc);
+        }
+    }
+
+    /// Drop every held marker and request, after the setting turns them off or
+    /// the document closes.
+    pub(in crate::app) fn forget_line_changes(&mut self, doc: Option<DocumentId>) {
+        match doc {
+            Some(doc) => {
+                self.docs.line_changes.remove(&doc);
+                self.docs.line_changes_pending.remove(&doc);
+                self.docs.line_changes_rerun.remove(&doc);
+            },
+            None => {
+                self.docs.line_changes.clear();
+                self.docs.line_changes_pending.clear();
+                self.docs.line_changes_rerun.clear();
+            },
+        }
     }
 
     /// Fill a reserved conflict view's two committed sides.
@@ -48,26 +145,40 @@ impl App {
     ) {
         self.scm.operation = None;
         let resume_quit = self.operation_blocker.take().is_some();
+        // The operation is over however it ended, so its progress card goes now.
+        // Clearing here rather than in each arm is what keeps a silent outcome
+        // (a preview tab, an unhandled variant) from orphaning the card forever.
+        self.notifications.dismiss_tagged(Self::VCS_OPERATION_TAG);
         if let Some(error) = error {
             match action {
                 VcsAction::SwitchBranch(target)
                     if error.contains("local changes")
                         || error.contains("would be overwritten") =>
                 {
-                    self.overlay = Some(Overlay::text(
-                        "Switch blocked · type stash to stash changes and retry",
-                        TextPurpose::StashAndSwitch { target },
-                    ));
+                    self.confirm_action(
+                        "Switch blocked by local changes",
+                        "Git refused the switch because uncommitted changes would \
+                         be overwritten. Stashing sets them aside, switches, and \
+                         leaves the stash for you to pop.",
+                        "Stay here",
+                        "Stash and switch",
+                        ConfirmAction::StashAndSwitch(target),
+                    );
                 },
                 VcsAction::UndoCommit {
                     allow_upstream: false,
                 } if error.contains("already present upstream") => {
-                    self.overlay = Some(Overlay::text(
-                        "Commit is upstream · type undo to confirm soft reset",
-                        TextPurpose::ConfirmPublishedUndo,
-                    ));
+                    self.confirm_action(
+                        "Undo a commit that is already pushed?",
+                        "This commit exists on the remote. Undoing it here rewrites \
+                         local history, so the branch will need a force-push and \
+                         anyone who pulled it will diverge.",
+                        "Keep the commit",
+                        "Undo anyway",
+                        ConfirmAction::UndoPublishedCommit,
+                    );
                 },
-                _ => self.notify(Severity::Error, NotificationKind::Vcs, error),
+                _ => self.notify(Report::Failure, NotificationKind::Vcs, error),
             }
         } else if let Some(outcome) = outcome {
             match outcome {
@@ -75,26 +186,48 @@ impl App {
                     self.publish_current_branch();
                 },
                 VcsOutcome::PullRequestUpdated => {
-                    self.status = Some("pull request branch updated".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "pull request branch updated",
+                    );
                 },
                 VcsOutcome::PullRequestCheckedOut { branch } => {
-                    self.status = Some(format!("switched to {branch}"));
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        format!("switched to {branch}"),
+                    );
                 },
                 VcsOutcome::CommitUndone { commit, .. } => {
                     let short: String = commit.chars().take(7).collect();
-                    self.status = Some(format!("undid commit {short}"));
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        format!("undid commit {short}"),
+                    );
                 },
                 VcsOutcome::StashCreated(true) => {
-                    self.status = Some("stashed local changes".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "stashed local changes",
+                    );
                 },
+                // Nothing was stashed: the command was understood and declined, so
+                // it is a refusal rather than a stash that happened.
                 VcsOutcome::StashCreated(false) => {
-                    self.status = Some("stash: no local changes".to_string());
+                    self.notify(Report::Refusal, NotificationKind::Vcs, "no local changes");
                 },
                 VcsOutcome::StashPreview { reference, patch } => {
                     self.push_tab(Tab::stash_preview(&reference, patch));
                 },
                 VcsOutcome::Completed => {
-                    self.status = Some("source control operation completed".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "source control operation completed",
+                    );
                 },
                 _ => {},
             }
@@ -137,31 +270,34 @@ impl App {
         }
     }
 
-    /// Accumulate open-pull-request pages; the last page opens the picker.
-    pub(super) fn on_pull_requests(
-        &mut self,
-        id: Option<RequestId>,
-        remote: String,
-        items: Vec<PullRequestSummary>,
-        next_page: Option<u32>,
-    ) {
-        if id.is_some() && id == self.pending_pull_requests {
-            self.pending_pull_requests = None;
-            self.pull_request_items.extend(items);
-            if let Some(page) = next_page {
-                self.pending_pull_requests = self.send(SessionCommand::PullRequests {
-                    remote,
-                    page,
-                    per_page: 100,
-                });
-            } else if self.pull_request_items.is_empty() {
-                self.pull_request_remote = None;
-                self.status = Some(format!("{remote}: no open pull requests"));
-            } else {
-                let items = std::mem::take(&mut self.pull_request_items);
-                let remote = self.pull_request_remote.take().unwrap_or(remote);
-                self.overlay = Some(Overlay::pull_requests(remote, items));
-            }
+    /// Whether `id` is the open-pull-request picker's in-flight request.
+    pub(super) fn answers_pull_request_picker(&self, id: Option<RequestId>) -> bool {
+        id.is_some() && id == self.pending_pull_requests
+    }
+
+    /// Accumulate the picker's open-pull-request pages; the last page opens it.
+    pub(super) fn on_pull_requests(&mut self, page: GithubPage<GithubPullRequest>) {
+        self.pending_pull_requests = None;
+        self.pull_request_items.extend(page.items);
+        let remote = self.pull_request_remote.clone().unwrap_or_default();
+        if let Some(page) = page.next_page {
+            self.pending_pull_requests =
+                self.send(GithubCommand::ListOpenPullRequests { remote, page });
+        } else if self.pull_request_items.is_empty() {
+            self.pull_request_remote = None;
+            self.notify_tagged(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                format!("{remote}: no open pull requests"),
+                Some(Self::PULL_REQUESTS_TAG.to_string()),
+            );
+        } else {
+            // The picker opening is the answer, so the "loading…" card goes
+            // with it rather than sitting behind the overlay.
+            self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
+            let items = std::mem::take(&mut self.pull_request_items);
+            self.pull_request_remote = None;
+            self.open_overlay(Overlay::pull_requests(remote, items));
         }
     }
 
@@ -176,12 +312,8 @@ impl App {
         labels: std::collections::HashMap<String, Vec<karet_vcs::RefLabel>>,
     ) {
         self.scm.ref_labels = labels;
-        if id.is_some_and(|request| {
-            self.graph_log_req
-                .is_some_and(|(pending, _)| pending == request)
-        }) {
-            self.graph_log_req = None;
-            self.apply_graph_log(skip, commits, has_more);
+        if let Some(view) = id.and_then(|request| self.graph_log_reqs.remove(&request)) {
+            self.apply_graph_log(view, skip, commits, has_more);
         } else {
             self.apply_vcs_log(skip, commits, has_more);
         }
@@ -196,12 +328,8 @@ impl App {
         commits: Vec<Commit>,
         has_more: bool,
     ) {
-        if id.is_some_and(|request| {
-            self.graph_log_req
-                .is_some_and(|(pending, _)| pending == request)
-        }) {
-            self.graph_log_req = None;
-            self.apply_graph_log(skip, commits, has_more);
+        if let Some(view) = id.and_then(|request| self.graph_log_reqs.remove(&request)) {
+            self.apply_graph_log(view, skip, commits, has_more);
         } else if id.is_some() && id == self.pending_history_picker {
             self.pending_history_picker = None;
             self.apply_history_picker(commits);
@@ -209,26 +337,26 @@ impl App {
     }
 
     /// Reset the commit editor and report a completed commit.
-    pub(super) fn on_committed(&mut self, oid: &str) {
+    pub(crate) fn on_committed(&mut self, oid: &str) {
         self.commit_input = CommitInput::default();
+        // The commit landed, so the box is empty and the draft that a generated
+        // message once replaced belongs to a message that is now history.
+        // Leaving the undo armed would let Ctrl+Z resurrect it into the *next*
+        // commit's box.
+        self.ai_commit.undo = None;
+        self.ai_commit.state = crate::app::scm::aicommit::AiCommitState::Idle;
         let short: String = oid.chars().take(7).collect();
-        self.notify(
-            Severity::Information,
+        self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Committed(
+            short.clone(),
+        ));
+        // Tagged to match `commit_submit`'s progress card, so the commit that was
+        // running is rewritten into the commit that landed.
+        self.notify_tagged(
+            Report::Outcome,
             NotificationKind::Vcs,
             format!("committed {short}"),
+            Some(Self::VCS_COMMIT_TAG.to_string()),
         );
-    }
-
-    /// Fill the commit editor with a generated message.
-    pub(super) fn on_commit_message_generated(&mut self, message: String) {
-        self.commit_input.text = message;
-        self.commit_input.edit.set_cursor(
-            &self.commit_input.text,
-            self.commit_input.text.len(),
-            false,
-        );
-        self.commit_input.edit.scroll = 0;
-        self.status = Some("commit message generated".to_string());
     }
 
     /// Route resolved commit metadata to the surface that asked for it.
@@ -237,15 +365,10 @@ impl App {
         id: Option<RequestId>,
         detail: Box<CommitDetail>,
     ) {
-        let dest = id.and_then(|i| self.pending_commit_detail.get(&i).cloned());
-        match dest {
-            Some(CommitDest::Browser { view, hash }) if detail.hash == hash => {
-                self.fill_graph_metadata(view, detail);
-            },
-            Some(CommitDest::Browser { .. }) => {},
-            Some(CommitDest::Tab { view }) => self.fill_commit_metadata(view, detail),
+        match id.and_then(|i| self.pending_commit_detail.get(&i).copied()) {
+            Some(view) => self.fill_commit_metadata(view, detail),
             None if id.is_none() => self.open_commit_metadata_tab(detail),
-            _ => {},
+            None => {},
         }
     }
 
@@ -258,17 +381,9 @@ impl App {
     ) {
         let commit_hash = detail.hash.clone();
         match id.and_then(|request| self.pending_commit_detail.remove(&request)) {
-            Some(CommitDest::Browser { view, hash })
-                if detail.hash == hash && self.all_tabs().any(|tab| tab.view == view) =>
-            {
-                self.fill_graph_detail(view, detail, changes);
-            },
-            Some(CommitDest::Browser { .. }) => {},
-            Some(CommitDest::Tab { view }) => {
-                self.fill_commit_tab(view, detail, changes);
-            },
+            Some(view) => self.fill_commit_tab(view, detail, changes),
             None if id.is_none() => self.open_commit_tab(detail, changes),
-            _ => {},
+            None => {},
         }
         self.apply_review_flags(&commit_hash);
     }

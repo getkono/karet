@@ -1,3 +1,9 @@
+use super::store::Declined;
+use super::store::clear_declined;
+use super::store::ever_installed;
+use super::store::installed_version;
+use super::store::read_declined;
+use super::store::write_declined;
 use super::*;
 
 #[test]
@@ -57,6 +63,8 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
         version: "1.2.3".into(),
         command,
         args: Vec::new(),
+        entry: None,
+        initialization_options: None,
     };
     let encoded = serde_json::to_string(&active)?;
     std::fs::write(provider.join("active.jsonl"), format!("{encoded}\n{{"))?;
@@ -68,6 +76,17 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn unsafe_versions_cannot_escape_the_provider_directory() {
     assert_eq!(safe_version("../../bad release"), ".._.._bad_release");
+    // The bare navigation names survive the character filter untouched, and
+    // `versions/..` is the provider root: the install silently no-ops on a
+    // destination that already exists, and retiring that "version" hands the
+    // provider root to `remove_dir_all`.
+    for version in ["..", ".", ""] {
+        let name = safe_version(version);
+        assert!(
+            !matches!(name.as_str(), "" | "." | ".."),
+            "{version:?} became {name:?}"
+        );
+    }
 }
 
 #[test]
@@ -171,8 +190,10 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "buf",
         "clangd",
         "clojure-lsp",
+        "copilot-language-server",
         "docker-langserver",
         "graphql-lsp",
+        "lemminx",
         "lua-language-server",
         "marksman",
         "neocmakelsp",
@@ -208,20 +229,36 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "gopls",
         "haskell-language-server",
         "jdtls",
-        "lemminx",
         "metals",
         "ocamllsp",
         "phpactor",
         "pkl-lsp",
         "powershell-editor-services",
+        "pylsp",
         "r-languageserver",
         "ruby-lsp",
         "sourcekit-lsp",
-        "taplo",
     ];
+    // taplo is built in where the build carries its server, and manual where
+    // it does not; either way it is counted exactly once.
+    let builtin: &[&str] = if cfg!(feature = "toml-lsp") {
+        &["taplo"]
+    } else {
+        manual.push("taplo");
+        &[]
+    };
     if std::env::consts::ARCH != "x86_64" {
         manual.push("clangd");
-        manual.sort();
+    }
+    manual.sort_unstable();
+    for server in builtin {
+        let server = LanguageServerId::new(*server);
+        assert!(builtin_provider(&server), "{server:?} should be built in");
+        assert!(
+            manual_install_reason(&server).is_none(),
+            "{server:?} is built in, so nothing about it is manual"
+        );
+        assert!(!managed_provider(&server), "a built-in has no installer");
     }
     for server in &manual {
         assert!(
@@ -230,8 +267,14 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len(), 40);
-    assert!(manual_install_reason(&LanguageServerId::new("company-lsp")).is_none());
+    assert_eq!(actual.len() + manual.len() + builtin.len(), 42);
+    // A reason is total: an id karet has never heard of is still explained,
+    // because callers use `None` to mean "the user has nothing to install" and
+    // must never read an unknown provider that way.
+    assert!(
+        manual_install_reason(&LanguageServerId::new("company-lsp"))
+            .is_some_and(|reason| !reason.trim().is_empty())
+    );
 
     let targets = [
         ("linux", "x86_64"),
@@ -270,6 +313,48 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
     }
 }
 
+/// LemMinX is fetched as Red Hat's native build, which needs no Java runtime.
+///
+/// The asset names are upstream's, including the `aarch_64` spelling and the
+/// unqualified `win32` build, and each archive holds a single executable named
+/// after the archive -- so a guessed "tidier" name finds nothing to download.
+#[test]
+fn lemminx_fetches_the_native_build_for_every_supported_target() {
+    let lemminx = LanguageServerId::new("lemminx");
+    let expected = [
+        ("linux", "x86_64", "lemminx-linux-x86_64"),
+        ("linux", "aarch64", "lemminx-linux-aarch_64"),
+        ("macos", "x86_64", "lemminx-osx-x86_64"),
+        ("macos", "aarch64", "lemminx-osx-aarch_64"),
+    ];
+    for (os, arch, stem) in expected {
+        let asset = catalog::github_asset_for(&lemminx, "0.29.3", os, arch);
+        assert!(
+            matches!(
+                &asset,
+                Ok((name, Archive::Zip, executable, false))
+                    if *name == format!("{stem}.zip") && executable == stem
+            ),
+            "{os}-{arch} resolved {:?}",
+            asset
+                .as_ref()
+                .map(|(name, _, executable, _)| (name, executable))
+        );
+    }
+    let windows = catalog::github_asset_for(&lemminx, "0.29.3", "windows", "x86_64");
+    assert!(matches!(
+        &windows,
+        Ok((name, Archive::Zip, executable, false))
+            if name == "lemminx-win32.zip" && executable == "lemminx-win32.exe"
+    ));
+    assert!(catalog::github_asset_for(&lemminx, "0.29.3", "windows", "aarch64").is_err());
+    assert_eq!(
+        manual_install_reason(&lemminx).is_none(),
+        managed_provider(&lemminx),
+        "lemminx is manual exactly where it has no recipe"
+    );
+}
+
 #[test]
 fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -286,6 +371,8 @@ fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
             version: "1.2.3".into(),
             command,
             args: Vec::new(),
+            entry: None,
+            initialization_options: None,
         },
     )?;
 
@@ -312,6 +399,8 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
             version: "1.2.3".into(),
             command: command.clone(),
             args: Vec::new(),
+            entry: None,
+            initialization_options: None,
         },
     )?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -332,10 +421,334 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
     Ok(())
 }
 
+/// An install job for a built-in provider is refused with the real reason,
+/// rather than failing in discovery with "has no managed installer".
+#[cfg(feature = "toml-lsp")]
+#[test]
+fn installing_a_built_in_provider_says_it_needs_no_installation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (jobs, mut updates) = spawn(Some(dir.path().to_path_buf()), None);
+    jobs.send(RegistryJob::Install {
+        request: RequestId(3),
+        server: LanguageServerId::new("taplo"),
+    })?;
+    // Bounded: the refusal needs no network, so it is all but immediate.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let update = loop {
+        match updates.try_recv() {
+            Ok(update) => break update,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            },
+            Err(_) => return Err("the registry never answered the install".into()),
+        }
+    };
+    let RegistryUpdate::Failed { request, message } = update else {
+        return Err("a built-in provider must not be installed".into());
+    };
+    assert_eq!(request, RequestId(3));
+    assert!(message.contains("built into karet"), "{message}");
+    Ok(())
+}
+
 #[test]
 fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let result = uninstall(dir.path(), &LanguageServerId::Gopls);
     assert!(matches!(result, Err(message) if message.contains("not managed")));
     Ok(())
+}
+
+/// Write an activation record for `server` under `root`, as a completed install
+/// would. The command file must exist for `read_active` to resolve it.
+fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::Result<()> {
+    let provider = provider_root(root, server);
+    std::fs::create_dir_all(&provider)?;
+    let command = provider.join("bin");
+    std::fs::write(&command, b"test")?;
+    let active = ActiveInstallation {
+        version: version.into(),
+        command,
+        args: Vec::new(),
+        entry: None,
+        initialization_options: None,
+    };
+    let Ok(encoded) = serde_json::to_string(&active) else {
+        return Ok(());
+    };
+    let mut journal = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{encoded}")
+}
+
+#[test]
+fn a_provider_never_touched_was_never_installed() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    assert!(!ever_installed(Some(dir.path()), &LanguageServerId::Texlab));
+    assert!(!ever_installed(None, &LanguageServerId::Texlab));
+    Ok(())
+}
+
+#[test]
+fn an_uninstalled_provider_still_counts_as_ever_installed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    activate(dir.path(), &server, "1.2.3")?;
+    assert!(ever_installed(Some(dir.path()), &server));
+
+    // Deactivating is what `read_active` replays away — and exactly the case that
+    // must not read as "never offered", or the prompt returns after an uninstall.
+    let provider = provider_root(dir.path(), &server);
+    let deactivation = serde_json::json!({ "deactivated": true, "version": "1.2.3" });
+    let mut journal = std::fs::OpenOptions::new()
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{deactivation}")?;
+
+    assert!(
+        read_active(dir.path(), &server).is_none(),
+        "no longer active"
+    );
+    assert!(
+        ever_installed(Some(dir.path()), &server),
+        "but the question has been answered once already"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declined_install_round_trips_and_can_be_cleared() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+
+    write_declined(dir.path(), &server, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &server).is_some());
+
+    clear_declined(dir.path(), &server)?;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+    // Clearing what is already cleared is the state the caller asked for.
+    clear_declined(dir.path(), &server)?;
+    Ok(())
+}
+
+#[test]
+fn a_refusal_records_when_it_was_made() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    write_declined(dir.path(), &server, &Declined::now())?;
+    let read = read_declined(Some(dir.path()), &server).ok_or("declined record")?;
+    // A human opening the file should be able to tell when they said no.
+    assert!(
+        read.declined_at.parse::<u64>().is_ok_and(|at| at > 0),
+        "{:?}",
+        read.declined_at
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refusal_for_one_provider_does_not_suppress_another() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    write_declined(dir.path(), &LanguageServerId::Texlab, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Texlab).is_some());
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Zls).is_none());
+    Ok(())
+}
+
+#[test]
+fn a_corrupt_declined_file_reads_as_no_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    let provider = provider_root(dir.path(), &server);
+    std::fs::create_dir_all(&provider)?;
+    std::fs::write(provider.join("declined.json"), b"{ not json")?;
+    // Failing open re-asks once; failing closed would silently disable a provider
+    // the user never refused, with no way to discover why.
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+    Ok(())
+}
+
+/// Correcting a built-in's launch arguments has to reach the providers already
+/// installed under the old ones.
+///
+/// `ActiveInstallation.args` is written into the journal at install time, so it
+/// froze there: a neocmakelsp installed while the recipe still said "no
+/// arguments" kept launching bare — the exact bug the table fix was for — until
+/// someone reinstalled it.
+#[test]
+fn an_installed_provider_picks_up_a_corrected_launch_argument() {
+    let server = LanguageServerId::new("neocmakelsp");
+    let installed = ActiveInstallation {
+        version: "0.11.0".to_owned(),
+        command: PathBuf::from("/managed/neocmakelsp"),
+        // What the old recipe recorded: the launch table's arguments, empty.
+        args: Vec::new(),
+        entry: Some(Vec::new()),
+        initialization_options: None,
+    };
+    assert_eq!(installed.launch_args(&server), vec!["stdio".to_owned()]);
+}
+
+/// An npm install runs its package through an entry script, which belongs to
+/// the installation and must survive re-derivation.
+#[test]
+fn re_derived_arguments_keep_the_installations_own_entry_point() {
+    let server = LanguageServerId::new("bash-language-server");
+    let cli = "/managed/package/node_modules/bash-language-server/out/cli.js";
+    let installed = ActiveInstallation {
+        version: "5.6.0".to_owned(),
+        command: PathBuf::from("/managed/node/bin/node"),
+        args: vec![cli.to_owned(), "start".to_owned()],
+        entry: Some(vec![cli.to_owned()]),
+        initialization_options: None,
+    };
+    assert_eq!(
+        installed.launch_args(&server),
+        vec![cli.to_owned(), "start".to_owned()]
+    );
+}
+
+/// A journal written before the entry point was recorded cannot be split, so it
+/// keeps replaying exactly what it recorded.
+#[test]
+fn an_older_journal_entry_replays_the_arguments_it_recorded() {
+    let server = LanguageServerId::new("neocmakelsp");
+    let installed = ActiveInstallation {
+        version: "0.11.0".to_owned(),
+        command: PathBuf::from("/managed/neocmakelsp"),
+        args: vec!["--legacy".to_owned()],
+        entry: None,
+        initialization_options: None,
+    };
+    assert_eq!(installed.launch_args(&server), vec!["--legacy".to_owned()]);
+}
+
+/// The next update from the registry worker, bounded so a silent worker fails
+/// the test rather than hanging it.
+fn next_update(
+    updates: &mut tokio_mpsc::UnboundedReceiver<RegistryUpdate>,
+) -> Result<RegistryUpdate, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match updates.try_recv() {
+            Ok(update) => return Ok(update),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err("the registry never answered".into()),
+        }
+    }
+}
+
+/// The failure message a registry job answered `request` with.
+fn failure_for(update: RegistryUpdate, expected: RequestId) -> Option<String> {
+    match update {
+        RegistryUpdate::Failed { request, message } if request == expected => Some(message),
+        _ => None,
+    }
+}
+
+/// Check → Plan → Apply, without the network: with nothing installed the check
+/// has nothing to discover, and every Apply below is refused before it would
+/// download. A refused selection keeps the plan; an id the worker never issued
+/// (or already consumed) reads as expired.
+#[test]
+fn an_update_plan_survives_a_refused_selection_and_unknown_plans_read_as_expired()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (jobs, mut updates) = spawn(Some(dir.path().to_path_buf()), None);
+
+    jobs.send(RegistryJob::Check {
+        request: RequestId(1),
+        server: None,
+    })?;
+    let RegistryUpdate::Plan {
+        request,
+        plan,
+        changes,
+    } = next_update(&mut updates)?
+    else {
+        return Err("a check answers with a plan".into());
+    };
+    assert_eq!(request, RequestId(1));
+    assert!(
+        changes.is_empty(),
+        "nothing is installed, so nothing updates"
+    );
+
+    let apply = |request, servers| RegistryJob::Apply {
+        request,
+        plan,
+        servers,
+    };
+    jobs.send(apply(RequestId(2), vec![LanguageServerId::RustAnalyzer]))?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(2)).unwrap_or_default();
+    assert!(message.contains("not in this plan"), "{message}");
+
+    // Still the same plan: the refusal above put it back.
+    jobs.send(apply(RequestId(3), Vec::new()))?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(3)).unwrap_or_default();
+    assert!(message.contains("selection is empty"), "{message}");
+
+    jobs.send(RegistryJob::Apply {
+        request: RequestId(4),
+        plan: LanguageServerPlanId(plan.0.wrapping_add(41)),
+        servers: vec![LanguageServerId::RustAnalyzer],
+    })?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(4)).unwrap_or_default();
+    assert!(message.contains("plan expired"), "{message}");
+
+    // A provider with no managed channel is refused by name, not checked.
+    jobs.send(RegistryJob::Check {
+        request: RequestId(5),
+        server: Some(LanguageServerId::Gopls),
+    })?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(5)).unwrap_or_default();
+    assert!(
+        message.contains("no Karet-managed update channel"),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// Without a storage root every job is still answered, each on its own id.
+#[test]
+fn a_registry_without_storage_answers_every_job_with_a_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (jobs, mut updates) = spawn(None, None);
+    jobs.send(RegistryJob::Check {
+        request: RequestId(1),
+        server: None,
+    })?;
+    jobs.send(RegistryJob::Uninstall {
+        request: RequestId(2),
+        server: LanguageServerId::RustAnalyzer,
+    })?;
+    for expected in [RequestId(1), RequestId(2)] {
+        let message = failure_for(next_update(&mut updates)?, expected).unwrap_or_default();
+        assert!(message.contains("storage is unavailable"), "{message}");
+    }
+    Ok(())
+}
+
+/// A user-configured provider has no launch table row, so re-derivation must
+/// not silently empty its arguments.
+#[test]
+fn a_provider_outside_the_launch_table_re_derives_to_its_entry_point_alone() {
+    let server = LanguageServerId::new("company-lsp");
+    let installed = ActiveInstallation {
+        version: "1.0.0".to_owned(),
+        command: PathBuf::from("/managed/node/bin/node"),
+        args: vec!["/managed/cli.js".to_owned()],
+        entry: Some(vec!["/managed/cli.js".to_owned()]),
+        initialization_options: None,
+    };
+    assert_eq!(
+        installed.launch_args(&server),
+        vec!["/managed/cli.js".to_owned()]
+    );
 }

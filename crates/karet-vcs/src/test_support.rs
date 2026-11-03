@@ -18,10 +18,16 @@ impl Drop for TestRepo {
     }
 }
 
+/// Runs a fixture `git` command isolated from the developer's global and system
+/// configuration, so a user's `init.defaultBranch`, hooks path, signing, or aliases
+/// cannot change what a fixture builds. Returns trimmed stdout, or the trimmed
+/// stderr as [`VcsError::Git`].
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, VcsError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_EDITOR", "true")
         .output()
         .map_err(|error| VcsError::Git(error.to_string()))?;
@@ -34,15 +40,34 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, VcsError> {
     }
 }
 
-pub(crate) fn init(name: &str) -> Result<TestRepo, VcsError> {
+/// The platform's empty-config path for `GIT_CONFIG_GLOBAL`.
+fn null_device() -> &'static str {
+    if cfg!(windows) { "NUL" } else { "/dev/null" }
+}
+
+/// A fresh, empty, uniquely named temp directory removed on drop; not a repository.
+pub(crate) fn scratch_dir(name: &str) -> Result<TestRepo, VcsError> {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("karet-vcs-{name}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&path).map_err(|error| VcsError::Git(error.to_string()))?;
-    let repo = TestRepo(path);
+    Ok(TestRepo(path))
+}
+
+/// A non-bare repository on `main` with a local identity and signing off.
+///
+/// The engine's own `git` subprocesses still read the developer's global config
+/// (only fixture commands are isolated), so every global setting known to change
+/// a write's outcome is shadowed here by a repository-local value.
+pub(crate) fn init(name: &str) -> Result<TestRepo, VcsError> {
+    let repo = scratch_dir(name)?;
     git(&repo.0, &["init", "-q", "-b", "main"])?;
     git(&repo.0, &["config", "user.email", "test@example.com"])?;
     git(&repo.0, &["config", "user.name", "karet test"])?;
     git(&repo.0, &["config", "commit.gpgsign", "false"])?;
+    // `tag.gpgSign` turns a lightweight tag into an annotated one needing a message.
+    git(&repo.0, &["config", "tag.gpgSign", "false"])?;
+    // A global `core.hooksPath` would run the developer's hooks on test commits.
+    git(&repo.0, &["config", "core.hooksPath", ".git/hooks"])?;
     Ok(repo)
 }
 
@@ -61,12 +86,9 @@ pub(crate) fn write(dir: &Path, relative: &str, body: &[u8]) -> Result<(), VcsEr
     std::fs::write(path, body).map_err(|error| VcsError::Git(error.to_string()))
 }
 
+/// An empty bare repository, for push/fetch round trips.
 pub(crate) fn bare_remote(name: &str) -> Result<TestRepo, VcsError> {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path =
-        std::env::temp_dir().join(format!("karet-vcs-{name}-bare-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).map_err(|error| VcsError::Git(error.to_string()))?;
-    let repo = TestRepo(path);
+    let repo = scratch_dir(&format!("{name}-bare"))?;
     git(&repo.0, &["init", "--bare", "-q"])?;
     Ok(repo)
 }

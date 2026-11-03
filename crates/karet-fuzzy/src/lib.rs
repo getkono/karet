@@ -1,7 +1,7 @@
 //! `karet-fuzzy` — fuzzy matching and ranking for the karet toolkit.
 //!
-//! Standalone (depends on no other karet crate). Wraps `nucleo`'s subsequence
-//! matching with smart case, shared by the widgets toolkit and completion
+//! Standalone (depends on no other karet crate). Wraps `nucleo`'s matching with
+//! fzf pattern syntax and smart case, shared by the widgets toolkit and completion
 //! ranking so neither has to depend on the other.
 
 /// A ranked item: a reference to the source item, its score, and the indices of
@@ -42,11 +42,20 @@ impl Matcher {
     /// Rank `items` against `pattern`, best match first (ties keep input order,
     /// so a pre-sorted candidate list stays meaningful).
     ///
-    /// Matching is nucleo's fuzzy subsequence match with **smart case**
-    /// (case-insensitive until the pattern contains an uppercase letter) and
-    /// Unicode normalization. Items that do not match are dropped. An empty
-    /// pattern keeps every item, unscored, in input order — the "just opened,
-    /// nothing typed yet" state of a picker or completion popup.
+    /// `pattern` uses fzf syntax, parsed by nucleo: it splits on unescaped
+    /// whitespace into atoms that must **all** match, and each atom is a fuzzy
+    /// subsequence match unless an operator changes it — a leading `^` anchors a
+    /// prefix, a trailing `$` anchors a suffix (both together match exactly), a
+    /// leading `'` asks for a contiguous substring, and a leading `!` inverts
+    /// the atom, excluding the items it matches (a bare `!foo` excludes items
+    /// containing `foo`). A backslash escapes an operator or a space.
+    ///
+    /// Matching uses **smart case** (case-insensitive until an atom contains an
+    /// uppercase letter) and Unicode normalization. Items that do not match are
+    /// dropped. An empty pattern keeps every item, unscored, in input order — the
+    /// "just opened, nothing typed yet" state of a picker or completion popup; a
+    /// whitespace-only pattern has no atoms, so it also keeps every item with
+    /// score 0.
     #[must_use]
     pub fn rank<'a, T: AsRef<str>>(&mut self, pattern: &str, items: &'a [T]) -> Vec<Scored<'a, T>> {
         if pattern.is_empty() {
@@ -86,8 +95,9 @@ impl Matcher {
 
     /// Rank `items` against `pattern` and return the **original indices** of the
     /// matches, best first (ties keep input order). The index-preserving twin of
-    /// [`rank`](Self::rank), for consumers that key rows by position (pickers).
-    /// An empty pattern keeps every index in input order.
+    /// [`rank`](Self::rank), for consumers that key rows by position (pickers),
+    /// with the same fzf pattern syntax. An empty pattern keeps every index in
+    /// input order.
     #[must_use]
     pub fn rank_indices<T: AsRef<str>>(&mut self, pattern: &str, items: &[T]) -> Vec<usize> {
         if pattern.is_empty() {
@@ -170,5 +180,57 @@ mod tests {
         assert_eq!(labels(&Matcher::new().rank("foo", &items)).len(), 2);
         let upper = Matcher::new().rank("FooB", &items);
         assert_eq!(labels(&upper), ["FooBar"]);
+    }
+
+    /// The position of each ranked item within `items`, recovered by identity so
+    /// duplicate strings stay distinguishable.
+    fn positions<T: AsRef<str>>(scored: &[Scored<'_, T>], items: &[T]) -> Vec<usize> {
+        scored
+            .iter()
+            .filter_map(|s| items.iter().position(|item| std::ptr::eq(item, s.item)))
+            .collect()
+    }
+
+    #[test]
+    fn rank_indices_agrees_with_rank_order() {
+        let items = [
+            "plus_unsigned",
+            "push",
+            "println",
+            "process",
+            "id",
+            "push",
+            "FooBar",
+            "foobar",
+        ];
+        let mut matcher = Matcher::new();
+        for pattern in ["", "pus", "prl", "p", "push", "foo", "FooB", "zzz"] {
+            let by_rank = positions(&matcher.rank(pattern, &items), &items);
+            assert_eq!(
+                matcher.rank_indices(pattern, &items),
+                by_rank,
+                "pattern {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rank_indices_keeps_every_index_for_an_empty_pattern() {
+        let items = ["zebra", "apple", "mango"];
+        assert_eq!(Matcher::new().rank_indices("", &items), [0, 1, 2]);
+        let none: [&str; 0] = [];
+        assert!(Matcher::new().rank_indices("", &none).is_empty());
+    }
+
+    #[test]
+    fn rank_indices_orders_best_first_and_drops_non_matches() {
+        let items = ["id", "plus_unsigned", "push"];
+        assert_eq!(Matcher::new().rank_indices("pus", &items), [2, 1]);
+    }
+
+    #[test]
+    fn rank_indices_ties_keep_input_order() {
+        let items = ["other", "alpha_one", "nope", "alpha_one"];
+        assert_eq!(Matcher::new().rank_indices("alpha", &items), [1, 3]);
     }
 }

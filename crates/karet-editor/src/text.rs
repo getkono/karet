@@ -1,8 +1,31 @@
-use super::*;
+use karet_core::HighlightSpan;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TokenId;
+use karet_text::TextBuffer;
+pub(crate) use karet_text::words::clusters;
+pub(crate) use karet_text::words::next_cluster;
+pub(crate) use karet_text::words::previous_cluster;
+pub(crate) use karet_text::words::word_at;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::style::Style;
+
+use super::hint::LineHints;
+use crate::Fold;
+use crate::cluster_widths;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
 pub(super) fn in_any(selections: &[Range], l: u32, col: u32) -> bool {
     selections.iter().any(|r| col_in_range(l, col, *r))
+}
+
+/// Whether the line break ending line `l` (of `line_len` chars) is inside any of
+/// `selections`: the break occupies the slot one past the last character, so a
+/// selection covers it exactly when it covers that column. An empty line inside
+/// a selection is the case with `line_len == 0`.
+pub(super) fn newline_in_any(selections: &[Range], l: u32, line_len: u32) -> bool {
+    in_any(selections, l, line_len)
 }
 
 /// Whether `c` is part of a word, on the shared [`karet_core::word_class`] model.
@@ -10,110 +33,100 @@ pub(super) fn is_word_char(c: char) -> bool {
     karet_core::is_word_char(c)
 }
 
-/// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a
-/// single-character span when `pos` is not on a word character. Mirrors the span a
-/// double-click selects; reused by the app's click handling.
-#[must_use]
-pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    let n = chars.len() as u32;
-    let col = pos.col.min(n);
-    let mut start = col;
-    while start > 0 && is_word_char(chars[start as usize - 1]) {
-        start -= 1;
+/// The first occurrence of `needle` starting at or after `from`, wrapping past the
+/// end of the buffer back to its start, that `taken` does not reject. With
+/// `whole_word`, a match must not continue a word on either side.
+///
+/// Reads the buffer a line at a time, so a search never copies the document. The
+/// line holding `from` is visited twice: first for matches at or after `from`, then,
+/// after the wrap, for those before it. `None` once every occurrence is rejected.
+pub(super) fn find_next(
+    buffer: &TextBuffer,
+    needle: &str,
+    from: LineCol,
+    whole_word: bool,
+    taken: impl Fn(Range) -> bool,
+) -> Option<Range> {
+    if needle.is_empty() {
+        return None;
     }
-    let mut end = col;
-    while end < n && is_word_char(chars[end as usize]) {
-        end += 1;
-    }
-    if start == end {
-        (
-            LineCol::new(pos.line, col),
-            LineCol::new(pos.line, (col + 1).min(n)),
-        )
-    } else {
-        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
-    }
+    let parts: Vec<&str> = needle.split('\n').collect();
+    let lines = (from.line..=last_line(buffer)).chain(0..=from.line);
+    lines.enumerate().find_map(|(i, l)| {
+        matches_on_line(buffer, l, &parts, whole_word)
+            .into_iter()
+            .filter(|r| match (i, l == from.line) {
+                (0, _) => r.start >= from,
+                (_, true) => r.start < from,
+                _ => true,
+            })
+            .find(|r| !taken(*r))
+    })
 }
 
-/// The text within `range`, or `None` if either end can't be resolved to a byte.
-pub(super) fn slice_text(buffer: &TextBuffer, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    buffer.text().get(start..end).map(str::to_string)
+/// Every occurrence of `needle` in the buffer, in document order, under the same
+/// matching rules as [`find_next`]. Empty for an empty needle.
+pub(super) fn find_all(buffer: &TextBuffer, needle: &str, whole_word: bool) -> Vec<Range> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = needle.split('\n').collect();
+    (0..=last_line(buffer))
+        .flat_map(|l| matches_on_line(buffer, l, &parts, whole_word))
+        .collect()
 }
 
-/// The byte offset of the next occurrence of `needle` in `hay` at or after `from`,
-/// wrapping around to the start of the buffer.
-pub(super) fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
-    let from = from.min(hay.len());
-    hay.get(from..)
-        .and_then(|tail| tail.find(needle).map(|i| from + i))
-        .or_else(|| hay.get(..from).and_then(|head| head.find(needle)))
-}
-
-/// The start of the word before `pos`, wrapping to the previous line's end when at
-/// column 0. Skips trailing whitespace, then a single word/punctuation run.
-#[must_use]
-pub fn previous_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
-    if pos.col == 0 {
-        return if pos.line > 0 {
-            let line = pos.line - 1;
-            LineCol::new(line, line_len(buffer, line))
-        } else {
-            pos
-        };
+/// Every occurrence of the needle `parts` (its text split at line breaks) that starts
+/// on line `line`, left to right and non-overlapping.
+fn matches_on_line(buffer: &TextBuffer, line: u32, parts: &[&str], whole_word: bool) -> Vec<Range> {
+    let Some(text) = buffer.line(line as usize) else {
+        return Vec::new();
+    };
+    let col_of = |s: &str, byte: usize| s.get(..byte).map_or(0, |h| h.chars().count() as u32);
+    let bounded = |before: Option<char>, after: Option<char>| {
+        !whole_word || !(before.is_some_and(is_word_char) || after.is_some_and(is_word_char))
+    };
+    match parts {
+        [] => Vec::new(),
+        [needle] => text
+            .match_indices(needle)
+            .filter(|(b, m)| {
+                let before = text.get(..*b).and_then(|h| h.chars().next_back());
+                let after = text.get(b + m.len()..).and_then(|t| t.chars().next());
+                bounded(before, after)
+            })
+            .map(|(b, m)| {
+                let start = col_of(&text, b);
+                Range {
+                    start: LineCol::new(line, start),
+                    end: LineCol::new(line, start + m.chars().count() as u32),
+                }
+            })
+            .collect(),
+        [first, middle @ .., last] => {
+            let Some(head) = text.strip_suffix(first) else {
+                return Vec::new();
+            };
+            let end_line = line + 1 + middle.len() as u32;
+            let middle_matches = middle
+                .iter()
+                .zip(line + 1..)
+                .all(|(part, l)| buffer.line(l as usize).as_deref() == Some(*part));
+            let Some(tail) = buffer.line(end_line as usize) else {
+                return Vec::new();
+            };
+            let after = tail.strip_prefix(last).map(|t| t.chars().next());
+            match after {
+                Some(after) if middle_matches && bounded(head.chars().next_back(), after) => {
+                    vec![Range {
+                        start: LineCol::new(line, head.chars().count() as u32),
+                        end: LineCol::new(end_line, last.chars().count() as u32),
+                    }]
+                },
+                _ => Vec::new(),
+            }
+        },
     }
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    let mut i = (pos.col as usize).min(chars.len());
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    if i > 0 {
-        let word = is_word_char(chars[i - 1]);
-        while i > 0 && !chars[i - 1].is_whitespace() && is_word_char(chars[i - 1]) == word {
-            i -= 1;
-        }
-    }
-    LineCol::new(pos.line, i as u32)
-}
-
-/// The end of the word after `pos`, wrapping to the next line's start at end of line.
-/// Skips leading whitespace, then a single word/punctuation run.
-#[must_use]
-pub fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    let n = chars.len();
-    if pos.col as usize >= n {
-        return if pos.line < last_line(buffer) {
-            LineCol::new(pos.line + 1, 0)
-        } else {
-            pos
-        };
-    }
-    let mut i = pos.col as usize;
-    while i < n && chars[i].is_whitespace() {
-        i += 1;
-    }
-    if i < n {
-        let word = is_word_char(chars[i]);
-        while i < n && !chars[i].is_whitespace() && is_word_char(chars[i]) == word {
-            i += 1;
-        }
-    }
-    LineCol::new(pos.line, i as u32)
 }
 
 /// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
@@ -128,11 +141,183 @@ pub(super) fn last_line(buffer: &TextBuffer) -> u32 {
     (buffer.line_count().max(1) - 1) as u32
 }
 
-/// The length (in `char`s) of line `line` in `buffer`.
+/// The length (in `char`s) of line `line` in `buffer` (0 past the end).
+///
+/// Read off the rope's line index rather than by copying the line out, so it
+/// costs the same on a minified one-line file as on a short line.
 pub(super) fn line_len(buffer: &TextBuffer, line: u32) -> u32 {
+    if line as usize >= buffer.line_count() {
+        return 0;
+    }
+    buffer.clamp(LineCol::new(line, u32::MAX)).col
+}
+
+/// The cache key of an [`ExtentCache`]: the buffer content (its edit version,
+/// line count and byte length) and the geometry the extents were measured at
+/// (viewport width, tab width).
+type ExtentKey = (u64, usize, usize, u32, u16);
+
+/// Each line's horizontal extent with no inlay hints, measured once per
+/// buffer content and geometry.
+///
+/// The horizontal scroll clamp needs the widest line in the document, and
+/// measuring that copies and walks every line. Remembering each line's answer
+/// makes repeated horizontal scrolls — and every frame's visible-line
+/// measurements — cost a lookup per line until the next edit. Lines that carry
+/// inlay hints are measured live by [`line_extent`], since hints change between
+/// frames without the buffer changing.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ExtentCache {
+    key: Option<ExtentKey>,
+    extents: Vec<Option<u32>>,
+}
+
+impl ExtentCache {
+    /// Line `line`'s hint-free [`horizontal_extent`] at `width` and
+    /// `tab_width`, measured on first request after the buffer or geometry
+    /// changed (0 past the end).
+    ///
+    /// [`horizontal_extent`]: super::visual::horizontal_extent
+    pub(super) fn plain(
+        &mut self,
+        buffer: &TextBuffer,
+        line: u32,
+        width: u32,
+        tab_width: u16,
+    ) -> u32 {
+        let key = (
+            buffer.version(),
+            buffer.line_count(),
+            buffer.len_bytes(),
+            width,
+            tab_width,
+        );
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.extents.clear();
+            self.extents.resize(buffer.line_count(), None);
+        }
+        let Some(slot) = self.extents.get_mut(line as usize) else {
+            return 0;
+        };
+        *slot.get_or_insert_with(|| {
+            super::visual::horizontal_extent(
+                &line_chars(buffer, line),
+                width,
+                tab_width,
+                LineHints::default(),
+            )
+        })
+    }
+}
+
+/// Line `line`'s horizontal extent with `hints` painted on it: cached in
+/// `cache` when the line has none, measured live otherwise.
+pub(super) fn line_extent(
+    cache: &mut ExtentCache,
+    buffer: &TextBuffer,
+    line: u32,
+    width: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    if hints.is_empty() {
+        cache.plain(buffer, line, width, tab_width)
+    } else {
+        super::visual::horizontal_extent(&line_chars(buffer, line), width, tab_width, hints)
+    }
+}
+
+/// The first `cap` `char`s of line `line` in `buffer` — all of them when the
+/// line is shorter, none past the end.
+///
+/// Only that prefix is copied out of the rope, so a renderer that needs the
+/// columns up to the right edge of the viewport pays for those and not for
+/// the rest of a megabyte-long line.
+pub(super) fn line_chars_prefix(buffer: &TextBuffer, line: u32, cap: u32) -> Vec<char> {
+    let Some(span) = buffer.line_to_byte_range(line as usize) else {
+        return Vec::new();
+    };
+    let end = buffer
+        .line_col_to_byte(LineCol::new(line, cap))
+        .unwrap_or(span.end);
+    buffer
+        .slice(karet_core::Span {
+            start: span.start,
+            end,
+        })
+        .unwrap_or_default()
+        .chars()
+        .collect()
+}
+
+/// Chars read past a row's right edge, so the grapheme cluster that straddles
+/// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
+/// chars — and keeps the width it has when the full line is measured.
+pub(super) const GRAPHEME_LOOKAHEAD: u32 = 32;
+
+/// The chars of unwrapped line `l` that a row starting at column `start` with
+/// `room` cells can show, plus [`GRAPHEME_LOOKAHEAD`], and their
+/// [`cluster_widths`].
+///
+/// The window starts at `start + 2 × room` chars and doubles until the chars
+/// past `start` (the lookahead aside) cover `room` cells, or the line ends. It
+/// is sized by cells rather than chars because a cluster can be many chars to
+/// one glyph: a ZWJ family emoji is five chars in two cells, so a fixed char
+/// budget would stop painting well short of the right edge. A tab counts one
+/// cell and hints none, so the estimate never overshoots what the walk paints.
+///
+/// The doubling stops at `room ×` [`GRAPHEME_LOOKAHEAD`] chars past `start`:
+/// one cell's cluster is taken to span at most the lookahead, the same bound
+/// the right edge already relies on. Without it a line of only zero-width chars
+/// (a million U+200B) never covers a cell, so every pass would re-copy and
+/// re-segment it from char 0 until the window reached the line end.
+pub(super) fn row_window(
+    buffer: &TextBuffer,
+    l: u32,
+    start: u32,
+    room: u32,
+) -> (Vec<char>, Vec<u32>) {
+    let most = room.saturating_mul(GRAPHEME_LOOKAHEAD).max(1);
+    let mut visible = room.saturating_mul(2).clamp(1, most);
+    loop {
+        let cap = start
+            .saturating_add(visible)
+            .saturating_add(GRAPHEME_LOOKAHEAD);
+        let chars = line_chars_prefix(buffer, l, cap);
+        let widths = cluster_widths(&chars);
+        let measured = chars.len().saturating_sub(GRAPHEME_LOOKAHEAD as usize);
+        let covered: u32 = chars
+            .iter()
+            .zip(&widths)
+            .take(measured)
+            .skip(start as usize)
+            .map(|(&ch, &w)| if ch == '\t' { 1 } else { w })
+            .fold(0, u32::saturating_add);
+        if chars.len() < cap as usize || covered >= room || cap == u32::MAX || visible >= most {
+            return (chars, widths);
+        }
+        visible = visible.saturating_mul(2).min(most);
+    }
+}
+
+/// The `char`s of line `line` in `buffer` (empty past the end).
+pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
     buffer
         .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32)
+        .unwrap_or_default()
+        .chars()
+        .collect()
+}
+
+/// The column one grapheme cluster left of `pos` on its line.
+pub(crate) fn previous_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
+    previous_cluster(&line_chars(buffer, pos.line), pos.col)
+}
+
+/// The column one grapheme cluster right of `pos` on its line.
+pub(crate) fn next_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
+    next_cluster(&line_chars(buffer, pos.line), pos.col)
 }
 
 /// The number of decimal digits needed to print `n`.
@@ -164,9 +349,15 @@ pub(super) fn col_in_range(l: u32, col: u32, range: Range) -> bool {
 }
 
 /// The semantic token covering absolute byte `abs`, if any highlight span claims it.
+///
+/// `hl` is byte-ordered and non-overlapping (the [`Highlights`] invariant), so
+/// the covering span is found by bisection. A linear scan here made painting a
+/// row cost its characters times its spans, which on a minified line with
+/// tens of thousands of tokens is quadratic.
 pub(super) fn token_at(abs: usize, hl: &[HighlightSpan]) -> Option<TokenId> {
-    hl.iter()
-        .find(|s| s.span.start.0 <= abs && abs < s.span.end.0)
+    let first = hl.partition_point(|s| s.span.end.0 <= abs);
+    hl.get(first)
+        .filter(|s| s.span.start.0 <= abs)
         .map(|s| s.token)
 }
 
@@ -182,22 +373,4 @@ pub(super) fn token_style(
         Some(token) => theme.token_style(token),
         None => Style::default().fg(default_fg.to_ratatui()),
     }
-}
-
-/// The text within `range`, sliced from `source` (the buffer's full text) using
-/// byte offsets derived from `buffer`. `None` if the range cannot be resolved.
-#[must_use]
-pub fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    source.get(start..end).map(str::to_string)
-}
-
-/// The `(anchor, head)` span covering all of `line`.
-#[must_use]
-pub fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let len = buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32);
-    (LineCol::new(line, 0), LineCol::new(line, len))
 }

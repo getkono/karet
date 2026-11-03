@@ -1,3 +1,10 @@
+//! The provider inventory the language-server panel is drawn from.
+//!
+//! It merges the built-in catalogue (from `provider`) with every provider the
+//! settings select, and reports each one's per-root instances and runtime state.
+//! It is built without touching the network; installation is the managed-LSP
+//! registry's job.
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -66,7 +73,7 @@ impl LspManager {
         if let Some(root) = &self.root {
             known_roots.insert(root.clone());
         }
-        known_roots.extend(self.servers.values().map(|slot| slot.root.clone()));
+        known_roots.extend(self.servers.keys().map(|key| key.root.clone()));
         if known_roots.is_empty() {
             known_roots.insert(PathBuf::from("."));
         }
@@ -74,16 +81,27 @@ impl LspManager {
         providers
             .into_values()
             .map(|(server, languages, managed, manual_install_reason)| {
-                let installed =
-                    crate::lsp_registry::installed_version(self.registry_root.as_deref(), &server);
+                let installed = crate::lsp_registry::store::installed_version(
+                    self.registry_root.as_deref(),
+                    &server,
+                );
                 let instances = known_roots
                     .iter()
                     .map(|root| self.inventory_instance(&server, &languages, root))
                     .collect();
+                let root = self.registry_root.as_deref();
                 LanguageServerStatus {
-                    enabled: self.settings.enabled,
+                    // Both switches, not just the global one. A provider turned off
+                    // by its own `lsp.servers.<id>.enabled = false` is never
+                    // launched, so reporting it as enabled made the editor badge it
+                    // as healthy-but-idle: a state indistinguishable from a working
+                    // provider that simply has not been needed yet, for something
+                    // the user had explicitly switched off.
+                    enabled: self.settings.enabled && !self.provider_disabled(&server, &languages),
                     installed,
-                    cleanup_pending: crate::lsp_registry::cleanup_pending(
+                    ever_installed: crate::lsp_registry::store::ever_installed(root, &server),
+                    declined: crate::lsp_registry::store::read_declined(root, &server).is_some(),
+                    cleanup_pending: crate::lsp_registry::store::cleanup_pending(
                         self.registry_root.as_deref(),
                         &server,
                     ),
@@ -97,6 +115,67 @@ impl LspManager {
             .collect()
     }
 
+    /// Whether the user's settings suppress this provider for every language it
+    /// covers.
+    ///
+    /// Reported only when settings make a launch *impossible*, never merely
+    /// unlikely -- the asymmetry is deliberate.
+    ///
+    /// Saying "enabled" about a provider the user switched off is a mild
+    /// inaccuracy. Saying "disabled" about one that is spawned and serving hides
+    /// its real runtime state and its error behind an `off` badge, which is worse
+    /// and is what two earlier attempts at this got wrong. So each clause below has
+    /// to be certain.
+    ///
+    /// Two are. A provider explicitly selected by
+    /// `lsp.languages.<language>.servers` and explicitly switched off cannot
+    /// launch. And an entry keyed by the language's own name suppresses that
+    /// language's built-in primary -- `lsp.servers.rust = { enabled = false }`
+    /// stops rust-analyzer without ever naming it.
+    ///
+    /// The second needs the companion exclusion. `ensure_additional_provider`
+    /// never consults `configured_primary`, so a provider listed in that language's
+    /// `diagnostics` still starts even when the primary path is suppressed --
+    /// `lsp.servers.python = { enabled = false }` with
+    /// `lsp.languages.python.diagnostics = ["pyright"]` really does run pyright.
+    ///
+    /// Known gap, deliberately not guessed at: a companion suppressed by its *own*
+    /// id (`lsp.servers.ruff = { enabled = false }`) is honoured by the launch path
+    /// but still reports enabled here. Establishing that needs the repository
+    /// markers that pick marker-default companions, which are root-scoped and not
+    /// available at this level.
+    fn provider_disabled(&self, server: &LanguageServerId, languages: &BTreeSet<String>) -> bool {
+        !languages.is_empty()
+            && languages.iter().all(|language| {
+                let language = language.to_ascii_lowercase();
+                let Some((id, Configured::Suppressed)) = self.configured_primary(&language) else {
+                    return false;
+                };
+                if id == *server {
+                    return true;
+                }
+                builtin_server(&language).as_ref() == Some(server)
+                    && !self.selected_as_companion(server, &language)
+            })
+    }
+
+    /// Whether `lsp.languages.<language>.diagnostics` names this provider.
+    ///
+    /// That list is read by `ensure_additional_provider`, which is a launch path
+    /// `configured_primary` says nothing about -- so a provider on it runs whatever
+    /// the primary selection does.
+    fn selected_as_companion(&self, server: &LanguageServerId, language: &str) -> bool {
+        self.settings
+            .languages
+            .get(language)
+            .is_some_and(|selection| {
+                selection
+                    .diagnostics
+                    .iter()
+                    .any(|candidate| candidate == server.key())
+            })
+    }
+
     fn inventory_instance(
         &self,
         server: &LanguageServerId,
@@ -105,29 +184,42 @@ impl LspManager {
     ) -> LanguageServerInstanceStatus {
         let configured = self.settings.servers.get(server.key());
         let language = languages.iter().next().map_or(server.key(), String::as_str);
+        // A provider its own entry disables resolves to nothing at all. Falling
+        // through to the built-in table here reported a command that would never be
+        // run, which read as an available provider.
+        if self.provider_disabled(server, languages) {
+            return LanguageServerInstanceStatus {
+                root: root.to_path_buf(),
+                source: LanguageServerSource::Unavailable,
+                command: None,
+                args: Vec::new(),
+                runtime: LanguageServerRuntimeState::Idle,
+                open_documents: 0,
+                error: None,
+            };
+        }
         let resolved = configured
             .filter(|setting| setting.enabled && !setting.command.is_empty())
             .map(|setting| {
                 (
-                    LspSpec {
-                        command: setting.command.clone(),
-                        args: setting.args.clone(),
-                        languages: vec![language.to_owned()],
-                    },
+                    LspSpec::new(
+                        setting.command.clone(),
+                        setting.args.clone(),
+                        vec![language.to_owned()],
+                    ),
                     LanguageServerSource::Configured,
                 )
             })
             .or_else(|| {
-                let fallback = builtin_spec(server, language);
+                let fallback = builtin_spec(server, language)?;
                 self.resolve_builtin(server, language, root, fallback)
             });
-        let slot = self
-            .servers
-            .values()
-            .find(|slot| slot.provider.as_ref() == Some(server) && slot.root == root);
-        let runtime = self
-            .runtime_states
-            .get(&(server.clone(), root.to_path_buf()));
+        // Every field below that describes *this session* comes off the one slot.
+        // They used to come from two places -- `runtime`/`error` from a side map
+        // and `open_documents` from the slot -- which is precisely how one row
+        // could report a `Running` provider with no open documents and offer a
+        // Restart for a process that had already gone.
+        let slot = self.servers.get(&SlotKey::new(server.clone(), root));
         let (command, args, source) = resolved.map_or(
             (None, Vec::new(), LanguageServerSource::Unavailable),
             |(spec, source)| (Some(spec.command), spec.args, source),
@@ -137,18 +229,10 @@ impl LspManager {
             source,
             command,
             args,
-            runtime: runtime.map_or_else(
-                || {
-                    if slot.is_some() {
-                        LanguageServerRuntimeState::Starting
-                    } else {
-                        LanguageServerRuntimeState::Idle
-                    }
-                },
-                |(state, _)| *state,
-            ),
+            // No slot is idle, and nothing else can say otherwise.
+            runtime: slot.map_or(LanguageServerRuntimeState::Idle, |slot| slot.runtime),
             open_documents: slot.map_or(0, |slot| slot.documents.len()),
-            error: runtime.and_then(|(_, error)| error.clone()),
+            error: slot.and_then(|slot| slot.error.clone()),
         }
     }
 }

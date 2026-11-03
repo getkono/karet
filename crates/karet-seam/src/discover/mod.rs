@@ -13,9 +13,10 @@
 //!
 //! Two rules shape the result:
 //!
-//! - **Both ecosystems always run.** Cargo discovery does not suppress Python discovery.
-//!   A repository with a Rust workspace and a Python service is one repository, and
-//!   answering with only half of it would be a quieter kind of wrong than failing.
+//! - **Every ecosystem always runs.** Cargo discovery does not suppress Python discovery,
+//!   nor Node, Swift, Gradle, Maven or C/C++. A repository with a Rust workspace, a Python service and
+//!   a TypeScript front end is one repository, and answering with only part of it would
+//!   be a quieter kind of wrong than failing.
 //! - **The order is stable and meaningful.** Outermost first, then declaration order, then
 //!   sorted. The order packages are discovered in is the order the view lists them in its
 //!   first column, so a reshuffle between runs is user-visible.
@@ -27,8 +28,10 @@ use std::path::PathBuf;
 mod glob;
 mod python;
 mod scan;
+mod trees;
 
 pub(crate) use scan::skipped;
+pub(crate) use scan::subdirs;
 
 /// Which ecosystem's rules apply to a discovered package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,6 +41,59 @@ pub enum PackageKind {
     Cargo,
     /// A Python package: walked over the filesystem, because Python modules *are* files.
     Python,
+    /// A Node package — TypeScript or JavaScript — marked by `package.json`.
+    Node,
+    /// A Swift package, marked by `Package.swift`, one root per target.
+    Swift,
+    /// A Gradle module, marked by `build.gradle{,.kts}`, one root per source set.
+    Gradle,
+    /// A C or C++ project, marked by `CMakeLists.txt`, `meson.build` or a `Makefile`.
+    CFamily,
+    /// A Maven module, marked by `pom.xml`, one root per source set.
+    Maven,
+}
+
+impl PackageKind {
+    /// The source extensions this ecosystem's walk reads.
+    ///
+    /// Empty for Cargo, whose module tree is declared rather than walked, and for Python,
+    /// which has a walk of its own because `__init__.py` carries a rule nothing else does.
+    #[must_use]
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+            Self::Swift => &["swift"],
+            Self::Gradle => &["kt", "kts", "java"],
+            Self::CFamily => &["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx"],
+            Self::Maven => &["java"],
+            Self::Cargo | Self::Python => &[],
+        }
+    }
+
+    /// Directory names this ecosystem copies other people's code into.
+    ///
+    /// Per ecosystem, not global: C and C++ vendor dependencies under `third_party` or
+    /// meson's `subprojects`, while a Gradle build keeps its own modules under
+    /// `subprojects` and must not lose them.
+    #[must_use]
+    pub fn vendored_directories(self) -> &'static [&'static str] {
+        match self {
+            Self::CFamily => &["third_party", "3rdparty", "subprojects"],
+            _ => &[],
+        }
+    }
+
+    /// File stems that *are* their directory's module rather than a module beside it.
+    ///
+    /// The `__init__.py`/`mod.rs` convention, where a language has one. Swift and Kotlin
+    /// do not, so every file there is its own module.
+    #[must_use]
+    pub fn index_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["index"],
+            _ => &[],
+        }
+    }
 }
 
 /// One package found under a directory.
@@ -62,8 +118,9 @@ pub struct DiscoveryOptions {
     pub max_packages: usize,
     /// Stop after visiting this many directories.
     ///
-    /// Depth alone does not bound the walk — a shallow tree can still be enormous — and
-    /// discovery runs synchronously while a reader waits for a picker to open.
+    /// Depth alone does not bound the walk — a shallow tree can still be enormous — so
+    /// this bounds the walk, which a caller runs on a worker while its picker waits for
+    /// the packages to arrive.
     pub max_directories: usize,
 }
 
@@ -75,14 +132,14 @@ impl Default for DiscoveryOptions {
             max_depth: 3,
             max_packages: 512,
             // Generous enough that no real repository is cut short, low enough that a
-            // pathological tree cannot stall the picker for longer than it takes to
-            // notice.
+            // pathological tree cannot keep a picker's packages from arriving for longer
+            // than it takes to notice.
             max_directories: 8192,
         }
     }
 }
 
-/// The packages under `root`, Cargo first, then Python.
+/// The packages under `root`, Cargo first, then Python, then the file-tree ecosystems.
 ///
 /// Infallible by design: an empty result means nothing indexable is here, which is an
 /// answer a caller can act on — offering a picker, say — rather than an error it must
@@ -92,9 +149,16 @@ impl Default for DiscoveryOptions {
 pub fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     let mut found = cargo(root, options);
     found.extend(python::discover(root, options));
+    found.extend(trees::discover(root, options));
 
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    found.retain(|package| seen.insert(package.root.clone()));
+    // One package per root, so two ecosystems reading the same files do not index them
+    // twice — except C/C++, whose extensions no other ecosystem reads: a Cargo crate or a
+    // Node addon with a `CMakeLists.txt` beside its manifest has C sources nothing else
+    // would index, and the C walk has already pruned the nested projects below them.
+    let mut seen: HashSet<(PathBuf, bool)> = HashSet::new();
+    found.retain(|package| {
+        seen.insert((package.root.clone(), package.kind == PackageKind::CFamily))
+    });
     found.truncate(options.max_packages);
     found
 }

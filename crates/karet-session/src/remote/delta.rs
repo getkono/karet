@@ -35,7 +35,7 @@ pub(super) fn minimal_change(old: &str, new: &str, base_version: u64) -> Option<
     let suffix = common_suffix(&old[prefix..], &new[prefix..], max_suffix);
     let start = position_of(old, prefix);
     let end = position_of(old, old.len() - suffix);
-    let range = Range::new(start, end).ok()?;
+    let range = Range::new(start, end);
     Some(Change::new(
         base_version,
         vec![TextEdit {

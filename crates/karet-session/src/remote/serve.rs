@@ -16,6 +16,7 @@ use super::wire::ClientFrame;
 use super::wire::Hello;
 use super::wire::ServerFrame;
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::backend::Backend;
@@ -229,7 +230,9 @@ where
                 Ok(true)
             },
             ClientFrame::Command { id, command } => {
-                if let Command::ApplyChange { doc, .. } = command.as_ref() {
+                if let Command::Document(DocumentCommand::ApplyChange { doc, .. }) =
+                    command.as_ref()
+                {
                     self.pending_edits.insert(id, *doc);
                 }
                 backend

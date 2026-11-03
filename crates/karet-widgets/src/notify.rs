@@ -108,7 +108,7 @@ impl Toasts<'_> {
 
     /// Compute the on-screen slot for each shown notification. Pure: no clock, no
     /// theme lookup. Cards tile without overlap inside `area`, capped at
-    /// [`MAX_ACTIVE`] and at whatever fits vertically.
+    /// `MAX_ACTIVE` and at whatever fits vertically.
     #[must_use]
     pub fn layout(&self, area: Rect) -> Vec<ToastSlot> {
         let mut slots = Vec::new();

@@ -1,282 +1,209 @@
+//! The server task loop: one task per slot, owning its server's connection.
+//!
+//! [`server_task`] connects through the slot's `Connector`, serializes document
+//! sync ahead of requests, debounces edits, and restarts a closed process with
+//! backoff, replaying every open document. Per-request handling is delegated to
+//! the feature modules (`commands`, `code_actions`, `code_lens`, `link_color`,
+//! `inline_completion`, `semantic_tokens`, `hint_flight`), loss detection to
+//! `health`, and diagnostic forwarding to `forward`.
+
+use karet_core::ServerFeature;
+
+use super::code_actions;
+use super::code_lens;
+use super::commands::OpenDocument;
+use super::commands::answer_empty;
+use super::commands::answer_reconnecting;
+use super::commands::caret_query;
+use super::commands::complete;
+use super::commands::flush_pending;
+use super::commands::remember_document;
+use super::commands::report_unsupported;
+use super::commands::resolve_hint;
+use super::commands::resolve_item;
+use super::delta::PendingChange;
+use super::forward::forward_diagnostics;
+use super::health::FailureTally;
+use super::health::{self};
+use super::hint_flight::FlightTag;
+use super::hint_flight::Flights;
+use super::hint_flight::HintAsk;
+use super::hint_flight::{self};
+use super::inline_completion as inline;
+use super::link_color;
+use super::semantic_tokens::DocumentFetches;
 use super::*;
 
-/// Answer a request command with an empty set (used whenever no live server can
-/// answer, so the client is never left waiting).
-fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, generation: u64) {
-    match cmd {
-        ServerCmd::Completion {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Completions {
-                generation,
-                request,
-                doc,
-                version,
-                items: Vec::new(),
-            });
-        },
-        ServerCmd::DocumentSymbols {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Symbols {
-                generation,
-                request,
-                doc,
-                version,
-                symbols: Vec::new(),
-            });
-        },
-        ServerCmd::Hover {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Hover {
-                generation,
-                request,
-                doc,
-                version,
-                hover: None,
-            });
-        },
-        ServerCmd::Definition {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Definitions {
-                generation,
-                request,
-                doc,
-                version,
-                locations: Vec::new(),
-            });
-        },
-        ServerCmd::WorkspaceSymbols { request, .. } => {
-            let _ = updates.send(LspUpdate::WorkspaceSymbols {
-                generation,
-                request,
-                symbols: Vec::new(),
-            });
-        },
-        ServerCmd::Rename { request, .. } => {
-            let _ = updates.send(LspUpdate::WorkspaceEdit {
-                generation,
-                request,
-                edit: WorkspaceEdit::default(),
-            });
-        },
-        ServerCmd::Formatting {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Formatting {
-                generation,
-                request,
-                doc,
-                version,
-                edits: Vec::new(),
-            });
-        },
-        ServerCmd::DidOpen { .. }
-        | ServerCmd::DidChange { .. }
-        | ServerCmd::DidClose { .. }
-        | ServerCmd::DidSave { .. } => {},
-    }
-}
+/// Slack over the session's own deadline before this task stops waiting.
+///
+/// The session sweeps `editor.formatOnSaveTimeout` on its backup tick, so its
+/// effective deadline is that plus up to one tick. Giving up any sooner would
+/// race the sweep and throw away an answer that was about to be used.
+const FORMATTING_SWEEP_MARGIN: Duration = Duration::from_secs(3);
 
-#[derive(Clone)]
-struct OpenDocument {
-    language: String,
-    version: i32,
-    text: String,
-}
-
-fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &ServerCmd) {
-    match cmd {
-        ServerCmd::DidOpen {
-            path,
-            language,
-            version,
-            text,
-        } => {
-            documents.insert(
-                path.clone(),
-                OpenDocument {
-                    language: language.clone(),
-                    version: *version,
-                    text: text.clone(),
-                },
-            );
-        },
-        ServerCmd::DidChange {
-            path,
-            version,
-            text,
-        } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.version = *version;
-                document.text.clone_from(text);
-            }
-        },
-        ServerCmd::DidSave { path, text } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.text.clone_from(text);
-            }
-        },
-        ServerCmd::DidClose { path } => {
-            documents.remove(path);
-        },
-        ServerCmd::Completion { .. }
-        | ServerCmd::DocumentSymbols { .. }
-        | ServerCmd::Hover { .. }
-        | ServerCmd::Definition { .. }
-        | ServerCmd::WorkspaceSymbols { .. }
-        | ServerCmd::Rename { .. }
-        | ServerCmd::Formatting { .. } => {},
-    }
-}
-
-fn forward_diagnostics(
-    client: &LspClient,
-    updates: mpsc::UnboundedSender<LspUpdate>,
-    language: String,
-    server: String,
-    generation: u64,
-) -> tokio::task::JoinHandle<()> {
-    let mut diagnostic_rx = client.diagnostics();
-    let mut raw_rx = client.raw_notifications();
-    let status_updates = updates.clone();
-    // jdtls-style `language/status` notifications carry the only feedback a
-    // user gets during a 30–120 s first import; forward them for the status
-    // bar rather than leaving the server looking hung.
-    tokio::spawn(async move {
-        loop {
-            match raw_rx.recv().await {
-                Ok(notification) if notification.method == "language/status" => {
-                    let message = notification
-                        .params
-                        .get("message")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    if !message.is_empty()
-                        && status_updates
-                            .send(LspUpdate::ServerStatus {
-                                generation,
-                                server: server.clone(),
-                                message,
-                            })
-                            .is_err()
-                    {
-                        return;
-                    }
-                },
-                Ok(_) => {},
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    });
-    tokio::spawn(async move {
-        loop {
-            match diagnostic_rx.recv().await {
-                Ok(publication) => {
-                    let _ = updates.send(LspUpdate::Diagnostics {
-                        generation,
-                        server: language.clone(),
-                        path: publication.path,
-                        version: publication.version,
-                        diagnostics: publication.diagnostics,
-                    });
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "language-server diagnostic subscriber lagged");
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
+/// How long `server_task` waits for a `textDocument/formatting` reply, given
+/// the `save_timeout` the save that asked will wait.
+///
+/// Tied to the save's `editor.formatOnSaveTimeout` rather than chosen
+/// independently: past that deadline the save has been committed unformatted,
+/// so an answer arriving later has nobody left waiting for it -- while the wait
+/// itself is serial, and holds every other command for this server (diagnostics,
+/// completions, `didChange` flushes) behind it.
+///
+/// `karet-jsonrpc`'s 30-second request timeout is the only other bound on this
+/// await, and at the default ten-second save timeout it is three times too long
+/// to hold the task for: it exists to decide that a *connection* is hung, which
+/// is a different question from how long one save may wait. At the setting's
+/// 30-second ceiling the request timeout ends the wait first, which is fine:
+/// either ending reports the file unformatted.
+pub(super) fn formatting_deadline(save_timeout: Duration) -> Duration {
+    save_timeout.saturating_add(FORMATTING_SWEEP_MARGIN)
 }
 
 pub(super) struct ServerTask {
     pub(super) spec: LspSpec,
-    pub(super) root: PathBuf,
-    pub(super) language: String,
-    pub(super) provider: LanguageServerId,
+    /// The slot this task serves: its provider, its root, and the identity of
+    /// the diagnostic layer it publishes under, all in one value.
+    pub(super) key: SlotKey,
+    /// Which incarnation of `key` this task is. Stamped on every report it makes
+    /// about its own slot, so a report outliving its slot is refused.
+    pub(super) token: SlotToken,
     pub(super) rx: mpsc::Receiver<ServerCmd>,
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
     pub(super) generation: u64,
+    /// Whether this task fetches semantic tokens (see `semantic_tokens`).
+    pub(super) semantic: tokio::sync::watch::Receiver<bool>,
+    /// Whether this task is its language's primary server, which alone
+    /// fetches folding ranges (see `folding`).
+    pub(super) primary: bool,
 }
 
-/// The per-language server task: serialize document sync and requests, restart
+/// The server task for one slot: serialize document sync and requests, restart
 /// closed processes with backoff, and replay the authoritative open-document set.
 pub(super) async fn server_task(task: ServerTask) {
     let ServerTask {
         spec,
-        root,
-        language,
-        provider,
+        key,
+        token,
         mut rx,
         updates,
         connector,
         generation,
+        semantic,
+        primary,
     } = task;
+    // The root is a local because the connector and `SpawnFailed` want it by
+    // value while `key` is still borrowed elsewhere.
+    let root = key.root.clone();
+    // Whether the last state reported was an open restart circuit, so a request
+    // arriving while the connection is down can be answered according to what
+    // kind of down it is. Atomic only because the task must stay `Send`.
+    let circuit_open = std::sync::atomic::AtomicBool::new(false);
     let report_state = |state, error: Option<String>| {
+        circuit_open.store(
+            state == LanguageServerRuntimeState::CircuitOpen,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let _ = updates.send(LspUpdate::RuntimeState {
-            generation,
-            server: provider.clone(),
-            root: root.clone(),
+            token,
+            key: key.clone(),
             state,
             error,
         });
     };
     report_state(LanguageServerRuntimeState::Starting, None);
-    let mut client: Option<LspClient> = None;
+    // Shared, not owned outright, because a launched inlay-hint request runs
+    // as its own task and holds the client for as long as it is in flight.
+    let mut client: Option<Arc<LspClient>> = None;
+    // So does a lightbulb probe, kept off the serial path the same way.
+    let mut flights = Flights::default();
+    // And so do a diagnostic pull, a semantic-token fetch and a folding-range
+    // fetch (see `pull`, `semantic_tokens` and `folding`).
+    let mut fetches = DocumentFetches::new(semantic, primary);
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
-    let mut pending: Option<(PathBuf, i32, String)> = None;
+    let mut pending: Option<PendingChange> = None;
+    // When the pending edit will have been quiet for `CHANGE_DEBOUNCE`: timed
+    // from the last *edit*, not the last command, so a hint request waiting on
+    // the flush does not itself push the flush back.
+    let mut flush_at = Instant::now();
     let mut restart_delay = RESTART_MIN_DELAY;
-    let mut next_restart = Instant::now();
+    // When the next launch is due; `None` until the first one has been tried.
+    let mut next_restart: Option<Instant> = None;
     let mut failures = VecDeque::<Instant>::new();
     let mut spawn_failure_reported = false;
+    // Whether this task ever reached a working connection. A server that has
+    // worked here before is worth retrying; one that has never started is not.
+    let mut ever_connected = false;
+    // The verdict on the *current* connection, reset with every new one: a run of
+    // timeouts on a server that has since been replaced says nothing about its
+    // successor.
+    let mut tally = FailureTally::default();
+    // Silent deaths, windowed separately: the failure window is too short to hold
+    // even one hang cycle, and an unwindowed count never forgives.
+    let mut hangs = VecDeque::<Instant>::new();
+    // When the current connection was established, so a disconnect can tell a
+    // server that worked from one that died on arrival.
+    let mut connected_at: Option<Instant> = None;
+    // When this provider's published diagnostics stop being worth trusting. Armed
+    // on every disconnect, disarmed by a reconnect inside the window.
+    let mut clear_diagnostics_at: Option<Instant> = None;
 
     loop {
         if client.is_none() {
-            if Instant::now() < next_restart {
-                let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(next_restart));
-                tokio::pin!(sleep);
+            // Sleep to whichever deadline comes first, answering commands
+            // meanwhile. The grace window usually outlasts the first two
+            // reconnect attempts, so it is normally the reconnect that wakes us
+            // and the grace never fires at all.
+            //
+            // Each deadline is its own arm rather than one sleep to the earlier
+            // of the two followed by comparisons against the clock: an arm that
+            // fires says which deadline passed, so nothing here can mistake a
+            // grace wake for the retry clock or spin on a deadline it has
+            // already reached. `biased` keeps a due deadline ahead of queued
+            // commands, and a due grace ahead of a due reconnect, so the stale
+            // markers go before the replacement server can republish.
+            //
+            // No deadline at all means the first launch, which goes at once:
+            // even an already-passed deadline costs a timer tick, and commands
+            // queued behind it would be answered "reconnecting" by a server
+            // that has not yet been tried.
+            if let Some(restart_at) = next_restart {
                 tokio::select! {
-                    cmd = rx.recv() => {
-                        let Some(cmd) = cmd else {
-                            break;
-                        };
-                        remember_document(&mut documents, &cmd);
-                        answer_empty(&updates, cmd, generation);
+                    biased;
+                    () = tokio::time::sleep_until(clear_diagnostics_at.unwrap_or(restart_at)),
+                        if clear_diagnostics_at.is_some() =>
+                    {
+                        clear_diagnostics_at = None;
+                        let _ = updates.send(LspUpdate::DiagnosticsCleared {
+                            token,
+                            server: key.clone(),
+                        });
                         continue;
                     },
-                    () = &mut sleep => {},
+                    () = tokio::time::sleep_until(restart_at) => {},
+                    cmd = rx.recv() => {
+                        let Some(mut cmd) = cmd else {
+                            break;
+                        };
+                        remember_document(&mut documents, &mut cmd);
+                        // An open circuit is a cooldown, but one a server that
+                        // keeps dying can sit in indefinitely -- so its hints
+                        // are treated as gone rather than held stale forever.
+                        // A plain retry is expected back shortly.
+                        if circuit_open.load(std::sync::atomic::Ordering::Relaxed) {
+                            answer_empty(&updates, cmd, generation);
+                        } else {
+                            answer_reconnecting(&updates, cmd, generation);
+                        }
+                        continue;
+                    },
                 }
             }
 
             let now = Instant::now();
-            while failures
-                .front()
-                .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
-            {
-                failures.pop_front();
-            }
+            health::expire(&mut failures, now, RESTART_WINDOW);
             match connector(spec.clone(), root.clone()).await {
                 Ok(candidate) => {
                     let mut replay_failed = false;
@@ -292,8 +219,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     if replay_failed {
                         failures.push_back(now);
-                        next_restart = now + restart_delay;
-                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
+                        next_restart = Some(now + health::back_off(&mut restart_delay));
                         report_state(
                             LanguageServerRuntimeState::Retrying,
                             Some("document replay failed".to_owned()),
@@ -303,31 +229,81 @@ pub(super) async fn server_task(task: ServerTask) {
                     diagnostic_task = Some(forward_diagnostics(
                         &candidate,
                         updates.clone(),
-                        language.clone(),
-                        provider.key().to_owned(),
-                        generation,
+                        key.clone(),
+                        token,
                     ));
-                    client = Some(candidate);
-                    failures.clear();
+                    client = Some(Arc::new(candidate));
+                    ever_connected = true;
+                    connected_at = Some(Instant::now());
+                    tally = FailureTally::default();
+                    // Back inside the window: the markers on screen are about to
+                    // be republished, so they were never stale.
+                    clear_diagnostics_at = None;
+                    // The failure budget is *not* cleared here. Connecting is not
+                    // the same as working: a server that exits the moment it has
+                    // read `didOpen` connects perfectly every time, so clearing
+                    // the budget on connect meant such a loop could never open the
+                    // circuit. It used to be gated by the user typing, which hid
+                    // the cost; now that a death is noticed immediately, an
+                    // uncounted loop would respawn forever. The budget is cleared
+                    // on disconnect instead, and only for a connection that lasted
+                    // long enough to count as real.
                     restart_delay = RESTART_MIN_DELAY;
                     spawn_failure_reported = false;
-                    tracing::info!(language, "language server connected");
+                    tracing::info!(language = %key, "language server connected");
                     report_state(LanguageServerRuntimeState::Running, None);
                     continue;
                 },
                 Err(error) => {
-                    tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
+                    tracing::warn!(language = %key, command = %spec.command, error = %error, "language server failed to start");
+                    let launch = match &error {
+                        LspError::Launch(failure) => Some(failure.as_ref()),
+                        _ => None,
+                    };
                     if !spawn_failure_reported {
                         let _ = updates.send(LspUpdate::SpawnFailed {
-                            generation,
-                            language: language.clone(),
-                            command: spec.command.clone(),
+                            token,
+                            key: key.clone(),
+                            // The spec, not the failure's own argv: through
+                            // the supervisor and the broker the process karet
+                            // literally ran is a hidden re-exec of the editor
+                            // binary, and the user needs to see the provider
+                            // launch they configured.
+                            command: std::iter::once(spec.command.as_str())
+                                .chain(spec.args.iter().map(String::as_str))
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            reason: launch.map_or_else(
+                                || error.to_string(),
+                                karet_lsp::LaunchFailure::diagnosis,
+                            ),
+                            permanent: launch.is_some_and(|failure| failure.cause.is_permanent()),
                         });
                         spawn_failure_reported = true;
                     }
+                    let permanent = launch.is_some_and(|failure| failure.cause.is_permanent());
+                    // Nothing about a binary that is absent or unusable changes
+                    // by waiting, so this stops rather than respawning it every
+                    // five minutes forever. A server that once connected and
+                    // then started exiting is a different case -- it keeps the
+                    // circuit, which is a cooldown, not a verdict.
+                    if permanent && !ever_connected {
+                        tracing::warn!(language = %key, error = %error, "language server is unavailable");
+                        report_state(
+                            LanguageServerRuntimeState::Unavailable,
+                            Some(error.to_string()),
+                        );
+                        // Drain rather than return: callers must keep getting
+                        // empty answers instead of waiting on a dead channel.
+                        while let Some(mut cmd) = rx.recv().await {
+                            remember_document(&mut documents, &mut cmd);
+                            answer_empty(&updates, cmd, generation);
+                        }
+                        return;
+                    }
                     failures.push_back(now);
-                    next_restart = if failures.len() >= RESTART_LIMIT {
-                        tracing::warn!(language, "language server restart circuit opened");
+                    next_restart = Some(if failures.len() >= RESTART_LIMIT {
+                        tracing::warn!(language = %key, "language server restart circuit opened");
                         report_state(
                             LanguageServerRuntimeState::CircuitOpen,
                             Some(error.to_string()),
@@ -338,444 +314,664 @@ pub(super) async fn server_task(task: ServerTask) {
                             LanguageServerRuntimeState::Retrying,
                             Some(error.to_string()),
                         );
-                        let next = now + restart_delay;
-                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
-                        next
-                    };
+                        now + health::back_off(&mut restart_delay)
+                    });
                     continue;
                 },
             }
         }
 
-        let cmd = if pending.is_some() {
-            match tokio::time::timeout(CHANGE_DEBOUNCE, rx.recv()).await {
-                Ok(cmd) => cmd,
-                Err(_quiet) => {
-                    let Some(active) = client.as_ref() else {
-                        continue;
-                    };
-                    let mut dead = false;
+        // Whatever the server has been sent since it was last asked -- an
+        // open, a replay, a flushed edit -- is pulled before the next wait.
+        if let Some(active) = client.as_ref() {
+            let unsent = pending.as_ref().map(|change| change.path.as_path());
+            fetches.launch_ready(active, &documents, unsent, (&updates, &key, token));
+        }
+
+        // Four things can wake the connected loop. The connection dying on its
+        // own is the one that was missing: without that arm a server that exits
+        // while the user reads rather than types stays `Running` until the next
+        // request happens to fail. A launched hint request finishing is the
+        // other newcomer (and a lightbulb probe, its sibling) -- see
+        // `hint_flight` for why neither is awaited in line.
+        let wake = health::next_wake(
+            &mut rx,
+            client.as_deref(),
+            pending.is_some().then_some(flush_at),
+            &mut flights,
+            &mut fetches,
+        )
+        .await;
+        let mut dead = false;
+        let slot = (&key, token);
+        let cmd = match wake {
+            health::Wake::Lost => {
+                let _ = client.take();
+                flights.abandon(&updates, generation);
+                fetches.abandon();
+                if let Some(task) = diagnostic_task.take() {
+                    task.abort();
+                }
+                // Reported exactly as a death found by a failing call is, so
+                // catching the exit sooner does not make it quieter.
+                tally.note_lost(&updates, &key, token);
+                // The buffered edit dies with the connection it was headed for.
+                // The replay set holds the document's whole text, so the reconnect
+                // re-opens it entire rather than applying a stale delta.
+                pending = None;
+                let (delay, state) = health::charge_disconnect(
+                    connected_at,
+                    &mut hangs,
+                    tally.hung(),
+                    &mut failures,
+                    &mut restart_delay,
+                    &key,
+                );
+                connected_at = None;
+                (next_restart, clear_diagnostics_at) = health::after_loss(Instant::now(), delay);
+                report_state(state, None);
+                continue;
+            },
+            health::Wake::Quiet => {
+                let Some(active) = client.as_ref() else {
+                    continue;
+                };
+                flush_pending(
+                    active,
+                    (&mut pending, &mut documents),
+                    &mut dead,
+                    &mut tally,
+                    &updates,
+                    &key,
+                    token,
+                )
+                .await;
+                // The flush is what a hint request or probe for the edited
+                // path was waiting on.
+                if !dead {
+                    flights.launch_ready(active, None);
+                }
+                if dead {
+                    let _ = client.take();
+                    flights.abandon(&updates, generation);
+                    fetches.abandon();
+                    if let Some(task) = diagnostic_task.take() {
+                        task.abort();
+                    }
+                    let (delay, state) = health::charge_disconnect(
+                        connected_at,
+                        &mut hangs,
+                        tally.hung(),
+                        &mut failures,
+                        &mut restart_delay,
+                        &key,
+                    );
+                    connected_at = None;
+                    (next_restart, clear_diagnostics_at) =
+                        health::after_loss(Instant::now(), delay);
+                    report_state(state, None);
+                }
+                continue;
+            },
+            health::Wake::Hint(answer) => {
+                hint_flight::deliver(
+                    answer, &mut tally, &mut dead, &updates, &key, token, generation,
+                );
+                None
+            },
+            health::Wake::Probe(answer) => {
+                code_actions::deliver(
+                    answer, &mut tally, &mut dead, &updates, &key, token, generation,
+                );
+                None
+            },
+            health::Wake::Lens(answer) => {
+                code_lens::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            health::Wake::Inline(answer) => {
+                inline::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            health::Wake::LinkColor(answer) => {
+                link_color::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            // Back to the top, where the fetches a registration, a semantic
+            // highlighting change or a semantic-token or diagnostic refresh
+            // enabled launch.
+            health::Wake::Registered => continue,
+            health::Wake::Command(None) => break, // the session dropped the manager
+            health::Wake::Command(Some(cmd)) => Some(cmd),
+        };
+        if let Some(mut cmd) = cmd {
+            remember_document(&mut documents, &mut cmd);
+            let Some(active) = client.as_deref() else {
+                answer_reconnecting(&updates, cmd, generation);
+                continue;
+            };
+            match cmd {
+                ServerCmd::DidChange {
+                    path,
+                    version,
+                    text,
+                    delta,
+                } => {
+                    // Coalesce successive edits to the same document, composing
+                    // their deltas; an edit to a different document flushes the
+                    // previous one first (order).
+                    if pending.as_ref().is_some_and(|change| change.path != path) {
+                        flush_pending(
+                            active,
+                            (&mut pending, &mut documents),
+                            &mut dead,
+                            &mut tally,
+                            &updates,
+                            &key,
+                            token,
+                        )
+                        .await;
+                    }
+                    if !dead {
+                        pending = Some(PendingChange::coalesce(
+                            pending.take(),
+                            (path, version, text),
+                            delta,
+                        ));
+                        flush_at = Instant::now() + CHANGE_DEBOUNCE;
+                    }
+                },
+                ServerCmd::DidOpen {
+                    path,
+                    language: document_language,
+                    version,
+                    text,
+                } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
+                        &mut tally,
                         &updates,
-                        &language,
-                        generation,
+                        &key,
+                        token,
                     )
                     .await;
-                    if dead {
-                        let _ = client.take();
-                        if let Some(task) = diagnostic_task.take() {
-                            task.abort();
-                        }
-                        next_restart = Instant::now() + restart_delay;
-                        report_state(LanguageServerRuntimeState::Retrying, None);
+                    if !dead {
+                        let result = active
+                            .did_open(&path, &document_language, version, &text)
+                            .await;
+                        tally.note(result, &mut dead, &updates, &key, token);
                     }
-                    continue;
+                },
+                ServerCmd::DidClose { path } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    if !dead {
+                        let result = active.did_close(&path).await;
+                        tally.note(result, &mut dead, &updates, &key, token);
+                    }
+                },
+                ServerCmd::DidSave { path, text } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    if !dead {
+                        let result = active.did_save(&path, Some(&text)).await;
+                        tally.note(result, &mut dead, &updates, &key, token);
+                    }
+                },
+                ServerCmd::Notify(notice) => notice.send(active),
+                ServerCmd::Completion {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    position,
+                    trigger,
+                } => {
+                    // The server must see the latest text before completing in it.
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let at = (path.as_path(), position, trigger);
+                    let (list, options) = complete(active, at, health).await;
+                    let _ = updates.send(LspUpdate::Completions {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        list,
+                        options,
+                    });
+                },
+                ServerCmd::ResolveCompletion { request, doc, item } => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let resolved = resolve_item(active, &item, health).await;
+                    let _ = updates.send(LspUpdate::CompletionResolved {
+                        generation,
+                        request,
+                        doc,
+                        resolved,
+                    });
+                },
+                ServerCmd::InlayHints {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    range,
+                } => {
+                    // Deliberately no flush, and no await: see `hint_flight`. The
+                    // request launches below, once the server has its text.
+                    flights.hints.ask(
+                        HintAsk {
+                            tag: FlightTag {
+                                request,
+                                doc,
+                                version,
+                            },
+                            path,
+                            params: range,
+                        },
+                        &updates,
+                        generation,
+                    );
+                },
+                ServerCmd::ResolveInlayHint { request, doc, hint } => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let hint = resolve_hint(active, hint, health).await;
+                    let _ = updates.send(LspUpdate::InlayHintResolved {
+                        generation,
+                        request,
+                        doc,
+                        hint,
+                    });
+                },
+                ServerCmd::DocumentSymbols {
+                    request,
+                    doc,
+                    version,
+                    path,
+                } => {
+                    // Symbol ranges must describe the same text revision as the request.
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let symbols = if dead {
+                        Vec::new()
+                    } else {
+                        let result = active.document_symbols(&path).await;
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
+                    };
+                    let _ = updates.send(LspUpdate::Symbols {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        symbols,
+                    });
+                },
+                ServerCmd::Definition {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    position,
+                    kind,
+                } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let locations = if dead {
+                        Vec::new()
+                    } else {
+                        let result = commands::locations(active, kind, &path, position).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            commands::location_feature(kind),
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
+                    };
+                    let _ = updates.send(LspUpdate::Definitions {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        kind,
+                        locations,
+                    });
+                },
+                ServerCmd::WorkspaceSymbols { request, query } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let symbols = if dead {
+                        Vec::new()
+                    } else {
+                        let result = active.workspace_symbols(&query).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::WorkspaceSymbol,
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
+                    };
+                    let _ = updates.send(LspUpdate::WorkspaceSymbols {
+                        generation,
+                        request,
+                        symbols,
+                    });
+                },
+                ServerCmd::PrepareRename {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    position,
+                    caret,
+                } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let answer = if dead {
+                        RenameAnswer::NoServer
+                    } else if !active.supports_for(ServerFeature::Rename, &path) {
+                        RenameAnswer::Unsupported
+                    } else if !active.supports_for(ServerFeature::PrepareRename, &path) {
+                        RenameAnswer::Identifier
+                    } else {
+                        match tally.observe(active.prepare_rename(&path, position).await) {
+                            Ok(Some(karet_core::PrepareRename::DefaultBehavior)) => {
+                                RenameAnswer::Identifier
+                            },
+                            Ok(Some(span)) => RenameAnswer::Span(span),
+                            Ok(None) => RenameAnswer::Refused(None),
+                            // A server explains "you cannot rename this" as an
+                            // error reply; that reply is the user's answer.
+                            Err(LspError::Server(reason)) => RenameAnswer::Refused(Some(reason)),
+                            Err(error) => {
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                RenameAnswer::NoServer
+                            },
+                        }
+                    };
+                    let _ = updates.send(LspUpdate::PrepareRename {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        caret,
+                        answer,
+                    });
+                },
+                ServerCmd::Rename {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    position,
+                    new_name,
+                } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let edit = if dead {
+                        Ok(WorkspaceEdit::default())
+                    } else {
+                        let result = active.rename(&path, position, &new_name).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::Rename,
+                        );
+                        // Every error is the user's answer: a server explains
+                        // "you cannot rename this" as an error reply, and an
+                        // edit naming a non-file URI is refused whole.
+                        match tally.observe(result) {
+                            Ok(edit) => Ok(edit),
+                            Err(LspError::Server(reason) | LspError::Protocol(reason)) => {
+                                Err(reason)
+                            },
+                            Err(error) => {
+                                let reason = error.to_string();
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                Err(reason)
+                            },
+                        }
+                    };
+                    let _ = updates.send(LspUpdate::WorkspaceEdit {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        edit,
+                    });
+                },
+                ServerCmd::CodeAction(cmd) => match cmd.into_probe() {
+                    // A lightbulb probe is background work: no flush, and no
+                    // await -- it launches below, as a hint request does. See
+                    // `code_actions`.
+                    Ok(probe) => flights.probes.ask(probe, &updates, generation),
+                    Err(cmd) => {
+                        flush_pending(
+                            active,
+                            (&mut pending, &mut documents),
+                            &mut dead,
+                            &mut tally,
+                            &updates,
+                            &key,
+                            token,
+                        )
+                        .await;
+                        let answer = if dead {
+                            cmd.unanswered(code_actions::UNAVAILABLE)
+                        } else {
+                            let health = (&mut dead, &mut tally, &updates, &key, token);
+                            let mut context = code_actions::StepContext::of(health, generation);
+                            code_actions::serve(active, cmd, &mut context).await
+                        };
+                        let _ = updates.send(LspUpdate::CodeAction { generation, answer });
+                    },
+                },
+                ServerCmd::CodeLens(cmd) => match cmd.into_listing() {
+                    // A listing is background work: no flush, and no await --
+                    // it launches below, as a hint request does. See `code_lens`.
+                    Ok(listing) => flights.lenses.ask(listing, &updates, generation),
+                    Err((request, lens)) => {
+                        flush_pending(
+                            active,
+                            (&mut pending, &mut documents),
+                            &mut dead,
+                            &mut tally,
+                            &updates,
+                            &key,
+                            token,
+                        )
+                        .await;
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        let mut context = code_actions::StepContext::of(health, generation);
+                        let answer = code_lens::run(active, request, lens, &mut context).await;
+                        let _ = updates.send(LspUpdate::CodeLens { generation, answer });
+                    },
+                },
+                ServerCmd::InlineCompletion(cmd) => match cmd.into_ask() {
+                    // An ask is background work: no flush, and no await -- it
+                    // launches below, as a hint request does. See `inline`.
+                    Ok(ask) => flights.inline.ask(ask, &updates, generation),
+                    // An accept only reports what the user took (the edit it
+                    // made reaches the server as any edit does); a sign-in
+                    // needs no text either, and its flights hold its follow-up.
+                    Err(step) => flights.run(&client, step, slot, &updates, generation).await,
+                },
+                ServerCmd::LinkColor(cmd) => match cmd.into_listing() {
+                    // A listing is background work: no flush, and no await --
+                    // it launches below, as a hint request does. See `link_color`.
+                    Ok(listing) => flights.links.ask(listing, &updates, generation),
+                    // A resolve hands the server its own data back and asks
+                    // nothing of the text, so it flushes nothing.
+                    Err(step) => {
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        link_color::resolve(active, step, health, generation).await;
+                    },
+                },
+                ServerCmd::Formatting {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    ask,
+                } => {
+                    flush_pending(
+                        active,
+                        (&mut pending, &mut documents),
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let mut context = code_actions::StepContext::of(health, generation);
+                    let asked = (request, doc, version);
+                    format::answer(active, asked, &path, ask, &mut context).await;
+                },
+                // What is left are the requests about the carets: a hover,
+                // signature help, selection ranges, document highlights.
+                // `caret_query` answers anything else empty, so a command
+                // routed here by mistake is still answered.
+                cmd => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let queue = (generation, &mut pending, &mut documents);
+                    caret_query(active, cmd, queue, health).await;
                 },
             }
-        } else {
-            rx.recv().await
-        };
-        let Some(cmd) = cmd else {
-            break; // the session dropped the manager
-        };
-        remember_document(&mut documents, &cmd);
-        let Some(active) = client.as_ref() else {
-            answer_empty(&updates, cmd, generation);
-            continue;
-        };
-        let mut dead = false;
-        match cmd {
-            ServerCmd::DidChange {
-                path,
-                version,
-                text,
-            } => {
-                // Coalesce successive edits to the same document; an edit to a
-                // different document flushes the previous one first (order).
-                if pending.as_ref().is_some_and(|(p, ..)| *p != path) {
-                    flush_pending(
-                        active,
-                        &mut pending,
-                        &mut dead,
-                        &updates,
-                        &language,
-                        generation,
-                    )
-                    .await;
-                }
-                if !dead {
-                    pending = Some((path, version, text));
-                }
-            },
-            ServerCmd::DidOpen {
-                path,
-                language: document_language,
-                version,
-                text,
-            } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                if !dead {
-                    let result = active
-                        .did_open(&path, &document_language, version, &text)
-                        .await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
-                }
-            },
-            ServerCmd::DidClose { path } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                if !dead {
-                    let result = active.did_close(&path).await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
-                }
-            },
-            ServerCmd::DidSave { path, text } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                if !dead {
-                    let result = active.did_save(&path, Some(&text)).await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
-                }
-            },
-            ServerCmd::Completion {
-                request,
-                doc,
-                version,
-                path,
-                position,
-            } => {
-                // The server must see the latest text before completing in it.
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let items = if dead {
-                    Vec::new()
-                } else {
-                    match active.completion(&path, position).await {
-                        Ok(items) => items,
-                        Err(e) => {
-                            note_failure::<()>(Err(e), &mut dead, &updates, &language, generation);
-                            Vec::new()
-                        },
-                    }
-                };
-                let _ = updates.send(LspUpdate::Completions {
-                    generation,
-                    request,
-                    doc,
-                    version,
-                    items,
-                });
-            },
-            ServerCmd::DocumentSymbols {
-                request,
-                doc,
-                version,
-                path,
-            } => {
-                // Symbol ranges must describe the same text revision as the request.
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let symbols = if dead {
-                    Vec::new()
-                } else {
-                    match active.document_symbols(&path).await {
-                        Ok(symbols) => symbols,
-                        Err(error) => {
-                            note_failure::<()>(
-                                Err(error),
-                                &mut dead,
-                                &updates,
-                                &language,
-                                generation,
-                            );
-                            Vec::new()
-                        },
-                    }
-                };
-                let _ = updates.send(LspUpdate::Symbols {
-                    generation,
-                    request,
-                    doc,
-                    version,
-                    symbols,
-                });
-            },
-            ServerCmd::Hover {
-                request,
-                doc,
-                version,
-                path,
-                position,
-            } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let hover = if dead {
-                    None
-                } else {
-                    active.hover(&path, position).await.unwrap_or_else(|error| {
-                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
-                        None
-                    })
-                };
-                let _ = updates.send(LspUpdate::Hover {
-                    generation,
-                    request,
-                    doc,
-                    version,
-                    hover,
-                });
-            },
-            ServerCmd::Definition {
-                request,
-                doc,
-                version,
-                path,
-                position,
-            } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let locations = if dead {
-                    Vec::new()
-                } else {
-                    active
-                        .definition(&path, position)
-                        .await
-                        .unwrap_or_else(|error| {
-                            note_failure::<()>(
-                                Err(error),
-                                &mut dead,
-                                &updates,
-                                &language,
-                                generation,
-                            );
-                            Vec::new()
-                        })
-                };
-                let _ = updates.send(LspUpdate::Definitions {
-                    generation,
-                    request,
-                    doc,
-                    version,
-                    locations,
-                });
-            },
-            ServerCmd::WorkspaceSymbols { request, query } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let symbols = if dead {
-                    Vec::new()
-                } else {
-                    active
-                        .workspace_symbols(&query)
-                        .await
-                        .unwrap_or_else(|error| {
-                            note_failure::<()>(
-                                Err(error),
-                                &mut dead,
-                                &updates,
-                                &language,
-                                generation,
-                            );
-                            Vec::new()
-                        })
-                };
-                let _ = updates.send(LspUpdate::WorkspaceSymbols {
-                    generation,
-                    request,
-                    symbols,
-                });
-            },
-            ServerCmd::Rename {
-                request,
-                path,
-                position,
-                new_name,
-                ..
-            } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let edit = if dead {
-                    WorkspaceEdit::default()
-                } else {
-                    active
-                        .rename(&path, position, &new_name)
-                        .await
-                        .unwrap_or_else(|error| {
-                            note_failure::<()>(
-                                Err(error),
-                                &mut dead,
-                                &updates,
-                                &language,
-                                generation,
-                            );
-                            WorkspaceEdit::default()
-                        })
-                };
-                let _ = updates.send(LspUpdate::WorkspaceEdit {
-                    generation,
-                    request,
-                    edit,
-                });
-            },
-            ServerCmd::Formatting {
-                request,
-                doc,
-                version,
-                path,
-            } => {
-                flush_pending(
-                    active,
-                    &mut pending,
-                    &mut dead,
-                    &updates,
-                    &language,
-                    generation,
-                )
-                .await;
-                let edits = if dead {
-                    Vec::new()
-                } else {
-                    active.formatting(&path).await.unwrap_or_else(|error| {
-                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
-                        Vec::new()
-                    })
-                };
-                let _ = updates.send(LspUpdate::Formatting {
-                    generation,
-                    request,
-                    doc,
-                    version,
-                    edits,
-                });
-            },
+        }
+        // Any command may have flushed the pending edit, a hint request may
+        // have just arrived for a path with none, and a finished one frees its
+        // document for the next: launch what is ready. Probes alike.
+        if !dead && let Some(active) = client.as_ref() {
+            flights.launch_ready(active, pending.as_ref().map(|change| change.path.as_path()));
         }
         if dead {
             let _ = client.take();
+            flights.abandon(&updates, generation);
+            fetches.abandon();
             if let Some(task) = diagnostic_task.take() {
                 task.abort();
             }
             pending = None;
-            next_restart = Instant::now() + restart_delay;
-            report_state(LanguageServerRuntimeState::Retrying, None);
+            let (delay, state) = health::charge_disconnect(
+                connected_at,
+                &mut hangs,
+                tally.hung(),
+                &mut failures,
+                &mut restart_delay,
+                &key,
+            );
+            connected_at = None;
+            (next_restart, clear_diagnostics_at) = health::after_loss(Instant::now(), delay);
+            report_state(state, None);
         }
     }
-    if let Some(client) = client {
+    // Every launched request holds the client; stop them first, so the polite
+    // shutdown owns it outright rather than falling back to a kill on drop. The
+    // requests are answered, not dropped: an answer to a request is not a report
+    // about the slot, so it is still true after retirement (see `accepts`).
+    flights.shutdown(&updates, generation).await;
+    fetches.shutdown().await;
+    if let Some(client) = client.and_then(Arc::into_inner) {
         let _ = client.shutdown().await;
     }
     if let Some(task) = diagnostic_task {
         task.abort();
     }
-    report_state(LanguageServerRuntimeState::Stopped, None);
-}
-
-/// Send the pending `didChange`, if any.
-async fn flush_pending(
-    client: &LspClient,
-    pending: &mut Option<(PathBuf, i32, String)>,
-    dead: &mut bool,
-    updates: &mpsc::UnboundedSender<LspUpdate>,
-    language: &str,
-    generation: u64,
-) {
-    if *dead {
-        *pending = None;
-        return;
-    }
-    if let Some((path, version, text)) = pending.take() {
-        let result = client.did_change(&path, version, &text).await;
-        note_failure(result, dead, updates, language, generation);
-    }
-}
-
-/// Record a client-call failure: a closed connection kills the server slot
-/// (reported once); other errors are logged and the task keeps going.
-fn note_failure<T>(
-    result: Result<T, LspError>,
-    dead: &mut bool,
-    updates: &mpsc::UnboundedSender<LspUpdate>,
-    language: &str,
-    generation: u64,
-) {
-    match result {
-        Ok(_) => {},
-        Err(LspError::Closed) => {
-            if !*dead {
-                *dead = true;
-                let _ = updates.send(LspUpdate::ServerDied {
-                    generation,
-                    language: language.to_owned(),
-                });
-            }
-        },
-        Err(e) => {
-            tracing::warn!(language, error = %e, "language server call failed");
-        },
-    }
+    // Nothing is reported about the slot on the way out -- the hint answers
+    // above are answers, not reports -- and nothing can be: a task only reaches
+    // here after `rx.recv()` returned `None`, which happens only once the manager
+    // has dropped its slot. Anything said now is said by a task that no longer
+    // represents anything -- and since the key can be re-taken immediately, a
+    // parting word lands on whatever replaced it. That is how a *serving* provider
+    // came to be badged `Unavailable` for the rest of a session.
+    //
+    // The manager reports the retirement instead, at the moment it retires the
+    // slot, where the fact is true by construction rather than raced for.
 }

@@ -138,6 +138,7 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::WorkspaceCommand;
 
     #[test]
     fn a_greeting_round_trips() -> Result<(), RemoteError> {
@@ -197,7 +198,7 @@ mod tests {
     fn a_command_frame_round_trips() -> Result<(), RemoteError> {
         let frame = ClientFrame::Command {
             id: RequestId(42),
-            command: Box::new(Command::ListFiles { limit: 100 }),
+            command: Box::new(WorkspaceCommand::ListFiles { limit: 100 }.into()),
         };
 
         let restored: ClientFrame = decode(&encode(&frame)?)?;
@@ -206,7 +207,10 @@ mod tests {
             return Ok(());
         };
         assert_eq!(id, RequestId(42));
-        assert!(matches!(*command, Command::ListFiles { limit: 100 }));
+        assert!(matches!(
+            *command,
+            Command::Workspace(WorkspaceCommand::ListFiles { limit: 100 })
+        ));
         Ok(())
     }
 
@@ -238,9 +242,12 @@ mod tests {
     fn a_github_token_refuses_to_encode() {
         let frame = ClientFrame::Command {
             id: RequestId(1),
-            command: Box::new(Command::GithubLogin {
-                token: crate::api::GithubToken::new("ghp_example".to_owned()),
-            }),
+            command: Box::new(
+                crate::api::GithubCommand::Login {
+                    token: crate::api::GithubToken::new("ghp_example".to_owned()),
+                }
+                .into(),
+            ),
         };
 
         assert!(encode(&frame).is_err());

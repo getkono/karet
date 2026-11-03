@@ -85,6 +85,9 @@ pub struct FileTreeState {
     respect_gitignore: bool,
     needs_rebuild: bool,
     pub(super) editing: Option<EditState>,
+    /// Where the inline edit field landed on screen, written by the renderer so a
+    /// click can place the caret in it.
+    pub(super) edit_rect: Option<Rect>,
     selected_paths: BTreeSet<PathBuf>,
     cursor_path: Option<PathBuf>,
     /// Directory listings the tree has been given, keyed by directory.
@@ -113,6 +116,7 @@ impl Default for FileTreeState {
             respect_gitignore: true,
             needs_rebuild: true,
             editing: None,
+            edit_rect: None,
             selected_paths: BTreeSet::new(),
             cursor_path: None,
             listings: BTreeMap::new(),
@@ -127,13 +131,6 @@ impl FileTreeState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Whether to show hidden (dot) files. Note the `.git` directory is always
-    /// excluded regardless.
-    pub fn set_show_hidden(&mut self, show: bool) {
-        self.show_hidden = show;
-        self.needs_rebuild = true;
     }
 
     /// The currently-visible rows.
@@ -417,34 +414,38 @@ impl FileTreeState {
         }
     }
 
-    /// Move the inline edit cursor left by one character.
-    pub fn edit_left(&mut self) {
+    /// Move the inline edit cursor left by one character, extending the selection
+    /// when `extend`.
+    pub fn edit_left(&mut self, extend: bool) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.field.move_left(&edit.buffer, false);
+            edit.field.move_left(&edit.buffer, extend);
             self.needs_rebuild = true;
         }
     }
 
-    /// Move the inline edit cursor right by one character.
-    pub fn edit_right(&mut self) {
+    /// Move the inline edit cursor right by one character, extending the selection
+    /// when `extend`.
+    pub fn edit_right(&mut self, extend: bool) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.field.move_right(&edit.buffer, false);
+            edit.field.move_right(&edit.buffer, extend);
             self.needs_rebuild = true;
         }
     }
 
-    /// Move the inline edit cursor to the start of the buffer.
-    pub fn edit_home(&mut self) {
+    /// Move the inline edit cursor to the start of the buffer, extending the
+    /// selection when `extend`.
+    pub fn edit_home(&mut self, extend: bool) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.field.move_start(&edit.buffer, false, false);
+            edit.field.move_start(&edit.buffer, false, extend);
             self.needs_rebuild = true;
         }
     }
 
-    /// Move the inline edit cursor to the end of the buffer.
-    pub fn edit_end(&mut self) {
+    /// Move the inline edit cursor to the end of the buffer, extending the
+    /// selection when `extend`.
+    pub fn edit_end(&mut self, extend: bool) {
         if let Some(edit) = self.editing.as_mut() {
-            edit.field.move_end(&edit.buffer, false, false);
+            edit.field.move_end(&edit.buffer, false, extend);
             self.needs_rebuild = true;
         }
     }
@@ -455,6 +456,37 @@ impl FileTreeState {
             edit.field.select_all(&edit.buffer);
             self.needs_rebuild = true;
         }
+    }
+
+    /// Place the inline edit cursor at display cell `column` of the edit field,
+    /// extending the selection when `extend`.
+    pub fn edit_place_cursor(&mut self, column: usize, extend: bool) {
+        if let Some(edit) = self.editing.as_mut() {
+            let cursor = crate::textfield::byte_at_cell(&edit.buffer, column);
+            edit.field.set_cursor(&edit.buffer, cursor, extend);
+            self.needs_rebuild = true;
+        }
+    }
+
+    /// The inline edit's selected text, if any is selected.
+    #[must_use]
+    pub fn edit_selected_text(&self) -> Option<&str> {
+        let edit = self.editing.as_ref()?;
+        edit.field.selected_text(&edit.buffer)
+    }
+
+    /// Remove and return the inline edit's selected text.
+    pub fn edit_cut(&mut self) -> Option<String> {
+        let edit = self.editing.as_mut()?;
+        let cut = edit.field.cut(&mut edit.buffer);
+        self.needs_rebuild = cut.is_some() || self.needs_rebuild;
+        cut
+    }
+
+    /// Where the inline edit field was painted last frame, for pointer hit-testing.
+    #[must_use]
+    pub fn edit_rect(&self) -> Option<Rect> {
+        self.edit_rect
     }
 
     /// Insert pasted text at the inline edit cursor (no-op when not editing).

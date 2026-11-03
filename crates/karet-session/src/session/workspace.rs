@@ -7,76 +7,29 @@
 //! answers.
 
 use super::*;
-use crate::fs_worker::FsJob;
 
 impl Session {
-    /// Handle a workspace-filesystem command, reporting whether it was consumed.
-    ///
-    /// Runs as a pre-dispatch arm of [`Session::handle`], like the LSP and debug
-    /// handlers, so the main match keeps its shape.
-    pub(super) fn handle_workspace_command(&mut self, id: RequestId, command: &Command) -> bool {
-        let job = match command {
-            Command::SetViewport {
-                doc,
-                view,
-                first_line,
-                last_line,
-            } => {
-                self.set_viewport(*doc, *view, *first_line, *last_line);
-                return true;
-            },
-            Command::CheckpointViewState { blob } => {
-                blob.clone_into(&mut self.view_state);
-                return true;
-            },
-            Command::ClassifyPath { path, ignore_size } => FsJob::Classify {
-                id,
-                path: path.clone(),
-                ignore_size: *ignore_size,
-            },
-            Command::ReadFileBytes { path, offset, len } => FsJob::ReadBytes {
-                id,
-                path: path.clone(),
-                offset: *offset,
-                len: *len,
-            },
-            Command::ListFiles { limit } => {
-                let Some(root) = self.config.roots.first().cloned() else {
-                    self.emit(
-                        Some(id),
-                        Event::FilesListed {
-                            files: Vec::new(),
-                            truncated: false,
-                        },
-                    );
-                    return true;
-                };
-                FsJob::ListFiles {
-                    id,
-                    root,
-                    limit: *limit,
-                }
-            },
-            Command::ReadDirectory {
-                path,
-                show_hidden,
-                respect_gitignore,
-            } => FsJob::ReadDirectory {
-                id,
-                path: path.clone(),
-                show_hidden: *show_hidden,
-                respect_gitignore: *respect_gitignore,
-            },
-            Command::MutatePath { mutation } => FsJob::Mutate {
-                id,
-                mutation: mutation.clone(),
-            },
-            _ => return false,
-        };
+    /// Hand a filesystem job to the worker.
+    pub(super) fn submit_fs(&self, job: FsJob) {
         // A dead worker means the session is shutting down; the client's request
         // simply goes unanswered, exactly as it would if the process had exited.
         let _ = self.fs_worker.send(job);
-        true
+    }
+
+    /// List the primary root's files for quick-open; a rootless session has
+    /// none, and says so at once.
+    pub(super) fn list_files(&self, id: RequestId, limit: usize) {
+        let Some(root) = self.config.roots.first().cloned() else {
+            self.emit(
+                Some(id),
+                Event::FilesListed {
+                    files: Vec::new(),
+                    truncated: false,
+                },
+            );
+            return;
+        };
+        self.submit_fs(FsJob::ListFiles { id, root, limit });
     }
 
     /// Record what `view` is displaying of `doc`.
@@ -85,7 +38,13 @@ impl Session {
     /// of *coverage*, never correctness of content: a client that scrolled past
     /// what it declared renders those lines unhighlighted for one round trip and
     /// then catches up.
-    fn set_viewport(&mut self, doc: DocumentId, view: ViewId, first_line: u32, last_line: u32) {
+    pub(super) fn set_viewport(
+        &mut self,
+        doc: DocumentId,
+        view: ViewId,
+        first_line: u32,
+        last_line: u32,
+    ) {
         if !self.store.docs.contains_key(&doc) {
             return;
         }
@@ -128,8 +87,12 @@ impl Session {
     }
 
     /// The view state a client checkpointed, for a later attach to restore.
+    ///
+    /// Test-only until an attach replays it: the server answers every attach
+    /// with no view state yet (see `docs/remote.md`).
+    #[cfg(test)]
     #[must_use]
-    pub fn view_state(&self) -> &[u8] {
+    pub(crate) fn view_state(&self) -> &[u8] {
         &self.view_state
     }
 }

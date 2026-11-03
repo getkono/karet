@@ -11,10 +11,10 @@ members  = ["crates/*", "xtask"]
 default-members = ["crates/karet"]
 
 [workspace.package]
-version      = "0.5.0"
+version      = "0.7.1"
 edition      = "2024"
 rust-version = "1.92"                  # edition 2024 needs 1.85; pinned deps (gamut 0.3.1,
-                                       # ratatui 0.30, ratatui-image→quantette) raise the real floor
+                                       # ratatui 0.30) raise the real floor
 
 authors      = ["Justin Chung"]
 license      = "MIT OR Apache-2.0"
@@ -34,28 +34,28 @@ categories   = ["text-editors", "command-line-utilities"]
 # the bumped `0.2.0` package) and break `cargo update`. Path-only keeps them resolvable.
 # (`karet-pdf` keeps its version: it IS published — pure-Rust PDF rasterization has a
 # standalone consumer story; only the app consumes it in-workspace, behind `pdf`.)
-karet-core       = { path = "crates/karet-core", version = "0.5.0" }
-karet-filetype   = { path = "crates/karet-filetype", version = "0.5.0" }
-karet-text       = { path = "crates/karet-text", version = "0.5.0" }
-karet-treesitter = { path = "crates/karet-treesitter", version = "0.5.0" }
-karet-syntax     = { path = "crates/karet-syntax", version = "0.5.0" }
-karet-theme      = { path = "crates/karet-theme", version = "0.5.0" }
-karet-diff       = { path = "crates/karet-diff", version = "0.5.0" }
+karet-core       = { path = "crates/karet-core", version = "0.7.1" }
+karet-filetype   = { path = "crates/karet-filetype", version = "0.7.1" }
+karet-text       = { path = "crates/karet-text", version = "0.7.1" }
+karet-treesitter = { path = "crates/karet-treesitter", version = "0.7.1" }
+karet-syntax     = { path = "crates/karet-syntax", version = "0.7.1" }
+karet-theme      = { path = "crates/karet-theme", version = "0.7.1" }
+karet-diff       = { path = "crates/karet-diff", version = "0.7.1" }
 karet-markdown   = { path = "crates/karet-markdown" }
 karet-cbor       = { path = "crates/karet-cbor" }
 karet-docx       = { path = "crates/karet-docx" }
-karet-jsonrpc    = { path = "crates/karet-jsonrpc", version = "0.5.0" }
-karet-lsp        = { path = "crates/karet-lsp", version = "0.5.0" }
+karet-jsonrpc    = { path = "crates/karet-jsonrpc", version = "0.7.1" }
+karet-lsp        = { path = "crates/karet-lsp", version = "0.7.1" }
 karet-notebook   = { path = "crates/karet-notebook" }
 karet-dap        = { path = "crates/karet-dap" }
-karet-vcs        = { path = "crates/karet-vcs", version = "0.5.0" }
-karet-search     = { path = "crates/karet-search", version = "0.5.0" }
+karet-vcs        = { path = "crates/karet-vcs", version = "0.7.1" }
+karet-search     = { path = "crates/karet-search", version = "0.7.1" }
 karet-seam       = { path = "crates/karet-seam" }
 karet-fuzzy      = { path = "crates/karet-fuzzy" }
 karet-widgets    = { path = "crates/karet-widgets" }
-karet-editor     = { path = "crates/karet-editor", version = "0.5.0" }
-karet-fileview   = { path = "crates/karet-fileview", version = "0.5.0" }
-karet-pdf        = { path = "crates/karet-pdf", version = "0.5.0" }
+karet-editor     = { path = "crates/karet-editor", version = "0.7.1" }
+karet-fileview   = { path = "crates/karet-fileview", version = "0.7.1" }
+karet-pdf        = { path = "crates/karet-pdf", version = "0.7.1" }
 karet-session    = { path = "crates/karet-session" }
 karet-supervisor = { path = "crates/karet-supervisor" }
 karet-watch      = { path = "crates/karet-watch" }
@@ -64,14 +64,27 @@ karet-github     = { path = "crates/karet-github" }
 # The dependable pair: `-core` (pure lockfile→graph, the `viz` lens) and
 # `-fetch` (async registry + OSV checking for Cargo.toml hints). Same author,
 # alpha line — pinned to the exact published version karet was built against.
-dependable-fetch = "=0.1.2"
+# The pin only binds `-fetch`; its own `-core` requirement is a caret, so a
+# resolve that ignores Cargo.lock is free to pair them across an alpha-line
+# break. 0.1.2 + core 0.1.3 is exactly that pairing and does not compile
+# (`ManifestKind::lockfile_name` became `lockfiles`), which is why the
+# `install` task resolves `--locked`.
+dependable-fetch = "=0.1.3"
 # TOML formatting for the built-in fallback (taplo the library, not the LSP:
 # lossless CST + the ~20 even-better-toml options; pure Rust, no network).
 taplo = "0.14.0"
 toml  = "1.1.4"                        # read .taplo.toml formatter options
+# The taplo language server, run in-process as TOML's built-in provider (its
+# native releases carry no publisher digest, so karet cannot fetch them; the
+# crates.io checksum is the integrity check instead). rustls only: the default
+# feature set is the same, but naming it keeps native-tls (OpenSSL) out.
+taplo-lsp      = { version = "0.8.0", default-features = false, features = ["rustls-tls"] }
+taplo-common   = { version = "0.6.0", default-features = false } # NativeEnvironment
+lsp-async-stub = { version = "0.7.0", default-features = false } # the server's message type
+futures        = { version = "0.3.33", default-features = false, features = ["std"] } # the server's Sink-based writer
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
-blameline        = { path = "crates/blameline", version = "2.0.0", default-features = false }
+blameline        = { path = "crates/blameline", version = "2.0.4", default-features = false }
 
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
@@ -98,10 +111,17 @@ spargen   = { version = "=0.2.1", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"
-# NOTE: `ratatui-image` (terminal image protocols) is intentionally not centralized
-# here — its build script needs the system C library `chafa`. Wire it in
-# `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
+# Integrated terminal (app-only, behind karet's `terminal` feature): a pure-Rust
+# PTY (`portable-pty`, libc/nix on Unix, ConPTY via windows APIs) feeding the
+# Alacritty VT emulator. `alacritty_terminal`'s default `serde` feature is off:
+# nothing serializes terminal state.
+portable-pty       = "0.9.0"
+alacritty_terminal = { version = "0.26.0", default-features = false }
+# Safe `poll(2)` and pipes for the terminal's PTY reader, so closing a pane wakes
+# and ends it; already in the tree beneath `portable-pty`.
+filedescriptor     = "0.8.3"
+unicode-segmentation = "1.13.3"       # extended grapheme clusters: caret steps, deletes, cell widths
 url = "2.5.8"
 # Mermaid diagrams (pure Rust; ASCII/Unicode rendering for the markdown preview).
 # Pinned exactly: the crate is alpha with documented API churn, and 0.8.x raises
@@ -210,18 +230,28 @@ ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "s
 # Filesystem watching (karet-watch)
 notify                 = "8.2"
 notify-debouncer-full  = "0.7"
+# Parallelism
+# Data parallelism for the seam index: packages fan out, and each package's module
+# walk is a work-stolen frontier. Already in the lock file transitively (via nucleo).
+rayon         = "1.12"
+
 # Search
 ignore        = "0.4.26"
 regex         = "1.12.4"
+# The parser `regex` itself compiles with (same version, already in the lock
+# file): `karet-search` reads a query's syntax tree to tell whether a match can
+# cross a line break.
+regex-syntax  = "0.8.11"
 memchr        = "2.8.2"
 # Fuzzy / misc
 nucleo      = "0.5.0"
 base64      = "0.22.1"
-palette     = "0.7.6"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"
-command-group = { version = "5.0.1", features = ["with-tokio"] }
+# Base entry stays synchronous so a lean consumer (karet-vcs) does not inherit
+# tokio; the crates that need the async API add `features = ["with-tokio"]`.
+command-group = { version = "5.0.1" }
 # Configuration file (karet-session): JSONC parsing (pure-Rust, byte-span errors)
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
 jsonc-parser = { version = "0.32.4", features = ["serde", "cst"] }
@@ -229,10 +259,15 @@ schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).
 dependable-core = "0.1.2"
-# AI commit-message generation (karet-session `aicommit` feature): builds the prompt,
-# picks the model, and shells out to the `claude` CLI. Frontend-agnostic and
-# git-agnostic (we hand it the staged diff), pure-Rust, no network stack of its own.
-aicommit-core = "0.1.0"
+# AI commit-message generation (karet-session `aicommit` feature): builds the
+# prompt and picks the model. Frontend-agnostic and git-agnostic (we hand it the
+# staged diff), pure-Rust, no network stack of its own.
+aicommit-core = "0.2.0"
+# The agent transport `aicommit-core` generates over. It declares agent-text with
+# `default-features = false`, so it carries no adapter itself — the concrete CLI
+# harnesses are ours to choose, and we take both. Pure-Rust: the adapters drive
+# the local `claude`/`codex` executables over pipes, with no network stack.
+agent-text = { version = "0.1.1", default-features = false, features = ["claude-code", "codex"] }
 # GitHub REST client (karet-github). Pure-Rust TLS via rustls (ring), no OpenSSL /
 # native-tls system dependency. Blocking API so callers need no async runtime.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

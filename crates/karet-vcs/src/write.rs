@@ -2,94 +2,30 @@
 //!
 //! Repository reads stay in-process through `gix`. Mutations use the user's Git so
 //! worktree/index semantics, hooks, identities, and configuration match the command
-//! line without adding a C-backed library dependency. No operation invokes a shell.
+//! line without adding a C-backed library dependency. They run it through the
+//! hardened runners in [`crate::subprocess`]; no operation invokes a shell.
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Output;
+
+mod commit;
+
+pub use commit::CommitCancel;
+pub use commit::CommitOutcome;
+pub use commit::CommitOutputLine;
+pub use commit::OutputStream;
 
 use crate::Repository;
 use crate::StagedDiff;
 use crate::VcsError;
 
 impl Repository {
-    fn workdir(&self) -> Result<&Path, VcsError> {
-        self.inner
-            .workdir()
-            .ok_or_else(|| VcsError::Git("repository has no working directory".to_string()))
-    }
-
-    pub(crate) fn git_output<I, S>(&self, args: I) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        Command::new("git")
-            .args(args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true")
-            .output()
-            .map_err(|error| VcsError::GitUnavailable(error.to_string()))
-    }
-
-    /// [`git_checked`](Self::git_checked) with extra environment overrides
-    /// (e.g. a prepared `GIT_SEQUENCE_EDITOR` for interactive rebase).
-    pub(crate) fn git_checked_with_env<I, S>(
-        &self,
-        args: I,
-        env: &[(&str, &str)],
-    ) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let mut command = Command::new("git");
-        command
-            .args(args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true");
-        for (key, value) in env {
-            command.env(key, value);
-        }
-        let output = command
-            .output()
-            .map_err(|error| VcsError::GitUnavailable(error.to_string()))?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(VcsError::Git(if message.is_empty() {
-                format!("git exited with {}", output.status)
-            } else {
-                message
-            }))
-        }
-    }
-
-    pub(crate) fn git_checked<I, S>(&self, args: I) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let output = self.git_output(args)?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(VcsError::Git(if message.is_empty() {
-                format!("git exited with {}", output.status)
-            } else {
-                message
-            }))
-        }
+    /// The `.git` directory, for the streaming commit runner's lock check.
+    pub(crate) fn commit_git_dir(&self) -> &Path {
+        self.inner.path()
     }
 
     fn has_head(&self) -> Result<bool, VcsError> {
@@ -177,18 +113,23 @@ impl Repository {
     }
 
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
-        self.git_checked([
-            OsStr::new("commit"),
-            OsStr::new("--quiet"),
-            OsStr::new("-m"),
-            OsStr::new(message),
-        ])?;
-        let output = self.git_checked(["rev-parse", "HEAD"])?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        // One commit path, so hooks behave identically whether or not the caller
+        // wants their output. Nothing holds the token, so nothing can cancel it.
+        match self.commit_with_output(message, &CommitCancel::new(), &mut |_| {})? {
+            CommitOutcome::Created(oid) => Ok(oid),
+            CommitOutcome::Cancelled => Err(VcsError::Git(
+                "commit was cancelled without a canceller".to_string(),
+            )),
+        }
     }
 
     pub(crate) fn git_staged_diff(&self) -> Result<StagedDiff, VcsError> {
-        let patch = self.git_checked(["diff", "--cached", "--binary", "--no-ext-diff"])?;
+        // Deliberately *not* `--binary`: this diff describes a change to a reader
+        // (see `Repository::staged_diff`), and an embedded binary payload is both
+        // unreadable and unbounded. Without the flag git still records that the
+        // file changed ("Binary files a/x and b/x differ"), which is the whole
+        // signal a summary needs.
+        let patch = self.git_checked(["diff", "--cached", "--no-ext-diff"])?;
         let stat = self.git_checked(["diff", "--cached", "--stat", "--no-ext-diff"])?;
         let names = self.git_checked(["diff", "--cached", "--name-only", "--no-ext-diff"])?;
         Ok(StagedDiff {
@@ -211,10 +152,9 @@ impl Repository {
         if reverse {
             args.push("--reverse");
         }
-        let mut child = Command::new("git")
+        let mut child = self
+            .git_command()?
             .args(&args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -276,55 +216,17 @@ fn remove_untracked(path: &Path) -> Result<(), VcsError> {
 mod tests {
     use std::path::Path;
     use std::path::PathBuf;
-    use std::process::Command;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
 
     use crate::Repository;
     use crate::Selection;
     use crate::StatusKind;
     use crate::VcsError;
+    use crate::test_support::TestRepo;
+    use crate::test_support::git;
+    use crate::test_support::write;
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    /// A temp repository removed on drop.
-    struct TempRepo(PathBuf);
-
-    impl Drop for TempRepo {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn git(dir: &Path, args: &[&str]) -> Result<(), VcsError> {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .map_err(|e| VcsError::Git(e.to_string()))?
-            .success();
-        ok.then_some(())
-            .ok_or_else(|| VcsError::Git(format!("git {args:?} failed")))
-    }
-
-    fn init_repo() -> Result<TempRepo, VcsError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("karet-vcs-write-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|e| VcsError::Git(e.to_string()))?;
-        let repo = TempRepo(path);
-        git(&repo.0, &["init", "-q"])?;
-        git(&repo.0, &["config", "user.email", "test@example.com"])?;
-        git(&repo.0, &["config", "user.name", "karet test"])?;
-        git(&repo.0, &["config", "commit.gpgsign", "false"])?;
-        Ok(repo)
-    }
-
-    fn write(dir: &Path, rel: &str, contents: &[u8]) -> Result<(), VcsError> {
-        let p = dir.join(rel);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| VcsError::Git(e.to_string()))?;
-        }
-        std::fs::write(&p, contents).map_err(|e| VcsError::Git(e.to_string()))
+    fn init_repo() -> Result<TestRepo, VcsError> {
+        crate::test_support::init("write")
     }
 
     #[test]
@@ -414,8 +316,57 @@ mod tests {
         r.apply_index_patch(patch, true)?;
         let staged = r.staged_diff()?;
         assert!(staged.patch.is_empty(), "reverse apply un-staged it");
-        // A garbage patch is a clean error, not a panic.
-        assert!(r.apply_index_patch("not a patch", false).is_err());
+        // A garbage patch is a clean error carrying git's stderr, not a panic.
+        assert!(matches!(
+            r.apply_index_patch("not a patch", false),
+            Err(VcsError::Git(message)) if !message.is_empty() && !message.starts_with("git exited with")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn staged_diff_names_binary_files_without_embedding_them() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        // A NUL byte is what makes git treat the blob as binary, and 0xff bytes
+        // are not valid UTF-8 — so if the payload ever leaked into the patch,
+        // the lossy decode would leave replacement characters behind.
+        let blob: Vec<u8> = [0u8, 1, 2, 0xff, 0xfe].repeat(512);
+        write(&repo.0, "logo.bin", &blob)?;
+        write(&repo.0, "a.txt", b"hello\n")?;
+        let r = Repository::discover(&repo.0)?;
+        r.stage(&[PathBuf::from("logo.bin"), PathBuf::from("a.txt")])?;
+
+        let diff = r.staged_diff()?;
+        assert_eq!(diff.file_count, 2);
+        // The change is reported...
+        assert!(
+            diff.patch.contains("logo.bin"),
+            "the binary file is still named: {}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("Binary files"),
+            "git marks it as binary: {}",
+            diff.patch
+        );
+        // ...but its contents are not, so the patch stays readable and bounded.
+        assert!(
+            !diff.patch.contains("GIT binary patch"),
+            "no binary payload: {}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains('\u{fffd}'),
+            "no lossily-decoded binary bytes: {}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.len() < blob.len(),
+            "the patch is far smaller than the blob it describes: {} bytes",
+            diff.patch.len()
+        );
+        // The text file alongside it is unaffected.
+        assert!(diff.patch.contains("+hello"), "patch: {}", diff.patch);
         Ok(())
     }
 

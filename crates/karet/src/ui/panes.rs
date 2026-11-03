@@ -1,22 +1,26 @@
 use super::*;
 
 /// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
-/// each pane's clickable regions for mouse routing.
+/// each pane's clickable regions and the split dividers into `frame`.
 pub(super) fn draw_panes(
     f: &mut Frame,
     app: &mut App,
     theme: &Theme,
     area: Rect,
-    hits: &mut ScrollHits,
+    frame: &mut FrameHits,
 ) {
-    app.pane_frames.clear();
-    app.image_area = None;
-    app.editor_rect = Rect::default();
-    app.markdown_preview_rect = Rect::default();
-    app.blame_rect = None;
-    app.markdown_link_hits.clear();
-    app.commit_badge_rect = None;
+    app.inlay_ui.hits.clear();
+    let hits = &mut frame.scroll;
     let focused = app.focus_pane();
+    // A maximised pane takes the whole area alone, with no dividers to drag. One
+    // that lost focus since it was maximised is dropped by `App::prepare_frame`;
+    // reading it through `maximized_pane` keeps this frame right without it.
+    let maximized = app.maximized_pane().is_some();
+    let tiles = if maximized {
+        vec![(focused, area)]
+    } else {
+        app.layout.layout(area)
+    };
     // Borrowed straight off the settings field so the reference stays disjoint
     // from the mutable tab borrows below.
     #[cfg(feature = "mermaid")]
@@ -28,35 +32,56 @@ pub(super) fn draw_panes(
         .then_some(app.settings.markdown.mermaid.fence_languages.as_slice());
     #[cfg(not(feature = "mermaid"))]
     let mermaid: Option<&[String]> = None;
+    let preview = PreviewEnv {
+        mermaid,
+        images: &app.preview_images,
+        icon_style: app.icon_style,
+    };
     let color_highlight = app.settings.editor.color_highlight.enabled;
-    let editor_focused = app.focus == Focus::Editor;
+    let language_servers = &app.lsp_runtime.servers;
+    let editor_focused = app.keyboard.focus() == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
-    for (pane, rect) in app.layout.layout(area) {
+    // Resolved up front, for every pane, because `PaneCtx` is assembled while
+    // `app.stored` is mutably borrowed -- a lookup inside the loop would not
+    // compile. Each pane badges its own active tab, so a background pane reports
+    // its file's condition rather than inheriting the focused pane's.
+    let lsp_badges: HashMap<karet_widgets::PaneId, Option<LanguageServerBadgeSummary>> = tiles
+        .iter()
+        .map(|&(pane, _)| {
+            let tab = if pane == focused {
+                app.tabs.get(app.active)
+            } else {
+                app.stored
+                    .get(&pane)
+                    .and_then(|stored| stored.tabs.get(stored.active))
+            };
+            (pane, tab.and_then(|tab| app.language_server_badge_for(tab)))
+        })
+        .collect();
+    for (pane, rect) in tiles {
         let is_focused = pane == focused;
-        // Only the focused pane's bars are grabbable, for the same reason only its
-        // `editor_rect` is kept: every write-back path here targets the active tab.
-        // A background pane's bars are painted, then dropped on the floor.
-        let mut unfocused = ScrollHits::default();
-        let sink = if is_focused {
-            &mut *hits
-        } else {
-            &mut unfocused
-        };
         let stored_tab_width = (!is_focused)
             .then(|| app.stored.get(&pane))
             .flatten()
             .and_then(|stored| stored.tabs.get(stored.active))
             .map(|tab| app.tab_width_for(tab));
         let rendered = if is_focused {
-            let resolved = app.tabs.get(app.active).map(|tab| {
+            let resolved = app
+                .tabs
+                .get(app.active)
+                .map(|tab| app.settings.editor.for_language(tab.config_file_type()));
+            let word_wrap = resolved.map_or(
                 app.settings
                     .editor
-                    .for_language(crate::app::tab_language(tab))
-            });
-            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
-            let sticky_scroll =
-                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+                    .word_wrap
+                    .map(karet_session::config::schema::WordWrap::wraps),
+                |r| r.word_wrap(),
+            );
+            let display = EditorDisplay::resolve(
+                resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
+            )
+            .with_undercurl(app.caps.undercurl);
             let tab_width = app
                 .tabs
                 .get(app.active)
@@ -64,25 +89,36 @@ pub(super) fn draw_panes(
             let blame = app
                 .live_blame
                 .as_ref()
-                .and_then(crate::app::LiveBlame::decoration);
+                .and_then(crate::app::LiveBlame::virtual_text);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
-                mermaid,
+                preview,
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
-                debug_stopped: app.debug_stopped.as_ref(),
+                debug_stopped: app.debugger.stopped.as_ref(),
                 ref_labels: &app.scm.ref_labels,
+                repo_state: app.scm.repository.as_ref().map(|snapshot| &snapshot.state),
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: true,
                 editor_focused,
                 graphical_cursor,
                 word_wrap,
-                sticky_scroll,
+                display,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                inlay_hints: &app.docs.inlay_hints,
+                code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
+                symbols: &app.docs.symbols,
+                line_changes: app
+                    .settings
+                    .git
+                    .decorations
+                    .then_some(&app.docs.line_changes),
+                language_servers,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -90,6 +126,9 @@ pub(super) fn draw_panes(
                     .and_then(|t| t.find.clone()),
                 blame,
                 definition_underline: app.definition_underline_decoration(),
+                code_action_bulb: app.code_action_bulb_decoration(),
+                inline_ghost: app.inline_ghost_render(),
+                occurrences: app.occurrence_decorations(),
                 blame_clickable: app
                     .live_blame
                     .as_ref()
@@ -97,70 +136,107 @@ pub(super) fn draw_panes(
                     .is_some(),
                 markdown_link_hover: app.markdown_link_hover,
                 pane_action_hover: app.pane_action_hover,
+                selection: app.surface_selection,
+                lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
-            render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
+            render_pane(f, &mut app.tabs, app.active, rect, &ctx, hits)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
-            let resolved = stored.tabs.get(stored.active).map(|tab| {
+            let resolved = stored
+                .tabs
+                .get(stored.active)
+                .map(|tab| app.settings.editor.for_language(tab.config_file_type()));
+            let word_wrap = resolved.map_or(
                 app.settings
                     .editor
-                    .for_language(crate::app::tab_language(tab))
-            });
-            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
-            let sticky_scroll =
-                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+                    .word_wrap
+                    .map(karet_session::config::schema::WordWrap::wraps),
+                |r| r.word_wrap(),
+            );
+            let display = EditorDisplay::resolve(
+                resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
+            )
+            .with_undercurl(app.caps.undercurl);
             let tab_width = stored_tab_width.unwrap_or(4);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
-                mermaid,
+                preview,
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
-                debug_stopped: app.debug_stopped.as_ref(),
+                debug_stopped: app.debugger.stopped.as_ref(),
                 ref_labels: &app.scm.ref_labels,
+                repo_state: app.scm.repository.as_ref().map(|snapshot| &snapshot.state),
                 icon_style: app.icon_style,
                 graphics,
                 pane_focused: false,
                 editor_focused: false,
                 graphical_cursor: false,
                 word_wrap,
-                sticky_scroll,
+                display,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                inlay_hints: &app.docs.inlay_hints,
+                code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
+                symbols: &app.docs.symbols,
+                line_changes: app
+                    .settings
+                    .git
+                    .decorations
+                    .then_some(&app.docs.line_changes),
+                language_servers,
                 find: None,
                 blame: None,
                 definition_underline: None,
+                code_action_bulb: None,
+                inline_ghost: None,
+                occurrences: Vec::new(),
                 blame_clickable: false,
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,
+                selection: None,
+                lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
-            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
+            // Every pane's bars are recorded, not just the focused pane's. Their
+            // surfaces name "the active tab", so the mouse lends a background
+            // pane the focus for the length of a gesture on one (`App::with_pane`).
+            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, hits)
         } else {
             continue;
         };
         if is_focused {
-            app.editor_rect = rendered.editor_rect;
-            app.markdown_preview_rect = rendered.markdown_preview_rect;
-            app.image_area = rendered.image_area;
-            app.blame_rect = rendered.blame_rect;
-            app.markdown_link_hits = rendered.markdown_link_hits;
-            app.commit_badge_rect = rendered.commit_badge_rect;
+            app.inlay_ui.hits = rendered.inlay_hits;
         }
-        app.pane_frames.push(crate::app::PaneFrame {
+        frame.panes.push(crate::app::PaneFrame {
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
             tab_hits: rendered.tab_hits,
             action_hits: rendered.action_hits,
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
+            lsp_badge_hit: rendered.lsp_badge_hit,
             content_rect: rendered.content_rect,
             editor_rect: rendered.editor_rect,
+            markdown_preview_rect: rendered.markdown_preview_rect,
             commit_file_hits: rendered.commit_file_hits,
+            commit_dir_hits: rendered.commit_dir_hits,
+            commit_rail_rect: rendered.commit_rail_rect,
             commit_collapse_hits: rendered.commit_collapse_hits,
+            select_regions: rendered.select_regions,
+            blame_rect: rendered.blame_rect,
+            commit_badge_rect: rendered.commit_badge_rect,
+            image_area: rendered.image_area,
+            find_rects: rendered.find_rects,
+            markdown_link_hits: rendered.markdown_link_hits,
         });
     }
-    app.pane_dividers = app.layout.dividers(area);
-    for divider in app.pane_dividers.iter().copied() {
+    frame.pane_dividers = if maximized {
+        Vec::new()
+    } else {
+        app.layout.dividers(area)
+    };
+    for divider in frame.pane_dividers.iter().copied() {
         let emphasized = app.pane_divider_hover == Some(divider)
             || app.pane_resize.is_some_and(|resize| {
                 resize.divider.axis == divider.axis
@@ -218,20 +294,14 @@ pub(super) fn render_pane(
     ])
     .split(area);
     let (tabstrip_rect, tab_hits, action_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
-    let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
-        let hits = draw_pane_breadcrumb(
-            f,
-            tabs.get(active),
-            ctx.theme,
-            ctx.root,
-            ctx.icon_style,
-            parts[1],
-        );
-        (parts[1], hits)
+    let (breadcrumb_rect, breadcrumb_hits, lsp_badge_hit) = if bc == 1 {
+        let (hits, badge_hit) = draw_pane_breadcrumb(f, tabs.get(active), ctx, parts[1]);
+        (parts[1], hits, badge_hit)
     } else {
-        (Rect::default(), Vec::new())
+        (Rect::default(), Vec::new(), None)
     };
     let mut content = parts[2];
+    let mut find_rects = FindBarRects::default();
     if let Some(find) = ctx.find.as_ref() {
         // One row for find; a second when the replace field is shown.
         let want = if find.replace_visible { 2 } else { 1 };
@@ -240,7 +310,7 @@ pub(super) fn render_pane(
             height: h,
             ..content
         };
-        draw_find_bar(f, find, ctx.theme, bar);
+        find_rects = draw_find_bar(f, find, ctx.theme, bar);
         content = Rect {
             y: content.y.saturating_add(h),
             height: content.height.saturating_sub(h),
@@ -254,21 +324,32 @@ pub(super) fn render_pane(
         action_hits,
         breadcrumb_rect,
         breadcrumb_hits,
+        lsp_badge_hit,
         content_rect: content,
         editor_rect: painted.editor_rect,
         markdown_preview_rect: painted.markdown_preview_rect,
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
+        commit_dir_hits: painted.dir_hits,
+        commit_rail_rect: painted.rail_rect.unwrap_or_default(),
         commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
+        inlay_hits: painted.inlay_hits,
         markdown_link_hits: painted.markdown_link_hits,
+        select_regions: painted.select_regions,
+        find_rects,
     }
 }
 
 /// While dragging a tab over another pane, tint the region it would land in (a half
 /// for an edge split, the whole pane for a center move) — VS Code's drop preview.
-pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
+pub(super) fn draw_drop_preview(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    panes: &[crate::app::PaneFrame],
+) {
     let Some(TabDrag {
         hover: Some((pane, zone)),
         ..
@@ -276,7 +357,7 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
     else {
         return;
     };
-    let Some(frame) = app.pane_frames.iter().find(|fr| fr.pane == pane) else {
+    let Some(frame) = panes.iter().find(|fr| fr.pane == pane) else {
         return;
     };
     let preview = karet_widgets::drop_preview_rect(frame.content_rect, zone);
@@ -288,19 +369,27 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
     );
 }
 
-/// Draw the notification toast stack (bottom-right) and record each card's clickable
-/// region for dismissal hit-testing. A no-op when there are no active notifications.
-/// Draw the completion popup anchored at the caret: aligned with the start of
-/// the word being completed, below the caret's line, or above it when there is
-/// not enough room below. Sized so the widest label+detail row is fully
-/// visible within the editor area (the widget truncates details with an
+/// Draw the completion popup anchored at the caret inside `editor`: aligned with
+/// the start of the word being completed, below the caret's line, or above it
+/// when there is not enough room below. Sized so the widest label+detail row is
+/// fully visible within the editor area (the widget truncates details with an
 /// ellipsis when the editor itself is too narrow).
-pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits: &mut ScrollHits) {
+pub(super) fn draw_completion(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    editor: Rect,
+    hits: &mut ScrollHits,
+) {
+    // Forgotten first, so a frame that ends up not painting it leaves nothing for
+    // the pointer to hit; the render below records where it went.
+    if let Some(ui) = app.completion.popup.as_mut() {
+        ui.list.hide();
+    }
     // The filter doubles as the "popup still applies" check.
     let Some(filter) = app.completion_filter() else {
         return;
     };
-    let editor = app.editor_rect;
     if editor.width == 0 || editor.height == 0 {
         return;
     }
@@ -330,7 +419,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         .saturating_sub(prefix_cols)
         .clamp(editor.left(), editor.right().saturating_sub(1));
 
-    let Some(ui) = app.completion.as_mut() else {
+    let Some(ui) = app.completion.popup.as_mut() else {
         return;
     };
     if filter != ui.last_filter {
@@ -338,7 +427,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         ui.last_filter.clone_from(&filter);
     }
     let crate::completion::CompletionUi { items, list, .. } = ui;
-    let mut popup = CompletionPopup::new(items, &mut app.completion_matcher, &filter, theme);
+    let mut popup = CompletionPopup::new(items, &mut app.completion.matcher, &filter, theme);
     let avail_w = editor.right().saturating_sub(x).max(1);
     let (width, rows) = popup.desired_size((avail_w, karet_widgets::completion::MAX_VISIBLE_ROWS));
     if width == 0 || rows == 0 {
@@ -359,26 +448,58 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         return;
     }
     let rect = Rect::new(x, y, width, height);
+    let ranked = popup.ranked();
     f.render_widget(Clear, rect);
     f.render_stateful_widget(popup, rect, list);
     // The popup lays itself out inside its own render, so the only way to learn
     // where its bar landed is to read it back afterwards. Recorded last, so it wins
     // the hit test over the editor bar it floats above.
     hits.record_track(list.track(), ScrollSurface::Completion);
+    let docs = ranked
+        .get(list.selected())
+        .and_then(|&index| items.get(index))
+        .and_then(|item| item.documentation.as_ref());
+    if let Some(docs) = docs {
+        draw_completion_docs(f, editor, rect, docs, theme);
+    }
+}
+
+/// Draw the selected candidate's documentation beside the completion popup at
+/// `popup`, rendered as markdown the way a hover is; not at all when neither
+/// side of the popup has room for it.
+fn draw_completion_docs(
+    f: &mut Frame,
+    editor: Rect,
+    popup: Rect,
+    docs: &karet_core::Markup,
+    theme: &Theme,
+) {
+    let pane = karet_widgets::hover::HoverPopup::new(docs, theme);
+    let rows_at = |width| u16::try_from(pane.lines(width).len()).unwrap_or(u16::MAX);
+    let Some(rect) = karet_widgets::completion::docs_pane_rect(editor, popup, rows_at) else {
+        return;
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        ratatui::widgets::Block::default().style(
+            ratatui::style::Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
+        ),
+        rect,
+    );
+    f.render_widget(pane, rect);
 }
 
 /// Draw the hover popup floating over the editor, anchored at the caret —
 /// above it when there is room (the line under discussion stays visible),
 /// below otherwise. Content is pre-wrapped to the chosen width; overflow past
-/// the available height is clipped.
-pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
-    let Some(ui) = &app.hover_ui else {
+/// the available height is clipped, and scrolls into view under the wheel.
+pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme, editor: Rect) {
+    let Some(ui) = app.hover_ui.as_mut() else {
         return;
     };
-    let editor = app.editor_rect;
-    if editor.width < 8 || editor.height < 3 {
-        return;
-    }
+    // Forgotten first, so a frame that does not paint the popup leaves nothing
+    // for the pointer to hit.
+    ui.rect = Rect::default();
     let caret_cell = {
         let Some(tab) = app.tabs.get(app.active) else {
             return;
@@ -399,21 +520,50 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
         return; // caret scrolled out of view
     };
     let popup = karet_widgets::hover::HoverPopup::new(&ui.markup, theme);
+    let Some((rect, content_rows)) =
+        place_hover_popup(f, editor, (caret_x, caret_y), &popup, theme)
+    else {
+        return;
+    };
+    // Content taller than the room left scrolls under the wheel; clamped here, as
+    // only the draw knows how many rows the content wrapped to.
+    ui.scroll = ui.scroll.min(content_rows.saturating_sub(rect.height));
+    ui.rect = rect;
+    f.render_widget(popup.scroll(ui.scroll), rect);
+}
+
+/// Place a hover-style popup against the cell `anchor` inside `editor`, then
+/// clear its rect and paint its background: above the anchor when the
+/// content fits there or there is more room above, below otherwise, and
+/// shifted left so it stays inside the editor. Returns the rect and the
+/// rows the content wrapped to, or `None` when the editor is too small or
+/// there is no row to draw in.
+fn place_hover_popup(
+    f: &mut Frame,
+    editor: Rect,
+    (anchor_x, anchor_y): (u16, u16),
+    popup: &karet_widgets::hover::HoverPopup<'_>,
+    theme: &Theme,
+) -> Option<(Rect, u16)> {
+    if editor.width < 8 || editor.height < 3 {
+        return None;
+    }
     let width = editor.width.saturating_sub(2).clamp(8, 72);
-    let lines = popup.lines(width);
-    let content_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX).max(1);
-    let above = caret_y.saturating_sub(editor.top());
-    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let content_rows = u16::try_from(popup.lines(width).len())
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let above = anchor_y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(anchor_y.saturating_add(1));
     let (y, height) = if above >= content_rows || above >= below {
         let height = content_rows.min(above);
-        (caret_y.saturating_sub(height), height)
+        (anchor_y.saturating_sub(height), height)
     } else {
-        (caret_y.saturating_add(1), content_rows.min(below))
+        (anchor_y.saturating_add(1), content_rows.min(below))
     };
     if height == 0 {
-        return;
+        return None;
     }
-    let x = caret_x.clamp(
+    let x = anchor_x.clamp(
         editor.left(),
         editor.right().saturating_sub(width).max(editor.left()),
     );
@@ -425,11 +575,33 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
         ),
         rect,
     );
-    f.render_widget(popup, rect);
+    Some((rect, content_rows))
 }
 
-pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.toast_hits.clear();
+/// Draw the tooltip of the inlay hint the pointer rests on, against the
+/// cells of the part it describes: above them when there is room, so the
+/// line it annotates stays readable, below otherwise. Clipped to the editor,
+/// like the hover popup.
+pub(super) fn draw_inlay_tooltip(f: &mut Frame, app: &App, theme: &Theme, editor: Rect) {
+    let Some(tooltip) = app.inlay_ui.tooltip.as_ref() else {
+        return;
+    };
+    let anchor = tooltip.anchor;
+    let popup = karet_widgets::hover::HoverPopup::new(&tooltip.markup, theme);
+    if let Some((rect, _)) = place_hover_popup(f, editor, (anchor.x, anchor.y), &popup, theme) {
+        f.render_widget(popup, rect);
+    }
+}
+
+/// Draw the notification toast stack (bottom-right) and record each card's clickable
+/// region for dismissal hit-testing. A no-op when there are no active notifications.
+pub(super) fn draw_toasts(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
     if app.notifications.is_empty() {
         return;
     }
@@ -440,7 +612,7 @@ pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         corner: Corner::BottomRight,
     };
     for slot in toasts.layout(area) {
-        app.toast_hits.push(ToastHit {
+        frame.toast_hits.push(ToastHit {
             rect: slot.rect,
             id: slot.id,
         });
@@ -451,7 +623,13 @@ pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 /// Draw the find-in-file bar: a find row (query, match count, option toggles) and,
 /// when the replace field is shown, a replace row. Mirrors the workspace Search
 /// panel's model on the status-bar strip for a consistent find/replace experience.
-pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area: Rect) {
+/// Returns where its two editable fields landed, for pointer hit-testing.
+pub(super) fn draw_find_bar(
+    f: &mut Frame,
+    find: &FindState,
+    theme: &Theme,
+    area: Rect,
+) -> FindBarRects {
     use crate::tab::SearchField;
 
     let base = Style::default()
@@ -462,7 +640,9 @@ pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
     // Find row.
-    let editing_find = find.field == SearchField::Find;
+    // A field draws its caret only while the bar owns the keyboard; once the
+    // editor has it back, a second caret here would say keys land in the bar.
+    let editing_find = find.focused && find.field == SearchField::Find;
     let count = if find.query.is_empty() {
         String::new()
     } else if find.count == 0 {
@@ -480,13 +660,12 @@ pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area
             },
         )
     };
-    let find_spans = vec![
-        Span::styled(" Find: ", base),
-        Span::styled(
-            find.query.clone(),
-            if editing_find { base.fg(accent) } else { base },
-        ),
-        Span::styled(if editing_find { "_" } else { "" }, base),
+    let selection_bg = theme.role(ThemeRole::Selection).to_ratatui();
+    let caret = Style::default().fg(accent);
+    // The label, the field, then the count and toggles: the field's own rect is
+    // what a click is measured against, so it is laid out rather than inlined.
+    const FIND_LABEL: &str = " Find: ";
+    let trailer = vec![
         Span::styled(count, base.fg(dim)),
         Span::styled("   ", base),
         toggle(".*", find.regex),
@@ -494,37 +673,90 @@ pub(super) fn draw_find_bar(f: &mut Frame, find: &FindState, theme: &Theme, area
         toggle("Aa", find.case_sensitive),
         Span::styled(" ", base),
         toggle("\\b", find.whole_word),
+        Span::styled(" ", base),
+        toggle("Sel", find.scope.is_some()),
     ];
-    f.render_widget(Paragraph::new(Line::from(find_spans)).style(base), rows[0]);
+    let trailer_width =
+        u16::try_from(trailer.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
+    let label_width = u16::try_from(FIND_LABEL.len()).unwrap_or(u16::MAX);
+    let find_cols = Layout::horizontal([
+        Constraint::Length(label_width),
+        Constraint::Min(0),
+        Constraint::Length(trailer_width),
+    ])
+    .split(rows[0]);
+    f.render_widget(Paragraph::new(Line::styled(FIND_LABEL, base)), find_cols[0]);
+    f.render_widget(
+        Paragraph::new(text_field_text(
+            &find.query,
+            &find.query_edit,
+            editing_find,
+            base,
+            base.bg(selection_bg),
+            caret,
+        ))
+        .scroll((0, find.query_edit.scroll)),
+        find_cols[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(trailer)).style(base),
+        find_cols[2],
+    );
+    let mut rects = FindBarRects {
+        query: find_cols[1],
+        replace: None,
+    };
 
     // Replace row (only when shown and there is room).
     if find.replace_visible && rows[1].height >= 1 {
-        let editing_replace = find.field == SearchField::Replace;
-        let replace_spans = vec![
-            Span::styled(" Repl: ", base),
+        const REPLACE_LABEL: &str = " Repl: ";
+        let hint = Line::from(vec![
+            Span::styled("   ", base),
+            toggle("AB", find.preserve_case),
             Span::styled(
-                find.replace.clone(),
-                if editing_replace {
-                    base.fg(accent)
-                } else {
-                    base
-                },
-            ),
-            Span::styled(if editing_replace { "_" } else { "" }, base),
-            Span::styled(
-                "   (Enter replace · Alt+Enter all · Tab find)",
+                "   (Enter replace \u{b7} Alt+Enter all \u{b7} Tab find)",
                 base.fg(dim),
             ),
-        ];
+        ]);
+        let editing_replace = find.focused && find.field == SearchField::Replace;
+        let hint_width = u16::try_from(crate::ui::line_width(&hint)).unwrap_or(u16::MAX);
+        let replace_cols = Layout::horizontal([
+            Constraint::Length(u16::try_from(REPLACE_LABEL.len()).unwrap_or(u16::MAX)),
+            Constraint::Min(0),
+            Constraint::Length(hint_width),
+        ])
+        .split(rows[1]);
         f.render_widget(
-            Paragraph::new(Line::from(replace_spans)).style(base),
-            rows[1],
+            Paragraph::new(Line::styled(REPLACE_LABEL, base)),
+            replace_cols[0],
         );
+        f.render_widget(
+            Paragraph::new(text_field_text(
+                &find.replace,
+                &find.replace_edit,
+                editing_replace,
+                base,
+                base.bg(selection_bg),
+                caret,
+            ))
+            .scroll((0, find.replace_edit.scroll)),
+            replace_cols[1],
+        );
+        f.render_widget(Paragraph::new(hint).style(base), replace_cols[2]);
+        rects.replace = Some(replace_cols[1]);
     }
+    rects
 }
 
-/// Draw a centered modal overlay (quick-open / command palette).
-pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area: Rect) {
+/// Draw a centered modal overlay (quick-open / command palette). `loading`
+/// adds a muted note to the title that its list is still being gathered.
+pub(super) fn draw_overlay(
+    f: &mut Frame,
+    overlay: &Overlay,
+    loading: bool,
+    theme: &Theme,
+    area: Rect,
+) {
     let width = (u32::from(area.width) * 7 / 10).clamp(20, 80) as u16;
     let height = (u32::from(area.height) * 6 / 10).clamp(6, 18) as u16;
     let rect = centered(area, width, height);
@@ -533,9 +765,16 @@ pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area
     let style = Style::default()
         .bg(theme.role(ThemeRole::Background).to_ratatui())
         .fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let mut title = vec![Span::raw(overlay.title().to_string())];
+    if loading {
+        title.push(Span::styled(
+            format!(" · {}", overlay.loading_note()),
+            theme.style(ThemeRole::LineNumber),
+        ));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(overlay.title().to_string())
+        .title(Line::from(title))
         .style(style);
     let inner = block.inner(rect);
     f.render_widget(block, rect);

@@ -1,0 +1,387 @@
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use ratatui::style::Modifier;
+
+use super::support::*;
+use crate::app::*;
+use crate::view::View;
+
+/// A left click at `(column, row)`.
+fn click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn selecting_a_view_moves_focus_onto_it() {
+    let mut app = app();
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
+
+    app.dispatch(Command::SelectView(View::GitHub));
+    assert_eq!(app.view, View::GitHub);
+    // Load-bearing rather than merely tidy: focus follows the surface that now owns
+    // the content area, so keys land on what the user is looking at.
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
+
+    app.dispatch(Command::SelectView(View::Editor));
+    assert_eq!(app.view, View::Editor);
+}
+
+#[test]
+fn the_view_decides_the_active_keymap_layers() {
+    let mut app = app();
+    app.dispatch(Command::SelectView(View::GitHub));
+    assert_eq!(app.focus_target(), FocusTarget::Github);
+    // The sidebar is not the content area, so it keeps its own layers whatever
+    // view is showing.
+    app.keyboard.focus_sidebar();
+    assert_eq!(app.focus_target(), FocusTarget::Explorer);
+}
+
+#[test]
+fn every_view_is_reachable_by_palette_title_and_slug() {
+    for view in View::ALL {
+        let command = Command::SelectView(view);
+        assert_eq!(
+            crate::command::resolve_named(command.label()),
+            Ok(command),
+            "{view:?} by title"
+        );
+        let slug = command.hint_verb().expect("a short slug");
+        assert_eq!(
+            crate::command::resolve_named(slug),
+            Ok(command),
+            "{view:?} by slug"
+        );
+    }
+}
+
+#[test]
+fn the_startup_flag_selects_a_view() {
+    let mut app = app();
+    app.apply_startup_view(crate::cli::ViewChoice::Github);
+    assert_eq!(app.view, View::GitHub);
+}
+
+#[test]
+fn the_chrome_row_offers_every_view_and_marks_the_active_one() {
+    let mut app = app();
+    let rows = screen(&mut app, 100, 12);
+    for view in View::ALL {
+        assert!(rows[0].contains(view.title()), "{view:?} on the chrome row");
+    }
+    // The active view is the bold one; the others are not.
+    let buffer = frame(&mut app, 100, 12);
+    let bold = |x: u16| buffer[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
+    let hits = app.last_frame.view_hits.clone();
+    assert_eq!(hits.len(), View::ALL.len());
+    for (start, _, view) in hits {
+        assert_eq!(
+            bold(start + 1),
+            view == View::Editor,
+            "{view:?} emphasis follows the active view"
+        );
+    }
+}
+
+#[test]
+fn a_narrow_chrome_row_drops_every_label_at_once() {
+    // All names or none: a row showing "Editor" beside two bare icons reads as a
+    // rendering fault rather than as a deliberate compaction.
+    let mut app = app();
+    let rows = screen(&mut app, 16, 12);
+    for view in View::ALL {
+        assert!(
+            !rows[0].contains(view.title()),
+            "no labels at 16 columns: {:?}",
+            rows[0]
+        );
+    }
+    // Still one button per view, still clickable.
+    assert_eq!(app.last_frame.view_hits.len(), View::ALL.len());
+    let (start, end, _) = app.last_frame.view_hits[View::ALL.len() - 1];
+    assert!(end <= 16, "the last button fits the row: {start}..{end}");
+}
+
+#[test]
+fn clicking_the_chrome_row_switches_view() {
+    let mut app = app();
+    let _ = screen(&mut app, 100, 12);
+    let (start, _, view) = app
+        .last_frame
+        .view_hits
+        .iter()
+        .copied()
+        .find(|&(_, _, view)| view == View::GitHub)
+        .expect("a GitHub button");
+
+    assert!(app.handle_view_chrome_mouse(click(start, 0)));
+    assert_eq!(app.view, view);
+    // The whole row belongs to the switcher: a click on its empty right-hand end
+    // is consumed rather than falling through to the body below.
+    assert!(app.handle_view_chrome_mouse(click(99, 0)));
+    assert_eq!(app.view, view);
+}
+
+#[test]
+fn the_github_hooks_do_not_fire_under_another_view() {
+    // `github_key` and `github_mouse` run ahead of the keymap and read the GitHub
+    // surface directly. That surface is off screen under the editor view, so a
+    // keystroke or a click aimed at the editor must not drive it. (The same shape of
+    // guard covers the Seam query box at `input.rs` and the unbound-printable
+    // fallback into the active document.)
+    let mut app = app();
+    app.apply_github_availability(
+        Some(super::support::repository()),
+        super::github::anonymous_auth(),
+    );
+    app.keyboard.focus_editor();
+    let section = |app: &App| {
+        app.github
+            .dashboard()
+            .map(|dashboard| dashboard.section)
+            .expect("the dashboard to be installed")
+    };
+    let before = section(&app);
+
+    app.dispatch(Command::SelectView(View::Editor));
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_eq!(section(&app), before, "the hidden surface is untouched");
+
+    // Same for the click path, against a hit region the surface recorded for itself.
+    if let Some(dashboard) = app.github.dashboard_mut() {
+        dashboard.section_hits = vec![(
+            crate::app::github::GithubSection::PullRequests,
+            Rect::new(10, 2, 20, 1),
+        )];
+    }
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 12,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(section(&app), before, "a stale rect claims nothing");
+
+    // Under its own view the same key reaches it.
+    app.dispatch(Command::SelectView(View::GitHub));
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_ne!(section(&app), before);
+}
+
+#[test]
+fn a_view_over_the_editor_drops_the_panes_hit_regions() {
+    // The pane shell is not drawn, so its rects from the last editor frame must not
+    // keep claiming clicks — a press in the GitHub body would otherwise arm a text
+    // drag in a document that is not on screen.
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    assert!(!app.last_frame.panes.is_empty());
+    assert_ne!(app.last_frame.editor_rect(), Rect::default());
+
+    app.dispatch(Command::SelectView(View::GitHub));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.last_frame.panes.is_empty());
+    assert_eq!(app.last_frame.editor_rect(), Rect::default());
+    assert!(app.last_frame.pane_dividers.is_empty());
+}
+
+#[test]
+fn the_status_bar_names_the_showing_view_and_drops_the_tab_strip() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let editing = screen(&mut app, 100, 12);
+    let status = editing.len() - 1;
+    assert!(editing[status].contains("EDITOR"), "{:?}", editing[status]);
+
+    app.dispatch(Command::SelectView(View::GitHub));
+    let rows = screen(&mut app, 100, 12);
+    assert!(rows[status].contains("GITHUB"), "{:?}", rows[status]);
+    // The tab is still open behind the view, but its language describes a document
+    // that is not on screen.
+    assert!(
+        !rows[status].contains("TOML"),
+        "the tab-derived strip is dropped: {:?}",
+        rows[status]
+    );
+}
+
+#[test]
+fn the_sidebar_survives_a_round_trip_through_another_view() {
+    // The view gates *drawing* the sidebar, not the user's preference: coming back
+    // to the editor must restore the sidebar rather than leave it collapsed.
+    let mut app = app();
+    app.dispatch(Command::SelectView(View::GitHub));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SelectView(View::Editor));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.sidebar_visible);
+    assert!(app.last_frame.sidebar_rect.width > 0);
+}
+
+#[test]
+fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    app.outline.visible = true;
+    app.keyboard.focus_outline();
+    let _ = screen(&mut app, 100, 12);
+    let tiled = app.last_frame.main_rect;
+
+    app.dispatch(Command::ToggleZenMode);
+    let rows = screen(&mut app, 100, 12);
+    assert_eq!(
+        app.last_frame.main_rect,
+        Rect::new(0, 0, 100, 12),
+        "every row and column"
+    );
+    assert!(!app.sidebar_visible);
+    assert!(!app.outline.visible);
+    assert_eq!(app.outline.rect, Rect::default());
+    // Focus sat on the outline that vanished, so it moves where keys can land.
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
+    assert!(
+        !rows[11].contains("EDITOR"),
+        "no status bar: {:?}",
+        rows[11]
+    );
+    // Nothing drawn, so nothing may keep claiming clicks.
+    assert_eq!(app.last_frame.status_rect, Rect::default());
+    assert!(app.last_frame.status_hits.is_empty());
+    assert_eq!(app.last_frame.view_chrome_rect, Rect::default());
+    assert!(app.last_frame.view_hits.is_empty());
+
+    app.dispatch(Command::ToggleZenMode);
+    let rows = screen(&mut app, 100, 12);
+    assert!(app.sidebar_visible);
+    assert!(app.outline.visible);
+    assert_eq!(app.last_frame.main_rect, tiled);
+    assert!(rows[11].contains("EDITOR"), "{:?}", rows[11]);
+    assert_ne!(app.last_frame.view_chrome_rect, Rect::default());
+}
+
+#[test]
+fn a_panel_opened_in_zen_mode_shows_and_stays_open_after_it() {
+    let mut app = app();
+    app.sidebar_visible = false;
+    app.dispatch(Command::ToggleZenMode);
+    // Opening a panel must not strand focus on a sidebar that is not drawn.
+    app.dispatch(Command::SelectPanel(SidebarPanel::Search));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.last_frame.sidebar_rect.width > 0);
+    assert_eq!(
+        app.last_frame.status_rect,
+        Rect::default(),
+        "still in Zen Mode"
+    );
+
+    app.dispatch(Command::ToggleZenMode);
+    assert!(app.sidebar_visible, "what was opened meanwhile stays");
+    assert!(!app.outline.visible, "the outline was never shown");
+}
+
+#[test]
+fn maximise_draws_only_the_focused_pane_until_toggled_back() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 2);
+    assert!(!app.last_frame.pane_dividers.is_empty());
+    let focused = app.focus_pane();
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 1);
+    assert_eq!(app.last_frame.panes[0].pane, focused);
+    assert_eq!(
+        app.last_frame.panes[0].tabstrip_rect.x,
+        app.last_frame.main_rect.x
+    );
+    assert_eq!(
+        app.last_frame.panes[0].tabstrip_rect.width, app.last_frame.main_rect.width,
+        "the pane spans the whole content area"
+    );
+    assert!(
+        app.last_frame.pane_dividers.is_empty(),
+        "no divider to drag"
+    );
+    // The other pane is hidden, not closed.
+    assert_eq!(app.layout.pane_count(), 2);
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 2);
+    assert!(!app.last_frame.pane_dividers.is_empty());
+}
+
+#[test]
+fn focusing_another_pane_tiles_a_maximised_layout_again() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 1);
+
+    app.dispatch(Command::FocusNextPane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 2);
+    // Returning focus does not maximise it again: the mode ended.
+    app.dispatch(Command::FocusNextPane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.last_frame.panes.len(), 2);
+    assert_eq!(app.maximized_pane(), None);
+}
+
+#[test]
+fn keyboard_resize_leaves_the_hidden_layout_alone_while_maximised() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    let _ = screen(&mut app, 100, 12);
+    let widths = |app: &App| {
+        app.last_frame
+            .panes
+            .iter()
+            .map(|frame| (frame.pane, frame.tabstrip_rect.width))
+            .collect::<Vec<_>>()
+    };
+    let tiled = widths(&app);
+
+    app.dispatch(Command::ToggleMaximizePane);
+    app.dispatch(Command::ResizePaneLeft);
+    app.dispatch(Command::ResizePaneUp);
+    app.dispatch(Command::ResizePaneRight);
+    app.dispatch(Command::ResizePaneRight);
+    assert!(
+        app.maximized_pane().is_some(),
+        "resizing keeps the maximise"
+    );
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(widths(&app), tiled, "the split ratios are unchanged");
+
+    // Tiled again, the same command does resize.
+    app.dispatch(Command::ResizePaneLeft);
+    let _ = screen(&mut app, 100, 12);
+    assert_ne!(widths(&app), tiled);
+}
+
+#[test]
+fn a_lone_pane_has_nothing_to_maximise() {
+    let mut app = app();
+    app.dispatch(Command::ToggleMaximizePane);
+    assert_eq!(app.modes.maximized, None);
+}

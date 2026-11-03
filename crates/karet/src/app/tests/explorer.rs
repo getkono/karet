@@ -5,13 +5,13 @@ use crate::app::*;
 fn explorer_header_toolbar_click_begins_new_file() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.header_action_hits = vec![
+    app.last_frame.header_action_hits = vec![
         (20, 22, Command::ExplorerNewFile),
         (22, 24, Command::ExplorerNewFolder),
         (24, 26, Command::ExplorerRefresh),
@@ -28,13 +28,13 @@ fn explorer_blank_area_click_does_not_open_the_last_row() {
     write_file(&dir, "a.txt", b"a");
     let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -187,7 +187,7 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
     // Start from a different panel/focus to prove the reveal switches them.
     app.sidebar_panel = SidebarPanel::Search;
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     let target = dir.join("a/b/c.rs");
     app.reveal_in_explorer(&target);
@@ -198,7 +198,7 @@ fn reveal_in_explorer_expands_ancestors_and_selects_nested_file() {
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -214,7 +214,7 @@ fn reveal_in_explorer_selects_a_directory() {
     build_explorer_from_disk(&mut app);
 
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -224,7 +224,7 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
     write_file(&dir, "inside.txt", b"x");
     let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     let outside = dir
         .parent()
@@ -235,11 +235,13 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
 
     // Nothing changes but a status note.
     assert!(!app.sidebar_visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
-        app.status.as_deref().is_some_and(|s| s.contains("outside")),
+        last_message(&app)
+            .as_deref()
+            .is_some_and(|s| s.contains("outside")),
         "status: {:?}",
-        app.status
+        last_message(&app)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -250,7 +252,7 @@ fn reveal_in_explorer_missing_path_reports_status() {
     write_file(&dir, "inside.txt", b"x");
     let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     app.reveal_in_explorer(&dir.join("does-not-exist.txt"));
     // The verdict needs the listings: "not there" is only knowable once the tree
@@ -259,13 +261,13 @@ fn reveal_in_explorer_missing_path_reports_status() {
 
     // A path under the root but absent from the tree does not steal focus.
     assert!(!app.sidebar_visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
-        app.status
+        last_message(&app)
             .as_deref()
             .is_some_and(|s| s.contains("not in the explorer")),
         "status: {:?}",
-        app.status
+        last_message(&app)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -305,7 +307,7 @@ fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
     let mut app = app_at(dir.clone());
     select_explorer_path(&mut app, &dir.join("top.txt"));
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     // The root has no row of its own: revealing it shows and focuses the
     // Explorer but leaves the selection where it was.
@@ -314,7 +316,7 @@ fn reveal_in_explorer_of_the_root_focuses_the_explorer_without_reselecting() {
 
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(
         app.explorer.selected_path(),
         Some(dir.join("top.txt").as_path())
@@ -338,10 +340,11 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
             width: 40,
             height: 1,
         },
+        lsp_badge_hit: None,
         breadcrumb_hits: vec![BreadcrumbHit {
             start: 12,
             end: 15,
-            path: segment,
+            target: BreadcrumbTarget::Path(segment),
         }],
         content_rect: Rect {
             x: 10,
@@ -350,8 +353,13 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
             height: 10,
         },
         editor_rect: Rect::default(),
+        markdown_preview_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
+        select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }
 }
 
@@ -361,9 +369,9 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     write_file(&dir, "a/b/c.rs", b"code");
     let mut app = app_at(dir.clone());
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let target = dir.join("a/b");
-    app.pane_frames = vec![breadcrumb_frame(&app, target.clone())];
+    app.last_frame.panes = vec![breadcrumb_frame(&app, target.clone())];
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -376,7 +384,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     assert_eq!(app.explorer.selected_path(), Some(target.as_path()));
     assert!(app.sidebar_visible);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -385,8 +393,8 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
     let dir = test_dir("breadcrumb-gap");
     write_file(&dir, "a/b/c.rs", b"code");
     let mut app = app_at(dir.clone());
-    app.focus = Focus::Sidebar;
-    app.pane_frames = vec![breadcrumb_frame(&app, dir.join("a/b"))];
+    app.keyboard.focus_sidebar();
+    app.last_frame.panes = vec![breadcrumb_frame(&app, dir.join("a/b"))];
 
     // Column 16 is past the segment (a separator gap): the click lands on the
     // breadcrumb row but maps to no segment. Had it fallen through, the editor
@@ -398,7 +406,11 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
         modifiers: KeyModifiers::NONE,
     });
 
-    assert_eq!(app.focus, Focus::Sidebar, "the gap click fell through");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "the gap click fell through"
+    );
     assert_eq!(app.explorer.selected_path(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -416,12 +428,15 @@ fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
         "the breadcrumb separator did not paint:\n{painted}"
     );
 
-    let frame = app.pane_frames.first().expect("a pane frame");
+    let frame = app.last_frame.panes.first().expect("a pane frame");
     assert_eq!(frame.breadcrumb_rect.height, 1);
     let paths: Vec<_> = frame
         .breadcrumb_hits
         .iter()
-        .map(|h| h.path.clone())
+        .filter_map(|h| match &h.target {
+            BreadcrumbTarget::Path(path) => Some(path.clone()),
+            BreadcrumbTarget::Symbol(_) => None,
+        })
         .collect();
     // Segments above the workspace root ("/", "tmp", …) are inert: only the
     // root itself and the components below it are recorded.
@@ -447,13 +462,22 @@ fn explorer_delete_requires_confirmation() {
     select_explorer_path(&mut app, &dir.join("gone.txt"));
     app.dispatch(Command::ExplorerDelete);
     assert!(dir.join("gone.txt").exists());
-    assert!(app.pending_explorer_delete.is_some());
+    assert!(app.confirm.is_some(), "the delete raised a confirmation");
 
-    app.dispatch(Command::ConfirmExplorerDelete);
+    // The safe answer is selected on open, so Enter alone keeps the file.
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    settle_mutations(&mut app);
+    assert!(dir.join("gone.txt").exists(), "Enter alone deleted nothing");
+    assert!(app.confirm.is_none());
+
+    // Reaching the delete costs a deliberate step onto its row.
+    app.dispatch(Command::ExplorerDelete);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
 
     settle_mutations(&mut app);
     assert!(!dir.join("gone.txt").exists());
-    assert!(app.pending_explorer_delete.is_none());
+    assert!(app.confirm.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -478,13 +502,13 @@ fn explorer_context_menu_accepts_the_selected_file_command() {
         return;
     };
     let Some(duplicate) = menu
-        .entries
+        .entries()
         .iter()
         .position(|entry| entry.command() == Some(Command::ExplorerDuplicate))
     else {
         return;
     };
-    menu.selected = duplicate;
+    assert!(menu.select_row(duplicate));
     app.accept_context_menu();
     settle_mutations(&mut app);
 
@@ -504,13 +528,13 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
     let mut app = app_at(dir.clone());
     app.sidebar_visible = true;
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -529,7 +553,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
         column: 2,
-        row: app.sidebar_content_rect.y + row as u16,
+        row: app.last_frame.sidebar_content_rect.y + row as u16,
         modifiers: KeyModifiers::NONE,
     });
 
@@ -538,7 +562,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
         return;
     };
     let has = |command| {
-        menu.entries
+        menu.entries()
             .iter()
             .any(|entry| entry.command() == Some(command))
     };
@@ -552,7 +576,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     let dir = test_dir("context-empty");
     let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -565,7 +589,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
         return;
     };
     let has = |cmd: Command| {
-        menu.entries
+        menu.entries()
             .iter()
             .any(|entry| entry.command() == Some(cmd))
     };
@@ -574,10 +598,51 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     assert!(!has(Command::SidebarActivate));
     assert!(!has(Command::ExplorerRename));
     assert!(
-        menu.entries.iter().all(|entry| entry.enabled),
+        menu.entries().iter().all(|entry| entry.enabled),
         "explorer menu entries stay enabled"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The keyboard context menu opened while the sidebar is hidden lands on the
+/// selected row exactly where the sidebar shows it once painted, with and
+/// without Zen Mode's missing view switcher — not at the frame origin the
+/// hidden sidebar left behind.
+#[test]
+fn explorer_keyboard_context_menu_anchors_on_the_row_of_a_hidden_sidebar() {
+    for zen in [false, true] {
+        let dir = test_dir(if zen {
+            "context-hidden-zen"
+        } else {
+            "context-hidden"
+        });
+        write_file(&dir, "a.txt", b"a");
+        write_file(&dir, "b.txt", b"b");
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        if zen {
+            app.dispatch(Command::ToggleZenMode);
+            assert!(app.modes.zen.is_some(), "zen mode is on");
+        }
+        app.sidebar_panel = SidebarPanel::Explorer;
+        app.sidebar_visible = true;
+        select_explorer_path(&mut app, &dir.join("b.txt"));
+        let row = app.explorer.cursor() - app.explorer.offset();
+        let _ = frame(&mut app, 80, 24);
+        let shown = app.last_frame.sidebar_content_rect;
+        assert!(shown.width > 0, "the sidebar was painted");
+
+        app.sidebar_visible = false;
+        let _ = frame(&mut app, 80, 24);
+        assert_eq!(app.last_frame.sidebar_content_rect, Rect::default());
+        app.open_context_menu_for_selection();
+
+        let Some(menu) = app.context_menu.as_ref() else {
+            panic!("the menu opened");
+        };
+        let expected_y = shown.y + u16::try_from(row).unwrap_or(u16::MAX);
+        assert_eq!((menu.x, menu.y), (shown.x + 2, expected_y), "zen: {zen}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]
@@ -594,7 +659,7 @@ fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
             ContextMenuEntry::enabled(Command::ExplorerRefresh),
         ],
     ));
-    let selected = |app: &App| app.context_menu.as_ref().map(|m| m.selected);
+    let selected = |app: &App| app.context_menu.as_ref().map(ContextMenu::selected);
     // The initial selection lands on the first enabled row, not row 0.
     assert_eq!(selected(&app), Some(1));
     // Down skips the disabled row 2 and lands on 3; another Down stays put.
@@ -633,7 +698,9 @@ fn nested_repository_status_is_requested_once_and_rendered_when_non_clean() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::NestedRepositoryStatus { path } => Some((*id, path.clone())),
+                    SessionCommand::Vcs(VcsCommand::NestedRepositoryStatus { path }) => {
+                        Some((*id, path.clone()))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -683,7 +750,7 @@ fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
         RequestId(7),
         (
             nested.clone(),
-            Pending::at(now - crate::app::LOADING_REVEAL_DELAY + Duration::from_millis(1)),
+            Pending::at(now - crate::pending::LOADING_REVEAL_DELAY + Duration::from_millis(1)),
         ),
     );
 
@@ -697,7 +764,7 @@ fn nested_repository_loading_badge_respects_the_shared_reveal_delay() {
         RequestId(7),
         (
             nested.clone(),
-            Pending::at(now - crate::app::LOADING_REVEAL_DELAY - Duration::from_millis(50)),
+            Pending::at(now - crate::pending::LOADING_REVEAL_DELAY - Duration::from_millis(50)),
         ),
     );
     assert_eq!(app.nested_repository_badges(now).len(), 1);
@@ -729,7 +796,12 @@ fn invalidation_tombstones_an_already_queued_repository_status() {
     // than assuming — the tree's own listing requests come first now.
     let queued = backend.sent.lock().ok().and_then(|sent| {
         sent.iter()
-            .find(|(_, command)| matches!(command, SessionCommand::NestedRepositoryStatus { .. }))
+            .find(|(_, command)| {
+                matches!(
+                    command,
+                    SessionCommand::Vcs(VcsCommand::NestedRepositoryStatus { .. })
+                )
+            })
             .map(|(id, _)| *id)
     });
     let Some(queued) = queued else {
@@ -761,4 +833,60 @@ fn invalidation_tombstones_an_already_queued_repository_status() {
         )
     }));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A left press routed the way a real one is, through `handle_mouse`.
+fn left_click(app: &mut App, column: u16, row: u16) {
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// The first header cell of `panel`'s tab, as the last painted frame placed it.
+fn panel_tab(app: &App, panel: SidebarPanel) -> Option<(u16, u16)> {
+    app.last_frame
+        .panel_hits
+        .iter()
+        .find_map(|&(start, _, hit)| {
+            (hit == panel).then_some((start, app.last_frame.sidebar_rect.y))
+        })
+}
+
+/// #315: double-clicking the tab of the panel already open folds the sidebar.
+#[test]
+fn double_click_on_the_open_panel_tab_folds_the_sidebar() {
+    let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+    app.sidebar_panel = SidebarPanel::Explorer;
+    let _ = frame(&mut app, 100, 30);
+    let tab = panel_tab(&app, SidebarPanel::Explorer);
+    assert!(tab.is_some(), "the explorer tab is painted in the header");
+    let (col, row) = tab.unwrap_or_default();
+
+    left_click(&mut app, col, row);
+    assert!(app.sidebar_visible, "a single click keeps the sidebar open");
+    left_click(&mut app, col, row);
+
+    assert!(!app.sidebar_visible);
+    assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+}
+
+/// A double-click on a tab that was not open opens it and leaves the sidebar up,
+/// rather than opening it and folding it away on the second click.
+#[test]
+fn double_click_on_another_panel_tab_opens_it_without_folding() {
+    let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+    app.sidebar_panel = SidebarPanel::Explorer;
+    let _ = frame(&mut app, 100, 30);
+    let tab = panel_tab(&app, SidebarPanel::Search);
+    assert!(tab.is_some(), "the search tab is painted in the header");
+    let (col, row) = tab.unwrap_or_default();
+
+    left_click(&mut app, col, row);
+    left_click(&mut app, col, row);
+
+    assert!(app.sidebar_visible);
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
 }

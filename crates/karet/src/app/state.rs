@@ -1,8 +1,47 @@
 //! Grouped [`App`](super::App) sub-states: terminal capabilities, per-panel
-//! chrome recorded during the last render (mouse hit-testing), and per-document
-//! caches. Pure data — behavior stays on `App`.
+//! chrome recorded during the last render (mouse hit-testing), per-document
+//! caches, and the small records the shell's flows pass around. Data with at
+//! most derived accessors: a panel whose state carries behaviour (rebuilding
+//! its rows, folding, field focus) lives beside the module that drives it —
+//! `debugging`, `search`, `spelling`, `todos` — and the terminal probe itself
+//! is [`crate::term_caps`].
 
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use karet_core::BlameAttribution;
+use karet_core::Decoration;
+use karet_core::Diagnostic;
+use karet_core::InlayHint;
+use karet_core::Range;
+use karet_core::Symbol;
+use karet_core::ThemeRole;
+use karet_core::VirtualText;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::ChangeSummary;
+use karet_session::DocumentId;
+use karet_session::DocumentSettings;
+use karet_session::RepositorySnapshot;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::ViewId;
+use karet_vcs::Commit;
+use karet_widgets::ListSelection;
+use karet_widgets::PaneId;
+use karet_widgets::textarea::TextAreaState;
+use ratatui::layout::Rect;
+
+use super::inlay::HintRange;
+use super::inlay::PendingInlay;
+use crate::app::DEFAULT_SCM_COMMITS_H;
+use crate::app::OUTLINE_WIDTH;
+use crate::command::Command;
+use crate::pending::Pending;
+use crate::remote;
+use crate::tab::Section;
+use crate::tab::Tab;
 
 /// What the terminal was confirmed to support at startup. Capabilities are
 /// only ever *confirmed* (via handshakes), never assumed.
@@ -20,19 +59,38 @@ pub(crate) struct TerminalCaps {
     /// The last OSC 22 pointer shape sent (so hover doesn't re-send every
     /// mouse event), or `None` for the terminal's default shape.
     pub(crate) pointer_shape: Option<&'static str>,
+    /// Whether the Kitty graphics terminal also draws unicode placeholders, which
+    /// the markdown preview paints its images with.
+    pub(crate) placeholders: bool,
+    /// The pixel size of one terminal cell, as the terminal last reported it.
+    pub(crate) cell_px: (u32, u32),
+    /// Whether the environment names a terminal that draws a curly underline,
+    /// which diagnostics then use instead of a straight one.
+    pub(crate) undercurl: bool,
 }
 
 impl TerminalCaps {
-    /// Probe the environment for the graphics protocol; everything else starts
-    /// unconfirmed until the startup handshakes answer.
+    /// What the environment alone answers ([`crate::term_caps::probe_env`]);
+    /// everything a handshake confirms starts unconfirmed until the live app
+    /// probes the terminal.
     pub(crate) fn detect() -> Self {
-        let graphics = image::detect_protocol();
+        Self::from_capabilities(&crate::term_caps::probe_env())
+    }
+
+    /// The app's view of one probe: the same [`TerminalCapabilities`]
+    /// `--doctor` reports, so the two cannot disagree.
+    ///
+    /// [`TerminalCapabilities`]: crate::term_caps::TerminalCapabilities
+    pub(crate) fn from_capabilities(caps: &crate::term_caps::TerminalCapabilities) -> Self {
         Self {
-            graphics,
-            kitty_graphics: graphics == GraphicsProtocol::Kitty,
-            kitty_keyboard: false,
-            pointer_shapes: false,
+            graphics: caps.effective_graphics(),
+            kitty_graphics: caps.kitty_graphics_supported(),
+            kitty_keyboard: caps.keyboard_enhancement,
+            pointer_shapes: caps.pointer_shapes_supported(),
             pointer_shape: None,
+            placeholders: caps.kitty_placeholders(),
+            cell_px: karet_markdown::DEFAULT_CELL_PIXELS,
+            undercurl: caps.undercurl,
         }
     }
 }
@@ -56,6 +114,30 @@ pub(crate) struct OutlinePanel {
     /// The list's scroll offset (first visible row) from the last frame, so a
     /// click maps to the correct entry even when the list is scrolled.
     pub(crate) scroll: usize,
+    /// The active Markdown view's outline rows, reused across frames until its
+    /// text changes or another view becomes active.
+    pub(crate) markdown: crate::outline::MarkdownOutlineCache,
+}
+
+/// The screen-reclaiming modes for small terminals: Zen Mode and a maximised
+/// pane. Both are toggles that hide chrome without forgetting it.
+#[derive(Default)]
+pub(crate) struct ScreenModes {
+    /// While Zen Mode is on, the panels it hid, so ending it restores them.
+    /// `None` when Zen Mode is off.
+    pub(crate) zen: Option<ZenRestore>,
+    /// The pane drawn alone across the whole content area, or `None` when every
+    /// pane is tiled. Cleared when focus moves to another pane.
+    pub(crate) maximized: Option<PaneId>,
+}
+
+/// What Zen Mode hid when it began.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ZenRestore {
+    /// Whether the sidebar was shown.
+    pub(crate) sidebar: bool,
+    /// Whether the outline was shown.
+    pub(crate) outline: bool,
 }
 
 impl Default for OutlinePanel {
@@ -68,6 +150,7 @@ impl Default for OutlinePanel {
             content_rect: Rect::default(),
             width: OUTLINE_WIDTH,
             scroll: 0,
+            markdown: crate::outline::MarkdownOutlineCache::default(),
         }
     }
 }
@@ -81,12 +164,17 @@ pub(crate) struct ScmChrome {
     pub(crate) changes_rect: Rect,
     /// The editable inner rect of the permanent commit-message field.
     pub(crate) commit_rect: Rect,
+    /// The commit box's AI chip from the last frame, for hit-testing. Empty when
+    /// the chip was not painted, so a click cannot reach an invisible target.
+    pub(crate) ai_chip_rect: Rect,
     /// The total number of changes display rows from the last frame.
     pub(crate) total_rows: usize,
     /// The commit-log region scroll offset (bottom pinned region).
     pub(crate) commits_offset: usize,
     /// The commit-log region viewport rect from the last frame.
     pub(crate) commits_rect: Rect,
+    /// The pinned, clickable `COMMITS` title's rect from the last frame.
+    pub(crate) commits_title_rect: Rect,
     /// The total number of commit-log display rows from the last frame.
     pub(crate) commits_total: usize,
     /// The display row *within the commit-log region* of the "load more"
@@ -111,9 +199,11 @@ impl Default for ScmChrome {
             offset: 0,
             changes_rect: Rect::default(),
             commit_rect: Rect::default(),
+            ai_chip_rect: Rect::default(),
             total_rows: 0,
             commits_offset: 0,
             commits_rect: Rect::default(),
+            commits_title_rect: Rect::default(),
             commits_total: 0,
             more_row: None,
             commits_h: DEFAULT_SCM_COMMITS_H,
@@ -136,6 +226,10 @@ pub(crate) struct SearchChrome {
     pub(crate) query_rect: Rect,
     /// The editable replacement rect, if shown.
     pub(crate) replace_rect: Option<Rect>,
+    /// The editable include-glob rect, if shown.
+    pub(crate) includes_rect: Option<Rect>,
+    /// The editable exclude-glob rect, if shown.
+    pub(crate) excludes_rect: Option<Rect>,
     /// Clickable header buttons `(start, end, row, command)` (option toggles
     /// and replace-all).
     pub(crate) action_hits: Vec<(u16, u16, u16, Command)>,
@@ -152,188 +246,6 @@ pub(crate) struct SpellingChrome {
     pub(crate) action_hits: Vec<(u16, u16, u16, Command)>,
 }
 
-/// One row of the Spelling panel's list: a file header, or one misspelled word
-/// under it. Both are selectable — the issue asks for every *instance* to be
-/// clickable, and grouping keeps a narrow sidebar readable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SpellingRow {
-    /// A file heading; `hit` is the file's first hit and `count` its total.
-    File {
-        /// Index into [`SpellingPanel::hits`] of this file's first misspelling.
-        hit: usize,
-        /// How many misspellings this file has.
-        count: usize,
-    },
-    /// One misspelled word; `hit` indexes [`SpellingPanel::hits`].
-    Word {
-        /// Index into [`SpellingPanel::hits`].
-        hit: usize,
-    },
-}
-
-impl SpellingRow {
-    /// The hit this row jumps to when activated.
-    pub(crate) fn hit(self) -> usize {
-        match self {
-            Self::File { hit, .. } | Self::Word { hit } => hit,
-        }
-    }
-}
-
-/// The workspace-spelling panel state.
-#[derive(Default)]
-pub(crate) struct SpellingPanel {
-    /// Every misspelling the current scan has reported, grouped by file.
-    pub(crate) hits: Vec<SpellingHit>,
-    /// The rendered rows derived from [`hits`](Self::hits).
-    pub(crate) rows: Vec<SpellingRow>,
-    /// The cursor over `rows`.
-    pub(crate) selection: ListSelection,
-    /// The in-flight scan, if one is running. Progress for any other request is
-    /// stale — a re-scan supersedes its predecessor.
-    pub(crate) scanning: Option<RequestId>,
-    /// How many files the running (or last) scan visited.
-    pub(crate) files_scanned: usize,
-    /// The last scan stopped at its result limit.
-    pub(crate) truncated: bool,
-    /// Whether a scan has ever completed, so an empty list can distinguish
-    /// "nothing found" from "nothing asked for yet".
-    pub(crate) scanned: bool,
-}
-
-impl SpellingPanel {
-    /// Rebuild [`rows`](Self::rows) from `hits`, clamping the cursor.
-    ///
-    /// `hits` arrive grouped by file already (the scan walks a directory tree, and
-    /// the session emits each open document's hits together), so a run-length pass
-    /// over consecutive equal paths is enough to insert the headings.
-    pub(crate) fn rebuild_rows(&mut self) {
-        self.rows.clear();
-        let mut index = 0;
-        while index < self.hits.len() {
-            let path = &self.hits[index].path;
-            let count = self.hits[index..]
-                .iter()
-                .take_while(|hit| hit.path == *path)
-                .count();
-            self.rows.push(SpellingRow::File { hit: index, count });
-            self.rows
-                .extend((index..index + count).map(|hit| SpellingRow::Word { hit }));
-            index += count;
-        }
-        let cursor = self.selection.cursor();
-        self.selection = ListSelection::new(self.rows.len());
-        self.selection
-            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
-    }
-
-    /// Drop every result, readying the panel for a fresh scan.
-    pub(crate) fn clear(&mut self) {
-        self.hits.clear();
-        self.rows.clear();
-        self.selection = ListSelection::new(0);
-        self.files_scanned = 0;
-        self.truncated = false;
-        self.scanned = false;
-    }
-}
-
-/// One row of the Todos panel's list: a grouping header (a file, or a tag when
-/// grouped by tag) or one codetag under it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TodoRow {
-    /// A group heading; `hit` is the group's first hit and `count` its total.
-    Group {
-        /// Index into [`TodosPanel::order`] of the group's first hit.
-        hit: usize,
-        /// How many hits the group holds.
-        count: usize,
-    },
-    /// One codetag; `hit` indexes [`TodosPanel::order`].
-    Item {
-        /// Index into [`TodosPanel::order`].
-        hit: usize,
-    },
-}
-
-impl TodoRow {
-    /// The hit this row jumps to when activated.
-    pub(crate) fn hit(self) -> usize {
-        match self {
-            Self::Group { hit, .. } | Self::Item { hit } => hit,
-        }
-    }
-}
-
-/// The workspace codetag (Todos) panel state.
-#[derive(Default)]
-pub(crate) struct TodosPanel {
-    /// Every codetag the current scan has reported, in scan order (grouped by
-    /// file, since the walk visits file by file).
-    pub(crate) hits: Vec<karet_session::TodoHit>,
-    /// Display order: indices into `hits`, regrouped when `by_tag` is set.
-    pub(crate) order: Vec<usize>,
-    /// The rendered rows derived from `order`.
-    pub(crate) rows: Vec<TodoRow>,
-    /// The cursor over `rows`.
-    pub(crate) selection: ListSelection,
-    /// The in-flight scan, if one is running.
-    pub(crate) scanning: Option<RequestId>,
-    /// How many files the running (or last) scan visited.
-    pub(crate) files_scanned: usize,
-    /// The last scan stopped at its result limit.
-    pub(crate) truncated: bool,
-    /// Whether a scan has ever completed.
-    pub(crate) scanned: bool,
-    /// Group rows by tag (`TODO` / `FIXME` / …) instead of by file.
-    pub(crate) by_tag: bool,
-}
-
-impl TodosPanel {
-    /// Rebuild `order` and [`rows`](Self::rows) from `hits`, clamping the cursor.
-    pub(crate) fn rebuild_rows(&mut self) {
-        self.order = (0..self.hits.len()).collect();
-        if self.by_tag {
-            self.order
-                .sort_by(|&a, &b| self.hits[a].tag.cmp(&self.hits[b].tag).then(a.cmp(&b)));
-        }
-        self.rows.clear();
-        let same_group = |a: usize, b: usize| {
-            if self.by_tag {
-                self.hits[a].tag == self.hits[b].tag
-            } else {
-                self.hits[a].path == self.hits[b].path
-            }
-        };
-        let mut index = 0;
-        while index < self.order.len() {
-            let count = self.order[index..]
-                .iter()
-                .take_while(|&&hit| same_group(self.order[index], hit))
-                .count();
-            self.rows.push(TodoRow::Group { hit: index, count });
-            self.rows
-                .extend((index..index + count).map(|hit| TodoRow::Item { hit }));
-            index += count;
-        }
-        let cursor = self.selection.cursor();
-        self.selection = ListSelection::new(self.rows.len());
-        self.selection
-            .move_to(cursor.min(self.rows.len().saturating_sub(1)));
-    }
-
-    /// Drop every result, readying the panel for a fresh scan.
-    pub(crate) fn clear(&mut self) {
-        self.hits.clear();
-        self.order.clear();
-        self.rows.clear();
-        self.selection = ListSelection::new(0);
-        self.files_scanned = 0;
-        self.truncated = false;
-        self.scanned = false;
-    }
-}
-
 /// The Todos panel's per-frame chrome — same shape as the Spelling panel's.
 pub(crate) type TodosChrome = SpellingChrome;
 
@@ -345,6 +257,25 @@ pub(crate) struct DocState {
     pub(crate) settings: HashMap<DocumentId, DocumentSettings>,
     /// Latest complete diagnostic set per editable backend document.
     pub(crate) diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
+    /// Latest inlay-hint set per document, positioned in buffer columns.
+    pub(crate) inlay_hints: HashMap<DocumentId, Vec<InlayHint>>,
+    /// The buffer version each held hint set is positioned against: the
+    /// version it was answered for, then each version an edit carried it to.
+    pub(crate) inlay_version: HashMap<DocumentId, u64>,
+    /// What each cached hint set covers, so an unchanged viewport asks again
+    /// for nothing.
+    pub(crate) inlay_covered: HashMap<DocumentId, HintRange>,
+    /// The outstanding hint request per document, for matching its answer.
+    pub(crate) inlay_pending: HashMap<DocumentId, PendingInlay>,
+    /// Bumped whenever hint coverage is invalidated, so a request issued
+    /// before it stops counting as covering anything.
+    pub(crate) inlay_epoch: u64,
+    /// When each recently edited document will have been quiet long enough to
+    /// ask about; its hint requests wait until then.
+    pub(crate) inlay_quiet_until: HashMap<DocumentId, Instant>,
+    /// How many hint requests in a row each document's server has left
+    /// unanswered, which sets how long the next re-ask waits.
+    pub(crate) inlay_failures: HashMap<DocumentId, u32>,
     /// Latest language-server symbol tree for each open document.
     pub(crate) symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.
@@ -353,6 +284,18 @@ pub(crate) struct DocState {
     pub(crate) outline_loading: HashMap<DocumentId, (u64, Pending)>,
     /// Dependency-freshness hints per open manifest, with the checked version.
     pub(crate) manifest_hints: HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
+    /// Latest uncommitted-line gutter markers per document. Held across edits
+    /// until the next answer replaces them, so typing does not flicker them off.
+    pub(crate) line_changes: HashMap<DocumentId, Vec<Decoration>>,
+    /// The one in-flight line-change request per document.
+    pub(crate) line_changes_pending: HashMap<DocumentId, RequestId>,
+    /// Documents that changed while their request was in flight, to re-ask for
+    /// as soon as it answers.
+    pub(crate) line_changes_rerun: HashSet<DocumentId>,
+    /// The view that last sent an undo or redo for each document. The
+    /// snapshot answering it restores its selection set in that view only;
+    /// every other view of the document maps its own carets through the change.
+    pub(crate) history_view: HashMap<DocumentId, ViewId>,
 }
 
 /// The Source-Control panel state: the changed files (staged first) and selection.
@@ -415,21 +358,20 @@ impl LiveBlame {
         }
     }
 
-    /// Compact current-line attribution rendered as editor virtual text.
-    pub(crate) fn decoration(&self) -> Option<Decoration> {
-        let text = self.text()?;
-        Some(Decoration {
-            range: Range {
-                start: LineCol::new(self.line, 0),
-                end: LineCol::new(self.line, 1),
-            },
-            kind: DecorationKind::InlineText {
-                text,
-                before: false,
-            },
-            role: Some(ThemeRole::Muted),
-        })
+    /// Compact current-line attribution in the line's end-of-line slot, at
+    /// [`BLAME_EOL_PRIORITY`](Self::BLAME_EOL_PRIORITY).
+    pub(crate) fn virtual_text(&self) -> Option<VirtualText> {
+        Some(VirtualText::end_of_line(
+            self.line,
+            self.text()?,
+            ThemeRole::Muted,
+            Self::BLAME_EOL_PRIORITY,
+        ))
     }
+
+    /// Inline blame is cut first when a line's end-of-line slot is short: it
+    /// is context, where a dependency hint on the same line is a call to act.
+    pub(crate) const BLAME_EOL_PRIORITY: u8 = 0;
 }
 
 impl Scm {
@@ -473,54 +415,10 @@ pub(crate) enum SearchOption {
     Case,
     /// Match whole words only.
     Word,
-}
-
-/// The workspace-search panel state.
-pub(crate) struct SearchPanel {
-    /// The query being typed/run.
-    pub(crate) query: String,
-    /// Cursor and selection state for the query field.
-    pub(crate) query_edit: TextFieldState,
-    /// The replacement text.
-    pub(crate) replace: String,
-    /// Cursor and selection state for the replacement field.
-    pub(crate) replace_edit: TextFieldState,
-    /// The streamed results (one entry per matching file).
-    pub(crate) results: Vec<FileHit>,
-    /// The cursor over `results`.
-    pub(crate) selection: ListSelection,
-    /// Whether a field is being edited (vs. browsing results).
-    pub(crate) input: bool,
-    /// Which field the input edits (find / replace).
-    pub(crate) field: SearchField,
-    /// Whether the replace field is shown (collapsible; shown by default).
-    pub(crate) replace_visible: bool,
-    /// Interpret the query as a regular expression.
-    pub(crate) regex: bool,
-    /// Match case-sensitively.
-    pub(crate) case_sensitive: bool,
-    /// Match whole words only.
-    pub(crate) whole_word: bool,
-}
-
-impl Default for SearchPanel {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            query_edit: TextFieldState::default(),
-            replace: String::new(),
-            replace_edit: TextFieldState::default(),
-            results: Vec::new(),
-            selection: ListSelection::new(0),
-            input: false,
-            field: SearchField::Find,
-            // The replace field is shown by default (collapsible via keybinding).
-            replace_visible: true,
-            regex: false,
-            case_sensitive: false,
-            whole_word: false,
-        }
-    }
+    /// Preserve the replaced text's case in the replacement (find bar only).
+    PreserveCase,
+    /// Search only inside the selection (find bar only).
+    InSelection,
 }
 
 /// Persistent multiline commit-message editor shown in the Source Control panel.
@@ -530,10 +428,13 @@ pub(crate) struct CommitInput {
     pub(crate) text: String,
     /// Cursor, selection, and viewport state within the draft.
     pub(crate) edit: TextAreaState,
-    /// Whether keyboard input is currently routed into the field.
-    pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.
     pub(crate) pending: Option<RequestId>,
+    /// Whether the viewport was deliberately scrolled off the caret. The box
+    /// follows the caret by default; a wheel notch or a scrollbar drag suspends
+    /// that until the caret next moves, so scrolling back through a long draft is
+    /// not undone by the next frame.
+    pub(crate) scrolled_away: bool,
 }
 
 /// A quit request waiting for a repository mutation that must not be interrupted.
@@ -542,15 +443,6 @@ pub(crate) struct OperationBlocker {
     pub(crate) label: String,
     /// Point after which shutdown stops waiting.
     pub(crate) deadline: Instant,
-}
-
-/// Where a resolved commit detail should be shown.
-#[derive(Clone)]
-pub(crate) enum CommitDest {
-    /// Fill the already-open standalone commit tab with this view id.
-    Tab { view: ViewId },
-    /// Fill the graph browser's detail pane if it still selects this hash.
-    Browser { view: ViewId, hash: String },
 }
 
 /// A document open owned by one concrete editor view.
@@ -606,6 +498,17 @@ pub(crate) enum ContextMenuAction {
         /// The configuration layer to update.
         target: DictionaryTarget,
     },
+    /// Run one code action from the quick-fix menu.
+    CodeAction {
+        /// The document the actions were listed for.
+        doc: DocumentId,
+        /// The document version they were listed at.
+        version: u64,
+        /// The action, as the language server listed it.
+        action: Box<karet_core::CodeAction>,
+    },
+    /// A group heading: shown, never selectable, does nothing.
+    Heading,
 }
 
 /// One row of the app's context menu (the shared widget over
@@ -631,7 +534,9 @@ impl ContextMenuEntryExt for ContextMenuEntry {
         match &self.action {
             ContextMenuAction::Command(command) => Some(*command),
             ContextMenuAction::ReplaceSpelling { .. }
-            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
+            | ContextMenuAction::AddSpellingToDictionary { .. }
+            | ContextMenuAction::CodeAction { .. }
+            | ContextMenuAction::Heading => None,
         }
     }
 }
@@ -655,7 +560,7 @@ pub(crate) enum PendingRemoteAction {
 /// the backend's VCS worker and cached per path (see [`App::cached_remote_facts`]).
 pub(crate) struct RemoteFacts {
     /// The parsed origin remote.
-    pub(crate) remote: remote::Remote,
+    pub(crate) remote: karet_vcs::RemoteUrl,
     /// The full `HEAD` commit hash, or `None` on an unborn branch.
     pub(crate) head: Option<String>,
     /// The current branch's short name, or `None` when `HEAD` is detached.
@@ -718,126 +623,3 @@ pub(crate) struct PendingSave {
 
 /// The Debug panel's chrome (same shape as the other list panels).
 pub(crate) type DebugChrome = SpellingChrome;
-
-/// One row of the Debug panel's flattened section list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DebugRow {
-    /// A section heading (`CALL STACK`, `VARIABLES`, …).
-    Section(&'static str),
-    /// A stack frame; indexes [`DebugPanel::stack`].
-    Frame(usize),
-    /// A variables scope; indexes [`DebugPanel::scopes`].
-    Scope(usize),
-    /// One variable of a fetched reference.
-    Variable {
-        /// The parent `variablesReference` whose children hold it.
-        parent: i64,
-        /// The index within that parent's children.
-        index: usize,
-        /// The tree depth (scopes' children are depth 1).
-        depth: u16,
-    },
-    /// One evaluate-log line; indexes [`DebugPanel::repl`].
-    Repl(usize),
-    /// One console-output line; indexes the app's debug output buffer.
-    Output(usize),
-    /// A muted placeholder note.
-    Note(&'static str),
-}
-
-/// How many trailing console lines the panel shows.
-pub(crate) const DEBUG_CONSOLE_TAIL: usize = 100;
-/// The variables tree recursion cap (cyclic references exist in the wild).
-const DEBUG_TREE_DEPTH_CAP: u16 = 8;
-
-/// The Debug sidebar panel: the stopped thread's stack, a lazily-fetched
-/// variables tree, the evaluate log, and the console tail. All inspection
-/// state is per-stop: it clears on resume so nothing stale survives.
-#[derive(Default)]
-pub(crate) struct DebugPanel {
-    /// The stopped thread's frames, top first.
-    pub(crate) stack: Vec<karet_session::DebugFrame>,
-    /// The frame inspection targets (scopes/evaluate context).
-    pub(crate) selected_frame: Option<i64>,
-    /// The selected frame's scopes.
-    pub(crate) scopes: Vec<karet_session::DebugScope>,
-    /// Fetched children per `variablesReference`.
-    pub(crate) variables: HashMap<i64, Vec<karet_session::DebugVariable>>,
-    /// Expanded references (scopes and structured variables).
-    pub(crate) expanded: HashSet<i64>,
-    /// In-flight inspection requests; answers not in here are stale and dropped.
-    pub(crate) pending: HashSet<RequestId>,
-    /// The evaluate log (`expr = result` lines, oldest first).
-    pub(crate) repl: Vec<String>,
-    /// The rendered rows.
-    pub(crate) rows: Vec<DebugRow>,
-    /// The cursor over `rows`.
-    pub(crate) selection: ListSelection,
-}
-
-impl DebugPanel {
-    /// Drop every per-stop artifact (stack, scopes, variables, pending).
-    /// The evaluate log survives — it is a console, not a snapshot.
-    pub(crate) fn clear_inspection(&mut self, output_len: usize) {
-        self.stack.clear();
-        self.selected_frame = None;
-        self.scopes.clear();
-        self.variables.clear();
-        self.expanded.clear();
-        self.pending.clear();
-        self.rebuild_rows(output_len);
-    }
-
-    /// Rebuild the flattened rows, keeping the cursor clamped.
-    pub(crate) fn rebuild_rows(&mut self, output_len: usize) {
-        self.rows.clear();
-        self.rows.push(DebugRow::Section("CALL STACK"));
-        if self.stack.is_empty() {
-            self.rows.push(DebugRow::Note("not stopped"));
-        }
-        self.rows.extend((0..self.stack.len()).map(DebugRow::Frame));
-        self.rows.push(DebugRow::Section("VARIABLES"));
-        if self.scopes.is_empty() {
-            self.rows.push(DebugRow::Note("no frame selected"));
-        }
-        let scope_refs: Vec<i64> = self.scopes.iter().map(|scope| scope.reference).collect();
-        for (index, reference) in scope_refs.into_iter().enumerate() {
-            self.rows.push(DebugRow::Scope(index));
-            if self.expanded.contains(&reference) {
-                self.push_children(reference, 1);
-            }
-        }
-        if !self.repl.is_empty() {
-            self.rows.push(DebugRow::Section("EVALUATE"));
-            self.rows.extend((0..self.repl.len()).map(DebugRow::Repl));
-        }
-        if output_len > 0 {
-            self.rows.push(DebugRow::Section("CONSOLE"));
-            let first = output_len.saturating_sub(DEBUG_CONSOLE_TAIL);
-            self.rows.extend((first..output_len).map(DebugRow::Output));
-        }
-        let cursor = self
-            .selection
-            .cursor()
-            .min(self.rows.len().saturating_sub(1));
-        self.selection = ListSelection::new(self.rows.len());
-        self.selection.move_to(cursor);
-    }
-
-    fn push_children(&mut self, parent: i64, depth: u16) {
-        if depth > DEBUG_TREE_DEPTH_CAP {
-            return;
-        }
-        let children = self.variables.get(&parent).cloned().unwrap_or_default();
-        for (index, child) in children.iter().enumerate() {
-            self.rows.push(DebugRow::Variable {
-                parent,
-                index,
-                depth,
-            });
-            if child.reference > 0 && self.expanded.contains(&child.reference) {
-                self.push_children(child.reference, depth + 1);
-            }
-        }
-    }
-}

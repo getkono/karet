@@ -1,8 +1,56 @@
 use std::ops::RangeInclusive;
 
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::SemanticBlock;
+use karet_core::SemanticBlocks;
+use karet_core::ThemeRole;
+use karet_core::VirtualLine;
+use karet_core::VirtualText;
+use karet_core::VirtualTextPlacement;
+use karet_text::TextBuffer;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::StatefulWidget;
+
+use super::hint::BlockIndex;
+use super::hint::EolItem;
+use super::hint::HintIndex;
+use super::hint::LineHints;
+use super::hint::place_eol;
+use super::hint::record_virtual_text;
+use super::hint::row_room;
+use super::hint::text_width;
+use super::hint::truncate;
 use super::text::*;
 use super::visual::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::WrappingIndent;
+use crate::cluster_bounds;
+use crate::cluster_widths;
+use crate::diagnostic;
+use crate::state::FrameGeometry;
+
+mod decorate;
+mod display;
+mod glyphs;
+mod virtual_paint;
+
+pub use display::LineNumbers;
+pub(crate) use display::gutter_width;
+pub use glyphs::RenderWhitespace;
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
@@ -14,17 +62,31 @@ pub struct Editor<'a> {
     highlights: Option<&'a Highlights>,
     theme: Option<&'a Theme>,
     decorations: &'a [Decoration],
+    decoration_index: decorate::DecorationIndex,
     diagnostics: &'a [Diagnostic],
-    inlay_hints: &'a [InlayHint],
+    virtual_text: &'a [VirtualText],
+    virtual_lines: &'a [VirtualLine],
     folds: &'a [Fold],
     focused: bool,
     cell_caret: bool,
     read_only: bool,
     word_wrap: bool,
+    wrap_column: Option<u16>,
+    wrapping_indent: WrappingIndent,
     tab_width: u16,
     unwrapped_lines: &'a [RangeInclusive<u32>],
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
+    line_numbers: LineNumbers,
+    change_lane: bool,
+    cursor_line: bool,
+    rulers: &'a [u16],
+    scroll_off: u16,
+    undercurl: bool,
+    indent_guides: bool,
+    active_indent_guide: bool,
+    render_whitespace: RenderWhitespace,
+    rainbow_brackets: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -36,17 +98,31 @@ impl<'a> Editor<'a> {
             highlights: None,
             theme: None,
             decorations: &[],
+            decoration_index: decorate::DecorationIndex::default(),
             diagnostics: &[],
-            inlay_hints: &[],
+            virtual_text: &[],
+            virtual_lines: &[],
             folds: &[],
             focused: false,
             cell_caret: true,
             read_only: false,
             word_wrap: false,
+            wrap_column: None,
+            wrapping_indent: WrappingIndent::None,
             tab_width: 4,
             unwrapped_lines: &[],
             semantic_blocks: None,
             sticky_scroll: false,
+            line_numbers: LineNumbers::Absolute,
+            change_lane: false,
+            cursor_line: true,
+            rulers: &[],
+            scroll_off: 0,
+            undercurl: false,
+            indent_guides: false,
+            active_indent_guide: true,
+            render_whitespace: RenderWhitespace::None,
+            rainbow_brackets: false,
         }
     }
 
@@ -81,6 +157,26 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn word_wrap(mut self, word_wrap: bool) -> Self {
         self.word_wrap = word_wrap;
+        self
+    }
+
+    /// Soft-wrap at `column` cells when the content area is wider (`None`,
+    /// the default, or `Some(0)` wraps at the content width).
+    ///
+    /// A soft-wrapped view has no horizontal scroll, so a content area
+    /// narrower than `column` still wraps at its own width. Only takes
+    /// effect with [`word_wrap`](Self::word_wrap) on.
+    #[must_use]
+    pub fn wrap_column(mut self, column: Option<u16>) -> Self {
+        self.wrap_column = column;
+        self
+    }
+
+    /// Indent the continuation rows of a soft-wrapped line (none by
+    /// default). Only takes effect with [`word_wrap`](Self::word_wrap) on.
+    #[must_use]
+    pub fn wrapping_indent(mut self, indent: WrappingIndent) -> Self {
+        self.wrapping_indent = indent;
         self
     }
 
@@ -130,9 +226,15 @@ impl<'a> Editor<'a> {
     }
 
     /// Supply decorations (VCS markers, breakpoints, search highlights, …).
+    ///
+    /// Where they overlap, the higher [`priority`](Decoration::priority) wins
+    /// each single-valued attribute and ties go to the one earlier in the
+    /// slice; modifiers blend. They are indexed by line here, once, so a
+    /// frame's lookups cost its visible lines rather than the whole slice.
     #[must_use]
     pub fn decorations(mut self, decorations: &'a [Decoration]) -> Self {
         self.decorations = decorations;
+        self.decoration_index = decorate::DecorationIndex::new(decorations);
         self
     }
 
@@ -143,10 +245,18 @@ impl<'a> Editor<'a> {
         self
     }
 
-    /// Supply inlay hints.
+    /// Supply virtual text: inlay hints (convert them with
+    /// `InlayHint::virtual_texts`), inline blame, dependency versions, and anything
+    /// else painted on a line without being in the buffer.
+    ///
+    /// Inline text takes part in wrapping, caret placement, hit-testing and
+    /// horizontal reveal; end-of-line text fills the cells a line's last row
+    /// leaves free (see [`VirtualTextPlacement`](karet_core::VirtualTextPlacement)).
+    /// Where each one was painted is reported by
+    /// [`EditorState::virtual_text_rect`], keyed by its index in this slice.
     #[must_use]
-    pub fn inlay_hints(mut self, inlay_hints: &'a [InlayHint]) -> Self {
-        self.inlay_hints = inlay_hints;
+    pub fn virtual_text(mut self, virtual_text: &'a [VirtualText]) -> Self {
+        self.virtual_text = virtual_text;
         self
     }
 
@@ -165,168 +275,217 @@ impl<'a> Editor<'a> {
 }
 
 impl Editor<'_> {
-    /// The gutter marker glyph + color for line `l`, if a decoration places one.
-    fn gutter_marker(&self, l: u32, theme: &Theme, default_fg: Rgba) -> Option<(char, Rgba)> {
-        for d in self.decorations {
-            if let DecorationKind::GutterMarker { glyph } = &d.kind
-                && line_in_range(l, d.range)
-            {
-                let color = d.role.map_or(default_fg, |r| theme.role(r));
-                return Some((*glyph, color));
-            }
-        }
-        None
-    }
-
-    /// The background color for column `col` on line `l`, from line/text-background
-    /// decorations (e.g. search matches).
-    fn decoration_bg(&self, l: u32, col: u32, theme: &Theme) -> Option<Rgba> {
-        for d in self.decorations {
-            let Some(role) = d.role else { continue };
-            let covers = match &d.kind {
-                DecorationKind::LineBackground => line_in_range(l, d.range),
-                DecorationKind::TextBackground => col_in_range(l, col, d.range),
-                _ => false,
-            };
-            if covers {
-                return Some(theme.role(role));
-            }
-        }
-        None
-    }
-
-    /// The swatch background + contrasting foreground for column `col` on line
-    /// `l`, when a [`DecorationKind::ColorSwatch`] covers the cell. The
-    /// foreground is whichever of black/white contrasts better, so the chip
-    /// stays legible on any color; alpha is ignored (cells cannot blend).
-    fn swatch_style(&self, l: u32, col: u32) -> Option<(Rgba, Rgba)> {
-        for d in self.decorations {
-            if let DecorationKind::ColorSwatch { rgba } = &d.kind
-                && col_in_range(l, col, d.range)
-            {
-                let bg = Rgba::rgb(rgba[0], rgba[1], rgba[2]);
-                let black = Rgba::rgb(0, 0, 0);
-                let white = Rgba::rgb(255, 255, 255);
-                let fg = if karet_theme::contrast_ratio(black, bg)
-                    >= karet_theme::contrast_ratio(white, bg)
-                {
-                    black
-                } else {
-                    white
-                };
-                return Some((bg, fg));
-            }
-        }
-        None
-    }
-
-    /// Inline virtual text attached to `l`, filtered by whether it belongs before or
-    /// after the decorated range.
-    fn push_inline_spans(
-        &self,
-        spans: &mut Vec<Span<'static>>,
-        l: u32,
-        before: bool,
-        theme: &Theme,
-    ) {
-        for decoration in self.decorations {
-            if let DecorationKind::InlineText {
-                text,
-                before: decoration_before,
-            } = &decoration.kind
-                && *decoration_before == before
-                && line_in_range(l, decoration.range)
-            {
-                let color = decoration
-                    .role
-                    .map_or_else(|| theme.role(ThemeRole::Muted), |role| theme.role(role));
-                spans.push(Span::styled(
-                    text.clone(),
-                    Style::default().fg(color.to_ratatui()),
-                ));
-            }
-        }
-    }
-
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
+    ///
+    /// `room` is the screen cells left on the row after the gutter: the walk
+    /// stops once they are filled, since the frame clips anything past them.
+    ///
+    /// `glyphs` draws the row's guides, whitespace and bracket colours over
+    /// the chars it walks; they are computed here, once the row's window of
+    /// chars is known, so their cost is bounded by it too.
+    ///
+    /// Returns whether the row ends with the selected line-break cell, and
+    /// the row's glyphs.
+    #[allow(clippy::too_many_arguments)]
+    // The already-resolved render palette and geometry for one row, plus the
+    // row's inline text and the record of where it went. Bundling them would
+    // duplicate the widget/state split for a single private helper.
     fn push_content_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
+        painted: &mut Vec<(usize, usize)>,
         l: u32,
         theme: &Theme,
         default_fg: Rgba,
-        range: VisualRange,
+        (range, room): (VisualRange, u32),
         selections: &[Range],
-    ) {
-        let Some(content) = self.buffer.line(l as usize) else {
-            return;
-        };
+        hints: LineHints<'_>,
+        glyphs: Option<&mut glyphs::GlyphFrame<'_>>,
+    ) -> (bool, Option<glyphs::RowGlyphs>) {
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
-            return;
+            return (false, None);
         };
         let line_start = line_span.start.0;
+        let line_len = line_len(self.buffer, l);
+        // Only the chars up to the row's right edge are copied out and walked,
+        // so a minified line costs its visible window (plus the scrolled-off
+        // prefix, whose widths decide the tab stops), not its whole length. An
+        // unwrapped row has no end column, so its window grows until the
+        // cells it covers fill the room left on screen.
+        let (chars, widths) = if range.end == u32::MAX {
+            row_window(self.buffer, l, range.start, room)
+        } else {
+            let chars =
+                line_chars_prefix(self.buffer, l, range.end.saturating_add(GRAPHEME_LOOKAHEAD));
+            let widths = cluster_widths(&chars);
+            (chars, widths)
+        };
+        let glyphs = glyphs.map(|frame| frame.row(l, &chars));
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
+        let line_decos = self.line_decorations(l);
 
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
         let mut display_col = 0_u32;
-        for (boff, ch) in content.char_indices() {
-            let width = character_width(ch, display_col, self.tab_width);
+        // Where on screen this row's first painted column sits, so the walk
+        // stops once the row is full rather than at the end of the line.
+        let mut row_origin = None;
+        let mut boff = 0_usize;
+        let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
+        // The shared horizontal scroll can start this row inside a cluster.
+        // Its earlier chars took the cluster's cells off screen, so the chars
+        // up to the next boundary are a fragment the width model counts as
+        // zero cells: painting them would shift the rest of the row away from
+        // the caret and hit-test columns.
+        let paint_from = cluster_bounds(&chars)
+            .into_iter()
+            .find(|&bound| bound >= range.start)
+            .unwrap_or(range.start);
+        for &ch in &chars {
+            let at = boff;
+            boff = boff.saturating_add(ch.len_utf8());
             if col < range.start {
-                display_col = display_col.saturating_add(width);
+                // Hints before the row start still shift the running column,
+                // and a tab's expansion is measured from it. Skipping their
+                // width here would put every tab after the row start on a
+                // different stop than `display_col` and `visual_ranges`
+                // computed, so the caret and the painted text would disagree.
+                display_col = display_col.saturating_add(hints.width_at(col));
+                display_col = display_col.saturating_add(character_width(
+                    ch,
+                    cells(col),
+                    display_col,
+                    self.tab_width,
+                ));
                 col += 1;
                 continue;
             }
             if col >= range.end {
                 break;
             }
-            let mut style = token_style(line_start + boff, hl, theme, default_fg);
+            let origin = *row_origin.get_or_insert(display_col);
+            // Stop only at a char that takes cells, so the zero-width tail of
+            // the cluster in the row's last cell stays with it.
+            if display_col.saturating_sub(origin) >= room && (cells(col) > 0 || ch == '\t') {
+                break;
+            }
+            // The hint anchored here renders *before* this character but after
+            // the caret slot of this column, so the caret stays against the
+            // text the hint describes.
+            if !hints.is_empty() {
+                self.push_hint_spans(
+                    spans,
+                    painted,
+                    (&mut run, &mut run_style),
+                    hints,
+                    col,
+                    theme,
+                );
+                display_col = display_col.saturating_add(hints.width_at(col));
+            }
+            if col < paint_from {
+                col += 1;
+                continue;
+            }
+            let width = character_width(ch, cells(col), display_col, self.tab_width);
+            let mut style = token_style(line_start + at, hl, theme, default_fg);
+            if let Some(color) = glyphs.as_ref().and_then(|g| g.bracket(col)) {
+                style = style.fg(color.to_ratatui());
+            }
+            let deco = Self::cell_decoration(&line_decos, (l, col), theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
-            // "this is navigable", and losing it would hide a real problem.
-            if let Some(color) = self
+            // "this is navigable", and losing it would hide a real problem. Theirs
+            // is marked, so the frame's last pass can curl it.
+            if let Some((color, mark)) = self
                 .diagnostic_underline(l, col, theme)
-                .or_else(|| self.decoration_underline(l, col, theme, default_fg))
+                .map(|color| (color, diagnostic::DIAGNOSTIC_UNDERLINE))
+                .or_else(|| Some((deco.underline?, Modifier::empty())))
             {
                 style = style
                     .underline_color(color.to_ratatui())
-                    .add_modifier(Modifier::UNDERLINED);
+                    .add_modifier(Modifier::UNDERLINED | mark);
             }
-            let bg = if in_any(selections, l, col) {
+            style = style.add_modifier(diagnostic::tag_modifiers(self.diagnostics, l, col));
+            style = style.add_modifier(deco.modifiers);
+            let selected = in_any(selections, l, col);
+            // A swatch's contrasting foreground goes with its background, which
+            // a selection replaces; a decoration's own foreground stays.
+            let swatch_fg = deco.swatch_fg.filter(|_| !selected);
+            if let Some(fg) = swatch_fg.or(deco.fg) {
+                style = style.fg(fg.to_ratatui());
+            }
+            let bg = if selected {
                 Some(theme.role(ThemeRole::Selection))
-            } else if let Some((swatch_bg, swatch_fg)) = self.swatch_style(l, col) {
-                style = style.fg(swatch_fg.to_ratatui());
-                Some(swatch_bg)
             } else {
-                self.decoration_bg(l, col, theme)
+                deco.bg
             };
             if let Some(bg) = bg {
                 style = style.bg(bg.to_ratatui());
             }
-            if run_style == Some(style) {
-                if ch == '\t' {
-                    run.push_str(&" ".repeat(width as usize));
-                } else {
-                    run.push(ch);
-                }
-            } else {
+            // A guide or whitespace mark takes the blanks the char paints.
+            let glyph = glyphs
+                .as_ref()
+                .and_then(|g| g.whitespace(&chars, (col, display_col, width), selected));
+            if let Some((_, color)) = &glyph {
+                style = style.fg(color.to_ratatui());
+            }
+            if run_style != Some(style) {
                 if let Some(prev) = run_style {
                     spans.push(Span::styled(std::mem::take(&mut run), prev));
                 }
-                if ch == '\t' {
-                    run.push_str(&" ".repeat(width as usize));
-                } else {
-                    run.push(ch);
-                }
                 run_style = Some(style);
+            }
+            match glyph {
+                Some((text, _)) => run.push_str(&text),
+                None if ch == '\t' => run.push_str(&" ".repeat(width as usize)),
+                None => run.push(ch),
             }
             display_col = display_col.saturating_add(width);
             col += 1;
         }
         if let Some(prev) = run_style {
+            spans.push(Span::styled(std::mem::take(&mut run), prev));
+            run_style = None;
+        }
+        // A hint anchored one past the last character -- a trailing return type,
+        // say -- has no character to precede, so it closes the row instead.
+        // Anchored at the line's own length, never at `range.end`: an
+        // unwrapped row carries `u32::MAX` there, which matches no hint at all.
+        //
+        // `range.start <= line_len` as well as `range.end >= line_len`: an
+        // unwrapped row carries `u32::MAX` as its end, so the end test alone is
+        // always true, and a line scrolled entirely off to the left would paint
+        // its trailing hint at the left margin over nothing. `col >= line_len`
+        // because a walk the right edge stopped never reached the line end, so
+        // what follows it is off screen and must not close a full row.
+        let ends_here = range.start <= line_len && range.end >= line_len && col >= line_len;
+        if !hints.is_empty() && ends_here {
+            self.push_hint_spans(
+                spans,
+                painted,
+                (&mut run, &mut run_style),
+                hints,
+                line_len,
+                theme,
+            );
+        }
+        if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
         }
+        // A selected line break paints one cell past the line end, so a blank
+        // line or a line end inside a selection shows what a delete removes.
+        // Only the row holding the line end paints it, after any trailing hint,
+        // so no hit-tested cell moves.
+        let selected_break = ends_here && newline_in_any(selections, l, line_len);
+        if selected_break {
+            let style = Style::default()
+                .fg(default_fg.to_ratatui())
+                .bg(theme.role(ThemeRole::Selection).to_ratatui());
+            spans.push(Span::styled(" ", style));
+        }
+        (selected_break, glyphs)
     }
 
     /// Warning/error diagnostics use a colored underline while preserving syntax
@@ -337,35 +496,7 @@ impl Editor<'_> {
             .iter()
             .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
             .min_by_key(|diagnostic| diagnostic.severity)
-            .map(|diagnostic| {
-                theme.role(match diagnostic.severity {
-                    Severity::Error => ThemeRole::DiagnosticError,
-                    Severity::Warning => ThemeRole::DiagnosticWarning,
-                    Severity::Information => ThemeRole::DiagnosticInfo,
-                    Severity::Hint => ThemeRole::DiagnosticHint,
-                    _ => ThemeRole::DiagnosticInfo,
-                })
-            })
-    }
-
-    /// The underline color for column `col` on line `l`, from underline decorations.
-    ///
-    /// A decoration with no role underlines in the text's own foreground, so the
-    /// treatment reads as an underline rather than as a recolouring.
-    fn decoration_underline(
-        &self,
-        l: u32,
-        col: u32,
-        theme: &Theme,
-        default_fg: Rgba,
-    ) -> Option<Rgba> {
-        self.decorations
-            .iter()
-            .find(|decoration| {
-                matches!(decoration.kind, DecorationKind::Underline)
-                    && col_in_range(l, col, decoration.range)
-            })
-            .map(|decoration| decoration.role.map_or(default_fg, |role| theme.role(role)))
+            .map(|diagnostic| theme.role(karet_core::severity_role(diagnostic.severity)))
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within
@@ -386,7 +517,10 @@ impl Editor<'_> {
         );
     }
 
-    fn sticky_blocks(&self, anchor: VisualAnchor, height: u16) -> Vec<SemanticBlock> {
+    /// The headers that stick above a viewport starting at `anchor`: a
+    /// block's header sticks once the top row is inside the block, past the
+    /// header's own first text row (virtual lines above it are outside).
+    fn sticky_blocks(&self, anchor: VisualAnchor, above: u32, height: u16) -> Vec<SemanticBlock> {
         if !self.sticky_scroll {
             return Vec::new();
         }
@@ -402,7 +536,7 @@ impl Editor<'_> {
             .filter(|block| {
                 block.scope_end >= anchor.line
                     && (block.header_start < anchor.line
-                        || (block.header_start == anchor.line && anchor.subrow > 0))
+                        || (block.header_start == anchor.line && anchor.subrow > above))
             })
             .collect();
         if active.len() > budget {
@@ -425,6 +559,8 @@ impl Editor<'_> {
         default_fg: Rgba,
         digits: usize,
         selections: &[Range],
+        index: &HintIndex,
+        rects: &mut Vec<(usize, Rect)>,
     ) {
         let line = block.header_start;
         let background = theme.role(ThemeRole::CursorLine);
@@ -437,44 +573,37 @@ impl Editor<'_> {
             },
             Style::default().bg(background.to_ratatui()),
         );
-        let fold = self.fold_at(line);
-        let (marker, marker_color) = fold.map_or_else(
-            || {
-                self.gutter_marker(line, theme, default_fg)
-                    .unwrap_or((' ', default_fg))
-            },
-            |fold| {
-                (
-                    if fold.collapsed {
-                        '\u{25b8}'
-                    } else {
-                        '\u{25be}'
-                    },
-                    theme.role(ThemeRole::LineNumberActive),
-                )
-            },
+        let number_fg = theme.role(ThemeRole::LineNumberActive);
+        let mut spans = self.gutter_spans(
+            Some(line),
+            state.cursor().line,
+            digits,
+            theme,
+            (default_fg, number_fg),
         );
-        let mut spans = vec![
-            Span::styled(
-                marker.to_string(),
-                Style::default().fg(marker_color.to_ratatui()),
-            ),
-            Span::styled(
-                format!("{:>width$} ", line + 1, width = digits),
-                Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
-            ),
-        ];
+        let mut painted = Vec::new();
+        let room = row_room(area, &spans);
+        // Painted with its inline text, as `EditorState::pos_at` resolves a
+        // click on it: the same mapping on both sides, so a click lands on
+        // the character it is over.
         self.push_content_spans(
             &mut spans,
+            &mut painted,
             line,
             theme,
             default_fg,
-            VisualRange {
-                start: state.scroll_col,
-                end: u32::MAX,
-            },
+            (VisualRange::new(state.scroll_col(), u32::MAX), room),
             selections,
+            index.line(line),
+            None,
         );
+        if state.scroll_col() <= line_len(self.buffer, line) {
+            // The multi-line header's `…` takes the last cell.
+            let marker = u32::from(block.has_multiline_header());
+            let room = row_room(area, &spans).saturating_sub(marker);
+            self.push_eol_spans(&mut spans, &mut painted, index, line, room, theme);
+        }
+        record_virtual_text(rects, area, y, &spans, &painted);
         buf.set_line(area.x, y, &Line::from(spans), area.width);
         if block.has_multiline_header() && area.width > 0 {
             buf.set_string(
@@ -494,6 +623,7 @@ impl StatefulWidget for Editor<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
         if area.width == 0 || area.height == 0 {
+            state.frame.forget_painted();
             return;
         }
         let fallback;
@@ -511,58 +641,74 @@ impl StatefulWidget for Editor<'_> {
         let default_fg = theme.role(ThemeRole::Foreground);
         let digits = digit_count(line_count.max(1));
 
-        let gutter = 1 + digits as u16 + 1;
+        let gutter = gutter_width(line_count, self.line_numbers, self.change_lane);
         let content_width = area.width.saturating_sub(gutter).max(1);
 
-        // Clamp scroll to the buffer and record horizontal geometry. The vertical
-        // content height is resolved after semantic sticky rows are selected.
-        state.last_content_width = content_width;
-        state.last_word_wrap = self.word_wrap;
-        state.last_tab_width = self.tab_width;
-        state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
-        state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
-        if self.word_wrap {
-            state.scroll_col = 0;
-        } else {
-            state.scroll_subrow = 0;
-        }
-
+        // The geometry this frame lays out is handed to `state` whole once
+        // it has been painted (`record_frame`).
+        let wrap_column = self.wrap_column.map(u32::from);
         let width = u32::from(content_width);
-        let mut anchor = normalize_visual_anchor(
-            self.buffer,
-            self.folds,
+        // Indexed once per frame and handed to `state` after the row loop, so
+        // a later mouse click resolves against the virtual text and lines
+        // this frame painted. Held locally until then because `layout`
+        // borrows them while the loop is still assigning scroll positions.
+        let hint_index = HintIndex::new(self.virtual_text);
+        let block_index = BlockIndex::new(self.virtual_lines);
+        let layout = Layout {
             width,
-            self.tab_width,
-            self.unwrapped_lines,
-            VisualAnchor {
-                line: state.scroll_line,
-                subrow: state.scroll_subrow,
-            },
-        );
-        let initial_sticky = self.sticky_blocks(anchor, area.height);
-        let initial_content_height = area
-            .height
-            .saturating_sub(u16::try_from(initial_sticky.len()).unwrap_or(u16::MAX));
-        if self.word_wrap && state.follow_cursor {
-            anchor = reveal_visual_anchor(
-                self.buffer,
-                self.folds,
-                width,
-                self.tab_width,
-                self.unwrapped_lines,
-                initial_content_height,
-                anchor,
-                state.cursor(),
-            );
+            tab_width: self.tab_width,
+            unwrapped_lines: self.unwrapped_lines,
+            hints: &hint_index,
+            blocks: &block_index,
+            wrap: self.word_wrap,
+            wrap_column,
+            wrapping_indent: self.wrapping_indent,
+        };
+        state.clamp_scroll_to_frame(self.buffer, layout);
+        let mut anchor =
+            normalize_visual_anchor(self.buffer, self.folds, layout, state.top_anchor());
+        // A wrap affinity outlives only the caret it was set for.
+        if self.word_wrap {
+            let heads = &state.cursors.selections;
+            state
+                .upstream
+                .retain(|at| heads.iter().any(|s| s.head == *at));
+        } else {
+            state.upstream.clear();
         }
-        state.scroll_line = anchor.line;
-        state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
-        state.follow_cursor = false;
-
-        let sticky = self.sticky_blocks(anchor, area.height);
-        state.sticky_rows = sticky.iter().map(|block| block.header_start).collect();
-        state.sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
-        state.last_height = area.height.saturating_sub(state.sticky_height);
+        let upstream = state.upstream.contains(&state.cursor());
+        let mut sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
+        let off = state.reveal_margin(self.scroll_off);
+        if state.follow_cursor {
+            // Revealing moves the top, the top decides which headers stick,
+            // and the headers decide how many rows are left for the caret. So
+            // re-check until the caret is on a row the headers leave. A reveal
+            // only moves down while the caret is below the last row, so this
+            // settles; the bound is a backstop.
+            for _ in 0..=area.height {
+                let height = area
+                    .height
+                    .saturating_sub(u16::try_from(sticky.len()).unwrap_or(u16::MAX));
+                let revealed = reveal_visual_anchor(
+                    self.buffer,
+                    self.folds,
+                    layout,
+                    height,
+                    anchor,
+                    state.cursor(),
+                    upstream,
+                    off,
+                );
+                if revealed == anchor {
+                    break;
+                }
+                anchor = revealed;
+                sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
+            }
+        }
+        state.settle_scroll(anchor);
+        let sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
+        let height = area.height.saturating_sub(sticky_height);
 
         // Snapshot the cursor set for painting: every non-empty selection's range and
         // the line of every caret (each caret's line gets the cursor-line emphasis).
@@ -577,6 +723,11 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
+        // Where this frame paints each clickable affordance, recorded with
+        // the rest of its geometry once the rows are painted.
+        let mut virtual_text = Vec::new();
+        let mut virtual_lines = Vec::new();
+        let mut fold_ellipses = Vec::new();
         for (row, block) in sticky.iter().copied().enumerate() {
             let y = area
                 .y
@@ -591,6 +742,8 @@ impl StatefulWidget for Editor<'_> {
                 default_fg,
                 digits,
                 &selections,
+                &hint_index,
+                &mut virtual_text,
             );
         }
 
@@ -598,22 +751,48 @@ impl StatefulWidget for Editor<'_> {
         // couple of comparisons per painted row rather than a second pass.
         let mut last_painted = None;
         let mut widest_visible = 0;
-        for row in 0..state.last_height {
+        let mut glyph_frame = self
+            .draws_glyphs()
+            .then(|| self.glyph_frame(theme, Some(state.cursor())));
+        for row in 0..height {
             if anchor.line >= line_count {
                 break;
             }
             let l = anchor.line;
             last_painted = Some(l);
-            if !self.word_wrap {
-                widest_visible = widest_visible.max(line_len(self.buffer, l));
+            let y = area.y.saturating_add(sticky_height).saturating_add(row);
+            let next = next_visual_anchor(self.buffer, self.folds, layout, anchor);
+            let ranges = layout.text_rows(self.buffer, l, state.scroll_col());
+            let (range_index, block) = match layout.kind(l, anchor.subrow, ranges.len() as u32) {
+                RowKind::Text(index) => (index as usize, None),
+                RowKind::Above(n) => (0, Some(block_index.above(l).get(n as usize))),
+                RowKind::Below(n) => (0, Some(block_index.below(l).get(n as usize))),
+            };
+            if let Some(block) = block {
+                if let Some(&(_, source)) = block {
+                    let rects = &mut virtual_lines;
+                    let col = state.scroll_col();
+                    self.draw_virtual_line(buf, area, y, gutter, source, col, theme, rects);
+                }
+                if next == anchor {
+                    break;
+                }
+                anchor = next;
+                continue;
             }
-            let y = area
-                .y
-                .saturating_add(state.sticky_height)
-                .saturating_add(row);
+            if !self.word_wrap {
+                widest_visible = widest_visible.max(line_extent(
+                    &mut state.extents,
+                    self.buffer,
+                    l,
+                    width,
+                    self.tab_width,
+                    layout.hints_on(l),
+                ));
+            }
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
-            let row_bg = if is_cursor {
+            let row_bg = if is_cursor && self.cursor_line {
                 cursor_line_bg
             } else {
                 background
@@ -628,91 +807,123 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            // A fold header shows a collapse/expand chevron in the marker column;
-            // other lines show their usual decoration marker (git/diagnostic).
-            let first_row = !self.word_wrap || anchor.subrow == 0;
+            let first_row = range_index == 0;
             let fold = self.fold_at(l);
-            let (marker_ch, marker_color) = match (first_row, fold) {
-                (true, Some(f)) => (
-                    if f.collapsed { '\u{25b8}' } else { '\u{25be}' },
-                    theme.role(ThemeRole::LineNumberActive),
-                ),
-                (true, None) => self
-                    .gutter_marker(l, theme, default_fg)
-                    .unwrap_or((' ', default_fg)),
-                (false, _) => (' ', default_fg),
-            };
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
             } else {
                 theme.role(ThemeRole::LineNumber)
             };
-            let mut spans = vec![
-                Span::styled(
-                    marker_ch.to_string(),
-                    Style::default().fg(marker_color.to_ratatui()),
-                ),
-                Span::styled(
-                    if first_row {
-                        format!("{:>width$} ", l + 1, width = digits)
-                    } else {
-                        " ".repeat(digits + 1)
-                    },
-                    Style::default().fg(number_color.to_ratatui()),
-                ),
-            ];
-            let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, width, self.tab_width, self.unwrapped_lines)
-            } else {
-                vec![VisualRange {
-                    start: state.scroll_col,
-                    end: u32::MAX,
-                }]
-            };
-            let range_index = if self.word_wrap {
-                (anchor.subrow as usize).min(ranges.len().saturating_sub(1))
-            } else {
-                0
-            };
+            let mut spans = self.gutter_spans(
+                first_row.then_some(l),
+                state.cursor().line,
+                digits,
+                theme,
+                (default_fg, number_color),
+            );
             let range = ranges
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
-            if range_index == 0 {
-                self.push_inline_spans(&mut spans, l, true, theme);
+            // A continuation row's indent: blank cells on the row background,
+            // ahead of the text, so every later cell keeps its hit-test column.
+            if range.indent > 0 {
+                spans.push(Span::raw(" ".repeat(range.indent as usize)));
             }
-            self.push_content_spans(&mut spans, l, theme, default_fg, range, &selections);
+            let mut painted = Vec::new();
+            let room = row_room(area, &spans);
+            let (selected_break, glyphs) = self.push_content_spans(
+                &mut spans,
+                &mut painted,
+                l,
+                theme,
+                default_fg,
+                (range, room),
+                &selections,
+                layout.hints_on(l),
+                glyph_frame.as_mut(),
+            );
+            // A wrapped last row that exactly fills the content width pushes
+            // the break cell one column past the area, where `set_line` clips
+            // it. Paint the selection on the last content cell instead: the
+            // end-of-line caret clamps to that same cell (`caret_cell`).
+            let clipped_break = self.word_wrap
+                && selected_break
+                && spans
+                    .iter()
+                    .fold(0_usize, |used, span| used.saturating_add(span.width()))
+                    > usize::from(area.width);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
+                display::record_fold_ellipsis(&mut fold_ellipses, area, y, &spans, l);
                 spans.push(Span::styled(
                     " \u{22ef}", // ⋯
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
                 ));
             }
-            if range_index + 1 == ranges.len() {
-                self.push_inline_spans(&mut spans, l, false, theme);
+            // Guides a blank line runs past its end stop where end-of-line
+            // text starts, so they never cut into a space inside it.
+            let mut guide_limit = area.right();
+            // The end-of-line slot is on the last row, and only while the
+            // line's end is not scrolled off to the left: past it, the slot
+            // would float at the margin over nothing.
+            if range_index + 1 == ranges.len() && range.start <= line_len(self.buffer, l) {
+                let room = row_room(area, &spans);
+                let before = spans.len();
+                self.push_eol_spans(&mut spans, &mut painted, &hint_index, l, room, theme);
+                if spans.len() > before {
+                    let room = u16::try_from(room).unwrap_or(u16::MAX);
+                    guide_limit = area.right().saturating_sub(room);
+                }
             }
+            record_virtual_text(&mut virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+            if let Some(glyphs) = &glyphs
+                && ranges.len() == 1
+            {
+                let at = (area.x.saturating_add(gutter), y);
+                self.paint_blank_guides(buf, glyphs, (l, range.start), at, guide_limit);
+            }
+            if clipped_break && area.width > 0 {
+                buf.set_style(
+                    Rect {
+                        x: area.right().saturating_sub(1),
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                    Style::default().bg(theme.role(ThemeRole::Selection).to_ratatui()),
+                );
+            }
 
-            let next = if self.word_wrap {
-                next_visual_anchor(
-                    self.buffer,
-                    self.folds,
-                    width,
-                    self.tab_width,
-                    self.unwrapped_lines,
-                    anchor,
-                )
-            } else {
-                next_line_anchor(self.folds, line_count, anchor)
-            };
             if next == anchor {
                 break;
             }
             anchor = next;
         }
-        state.last_visible_lines =
-            last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
+        state.record_frame(FrameGeometry {
+            height,
+            content_width,
+            line_numbers: self.line_numbers,
+            change_lane: self.change_lane,
+            scroll_off: self.scroll_off,
+            last_line: line_count.saturating_sub(1),
+            word_wrap: self.word_wrap,
+            wrap_column,
+            wrapping_indent: self.wrapping_indent,
+            tab_width: self.tab_width,
+            unwrapped_lines: self.unwrapped_lines.to_vec(),
+            hints: hint_index,
+            blocks: block_index,
+            folds: self.folds.iter().copied().filter(|f| f.collapsed).collect(),
+            sticky_rows: sticky.iter().map(|block| block.header_start).collect(),
+            sticky_height,
+            visible_lines: last_painted
+                .map_or(0, |last: u32| last.saturating_sub(state.scroll_line()) + 1),
+            virtual_text,
+            virtual_lines,
+            fold_ellipses,
+        });
         if !self.word_wrap {
             // Raise the high-water mark by what this frame could see. The right-edge
             // term keeps the extent from ever claiming the caret has scrolled past
@@ -720,8 +931,18 @@ impl StatefulWidget for Editor<'_> {
             state.last_longest_col = state
                 .last_longest_col
                 .max(widest_visible)
-                .max(state.scroll_col.saturating_add(u32::from(content_width)));
+                .max(state.scroll_col().saturating_add(u32::from(content_width)));
         }
+
+        let content = Rect {
+            x: area.x.saturating_add(gutter),
+            width: area.width.saturating_sub(gutter),
+            ..area
+        };
+        let plain = [background, cursor_line_bg];
+        let ruler = theme.role(ThemeRole::IndentGuide);
+        self.paint_rulers(buf, content, state.scroll_col(), plain, ruler);
+        diagnostic::finish_underlines(buf, area, self.undercurl);
 
         // Draw a reversed caret cell for every head when focused and editable.
         if self.focused && self.cell_caret && !self.read_only {

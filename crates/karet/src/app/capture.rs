@@ -7,14 +7,27 @@
 //! that a live session would show. The loop draws until the backend falls quiet (or
 //! a deadline passes), writes the final grid to stdout, and returns.
 
+use std::io;
+use std::io::Write;
+use std::time::Instant;
+
+use color_eyre::eyre::eyre;
+use karet_core::ThemeRole;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::EventRx;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_theme::Theme;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 
-use super::*;
+use crate::app::App;
 use crate::cli::CaptureSpec;
+use crate::color_depth::xterm_rgb;
+use crate::ui;
 
 /// Render `app` off-screen and write the settled frame to stdout as ANSI.
 ///
@@ -31,6 +44,8 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     app.caps.graphics = GraphicsProtocol::Halfblocks;
     app.caps.kitty_graphics = false;
     app.caps.pointer_shapes = false;
+    // No colour-depth fallback either: the grid is serialised as truecolor ANSI
+    // for whatever reads it, not for the terminal that ran the capture.
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     // A capture is a throwaway read-only session: never write crash-recovery
@@ -82,10 +97,21 @@ async fn settle(
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
     let deadline = Instant::now() + spec.timeout;
+    // Preview images decode off-thread; a decode landing is progress like any event.
+    let mut decoded_images = super::runtime::preview_image_results(app);
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        draw_frame(terminal, app)?;
         // A capture never calls `App::flush_graphics`: it writes Kitty escapes
         // straight to stdout, which is where the captured grid is going.
+        //
+        // It does ask for inlay hints, exactly as the interactive loop does
+        // after its own draw. Without this a capture could never contain one,
+        // since the request is a function of the painted viewport -- and a
+        // settled frame that is missing an annotation the real editor shows is
+        // not a capture of the same UI.
+        app.request_inlay_hints();
+        app.request_code_lenses();
+        app.request_links_and_colors();
 
         let now = Instant::now();
         let Some(remaining) = deadline.checked_duration_since(now) else {
@@ -105,6 +131,11 @@ async fn settle(
                 Some((doc, snap)) => { app.on_snapshot(doc, &snap); true },
                 None => false,
             },
+            image = super::runtime::recv_decoded(&mut decoded_images) => {
+                let landed = image.is_some();
+                super::runtime::accept_decoded(app, image);
+                landed
+            },
             () = tokio::time::sleep(quiet) => false,
         };
         if !progressed {
@@ -120,6 +151,14 @@ async fn settle(
         }
         app.notifications.expire(Instant::now());
     }
+    draw_frame(terminal, app)?;
+    Ok(())
+}
+
+/// Prepare and paint one frame, as the interactive loop does: the requests and
+/// clamps a frame depends on run in [`App::prepare_frame`], never in the paint.
+fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) -> color_eyre::Result<()> {
+    app.prepare_frame(terminal.size()?.into());
     terminal.draw(|f| ui::draw(f, app))?;
     Ok(())
 }
@@ -240,48 +279,6 @@ fn rgb_of(color: Color, fallback: karet_theme::Rgba) -> (u8, u8, u8) {
         Color::LightMagenta => xterm_rgb(13),
         Color::LightCyan => xterm_rgb(14),
         Color::White => xterm_rgb(15),
-    }
-}
-
-/// The xterm 256-colour palette: 16 system colours, a 6×6×6 RGB cube, 24 greys.
-fn xterm_rgb(index: u8) -> (u8, u8, u8) {
-    /// The 16 system colours, in xterm's default palette.
-    const SYSTEM: [(u8, u8, u8); 16] = [
-        (0, 0, 0),
-        (128, 0, 0),
-        (0, 128, 0),
-        (128, 128, 0),
-        (0, 0, 128),
-        (128, 0, 128),
-        (0, 128, 128),
-        (192, 192, 192),
-        (128, 128, 128),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (0, 0, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
-    ];
-    /// The six levels each channel of the colour cube takes.
-    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-
-    match index {
-        0..=15 => SYSTEM[index as usize],
-        16..=231 => {
-            let offset = index - 16;
-            (
-                LEVELS[(offset / 36) as usize],
-                LEVELS[(offset % 36 / 6) as usize],
-                LEVELS[(offset % 6) as usize],
-            )
-        },
-        // 232..=255 is a 24-step grey ramp from #080808 to #eeeeee.
-        _ => {
-            let level = 8 + (index - 232) * 10;
-            (level, level, level)
-        },
     }
 }
 
@@ -427,17 +424,5 @@ mod tests {
         assert_eq!(rgb_of(Color::Indexed(1), fallback), (128, 0, 0));
         assert_eq!(rgb_of(Color::Rgb(7, 8, 9), fallback), (7, 8, 9));
         assert_eq!(rgb_of(Color::Reset, fallback), (9, 9, 9));
-    }
-
-    #[test]
-    fn the_xterm_cube_and_grey_ramp_are_correct() {
-        // Cube corners and one interior point.
-        assert_eq!(xterm_rgb(16), (0, 0, 0));
-        assert_eq!(xterm_rgb(231), (255, 255, 255));
-        assert_eq!(xterm_rgb(21), (0, 0, 255));
-        assert_eq!(xterm_rgb(46), (0, 255, 0));
-        // Grey ramp endpoints.
-        assert_eq!(xterm_rgb(232), (8, 8, 8));
-        assert_eq!(xterm_rgb(255), (238, 238, 238));
     }
 }

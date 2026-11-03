@@ -29,7 +29,10 @@ pub struct Applied {
     pub version: u64,
     /// The applied edits, descending by `start_byte`.
     pub edits: Vec<AppliedEdit>,
-    /// The cursor to restore (set by [`undo`](TextBuffer::undo); `None` otherwise).
+    /// The cursor to restore: always set by [`undo`](TextBuffer::undo) (the
+    /// state before the undone step), set by [`redo`](TextBuffer::redo) when a
+    /// cursor was reported after the redone step through
+    /// [`note_cursor_after`](TextBuffer::note_cursor_after), `None` otherwise.
     pub restored_cursor: Option<CursorState>,
 }
 
@@ -55,6 +58,32 @@ impl TextBuffer {
     /// - [`TextError::OverlappingEdits`] if the batch's edits overlap.
     /// - [`TextError::OutOfBounds`] for an edit addressing a line past the end.
     pub fn apply(&mut self, change: &Change, ctx: EditContext) -> Result<Applied, TextError> {
+        self.apply_recorded(change, &ctx, false)
+    }
+
+    /// Apply an atomic [`Change`] as part of the most recent undo step rather
+    /// than as a new one, so a single [`undo`](Self::undo) reverts it together
+    /// with the edit before it and restores *that* edit's cursor. Use it for
+    /// follow-up rewrites that belong to one user action (e.g. a save's
+    /// formatting and its whitespace cleanup). With nothing to undo yet it
+    /// starts a step of its own, like [`apply`](Self::apply).
+    ///
+    /// # Errors
+    /// As [`apply`](Self::apply).
+    pub fn apply_joined(
+        &mut self,
+        change: &Change,
+        ctx: EditContext,
+    ) -> Result<Applied, TextError> {
+        self.apply_recorded(change, &ctx, true)
+    }
+
+    fn apply_recorded(
+        &mut self,
+        change: &Change,
+        ctx: &EditContext,
+        join: bool,
+    ) -> Result<Applied, TextError> {
         if change.base_version != self.version {
             return Err(TextError::StaleVersion);
         }
@@ -72,7 +101,12 @@ impl TextBuffer {
             edits: inverse_edits,
         };
         let edit_end = edit_end_byte.map(|b| self.byte_to_line_col(BytePos(b)));
-        self.history.record(inverse, change.clone(), &ctx, edit_end);
+        if join {
+            self.history
+                .record_joined(inverse, change.clone(), ctx, edit_end);
+        } else {
+            self.history.record(inverse, change.clone(), ctx, edit_end);
+        }
         Ok(Applied {
             version: self.version,
             edits,
@@ -101,17 +135,27 @@ impl TextBuffer {
         })
     }
 
-    /// Redo the most recently undone edit group, or `None` when there is nothing
-    /// to redo.
+    /// Redo the most recently undone edit group, returning the re-applied edits
+    /// and the cursor reported right after the step (when one was), or `None`
+    /// when there is nothing to redo.
     pub fn redo(&mut self) -> Option<Applied> {
-        let changes = self.history.take_redo()?;
+        let (changes, cursor) = self.history.take_redo()?;
         let edits = self.replay(&changes);
         self.version += 1;
         Some(Applied {
             version: self.version,
             edits,
-            restored_cursor: None,
+            restored_cursor: cursor,
         })
+    }
+
+    /// Record the cursor/selection state as it stands right after the most
+    /// recent edit, so redoing that edit restores it. Only the first report
+    /// for the current version is kept, and only while the most recent
+    /// recorded edit is what produced it: a report after an undo, a redo, or a
+    /// caret move that followed the first report describes something else.
+    pub fn note_cursor_after(&mut self, cursor: &CursorState) {
+        self.history.note_cursor_after(self.version, cursor);
     }
 
     /// Apply a sequence of trusted changes (history replay) to the rope, with no
@@ -335,6 +379,150 @@ mod tests {
         assert_eq!(b.line(0).as_deref(), Some("aXbcdYef"));
     }
 
+    fn edit(start: (u32, u32), end: (u32, u32), text: &str) -> TextEdit {
+        TextEdit {
+            range: Range {
+                start: LineCol::new(start.0, start.1),
+                end: LineCol::new(end.0, end.1),
+            },
+            new_text: text.to_string(),
+        }
+    }
+
+    /// `(start_byte, old_end_byte, new_end_byte, replaced)` of each edit, in order.
+    fn spans(applied: &Applied) -> Vec<(usize, usize, usize, &str)> {
+        applied
+            .edits
+            .iter()
+            .map(|e| {
+                (
+                    e.start_byte,
+                    e.old_end_byte,
+                    e.new_end_byte,
+                    e.replaced.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn length_changing_multi_edit_applies_undoes_and_redoes() {
+        // "ab\ncd\nef": a growing insert, a shrinking replace across a line
+        // break, and a deleted line break — listed out of order, so the result
+        // depends on resolving every edit against the pre-edit text, and the
+        // undo depends on the running delta shifting each inverse into place.
+        let mut b = TextBuffer::from_text("ab\ncd\nef");
+        let change = Change::new(
+            0,
+            vec![
+                edit((2, 1), (2, 1), "XYZ"),
+                edit((0, 1), (1, 1), "Q"),
+                edit((1, 2), (2, 0), ""),
+            ],
+        );
+        let applied = b.apply_simple(&change).unwrap_or_default();
+        assert_eq!(b.text(), "aQdeXYZf");
+        assert_eq!(applied.version, 1);
+        // Descending by start byte, each in the pre-edit frame.
+        assert_eq!(
+            spans(&applied),
+            vec![(7, 7, 10, ""), (5, 6, 5, "\n"), (1, 4, 2, "b\nc")]
+        );
+        let points: Vec<_> = applied
+            .edits
+            .iter()
+            .map(|e| (e.start_point, e.old_end_point, e.new_end_point))
+            .collect();
+        assert_eq!(
+            points,
+            vec![
+                (
+                    BytePoint::new(2, 1),
+                    BytePoint::new(2, 1),
+                    BytePoint::new(2, 4)
+                ),
+                (
+                    BytePoint::new(1, 2),
+                    BytePoint::new(2, 0),
+                    BytePoint::new(1, 2)
+                ),
+                (
+                    BytePoint::new(0, 1),
+                    BytePoint::new(1, 1),
+                    BytePoint::new(0, 2)
+                ),
+            ]
+        );
+
+        let undone = b.undo().unwrap_or_default();
+        assert_eq!(b.text(), "ab\ncd\nef");
+        assert!(!b.is_dirty());
+        assert_eq!(undone.version, 2);
+        // The inverse edits, in the post-edit frame, again descending.
+        assert_eq!(
+            spans(&undone),
+            vec![(4, 7, 4, "XYZ"), (3, 3, 4, ""), (1, 2, 4, "Q")]
+        );
+
+        let redone = b.redo().unwrap_or_default();
+        assert_eq!(b.text(), "aQdeXYZf");
+        assert_eq!(redone.version, 3);
+        assert_eq!(spans(&redone), spans(&applied));
+    }
+
+    #[test]
+    fn touching_edits_are_not_overlapping() {
+        // The first edit ends exactly where the second starts.
+        let mut b = TextBuffer::from_text("abcd");
+        let change = Change::new(
+            0,
+            vec![edit((0, 1), (0, 2), "XX"), edit((0, 2), (0, 3), "")],
+        );
+        let applied = b.apply_simple(&change).unwrap_or_default();
+        assert_eq!(b.text(), "aXXd");
+        assert_eq!(spans(&applied), vec![(2, 3, 2, "c"), (1, 2, 3, "b")]);
+        assert!(b.undo().is_some());
+        assert_eq!(b.text(), "abcd");
+    }
+
+    /// Assert `b` still holds `text` untouched: same content, version, and no
+    /// undo step recorded.
+    fn assert_untouched(b: &mut TextBuffer, text: &str) {
+        assert_eq!(b.text(), text);
+        assert_eq!(b.version(), 0);
+        assert!(!b.is_dirty());
+        assert_eq!(b.undo_len(), 0);
+        assert!(b.undo().is_none());
+    }
+
+    #[test]
+    fn an_edit_past_the_last_line_rejects_the_whole_change() {
+        let mut b = TextBuffer::from_text("ab\ncd");
+        // A valid edit alongside one addressing line 5 of a two-line buffer.
+        let change = Change::new(
+            0,
+            vec![edit((0, 0), (0, 0), "Z"), edit((5, 0), (5, 0), "!")],
+        );
+        assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+        assert_untouched(&mut b, "ab\ncd");
+        // An end past the last line is rejected the same way.
+        let change = Change::new(0, vec![edit((1, 0), (2, 0), "")]);
+        assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+        assert_untouched(&mut b, "ab\ncd");
+    }
+
+    #[test]
+    fn a_reversed_range_is_out_of_bounds() {
+        let mut b = TextBuffer::from_text("ab\ncd");
+        for change in [
+            Change::new(0, vec![edit((0, 2), (0, 1), "X")]),
+            Change::new(0, vec![edit((1, 0), (0, 1), "")]),
+        ] {
+            assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+            assert_untouched(&mut b, "ab\ncd");
+        }
+    }
+
     #[test]
     fn overlapping_edits_rejected() {
         let mut b = TextBuffer::from_text("abcdef");
@@ -361,6 +549,7 @@ mod tests {
             b.apply_simple(&change).err(),
             Some(TextError::OverlappingEdits)
         );
+        assert_untouched(&mut b, "abcdef");
     }
 
     #[test]
@@ -376,6 +565,132 @@ mod tests {
     }
 
     #[test]
+    fn redo_restores_the_cursor_first_reported_after_the_edit() {
+        let caret = |col| CursorState::single(karet_core::Selection::caret(LineCol::new(0, col)));
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, " world")).is_ok());
+        b.note_cursor_after(&caret(11));
+        // A later report at the same version is a caret move, not the edit's.
+        b.note_cursor_after(&caret(2));
+        assert!(b.undo().is_some());
+        // After the undo the head edit no longer produced the current version.
+        b.note_cursor_after(&caret(4));
+        let redone = b.redo().unwrap_or_default();
+        assert_eq!(redone.restored_cursor, Some(caret(11)));
+    }
+
+    #[test]
+    fn undo_limit_bounds_buffer_undo() {
+        let mut b = TextBuffer::from_text("");
+        b.set_undo_limit(Some(2));
+        assert_eq!(b.undo_limit(), Some(2));
+        for col in 0..4 {
+            assert!(b.apply_simple(&ins(b.version(), 0, col, "x")).is_ok());
+        }
+        assert_eq!(b.undo_len(), 2);
+        assert!(b.undo().is_some());
+        assert!(b.undo().is_some());
+        assert!(b.undo().is_none(), "the two oldest steps were forgotten");
+        assert_eq!(b.line(0).as_deref(), Some("xx"));
+    }
+
+    #[test]
+    fn reload_keeps_the_undo_limit() {
+        let mut b = TextBuffer::from_text("a");
+        b.set_undo_limit(Some(5));
+        b.adopt_content(TextBuffer::from_text("b"));
+        assert_eq!(b.undo_limit(), Some(5));
+    }
+
+    #[test]
+    fn history_round_trips_into_a_fresh_buffer_with_the_same_text() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, " world")).is_ok());
+        assert!(b.apply_simple(&ins(b.version(), 0, 0, ">")).is_ok());
+        assert!(b.undo().is_some());
+        let snapshot = b.history_snapshot();
+
+        let mut fresh = TextBuffer::from_text("hello world");
+        let before = fresh.version();
+        assert_eq!(fresh.restore_history(snapshot), Ok(()));
+        assert!(fresh.version() > before, "restoring bumps the version");
+        assert!(!fresh.is_dirty());
+        assert!(fresh.redo().is_some());
+        assert_eq!(fresh.line(0).as_deref(), Some(">hello world"));
+        assert!(fresh.undo().is_some());
+        assert!(fresh.undo().is_some());
+        assert_eq!(fresh.line(0).as_deref(), Some("hello"));
+        assert!(fresh.undo().is_none());
+    }
+
+    #[test]
+    fn history_is_refused_by_different_text() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, "!")).is_ok());
+        let snapshot = b.history_snapshot();
+        let mut other = TextBuffer::from_text("hello");
+        let version = other.version();
+        assert_eq!(
+            other.restore_history(snapshot),
+            Err(TextError::HistoryMismatch)
+        );
+        assert!(
+            other.undo().is_none(),
+            "a refused restore leaves history alone"
+        );
+        assert_eq!(other.version(), version);
+    }
+
+    #[test]
+    fn a_restored_head_never_claims_a_later_cursor_report() {
+        let caret = |col| CursorState::single(karet_core::Selection::caret(LineCol::new(0, col)));
+        let mut b = TextBuffer::from_text("ab");
+        assert!(b.apply_simple(&ins(0, 0, 2, "c")).is_ok());
+        let mut fresh = TextBuffer::from_text("abc");
+        assert_eq!(fresh.restore_history(b.history_snapshot()), Ok(()));
+        // Nothing was edited since the restore, so this report is a caret move.
+        fresh.note_cursor_after(&caret(1));
+        assert!(fresh.undo().is_some());
+        assert_eq!(fresh.redo().unwrap_or_default().restored_cursor, None);
+    }
+
+    #[test]
+    fn redo_without_a_reported_cursor_restores_none() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, "!")).is_ok());
+        assert!(b.undo().is_some());
+        assert_eq!(b.redo().unwrap_or_default().restored_cursor, None);
+    }
+
+    #[test]
+    fn joined_change_undoes_with_the_previous_step() {
+        let mut b = TextBuffer::from_text("a ");
+        let at = |line, col| EditContext {
+            cursor_before: CursorState::single(karet_core::Selection::caret(LineCol::new(
+                line, col,
+            ))),
+            ..EditContext::default()
+        };
+        assert!(b.apply_simple(&ins(0, 0, 0, "x")).is_ok());
+        assert!(b.apply(&ins(b.version(), 0, 0, "y"), at(0, 2)).is_ok());
+        assert!(
+            b.apply_joined(&ins(b.version(), 0, 0, "z"), at(5, 5))
+                .is_ok()
+        );
+        assert_eq!(b.line(0).as_deref(), Some("zyxa "));
+
+        let undone = b.undo().unwrap_or_default();
+        assert_eq!(b.line(0).as_deref(), Some("xa "), "one undo reverts both");
+        assert_eq!(
+            undone.restored_cursor.map(|c| c.primary().head),
+            Some(LineCol::new(0, 2)),
+            "the cursor from before the first edit of the step comes back"
+        );
+        assert!(b.redo().is_some());
+        assert_eq!(b.line(0).as_deref(), Some("zyxa "), "one redo replays both");
+    }
+
+    #[test]
     fn coalesced_typing_undoes_as_one_step() {
         let mut b = TextBuffer::from_text("");
         let mut tick = 0;
@@ -383,7 +698,7 @@ mod tests {
             let col = i as u32;
             let ctx = EditContext {
                 tick_ms: tick,
-                cause: crate::EditCause::Type,
+                cause: karet_core::EditCause::Type,
                 cursor_before: CursorState::single(karet_core::Selection::caret(LineCol::new(
                     0, col,
                 ))),

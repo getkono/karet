@@ -27,10 +27,11 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 
 use crate::discover::Discovered;
-use crate::discover::DiscoveryOptions;
 use crate::discover::PackageKind;
 use crate::extract::ExtractError;
 use crate::extract::extract_file;
+use crate::extract::extract_parsed;
+use crate::extract::parse_file;
 use crate::id::SeamId;
 use crate::id::SeamPath;
 use crate::id::SeamSegment;
@@ -82,13 +83,13 @@ impl Default for IndexOptions {
 }
 
 /// One file waiting to be indexed, and the module node it belongs to.
-struct Pending {
-    file: PathBuf,
-    parent: SeamId,
+pub(crate) struct Pending {
+    pub(crate) file: PathBuf,
+    pub(crate) parent: SeamId,
     /// Fixed when the file is enqueued, not guessed when it is read: an index may hold
     /// Rust and Python at once, so there is no one grammar to fall back on.
-    language: LanguageId,
-    crate_root: bool,
+    pub(crate) language: LanguageId,
+    pub(crate) crate_root: bool,
 }
 
 /// Index the package rooted at `root`, following module declarations across files.
@@ -121,9 +122,19 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
     let mut index = SeamIndex::new();
     let mut pool = ParserPool::new();
     let root_id = add_package_node(&mut index, &package);
-    let mut queue = seed_cargo(entry_points, root_id);
+    let mut queue = seed::seed(&mut index, &package, root_id, entry_points);
 
-    drain(&mut index, &mut pool, &mut queue, &mut Walk::new(), options);
+    let mut ownership = Vec::new();
+    drain(
+        &mut index,
+        &mut pool,
+        &mut queue,
+        &mut Walk::new(),
+        options,
+        &mut ownership,
+    );
+    crate::regroup::apply(&mut index, ownership);
+    crate::calls::link(&mut index);
     index.recompute_rollups();
     Ok(index)
 }
@@ -140,42 +151,7 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
 /// is found but cannot be read is represented in the index rather than failing the whole
 /// call, since one unreadable crate is no reason to answer nothing about the rest.
 pub fn index_workspace(root: &Path, options: IndexOptions) -> Result<SeamIndex, PackageError> {
-    let packages = crate::discover::discover(root, DiscoveryOptions::default());
-    if packages.is_empty() {
-        return Err(PackageError::NothingToIndex(root.to_path_buf()));
-    }
-
-    let mut index = SeamIndex::new();
-    let mut pool = ParserPool::new();
-    // Shared across packages: a file reachable from two roots is indexed once, and the cap
-    // is a budget for the whole index rather than a per-package allowance.
-    let mut walk = Walk::new();
-
-    for package in &packages {
-        if walk.scanned >= options.max_files {
-            index.mark_truncated(walk.scanned);
-            break;
-        }
-        let root_id = add_package_node(&mut index, package);
-        let mut queue = match package.kind {
-            PackageKind::Cargo => {
-                let entry_points = crate_roots(&package.root);
-                if entry_points.is_empty() {
-                    // The package keeps its root. Dropping it would say the workspace has
-                    // no such member; an empty root would say the member holds nothing.
-                    // Neither is what happened — its entry point is somewhere we do not
-                    // look yet, and the paths tried say exactly that.
-                    index.mark_module_unresolved(root_id, crate_root_candidates(&package.root));
-                }
-                seed_cargo(entry_points, root_id)
-            },
-            PackageKind::Python => seed_python(&mut index, package, root_id),
-        };
-        drain(&mut index, &mut pool, &mut queue, &mut walk, options);
-    }
-
-    index.recompute_rollups();
-    Ok(index)
+    crate::parallel::index_workspace_with(root, options, &crate::parallel::Unobserved)
 }
 
 /// What one walk has already done, shared across every package in an index.
@@ -194,12 +170,17 @@ impl Walk {
 }
 
 /// Work the queue until it empties or the file cap stops it.
+///
+/// Ownership hints accumulate rather than being acted on: a Rust `impl` and the type it
+/// implements routinely live in different files, and the file holding the type may not be
+/// read until later. They are resolved once the queue is empty.
 fn drain(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
     queue: &mut Vec<Pending>,
     walk: &mut Walk,
     options: IndexOptions,
+    ownership: &mut Vec<(SeamId, Vec<crate::lang::Owner>)>,
 ) {
     while let Some(pending) = queue.pop() {
         let canonical = pending
@@ -220,7 +201,7 @@ fn drain(
             // Unreadable or not UTF-8: skip the file, keep the module node.
             continue;
         };
-        index_one_file(index, pool, queue, &pending, &text);
+        index_one_file(index, pool, queue, &pending, &text, ownership);
     }
 }
 
@@ -231,6 +212,7 @@ fn index_one_file(
     queue: &mut Vec<Pending>,
     pending: &Pending,
     text: &str,
+    ownership: &mut Vec<(SeamId, Vec<crate::lang::Owner>)>,
 ) {
     let file_id = index.intern_file(&pending.file);
     // Recorded before extraction, so a file that will not parse can still be re-indexed
@@ -240,6 +222,8 @@ fn index_one_file(
     else {
         return;
     };
+
+    ownership.extend(outcome.ownership);
 
     // Unbranched by design: `SeamLanguage::external_module` defaults to `None`, so a
     // language whose modules never span files reports none and this loop is simply inert.
@@ -252,7 +236,7 @@ fn index_one_file(
             declaration.path_attribute.as_deref(),
         ) {
             ModuleSource::File(file) => {
-                queue.extend(pending_for(file, declaration.id, false));
+                queue.extend(seed::pending_for(file, declaration.id, false));
             },
             ModuleSource::Missing { candidates } => {
                 // The module stays in the tree. Dropping it would claim the package has
@@ -262,87 +246,6 @@ fn index_one_file(
             ModuleSource::Inline => {},
         }
     }
-}
-
-/// The queue entries a Cargo package starts from.
-fn seed_cargo(entry_points: Vec<PathBuf>, root_id: SeamId) -> Vec<Pending> {
-    entry_points
-        .into_iter()
-        .filter_map(|file| pending_for(file, root_id, true))
-        .collect()
-}
-
-/// Build a Python package's module nodes, and the queue entries that fill them.
-///
-/// The nodes have to exist before their files are read: the walk hands back parents before
-/// children, and each module node is the parent its own file's contents attach to.
-fn seed_python(index: &mut SeamIndex, package: &Discovered, root_id: SeamId) -> Vec<Pending> {
-    let mut queue = Vec::new();
-    for module in crate::modules::python::walk(&package.root) {
-        // An empty import path is the package's own `__init__.py`, whose contents belong
-        // to the package node itself rather than to a child module named `__init__`.
-        let parent = if module.segments.is_empty() {
-            root_id
-        } else {
-            add_module_node(index, root_id, &module.segments, &module.file)
-        };
-        queue.extend(pending_for(module.file, parent, false));
-    }
-    // The drain pops from the back, so reversing keeps files in walk order — parents
-    // before children, which is the order their nodes were created in.
-    queue.reverse();
-    queue
-}
-
-/// A queue entry, or `None` when no compiled-in grammar reads this file.
-fn pending_for(file: PathBuf, parent: SeamId, crate_root: bool) -> Option<Pending> {
-    let language = karet_treesitter::language_id_from_path(&file)?;
-    Some(Pending {
-        file,
-        parent,
-        language,
-        crate_root,
-    })
-}
-
-/// Add a Python module's node, located in the file it owns.
-fn add_module_node(
-    index: &mut SeamIndex,
-    root_id: SeamId,
-    segments: &[String],
-    file: &Path,
-) -> SeamId {
-    let Some(root_segment) = index
-        .path(root_id)
-        .and_then(|path| path.segments().first().cloned())
-    else {
-        return root_id;
-    };
-    let mut full = vec![root_segment];
-    full.extend(segments.iter().map(SeamSegment::new));
-    let id = index.intern(SeamPath::new(full.clone()));
-    let parent = SeamPath::new(full[..full.len() - 1].to_vec());
-    let file_id = index.intern_file(file);
-    index.insert(Node {
-        id,
-        kind: NodeKind::Module,
-        name: segments.last().cloned().unwrap_or_default(),
-        detail: None,
-        location: SeamLocation {
-            file: file_id,
-            range: karet_core::Range::default(),
-            span: karet_core::Span::default(),
-            selection: karet_core::Range::default(),
-        },
-        parent: index.resolve(&parent),
-        children: Vec::new(),
-        facets: Vec::new(),
-        visibility: None,
-        rollups: Rollups::new(),
-        membership: ConfigMembership::Active,
-        provisional: false,
-    });
-    id
 }
 
 /// Add the package's root node, which every declaration ultimately hangs from.
@@ -360,6 +263,7 @@ fn add_package_node(index: &mut SeamIndex, package: &Discovered) -> SeamId {
             range: karet_core::Range::default(),
             span: karet_core::Span::default(),
             selection: karet_core::Range::default(),
+            header: karet_core::Range::default(),
         },
         parent: None,
         children: Vec::new(),
@@ -397,7 +301,7 @@ fn unique_root_segment(index: &SeamIndex, name: &str) -> SeamSegment {
 /// The entry points a Cargo package conventionally has, whether or not they exist.
 ///
 /// Recorded as evidence when none of them do, so "we looked here" is answerable.
-fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
     CRATE_ROOTS
         .iter()
         .map(|relative| root.join(relative))
@@ -408,7 +312,7 @@ fn crate_root_candidates(root: &Path) -> Vec<PathBuf> {
 ///
 /// Conventional locations only, for now — the manifest tier supplies the full declared
 /// target set, including the ones a manifest relocates with an explicit `path`.
-fn crate_roots(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn crate_roots(root: &Path) -> Vec<PathBuf> {
     crate_root_candidates(root)
         .into_iter()
         .filter(|candidate| candidate.is_file())
@@ -422,7 +326,9 @@ fn crate_roots(root: &Path) -> Vec<PathBuf> {
 /// re-walking the package on every keystroke would make the view unusable.
 ///
 /// # Errors
-/// Propagates [`ExtractError`] when the file cannot be parsed or has no mapping.
+/// Propagates [`ExtractError`] when the file cannot be parsed or has no mapping. Every
+/// such failure is detected before the file's old nodes are removed, so on `Err` the
+/// index is left as it stood.
 pub fn reindex_file(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
@@ -442,11 +348,27 @@ pub fn reindex_file(
             karet_treesitter::language_id_from_path(file).ok_or(ExtractError::NoGrammar)?,
         ),
     };
-    index.remove_nodes_in_file(file_id, parent);
-    extract_file(index, pool, parent, file_id, language, text)?;
-    index.recompute_rollups_from(parent);
+    // Removal is scoped to the *package*, not to the module that declares the file.
+    // Regrouping moves nodes out from under their declaring module — a Rust `impl` ends
+    // up beneath the type it implements, which may be anywhere in the package — and a
+    // narrower sweep would leave those behind as duplicates of what is about to be built.
+    let root = index.ancestors(parent).last().copied().unwrap_or(parent);
+    // Parsed before anything is removed: a file that fails here leaves the index exactly
+    // as it stood, rather than without this file's nodes.
+    let parsed = parse_file(pool, language, text)?;
+    index.remove_nodes_in_file(file_id, root);
+    let outcome = extract_parsed(index, parent, file_id, language, &parsed, text);
+    crate::regroup::apply(index, outcome.ownership);
+    // The whole index, not the file: calls elsewhere may have pointed at what this file
+    // used to declare, and calls here may now reach something new.
+    crate::calls::link(index);
+    // From the package root for the same reason: the rebuilt nodes may not have landed
+    // in the subtree the edit appeared to touch.
+    index.recompute_rollups_from(root);
     Ok(())
 }
+
+pub(crate) mod seed;
 
 #[cfg(test)]
 mod tests;

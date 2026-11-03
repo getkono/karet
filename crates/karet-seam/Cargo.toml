@@ -19,17 +19,26 @@ default = []
 # Serialize the model, for the programmatic/agent surface. Off by default so a
 # consumer that only navigates the index never compiles serde.
 #
-# Serialization only, deliberately: the index is always *built* by walking source, never
-# read back from JSON, so `Deserialize` would be a shape nothing produces. That also lets
-# `FacetSubtype` stay a `Copy` `&'static str` (which cannot deserialize) instead of an
-# allocating string on every facet.
+# Both directions, since the on-disk index cache reads the model back: a
+# `FileContribution` is written after extraction and replayed on the next run instead of
+# re-parsing an unchanged file. `FacetSubtype` still stays a `Copy` `&'static str` — it
+# deserializes by resolving the name against the registered languages' subtype tables
+# (see `FacetSubtype::from_name`) rather than by allocating a string per facet.
 serde = ["dep:serde", "karet-core/serde"]
 
 # Grammar pass-through to the single parse host. Only the languages this crate
 # actually maps into the lens vocabulary appear here — a grammar with no facet
 # mapping would parse and then classify nothing.
-lang-rust   = ["karet-treesitter/lang-rust"]
-lang-python = ["karet-treesitter/lang-python"]
+lang-rust       = ["karet-treesitter/lang-rust"]
+lang-python     = ["karet-treesitter/lang-python"]
+lang-javascript = ["karet-treesitter/lang-javascript"]
+lang-typescript = ["lang-javascript", "karet-treesitter/lang-typescript"]
+lang-swift      = ["karet-treesitter/lang-swift"]
+lang-kotlin     = ["karet-treesitter/lang-kotlin"]
+# C and C++ share one mapping, so either compiles it; each still parses with its own grammar.
+lang-c          = ["karet-treesitter/lang-c"]
+lang-cpp        = ["karet-treesitter/lang-cpp"]
+lang-java       = ["karet-treesitter/lang-java"]
 
 [dependencies]
 karet-core.workspace       = true
@@ -39,6 +48,10 @@ karet-treesitter.workspace = true
 # manifest parsing — so the package name comes from there rather than a second parser.
 dependable-core.workspace  = true
 thiserror.workspace        = true
+# Packages fan out across cores, and each package's module walk is a work-stolen
+# frontier — the file set cannot be enumerated up front, because Rust files are
+# discovered by parsing the `mod` declarations that name them.
+rayon.workspace            = true
 serde = { workspace = true, optional = true }
 
 [lints]
@@ -46,6 +59,9 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace         = true
-# The workspace integration suite indexes this repo's own crates, which needs the
-# grammar and the parser pool the library only takes as an argument.
-karet-treesitter.workspace = true
+
+# The workspace integration suite indexes this repo's own Rust crates, so it needs the
+# Rust grammar; its parser pool comes from the ordinary `karet-treesitter` dependency.
+[[test]]
+name              = "workspace"
+required-features = ["lang-rust"]

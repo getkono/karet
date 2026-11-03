@@ -48,27 +48,47 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 |---|---|---|---|
 | `tabSize` | number | `4` | Columns per indent level. |
 | `insertSpaces` | bool | `true` | Insert spaces instead of a hard tab. |
-| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode. |
-| `cursorLine` | bool | `true` | Highlight the caret's line. |
+| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode; `"relative"` counts buffer lines from the caret, whose line shows its own number; `"off"` drops the numbers but keeps a 2-cell gutter for the git, diagnostic and fold markers. |
+| `cursorLine` | bool | `true` | Highlight the caret's line (its number stays emphasized either way). |
 | `graphicalCursor` | bool\|null | `null` | Draw a graphical caret when supported; `true` reports a visible error if incompatible. |
-| `scrollOff` | number | `3` | Lines kept visible above/below the caret. |
-| `rulers` | number[] | `[]` | Columns to draw vertical rulers at. |
-| `wordWrap` | bool\|null | `null` | Override long-line handling; `null` uses the file-type default, `true` wraps, and `false` scrolls horizontally. |
+| `scrollOff` | number | `3` | Lines kept visible above/below the caret when the keyboard moves it; capped to what the viewport can spare, and a click never scrolls. |
+| `rulers` | number[] | `[]` | Columns to draw vertical rulers after, tinted on the plain background. |
+| `guides` | object | `{ "indentation": true, "highlightActiveIndentation": true }` | `indentation` draws a `│` guide every `tabSize` columns of a line's leading whitespace; a blank line takes the deeper indentation of the code around it, so a block's guide runs through its blank lines. `highlightActiveIndentation` draws the guide of the block holding the caret brighter (on a block's header line, the block it opens). Global only; not a per-language override. |
+| `renderWhitespace` | `"none"`\|`"boundary"`\|`"selection"`\|`"trailing"`\|`"all"` | `"none"` | Which whitespace is drawn visibly: a space as `·`, a tab as `→`. `"boundary"` shows all but a single space between words; `"selection"` only whitespace inside a selection; `"trailing"` only whitespace at a line's end. An indentation guide wins the cell it shares with a mark. Global only; not a per-language override. |
+| `bracketPairColorization` | object | `{ "enabled": false }` | `enabled` colours each code `()`, `[]` and `{}` by its nesting depth, cycling through the theme's constant, keyword and function colours. Brackets in strings and comments, and a closer with no opener, keep their own colour. Global only; not a per-language override. |
+| `wordWrap` | bool\|`"off"`\|`"on"`\|`"wordWrapColumn"`\|`"bounded"`\|null | `null` | Override long-line handling; `null` uses the file-type default, `true`/`"on"` wraps at the viewport, and `false`/`"off"` scrolls horizontally. `"wordWrapColumn"` and `"bounded"` wrap at `wordWrapColumn`, or at the viewport when it is narrower: a wrapped view has no horizontal scroll, so in a terminal the two read the same. |
+| `wordWrapColumn` | number | `80` | The column `"wordWrapColumn"` and `"bounded"` wrap at; `0` wraps at the viewport. |
+| `wrappingIndent` | `"none"`\|`"same"`\|`"indent"` | `"same"` | How a wrapped line's continuation rows are indented: `"none"` starts them at the left edge, `"same"` lines them up with the line's own leading whitespace, `"indent"` puts them one `tabSize` deeper. The indent never takes more than half the wrap width, so a deeply indented line in a narrow pane keeps room for its text. A click in the indent puts the caret at the row's first character, and Up/Down keep the screen column across it. |
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
+| `middleClickPaste` | bool\|null | `null` | Paste the primary selection (the X11/Wayland "last selected text") at a middle click in the text, read through `wl-paste`, `xclip` or `xsel`. `null` turns it on for Linux and off elsewhere. A middle click on a tab closes it either way. Global only; not a per-language override. |
+| `keymap` | `"default"`\|`"vim"`\|`"helix"` | `"default"` | The editing model of a code tab. `"default"` types at the caret, as in VS Code; `"vim"` and `"helix"` add modal editing (Normal, Insert and Visual/Select modes), described under [Modal editing](#modal-editing-editorkeymap). Takes effect on save, in the mode the editor was last in. Global only; not a per-language override. |
+| `autoClosingBrackets` | `"always"`\|`"languageDefined"`\|`"never"` | `"languageDefined"` | When typing `(`, `[` or `{` also inserts its closer. `"languageDefined"` closes only before whitespace, the end of the line, or closing punctuation (`;:.,=}])>`); `"always"` closes wherever the caret is. Typing a closer the editor inserted steps over it, Backspace between an empty pair deletes both halves, and an opener typed over a selection wraps it. Enter between a bracket pair and a closer typed on a blank line (which snaps to its opener's indentation) work whatever this says. |
+| `autoClosingQuotes` | `"always"`\|`"languageDefined"`\|`"never"` | `"languageDefined"` | The same for quotes. The language decides which quotes pair: `"` everywhere, `'` only where it is always a quote (not in Rust, whose lifetimes start with one, nor in Markdown or plain text), and `` ` `` in JavaScript, TypeScript, Go, shell and Markdown. `"languageDefined"` also leaves a quote alone inside a string or comment, and straight after a letter, digit or `_` (`don't`). |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
-| `formatOnSave` | bool | `false` | Run the formatter on save. |
+| `formatOnSave` | bool | `true` | Format before writing the file, using the language server's `textDocument/formatting` when the server offers it and the built-in formatter otherwise. Honours the per-language override. The write waits for the formatter for up to `formatOnSaveTimeout` (a little longer if the sweep that enforces it has just run); the tab shows a spinner once a save runs past a second. A formatter that fails, declines, or overruns that costs the formatting, never the save. The `afterDelay` autosave is excluded, so a reformat never lands mid-edit; every other save formats. A server that asks for will-save edits (`textDocument/willSaveWaitUntil`) has them applied first, on those same saves, whether or not this is on, within the same timeout. |
+| `formatOnType` | bool | `false` | Apply the language server's on-type formatting (`textDocument/onTypeFormatting`) after typing one of its trigger characters, such as `}` or Enter. Honours the per-language override; *Toggle Format on Type* flips it for the session. The edits are dropped, never misplaced, when typing has moved on before the server answers. |
+| `formatOnSaveTimeout` | number | `10000` | Milliseconds a save waits on the language server's formatter before writing the file unformatted. Accepts `1`–`30000`: the ceiling is the language-server request timeout, past which no answer can arrive. A value outside that range is reported as an invalid `editor` section, like any other malformed editor setting. Global only; not a per-language override. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
+| `inlineCompletion` | object | enabled | Ghost text (`enabled`): what a server offering LSP 3.18 inline completions -- such as `copilot-language-server`, see [language servers](language-servers.md#inline-completions-copilot) -- proposes at the caret, asked for once typing pauses and drawn dimmed after it. `Tab` accepts it, `Ctrl+Right` accepts one word, `Esc` dismisses it, and `Alt+]` / `Alt+[` cycle the proposals (or ask for some when none is shown). Honours the per-language override (`"[markdown]": { "inlineCompletion": { "enabled": false } }`). Nothing is asked where no attached server offers it. |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
-| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
+| `inlayHints` | object | enabled | Inferred types and parameter names drawn between characters, from the language's primary server, each kind in its own color. `enabled` takes `true`/`"on"` (default), `false`/`"off"`, or VS Code's `"onUnlessPressed"`/`"offUnlessPressed"`. **Toggle Inlay Hints** (`Ctrl+K Ctrl+T`, or the palette) flips them for the session under `on`/`off`; under the `…UnlessPressed` modes it flips them only until the next key, since a terminal cannot tell a held key. Servers that offer none cost nothing. Turning them off takes effect at once: hints already shown are cleared. |
+| `semanticHighlighting` | object | enabled | `enabled` (default `true`): ask the language's semantic-token server -- its primary, unless `lsp.languages.<id>.semanticTokens` names another -- for semantic tokens and lay them over the tree-sitter colours, recoloured through the theme's `semanticTokenColors` (macros, mutable bindings, unresolved names, deprecated symbols, …). Comments, strings and markup keep their tree-sitter colours. Turning it off takes effect at once, without restarting a server; see [language servers](language-servers.md#capability-ownership-and-overlap). |
+| `codeLens` | bool | `true` | The language server's code lenses ("Run test", "3 references") on a row of their own above the line they describe, indented like it, in the theme's `editorCodeLens.foreground`. Clicking a title runs its command on the server; a lens that only informs runs nothing. Turning them off takes effect at once: lenses already shown are cleared. |
+| `inlineDiagnostics` | object | `{ "mode": "currentLine", "minSeverity": "hint" }` | Which diagnostics show their message at the end of their line, in the severity's color. `mode` is `"off"`, `"currentLine"` (the lines a caret is on) or `"all"` (every line a diagnostic starts on); `minSeverity` is the least severe one shown: `"error"`, `"warning"`, `"info"` or `"hint"`. A short line cuts the least severe message first. The gutter sign and the underline are drawn whatever this says, and misspellings never take the message slot. The underline is curly where the terminal is known to draw one (kitty, Ghostty, WezTerm, foot, Alacritty, iTerm2, VS Code, and VTE-based terminals, outside tmux) and straight elsewhere. |
+| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`), and the colours the file's language server reports (`textDocument/documentColor` -- a Tailwind class, a CSS named colour); where both find the same literal, the server's colour is drawn. |
 | `prettyErrors` | bool | `true` | Re-render TypeScript diagnostics as markdown — quoted types become highlighted code blocks — in the hover popup and the diagnostic view (`Ctrl+K Ctrl+M`). |
 
 #### Per-language editor settings
 
 Every `editor` key can be overridden for one language with a `[language]` selector in
 the same object. Selectors are matched case-insensitively against the file type's stable
-configuration identity:
+configuration identity, never its display name: `Cargo.lock` (shown as "Cargo lockfile")
+takes `[toml]`, and `.gitmodules` takes `[gitconfig]`. A diff tab takes its file's selector
+and a rendered Markdown preview takes `[markdown]`; tabs that show no document text (images,
+PDFs, hex, logs, commit and graph views) use the global settings, as does a file with no
+selector (plain text, or a file karet does not recognize). For example:
 
 ```jsonc
 {
@@ -94,7 +114,8 @@ This means language specificity wins over layer specificity: a system-level `[ru
 value still beats a project-level global value for a Rust document. Within the same
 selector, the normal layer precedence still applies. Arrays such as `rulers` and
 `semanticComments.tags` replace rather than concatenate. Explicit `null` for
-`wordWrap` or `graphicalCursor` restores that setting's automatic behavior.
+`wordWrap`, `graphicalCursor` or `middleClickPaste` restores that setting's automatic
+behavior.
 
 Configuration selectors are deliberately independent from language-server protocol
 identifiers and remain compatible with existing settings. In particular, continue to
@@ -104,27 +125,151 @@ selectors to the protocol IDs `cpp`, `csharp`, `javascriptreact`, `typescriptrea
 using `[json]`, while formats that require distinct parsing such as JSON5, MDX, ERB,
 Zsh, Fish, and EDN have their own selectors.
 
+#### Format-on-save and pinned formatters
+
+`formatOnSave` uses whichever formatter the language server runs, and a server
+typically runs whatever version of that tool is on `PATH`. A project whose CI pins a
+different formatter version can therefore see a save-time reformat that its own
+format check rejects. Turn format-on-save off for that language in the project layer,
+and format with the pinned tool instead. *Format Document* (`Shift+Alt+F`) and
+*Format Selection* (`Ctrl+K Ctrl+F`) still ask the language's formatter on demand,
+with the same per-language `formatter` choice and the same `formatOnSaveTimeout`
+bound.
+
+karet's own repository is such a project: its merge gate runs the nightly `rustfmt`
+pinned in `rust-nightly.txt`, while rust-analyzer runs the `rustfmt` on `PATH`. Its
+tracked `.karet/setting.jsonc` therefore carries:
+
+```jsonc
+{
+  "editor": {
+    "[rust]": { "formatOnSave": false }
+  }
+}
+```
+
+Because the project layer has the highest precedence within a selector, this value
+also beats a user-level `[rust]` `formatOnSave`.
+
+#### Modal editing (`editor.keymap`)
+
+`"vim"` and `"helix"` make a code tab modal. The editor starts in **Normal** mode,
+where keys are commands and never type; the status bar names the mode beside the
+focus (`NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `SELECT`), with the macro being
+recorded and the command typed so far. **Insert** mode types exactly as the default
+keymap does (completion, snippets, auto-pairs, every `Ctrl` chord); `Esc` returns to
+Normal, closing any popup on the way. Every other pane — the sidebar, pickers, the
+terminal, diff and pager views — keeps its usual keys.
+
+In Normal mode a key goes first to the mode's layer (`vimNormal` or `helixNormal`),
+then to the editing grammar, then, if it carries `Ctrl` or `Alt` or is a function key,
+to the editor's and global bindings. So `Ctrl+P`, `Ctrl+S`, `Ctrl+B`, `Ctrl+F` and the
+`Ctrl+K` chords work as usual, while a plain key nothing takes is ignored. The grammar
+claims only the `Ctrl` keys vim cannot do without: `Ctrl+D`/`Ctrl+U` (half page),
+`Ctrl+E`/`Ctrl+Y` (scroll), `Ctrl+A`/`Ctrl+X` (increment/decrement the number at the
+cursor: decimal, `0x` hexadecimal or `0b` binary, keeping its width); `Ctrl+R` is
+redo in vim.
+
+**vim** supports:
+
+- **Counts** before a command or its motion (`3w`, `2d3w`, `5dd`).
+- **Motions:** `h j k l`, arrows, `w b e ge` and `W B E gE`, `0 ^ $ g_ |`, `gg G`
+  (with a count, that line), `f t F T` with `;` and `,`, `%` (and `N%`), `{ }`,
+  `H M L`, `+ - Enter`, `n N * #`, `Ctrl+D Ctrl+U PageDown PageUp`.
+- **Operators** over a motion or text object, or doubled for whole lines: `d c y > <`
+  and `gu gU g~`. `cw` changes to the word's end; a `dw` (or `d3w`) whose last word
+  ends a line stops at the line's end.
+- **Text objects** after `i` (inner) or `a` (around): `w W p`, `" ' \``, `( ) b`,
+  `[ ]`, `{ } B`, `< >`, and `t` (an XML/HTML element). An inner block whose braces
+  sit on their own lines is the lines between them.
+- **Commands:** `x X D C s S Y` (`Y` yanks to the line's end, as in Neovim), `p P`,
+  `J gJ`, `r`, `~`, `i a I A gI o O`, `v V` (with `o` to swap ends), `.`, `zz zt zb`,
+  `Ctrl+E Ctrl+Y`, `Ctrl+A Ctrl+X`.
+- **Registers** after `"`: the unnamed register, `a`–`z` (`A`–`Z` append), `0` (the
+  last yank), `1`–`9` (recent multi-line deletes), `-` (the last small delete), `_`
+  (discards), and `+`/`*` (the system clipboard; text ending in a line break pastes
+  as a line). Visual `p` swaps the selection with the register; `P` keeps it.
+- **Macros:** `q{a-z}` records every key until `q` (`q{A-Z}` appends), `@{a-z}`
+  replays (with a count), `@@` replays the last one. A completion accepted while
+  recording (or within the change `.` repeats) replays as the text it inserted. A
+  macro that ends up running itself is stopped after 16 nested replays, with a
+  notification.
+- **Search:** `/` and `?` open the find bar; `Enter` jumps to the match and hands the
+  keys back, so `n`/`N` step through the query (smart case: a lower-case query matches
+  either case). `*`/`#` search for the word under the cursor.
+- **The `vimNormal` layer:** `u` undo, `Ctrl+R` redo, `:` the command palette, `K`
+  hover, `gd`/`Ctrl+]` definition, `gD` declaration, `grr` references, `grn` rename,
+  `gra` code actions, `gri` implementation, `gO` document symbols, `gt`/`gT` next and
+  previous tab, `]d`/`[d` next and previous problem, `Ctrl+O` back. A count runs a
+  layer command that many times (`3u`).
+
+**helix** selects first, then acts: `w b e` (and `W B E`) select to the next word
+start, the previous word start or the word end; `f t F T` select to a character;
+`x` selects the line (again, the next line too), `X` extends to whole lines, `%`
+selects everything, `;` collapses the selection and `Alt+;` flips it; `v` toggles
+Select mode, in which motions extend. Then `d`/`c` delete or change the selection
+(`Alt+d`/`Alt+c` without yanking), `y` yanks, `p`/`P` paste after or before it (a line
+below or above when the register holds lines), `R` replaces it with the register, `r`
+replaces each character, `~`, `` ` `` and `` Alt+` `` change case, `>`/`<` indent,
+`J` joins. `mm` jumps to the matching bracket and `mi`/`ma` select a text object (with
+`m` for the nearest pair of any kind). `gg ge gh gl gs` and `G` go to places, `Q`
+records a macro and `q` replays it, `"` names a register, `.` repeats the last change,
+`n`/`N` select the next match and `*` searches for the selection. The `helixNormal`
+layer holds `u`/`U` (undo, redo), `/`, `:`, `gd gD gy gr gi`, `gn`/`gp` (tabs),
+`Alt+o`/`Alt+i` (expand and shrink the selection by syntax), `]d`/`[d`, `Ctrl+O`, and
+space mode: `Space f` (files), `Space s`/`Space S` (symbols), `Space k` (hover),
+`Space r` (rename), `Space a` (code actions), `Space /` (search), `Space c` (comment).
+
+Both layers, and the shared `insert` layer (whose `Esc` is `enterNormalMode`), can be
+rebound in [`keymap.jsonc`](#key-bindings-keymapjsonc): a binding in `vimNormal` or
+`helixNormal` outranks the grammar, so `{ "key": "Q", "command": "formatDocument",
+"when": "vimNormal" }` takes `Q` from it.
+
+Not supported: ex commands (`:` is the command palette), marks, Visual block mode,
+sentence objects, `gv`, and multiple selections in Normal mode (Normal mode keeps the
+primary one). A change made from Visual mode is not what `.` repeats, `3.` repeats the
+change three times rather than with a count of three, and undo restores a change and
+the typing after it in two steps rather than one.
+
 ### `files`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `autoSave` | `"off"`\|`"afterDelay"`\|`"onFocusChange"` | `"off"` | When dirty buffers auto-save. |
 | `autoSaveDelay` | number | `1000` | Delay (ms) for `afterDelay`. |
-| `encoding` | string | `"utf-8"` | Default encoding label. |
+| `encoding` | `"auto"`\|`"utf-8"`\|`"utf-8-bom"` | `"auto"` | Encoding on save: `auto` keeps the file's own (no BOM for a new file), `utf-8` drops a byte-order mark, `utf-8-bom` writes one. An `.editorconfig` `charset` overrides it. |
 | `eol` | `"auto"`\|`"lf"`\|`"crlf"` | `"auto"` | Line-ending style on save. |
 | `exclude` | string[] | `[]` | Globs hidden from the file explorer. |
 | `watcherExclude` | string[] | `[]` | Globs excluded from the filesystem watcher. |
 | `backup` | bool | `true` | Keep crash-recovery backups of unsaved buffers (see below). |
 | `backupInterval` | number | `30000` | Milliseconds a buffer stays dirty before its backup is written. |
 | `confirmOnExit` | bool | `true` | Prompt to save unsaved changes when quitting. |
+| `undoLimit` | number | `1000` | Most undo steps kept per buffer; `0` = no cap (see [Undo history](#undo-history)). |
+| `persistentUndo` | bool | `false` | Keep undo history across restarts, restored onto unchanged files. |
 
 ### `workbench`
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)). |
+| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)); the [theme picker](#color-themes) previews and chooses among them. A theme's `semanticTokenColors` style semantic tokens (`editor.semanticHighlighting`) by VS Code's selectors (`variable.readonly`, `*.deprecated`); a selector scoped to a language (`variable:rust`) is not applied, and a token no rule styles takes its `tokenColors` colour for the closest syntax class. |
 | `iconStyle` | `"nerdFont"`\|`"unicode"`\|`"ascii"` | `"nerdFont"` | File-tree / activity-bar glyphs. |
 | `startupPanel` | `"explorer"`\|`"search"`\|`"sourceControl"`\|`"none"` | `"explorer"` | Sidebar panel shown at startup. |
+| `restoreLayout` | bool | `true` | Reopen the workspace's tabs, splits, and cursors as the last clean exit left them (see [Saved layout](#saved-layout)). |
+
+#### Color themes
+
+**Settings: Select Color Theme…** in the command palette lists the built-in
+`Dark` theme, every VS Code `.json` theme in a `themes` directory beside a
+`setting.jsonc` — the user's `$XDG_CONFIG_HOME/karet/themes/` and the project's
+`$GIT_ROOT/.karet/themes/` — and the file `colorTheme` names when it lives
+anywhere else. Each row's hint says which of `built-in`, `user`, `project` or
+`settings` it came from.
+
+Moving through the list repaints the UI in the highlighted theme; Esc puts back
+the theme from before, Enter keeps the highlighted one. The pick lasts for the
+session and is never written to a settings file: to keep it, set `colorTheme` to
+the theme's path. A live reload keeps the pick while it leaves `colorTheme` as it
+was, and applies the setting once `colorTheme` itself changes.
 
 ### `search`
 
@@ -309,7 +454,7 @@ an external prerequisite.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers formatting; with the `taplo` LSP installed, its formatter wins. |
+| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) whenever no language server formatted the file — it never advertised `textDocument/formatting`, it was not reachable, or the request failed. With the `taplo` LSP installed and answering, its formatter wins. When karet gives up on a formatter it did reach (the deadline below, a server retired by a live `lsp.*` reload, or a buffer that moved on), the file is written as it stands rather than formatted twice by different rules. |
 
 ### `debug`
 
@@ -326,6 +471,67 @@ whole story. No launch.json compatibility layer — configurations live here.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `kernel.autoStart` | bool | `false` | Start a notebook's Jupyter kernel as soon as its preview opens, instead of on the first `Notebook: Run All Cells`. Off by default — a kernel is an arbitrary-code process. |
+
+### `tasks`
+
+Named shell commands for build and test loops. **Tasks: Run Task** (palette, or
+bind `runTask` in `keymap.jsonc`) lists them by label with the command beside
+it; picking one runs the command in a new [integrated terminal](scope.md#in-scope)
+tab titled `Task: <label>`. `tasks` is an object keyed by label, so a project
+layer overrides a user task of the same name key by key and leaves the user's
+other tasks alone. Each task takes:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `command` | string | `""` | The command line, run by `/bin/sh -c` on Unix and `cmd /C` on Windows (not your login shell, so it behaves the same for everyone sharing the project file). |
+| `cwd` | string | `""` | The working directory: absolute, or relative to the workspace root; empty is the root. |
+| `env` | object | `{}` | Environment variables set for the command, over the editor's own. |
+| `problemMatcher` | array | `[]` | How to read the output for problems: built-in names and patterns of your own, all applied. |
+
+The built-in matchers are `"$rustc"` (cargo and clippy too: the
+`error[E0308]: …` heading and the ` --> file:line:col` under it), `"$gcc"`
+(GCC and Clang), `"$tsc"` (plain and `--pretty`), `"$go"`, and
+`"$eslint-compact"`. A pattern of your own is
+`{ "regexp", "file": 1, "line": 2, "column", "severity", "code", "message", "defaultSeverity": "error" }`:
+`regexp` (Rust `regex` syntax) is tried on every output line, the other numbers
+are capture groups, and an unset `message` takes the whole line; `severity`
+reads `error`, `warning`, `info`, `note` and `hint` in any case and falls back
+to `defaultSeverity` (`"error"`, `"warning"`, `"info"` or `"hint"`).
+
+The matchers read what the terminal shows, history included, after colours
+and cursor movement are interpreted, so coloured compiler output needs no
+`--color=never`. A relative path resolves under the task's `cwd`, or under the
+workspace root when it is not there (cargo prints workspace-relative paths
+from inside a member). What they find replaces that task's entries in the
+**Problems** panel and the status-bar counts — at most twice a second while it
+runs, whether or not its tab is on screen, and always when it exits — with the
+task's label as the source, and stays until the task runs again or settings no
+longer define it; F8 still walks only the language servers'
+diagnostics. When a task ends, a notification gives its exit status and how
+many problems it found.
+
+Running a task whose last run is still going shows that run instead of starting
+a second (close its terminal to stop it); a finished run's tab is closed and
+replaced once the new run has started, so repeated builds do not pile up tabs
+and a run that cannot start leaves the last one's output and problems in place.
+
+```jsonc
+{
+  "tasks": {
+    "check": { "command": "cargo clippy --workspace", "problemMatcher": ["$rustc"] },
+    "web": {
+      "command": "npx tsc --noEmit",
+      "cwd": "web",
+      "env": { "NODE_OPTIONS": "--max-old-space-size=4096" },
+      "problemMatcher": ["$tsc"]
+    },
+    "lint": {
+      "command": "ruff check --output-format concise .",
+      "problemMatcher": [{ "regexp": "^(.+?):(\\d+):(\\d+): (\\S+) (.*)$", "column": 3, "code": 4, "message": 5, "defaultSeverity": "warning" }]
+    }
+  }
+}
+```
 
 ### `wakatime`
 
@@ -349,6 +555,64 @@ activity to the configured WakaTime-compatible service.
 while retaining comments and unrelated settings. Files without committed Git history
 show no attribution and do not report an error.
 
+#### `git.aiCommit`
+
+Drafts a commit message from the **staged** diff by running a local agent CLI —
+karet never talks to a model provider itself, so authentication is whatever the
+agent already has. Nothing is sent anywhere until you ask for a message.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Allow generating commit messages. When off, the action reports that it is disabled rather than running. |
+| `agent` | `"claude"`\|`"codex"` | `"claude"` | Which CLI drafts the message. `codex` needs `codex` 0.146.0 or newer. |
+| `model` | string | `"auto"` | `"auto"` picks a cheap model for small diffs and a stronger one for large or many-file ones; any other value pins that model name (`"haiku"`, `"sonnet"`, a full model id). |
+| `effort` | string\|null | `null` | Thinking effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `null` defers — to the model's default for a pinned model, and to the size heuristic under `"auto"`, which raises effort alongside the model for a large diff. A value here outranks both. |
+| `instructions` | string[] | `[]` | Extra prompt guidance, one line each (e.g. "mention the user-visible effect"). |
+| `binary` | string\|null | `null` | Path to the selected agent's executable; `null` searches `PATH`. It overrides whichever agent is selected, so changing agent clears it. |
+| `timeoutMs` | number | `60000` | How long one generation may run before it is abandoned. |
+
+Not every effort is legal on every agent: `claude` rejects `minimal` and `codex`
+rejects `max`. A file naming one its agent refuses still loads — the generation
+runs at the model's default effort and karet reports the discrepancy rather than
+failing.
+
+##### Using it
+
+The commit box in Source Control carries a chip showing what will run, or why
+nothing will — a missing CLI is visible before you press anything, not after
+waiting for it.
+
+| Key | Action |
+|---|---|
+| `Ctrl+G` | Generate a message from the staged diff (also: click the chip). |
+| `Esc` | Cancel a running generation, killing the agent process. A second `Esc` leaves the field. |
+| `Ctrl+Z` | Restore the draft a generated message replaced. |
+| `Ctrl+Shift+G` | Open the options form, which re-probes the agents and writes back to the user JSONC layer. |
+
+A generated message replaces the draft. If you typed while waiting, the previous
+draft is kept and `Ctrl+Z` brings it back.
+
+Binary files are named in the diff but their contents are never included, so a
+staged image costs neither prompt budget nor a distorted model choice.
+
+##### What a repository may configure
+
+`binary` names a program karet launches — to check the agent's version, and to
+generate — so it is the one key a **project** layer cannot set. A
+`.karet/setting.jsonc` arrives with a clone, and honouring an executable path
+from it would make opening a repository enough to run code it chose. That key is
+read from the user and system layers only; a project layer setting it is ignored.
+
+Every other key is honoured from any layer, so a repository can still ask for a
+particular model, effort, or set of instructions.
+
+Agents are probed only when `enabled` is `true`, so turning the feature off in a
+workspace means nothing is launched there at all.
+
+Generation is compiled into the default build. `cargo build
+--no-default-features` (or dropping the app's `aicommit` feature) removes the
+generator and both agent adapters entirely — see [binary size](binary-size.md).
+
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.
 
@@ -365,6 +629,55 @@ value, avoiding a temporary reset while a file is half-written. Saving a valid v
 applies it immediately; deleting a layer falls back to the remaining layers and
 defaults. `workbench.startupPanel` is intentionally not replayed during reload, and
 command-line overrides such as `--icons` remain authoritative.
+
+## Key bindings (`keymap.jsonc`)
+
+Key bindings live in their own JSONC file beside `setting.jsonc`, in two layers applied
+over the built-in keymap in order: the user's `$XDG_CONFIG_HOME/karet/keymap.jsonc`,
+then the project's `$GIT_ROOT/.karet/keymap.jsonc`. Each entry in `bindings` is applied
+in turn:
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/getkono/karet/master/docs/keymap.schema.json",
+  "bindings": [
+    // Bind a chord, or a space-separated sequence, to a command id.
+    { "key": "ctrl+k ctrl+c", "command": "toggleLineComment", "when": "editor" },
+    // A leading `-` unbinds: here only Ctrl+Q; without `key`, every binding of it.
+    { "key": "ctrl+q", "command": "-quit" }
+  ]
+}
+```
+
+- **`key`** — modifiers `ctrl`, `shift`, `alt` joined by `+` (`ctrl+shift+p`,
+  `alt+1`, `f12`, `ctrl++`). A bare letter's case carries Shift (`G` is `shift+g`); a
+  shifted symbol is written as the symbol itself (`?`, not `shift+/`).
+- **`command`** — a stable command id, lowerCamelCase (`openQuickOpen`,
+  `selectPanel.sourceControl`, `goToTab.3`). The schema lists every id; `--command`
+  accepts the id of any command the palette offers (not editing or motion ids such as
+  `caretUp`).
+- **`when`** — the layer the binding lives in (default `global`): `editor`,
+  `explorer`, `sourceControl`, `find`, `overlay`, … A more specific layer shadows
+  `global` while it is active. With a modal `editor.keymap`, `vimNormal`,
+  `helixNormal` and `insert` stack over `editor` in their mode (see
+  [Modal editing](#modal-editing-editorkeymap)). A modal layer (`overlay`, `find`, `searchInput`,
+  `searchList`, `problemsFilter`, `commitInput`, `commitConsole`, `revInput`,
+  `rename`, `contextMenu`, `confirm`, `explorerEdit`) reads one chord at a time, so it
+  takes single chords only: a sequence bound there is reported and skipped. So does
+  `terminal`, which sends every key it does not bind straight to the shell. For the
+  same reason a `global` sequence does not fire while the Search query, Search
+  results, or Problems filter has the keyboard, though it does everywhere else.
+
+A binding replaces any earlier binding of the same keys in the same layer, so the
+project file overrides the user file and both override the defaults. Saving either file
+reloads the keymap at once. A malformed file is ignored whole, a bad entry is skipped
+alone, and each problem raises a notification. A file that binds the same keys twice,
+or binds a chord that makes a longer one untypeable (`ctrl+k` alone would swallow every
+`Ctrl+K …` chord), is reported the same way. `karet --doctor` lists the keymap files in
+effect and every problem, exiting non-zero when there is one.
+
+The schema is generated from the id tables the parser reads; regenerate it with
+`KARET_BLESS=1 cargo test -p karet keymap_schema` (the same test fails on drift).
 
 ## Crash recovery (unsaved-change backups)
 
@@ -385,13 +698,45 @@ would overwrite.
 
 Set `files.backup` to `false` to disable the whole mechanism.
 
+## Undo history
+
+Each buffer keeps at most `files.undoLimit` undo steps (a run of typing is one step);
+once a new step would exceed it, the oldest is forgotten. `0` removes the cap.
+
+With `files.persistentUndo` on, undo survives a restart. When a file is saved, and when
+it is closed with no unsaved changes, its undo/redo history is written beside the swaps
+(`…/karet/swaps/*.karet-undo`), tagged with a fingerprint of the buffer's text. Reopening
+the file restores that history only if the file's content still matches the
+fingerprint; history for a file changed elsewhere since is deleted instead, and a
+history larger than 16 MiB is not kept at all. The files
+hold text you have deleted, which is why the setting is off by default; switching it off
+deletes each file's history the next time that file is saved or closed.
+
+## Saved layout
+
+With `workbench.restoreLayout` on (the default), quitting karet cleanly saves the
+workspace's layout beside the swaps (`…/karet/swaps/*.karet-layout`, one file per
+workspace root): the split tree and its ratios, each pane's file tabs in strip order and
+which one is in front, the focused pane, and every tab's cursors, selections, and scroll
+position. Tabs that do not show a file (diffs, commit views, terminals, Welcome) are
+not saved, and a file shown as a rendered preview reopens in its usual view. Quitting
+with no file tab open deletes the saved layout. A crash writes nothing, so the layout
+of the last clean exit survives it.
+
+The next time karet starts on the same root with nothing to open (no file argument,
+`--open`, `--preview`, `--split`, `--diff`, or `--goto`), it reopens that layout in
+place of the repository README preview. A `--preview` of that root README is the same
+surface karet shows unasked, so it too gives way to the saved layout. A file that no longer exists is skipped, and a
+pane left with no tabs is dropped. Switching the setting off restores nothing and
+deletes the saved layout at the next exit.
+
 ## Regenerating the schema
 
 The JSON Schema is emitted from the `Settings` type; regenerate it after changing the
 schema with:
 
 ```sh
-cargo run -p karet-session --example settings-schema > settings.schema.json
+cargo run -p karet-session --features schema --example settings-schema > settings.schema.json
 ```
 
 A test (`karet-session`'s `config::tests::checked_in_schema_is_current`) fails if the

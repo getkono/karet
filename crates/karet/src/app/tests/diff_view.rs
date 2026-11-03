@@ -1,5 +1,6 @@
 use super::support::*;
 use crate::app::*;
+use crate::paths::canonical_nearest as canonical;
 
 #[test]
 fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
@@ -17,7 +18,7 @@ fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
     let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
     app.backend = Some(backend);
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate); // reserve + focus the diff
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
     // The backend answers with the prepared diff (line 2 is the addition).
@@ -38,11 +39,7 @@ fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
     // Enter on the focused diff drops into the file, caret on the first
     // changed line (line 2, 0-based 1) — keyboard parity with the mouse.
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    deliver_content(
-        &mut app,
-        &dir.join("a.rs"),
-        "fn a() {}\nfn added() {}\nfn c() {}\n",
-    );
+    fill_reserved_tabs(&mut app);
     assert!(
         matches!(app.tabs[app.active].kind, TabKind::Code { .. }),
         "a normal, editable editor tab"
@@ -51,7 +48,7 @@ fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {
         app.tabs[app.active].path().map(canonical),
         Some(canonical(&dir.join("a.rs")))
     );
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(
         app.tabs[app.active].editor.cursor().line,
         1,
@@ -88,7 +85,7 @@ fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
     };
     let mut app = App::new(dir.clone(), Vec::new(), vec![deleted], false);
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
 
@@ -98,7 +95,9 @@ fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
     assert_eq!(app.tabs.len(), 1, "nothing new opens for a deleted file");
     assert!(app.active_is_diff(), "the diff stays active");
     assert!(
-        app.status.as_deref().is_some_and(|s| s.contains("gone.rs")),
+        last_message(&app)
+            .as_deref()
+            .is_some_and(|s| s.contains("gone.rs")),
         "a status message names the missing file"
     );
 
@@ -121,7 +120,7 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     let mut app = App::new(dir.clone(), Vec::new(), vec![changed], false);
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     app.on_backend_event(
         None,
@@ -143,7 +142,7 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     assert!(
         !backend.sent.lock().is_ok_and(|sent| sent
             .iter()
-            .any(|(_, c)| matches!(c, SessionCommand::ApplyIndexPatch { .. }))),
+            .any(|(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::ApplyIndexPatch { .. })))),
         "mismatched verb sends nothing"
     );
 
@@ -151,7 +150,9 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
     let patch = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(_, command)| match command {
-            SessionCommand::ApplyIndexPatch { patch, reverse } => Some((patch.clone(), *reverse)),
+            SessionCommand::Vcs(VcsCommand::ApplyIndexPatch { patch, reverse }) => {
+                Some((patch.clone(), *reverse))
+            },
             _ => None,
         })
     });
@@ -173,7 +174,7 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     ));
     let requested = backend.sent.lock().is_ok_and(|sent| {
         sent.iter().any(
-            |(_, c)| matches!(c, SessionCommand::PrepareChange { path, staged: false } if path == Path::new("a.rs")),
+            |(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::PrepareChange { path, staged: false }) if path == Path::new("a.rs")),
         )
     });
     assert!(requested, "the diff is re-requested after the apply");

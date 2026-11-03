@@ -94,32 +94,32 @@ published to crates.io (everything else is `publish = false`).
 | `karet-filetype` | engine | ✓ | single registry: path → file type (name, category, per-`IconStyle` icon) + renderer routing (`FileKind`/`classify`); dependency-free |
 | `karet-text` | engine | ✓ | rope buffer, undo/redo, dirty/save, EOL/encoding detection, atomic save |
 | `karet-treesitter` | engine | ✓ | shared tree-sitter parse host (parser pool, incremental trees, queries, **language injection** → layered trees) |
-| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `serde` derives on the block model for the remote seam; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
+| `karet-syntax` | engine | ✓ | tree-sitter highlighting (incl. **injected** languages), fold regions, semantic blocks, symbol outlines, inline macros; `lang-*` pass-through + `all-languages` forward grammar choice to the parse host |
 | `karet-theme` | engine | ✓ | token palette, VS Code JSON theme loader (`vscode` feat), ratatui styles + contrast (`view` feat) |
 | `karet-diff` | engine | ✓ | pure text diffing: histogram line diff, side-by-side alignment, intra-line highlights, unified-diff parse, per-hunk staging, prepared-diff model (`PreparedDiff`); ratatui painters behind `view` |
 | `karet-graph` | engine | — | DAG lane-assignment layout; `view` paints the commit-rail gutter and flattens `karet_core::GraphView` into styled tree rows (plain-style slots, no theme dep) |
-| `karet-markdown` | engine | — | markdown parse → wrap → render model, with source-line anchors for scroll sync; `highlight` colours code fences (`lang-common`/`all-languages` bundle the grammars), `view` paints ratatui (incl. a scrollable `MarkdownView`) |
+| `karet-markdown` | engine | — | markdown (plus a curated embedded-HTML subset, no layout engine) parse → wrap → render model, with source-line anchors for scroll sync and image rows reserved through a consumer's `ImageSizer`; `highlight` colours code fences (`lang-common`/`all-languages` bundle the grammars), `view` paints ratatui (incl. a scrollable `MarkdownView`) |
 | `karet-cbor` | engine | — | CBOR decode/encode ↔ editable diagnostic-notation text (via `ciborium`); no presentation |
 | `karet-docx` | engine | — | DOCX (OOXML) parse → neutral document model → markdown text, hand-rolled on deflate-only `zip` + `quick-xml` (pure-Rust, no zstd/bzip2); no presentation |
 | `karet-notebook` | engine | — | Jupyter `.ipynb` (nbformat 4) parse → round-trip-preserving model → markdown text; `kernel` feat adds kernelspec discovery + a kernel client over pure-Rust ZMTP (`zeromq`/`jupyter-protocol`/`hmac`); no presentation |
 | `karet-pdf` | engine | ✓ | pure-Rust PDF page → RGBA rasterization (via `hayro`); no presentation |
 | `karet-jsonrpc` | engine | ✓ | protocol-agnostic JSON-RPC 2.0 client core: outgoing envelopes, `classify`, the correlation actor (id allocation, pending map, timeouts, bounded outbound queue, close protocol, fail-all-on-EOF), framing behind a `Framing` trait (`ContentLength`, `LineDelimited`); no karet deps |
 | `karet-lsp` | engine | ✓ | async LSP client → core models over `karet-jsonrpc` (headless; ratatui popups live in `karet-widgets`) |
-| `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over the shared `karet-lsp` codec, capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by the debugger backend work |
+| `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over `karet-jsonrpc`'s Content-Length framing (`framing::content_length`), capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by `karet-session`'s debugger orchestration |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
-| `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
-| `karet-seam` | engine | — | a repository's **seams** as a queryable index: package discovery (Cargo workspaces, nested crates, Python projects) → containment tree with a root per package, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; `lang-rust`/`lang-python` mappings |
+| `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); only karet dep is `karet-filetype` (shared binary sniff) |
+| `karet-seam` | engine | — | a repository's **seams** as a queryable index: package discovery (Cargo, Python, Node, Swift, Gradle, Maven, CMake/Meson/Make) → containment tree with a root per package, regrouped so members sit under the type they belong to whatever syntax declared them, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; a **call tier** (one tree-sitter call query per language → name-resolved `calls` edges tagged with how sure they are → per-function own/inclusive/tree-weighted lines as lower and upper bounds, `reach:`/`callers:` terms); builds in parallel (rayon) and emits a replayable per-file `FileContribution` so a caller can cache it; `lang-rust`/`lang-python`/`lang-typescript`/`lang-swift`/`lang-kotlin` mappings, plus `lang-c`/`lang-cpp`/`lang-java` (containment and `api` only; the other lenses are declared unread) |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
-| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session, workspace path I/O; `remote` serves the same seam over any byte stream |
-| `karet-supervisor` | infra | — | hidden alternate entry points of the `karet` binary: a process-group supervisor that outlives-and-kills external process trees with the editor, and the cross-process LSP broker (one per server+root, shared by editor windows over an authenticated loopback socket); consumed only by the app |
+| `karet-session` | backend | — | headless editor backend: owns documents/workspace, orchestrates producers, applies `Command`s, emits `Event`s; runs layered highlighting on a background worker; holds format-on-save, spell-check (per-document *and* a workspace-wide scan worker), settings/session, workspace path I/O; also runs DAP debugging, GitHub forge calls, the seam index, workspace search, the TODO scan, the managed-LSP registry, notebook kernels, AI commit messages, `Cargo.toml` dependency hints, the built-in TOML language server and formatter, and the `Cargo.lock` dependency graph (module map in its crate doc); `remote` serves the same seam over any byte stream |
+| `karet-supervisor` | infra | — | hidden alternate entry points of the `karet` binary: a process-group supervisor that outlives-and-kills external process trees with the editor, and the cross-process LSP broker (one per server+root, shared by editor windows over an authenticated loopback socket); the app dispatches to the entry points, and `karet-session` uses it to own the language servers, debug adapters, notebook kernels and LaTeX builds it spawns |
 | `karet-widgets` | widget | — | ratatui UI toolkit: file tree (renders supplied listings; reads no directories), completion popup, toasts, pane layout + drop zones, multi-select model, UI glyphs; LSP hover popup behind the `hover` feat |
 | `karet-editor` | widget | ✓ | the editor widget: gutter, folds, sticky scroll, word wrap, multi-caret, merge-conflict decorations; `read_only` mode |
 | `karet-fileview` | widget | ✓ | read-only file-view primitives: hex view + terminal image (behind `raster`/`images`) + placeholder, plus `FileKind`/`classify` re-exports; composition is the consumer's |
-| `karet` | app | — | composition root / TUI client, local or split across two machines (`--serve` / `--client`); merges the clipboard + input (keymap) modules; default-on `images`/`pdf`/`docx` features gate the optional media/document deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
+| `karet` | app | — | composition root / TUI client, local or split across two machines (`--serve` / `--client`); merges the clipboard + input (keymap) modules; default-on media/document/terminal features (see `crates/karet/Cargo.toml`) gate the optional deps (`--no-default-features` → lean build, see `docs/binary-size.md`); `publish = false` |
 | `blameline` | standalone | ✓ | semantic git-blame (via `gix`): grouped whole-file blame by default (pure Rust, no C compiler); tree-sitter function narrowing opt-in behind `treesitter` + `lang-*` (`all-narrowing-languages`); serde/JSON output; on its **own** SemVer line (see [Versioning](#versioning)) |
-| `xtask` | dev tool | — | repo verification tasks run by `mise`/CI (`file-lines` code-line ceiling, `publish-closure`, `publish-ready`); version `0.0.0`, never shipped |
+| `xtask` | dev tool | — | repo verification tasks run by `mise`/CI (`file-lines` code-line ceiling, `publish-closure`, `publish-ready`) plus the `readme-svg` generator; version `0.0.0`, never shipped |
 
 ## Quality
 
@@ -136,11 +136,31 @@ workspace crates) → `publish-ready` (builds `.crate` archives against release-
 dep sources) → `format-check` (**nightly** rustfmt, pinned in `rust-nightly.txt` —
 plain `cargo fmt` uses the wrong toolchain) → `lint` (`cargo clippy --workspace
 --all-targets --all-features -- -D warnings`) → `test` (`cargo test --workspace
---all-features`) → `build-lean` (app/fileview builds across feature subsets) →
-`coverage` (`cargo llvm-cov`, uploaded, no threshold). The individual tasks
+--all-features`) → `build-lean` (app/fileview builds across feature subsets, plus
+`cargo test -p karet --no-default-features` so the lean app's tests run) →
+`coverage` (`cargo llvm-cov`, uploaded, no threshold). `test` also runs the
+real-process language-server suite: that suite is gated on `required-features
+= ["testbed"]`, and `--all-features` turns `testbed` on, so no extra command is
+needed. The individual tasks
 (`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
-requests and `cargo check`s a few grammar feature subsets.
+requests and runs `mise run feature-subsets`, which `cargo test`s the grammar,
+theme and blameline feature subsets `--all-features` never builds, `cargo
+check`s the headless engines without `view`, and runs `cargo clippy` on
+`karet-session`'s default and `--no-default-features` builds. It stays out of `verify`, so the
+pre-push hook does not run it.
+
+Format Rust with `mise run format`, never with an editor's format-on-save:
+rust-analyzer runs whatever `rustfmt` is on `PATH` (through rustup, the stable
+toolchain in `rust-toolchain.toml`), which ignores the unstable options in
+`rustfmt.toml`, so its output can fail `format-check`. The
+tracked project layer `.karet/setting.jsonc` therefore sets
+`editor."[rust]".formatOnSave` to `false`, so saving a `.rs` file in karet here
+leaves its formatting alone; other editors need the equivalent setting.
+
+One task is deliberately **not** in `verify`: `mise run test-servers-live`
+really installs and starts every managed language server from upstream. It
+needs network and takes minutes, so it is opt-in — see the testing policy.
 
 ## Conventions
 
@@ -174,6 +194,13 @@ requests and `cargo check`s a few grammar feature subsets.
   (`LOADING_REVEAL_DELAY`, currently 200ms) and render a stable, muted placeholder
   only after work remains pending beyond that delay. Schedule a repaint at the
   threshold so the placeholder appears even if no input arrives.
+  - The one recorded exception is the tab **save spinner** (`SPINNER_DELAY` in
+    `crates/karet/src/ui.rs`), which reveals at 1s. It is deliberately slower:
+    nearly every save finishes imperceptibly, and the tab's one-cell status slot
+    already shows the unsaved `●` until the save lands, so a 200ms spinner would
+    flicker on ordinary saves without telling the user anything new. A save can
+    still take seconds (format-on-save waits on the language server), and past
+    1s the spinner appears. Keep it at 1s rather than `LOADING_REVEAL_DELAY`.
 - Keep delayed loading states layout-stable: reserve the destination pane/tab
   immediately, clear stale detail while a new detail request is pending, and ignore
   stale async responses that no longer match the selected item or open view.
@@ -202,5 +229,17 @@ correctness and stay light where it would only tax velocity.
   events/state out — since that seam is the API everything downstream depends on.
 - **App (`karet`):** module-level unit tests (already dense) are the norm; a
   black-box binary smoke test is a **known gap** — welcome, not required.
+- **Process doubles:** where the thing under test *is* a process boundary — the
+  language-server supervisor and broker — an in-memory double proves nothing, so
+  `karet-session` builds `karet-testbed` behind its off-by-default `testbed`
+  feature and spawns it. Those tests live in `crates/karet-session/tests/`
+  because `CARGO_BIN_EXE_*` is set only for integration targets.
+- **Live-service tests** are `#[ignore]`d and never run by `mise run verify`, so
+  the merge gate provably makes no network request. They exist only where an
+  offline double cannot observe upstream drift — today just the managed
+  language-server catalogue, where a renamed release asset or a withdrawn
+  publisher digest is invisible to any fixture. Run them deliberately with
+  `mise run test-servers-live`, and keep them reporting a table of every case
+  rather than aborting on the first failure.
 - **Coverage** (`mise run coverage`) is a **signal, not a gate** — no numeric
   threshold blocks a merge. Judgment over a percentage.

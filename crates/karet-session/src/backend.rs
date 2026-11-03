@@ -36,6 +36,56 @@ pub enum BackendError {
 /// submission is synchronous and fallible, while results arrive asynchronously on
 /// the session's [`EventRx`](crate::session::EventRx). The same UI code drives an
 /// in-process [`LocalBackend`] today and a remote client later.
+///
+/// # Answer latency
+///
+/// Do not assume a command is answered promptly. In particular, a
+/// [`DocumentCommand::Save`](crate::api::DocumentCommand::Save) with format-on-save enabled waits for the language
+/// server's formatting answer before it writes, so its
+/// [`Event::Saved`](crate::api::Event::Saved) can arrive seconds after the
+/// command, bounded by the format-on-save deadline. A consumer that needs to
+/// act after a save (close, quit, reload) must hold that action until the
+/// event answering the save's [`RequestId`] arrives (`Saved`, an error, or a
+/// `save cancelled` notification), not assume the write is done once `send`
+/// returns. While it waits on the formatter, such a save
+/// can be withdrawn with [`Command::Cancel`](crate::api::Command::Cancel).
+///
+/// # Which commands answer
+///
+/// A command that asks for something — a result, a read, or a change whose
+/// outcome the client waits on — is answered by at least one event tagged with
+/// its [`RequestId`]: the result, an empty result, or an error. That holds when
+/// the session has no workspace root or no repository too. For example, with no
+/// root [`SeamCommand::Index`](crate::api::SeamCommand::Index) answers
+/// [`Event::SeamIndexFailed`](crate::api::Event::SeamIndexFailed) and
+/// [`WorkspaceCommand::DependencyGraph`](crate::api::WorkspaceCommand::DependencyGraph)
+/// answers an error notification. With no repository the index writes
+/// ([`VcsCommand::Stage`](crate::api::VcsCommand::Stage) and its siblings) answer an
+/// error notification, and [`VcsCommand::Refresh`](crate::api::VcsCommand::Refresh)
+/// answers an empty [`Event::VcsStatus`](crate::api::Event::VcsStatus).
+///
+/// The exceptions are deliberate:
+///
+/// - **Fire-and-forget**, never answered: `Cancel`, `SetCursor`,
+///   `DiscardSwaps`, `RefreshManifestHints`, `RestartLanguageServer`,
+///   `CancelLanguageServerWork`, `AnswerLanguageServerMessage`, `DebugStart`,
+///   `DebugStop`, the debugger's run controls and `DebugSetBreakpoints`, and
+///   the notebook execution commands. These report through untagged state
+///   events, if at all.
+/// - **Answered only on failure**: `SetBlameEnabled`, `DeclineLanguageServer`
+///   and `UndeclineLanguageServer`.
+/// - **Answered only when there is something to say**: `RecoverSwaps` answers
+///   through the documents it reopens, and `FetchCommitVerification` only with
+///   a fetched verdict. `Undo` and `Redo` answer nothing when the history has
+///   nothing to undo or redo or the document is unknown, and `CloseDocument`
+///   answers [`Event::Closed`](crate::api::Event::Closed) only when it drops
+///   the last reference: closing a document still open elsewhere, or one that
+///   is unknown, answers nothing.
+/// - **Withdrawn**: a request cancelled with `Cancel`, one superseded by a
+///   newer request of the same kind (a seam index, query or node; an AI commit
+///   message), and a `Blame` for a buffer version that has since moved on
+///   answer nothing. A cancelled save is the one cancellation that still
+///   answers, with the `save cancelled` notification described above.
 pub trait Backend: Send + Sync {
     /// Submit `command`, tagged with `id` so its answering event can be correlated.
     ///
@@ -57,7 +107,7 @@ pub trait Backend: Send + Sync {
     fn take_events(&self) -> Option<EventRx>;
 }
 
-/// An in-process backend that drives a [`Session`] on a background task.
+/// An in-process backend that drives a session on a background task.
 ///
 /// `send` pushes onto an unbounded command channel (an unbounded send is the only
 /// non-`async` send, which the synchronous [`Backend::send`] requires); the actor
@@ -88,7 +138,7 @@ impl Backend for LocalBackend {
     }
 }
 
-/// Build a [`Session`] from `config` and drive it in-process on a spawned task,
+/// Build a session from `config` and drive it in-process on a spawned task,
 /// returning the [`LocalBackend`] to submit commands to plus the local-only
 /// [`SnapshotRx`] render stream.
 ///
@@ -119,8 +169,9 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
         // construction thread — a large repository's `git status` then runs
         // concurrently with the first frame instead of blocking it.
         session.start();
-        // A steady tick drives the crash-recovery backup sweep; the session decides
-        // per-document whether the configured dirty interval has elapsed.
+        // A steady tick drives the session's periodic sweeps: the crash-recovery
+        // backup (which decides per-document whether the configured dirty
+        // interval has elapsed) and the format-on-save deadline.
         let mut backup = tokio::time::interval(BACKUP_TICK);
         backup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -151,8 +202,21 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
                     Some(update) => session.apply_lsp_registry_update(update),
                     None => registry_updates = None,
                 },
-                _ = backup.tick() => session.backup_tick(),
+                _ = backup.tick() => session.tick(),
             }
+            // One drain, here, for whichever arm just ran. A retirement is
+            // routinely the first half of an operation -- `restart` retires a
+            // provider and then starts its replacement -- so the client is told
+            // its inventory is stale once the whole unit of work is done rather
+            // than partway through it.
+            //
+            // At the loop rather than inside the arms that can retire, because
+            // that list is not something a reader can be asked to maintain: an
+            // arm added later that retires a slot and forgets to drain would
+            // silently stop telling the client, which is the defect #278 was
+            // filed over. Here every arm is covered by construction, and the
+            // arms that cannot retire pay one bool test.
+            session.settle_lsp_inventory();
         }
     });
     LocalBackend {
@@ -173,7 +237,13 @@ async fn recv_opt<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
 }
 
 #[cfg(test)]
+mod line_changes_tests;
+
+#[cfg(test)]
 mod merge_conflict_tests;
+
+#[cfg(test)]
+mod retarget_tests;
 
 #[cfg(test)]
 mod tests;

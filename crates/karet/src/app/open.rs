@@ -18,15 +18,16 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_fileview::viewer::FileKind;
-use karet_session::api::Command as SessionCommand;
+use karet_session::api::DocumentCommand;
 use karet_session::api::DocumentId;
 use karet_session::api::PathClass;
 use karet_session::api::RequestId;
 use karet_session::api::ViewId;
+use karet_session::api::WorkspaceCommand;
 
 use super::App;
 use crate::tab::TabKind;
-use crate::workspace;
+use crate::tab::open;
 
 /// Read a file's bytes in pieces of this size.
 ///
@@ -71,7 +72,7 @@ impl App {
     /// nothing happens) or prevents a file from being rendered as something it is
     /// not.
     pub(super) fn request_classification(&mut self, path: &Path, ignore_size: bool) {
-        let Some(id) = self.send(SessionCommand::ClassifyPath {
+        let Some(id) = self.send(WorkspaceCommand::ClassifyPath {
             path: path.to_path_buf(),
             ignore_size,
         }) else {
@@ -98,22 +99,37 @@ impl App {
         if expected != path {
             return;
         }
-        if workspace::needs_bytes(class.kind) {
+        if open::needs_bytes(class.kind) {
             self.request_bytes(path, class.kind, 0);
             return;
         }
         // A guess that did not hold: re-reserve the tab as what the bytes say it
-        // is. Text kinds are left alone — their content is already on its way as a
-        // document, and replacing the tab would abandon it.
-        let guessed = workspace::kind_from_path(path, false);
-        if guessed != class.kind && !is_text(class.kind) {
-            self.replace_tab_for(path, workspace::reserve(path, class.kind));
+        // is. Only byte tabs ask to be classified, so a text verdict here is a
+        // file the name hid (CBOR sniffed from its content, say): its new code
+        // tab registers as a document like any other.
+        if open::kind_from_path(path) == class.kind {
+            return;
+        }
+        self.replace_tab_for(path, open::reserve(path, class.kind));
+        if open::is_text_kind(class.kind) {
+            let unregistered: Vec<usize> = self
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, tab)| {
+                    matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if p == path)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+            for idx in unregistered {
+                self.register_doc(idx);
+            }
         }
     }
 
     /// Request the next chunk of `path`.
     pub(super) fn request_bytes(&mut self, path: &Path, kind: FileKind, offset: u64) {
-        let Some(id) = self.send(SessionCommand::ReadFileBytes {
+        let Some(id) = self.send(WorkspaceCommand::ReadFileBytes {
             path: path.to_path_buf(),
             offset,
             len: CHUNK,
@@ -143,9 +159,6 @@ impl App {
         path: &Path,
         result: Result<karet_session::api::FileChunk, String>,
     ) {
-        if self.take_markdownlint_answer(id, &result) {
-            return;
-        }
         let Some(mut pending) = self.pending_bytes.remove(&id) else {
             return;
         };
@@ -159,7 +172,7 @@ impl App {
         pending.bytes.extend_from_slice(&chunk.bytes);
         if chunk.is_final() {
             let total = chunk.total_len;
-            let tab = workspace::realize(path, pending.kind, pending.bytes, total);
+            let tab = open::realize(path, pending.kind, pending.bytes, total);
             self.replace_tab_for(path, tab);
             return;
         }
@@ -167,7 +180,7 @@ impl App {
         let kind = pending.kind;
         let path = pending.path.clone();
         // Carry what has arrived into the next request rather than restarting.
-        if let Some(id) = self.send(SessionCommand::ReadFileBytes {
+        if let Some(id) = self.send(WorkspaceCommand::ReadFileBytes {
             path: path.clone(),
             offset: next,
             len: CHUNK,
@@ -206,54 +219,6 @@ impl App {
         }
     }
 
-    /// Fetch the workspace's markdownlint configuration, if it has one.
-    ///
-    /// The rules a "fix all" applies come from beside the code, so they have to be
-    /// read from where the code is. Both candidate names are asked for and
-    /// whichever answers wins; a workspace with neither simply lints by the
-    /// defaults, which is what it would have done anyway.
-    pub(super) fn request_markdownlint_config(&mut self) {
-        if self.markdownlint_config.is_some() || !self.markdownlint_requests.is_empty() {
-            return;
-        }
-        for name in [".markdownlint.json", ".markdownlint.jsonc"] {
-            let path = self.root.join(name);
-            if let Some(id) = self.send(SessionCommand::ReadFileBytes {
-                path,
-                offset: 0,
-                len: CHUNK,
-            }) {
-                self.markdownlint_requests.push(id);
-            }
-        }
-    }
-
-    /// Take a markdownlint configuration answer, if this request was for one.
-    ///
-    /// Reports whether it consumed the answer, so the ordinary media path does not
-    /// also try to build a tab out of it.
-    pub(super) fn take_markdownlint_answer(
-        &mut self,
-        id: RequestId,
-        result: &Result<karet_session::api::FileChunk, String>,
-    ) -> bool {
-        let Some(index) = self
-            .markdownlint_requests
-            .iter()
-            .position(|open| *open == id)
-        else {
-            return false;
-        };
-        self.markdownlint_requests.remove(index);
-        if let Ok(chunk) = result
-            && let Ok(text) = std::str::from_utf8(&chunk.bytes)
-            && let Ok(config) = karet_markdown::lint::Config::from_json(text)
-        {
-            self.markdownlint_config = Some(config);
-        }
-        true
-    }
-
     /// Tell the backend what each open document's views are displaying.
     ///
     /// Highlights are resolved per rendered line, so spans outside a viewport are
@@ -280,7 +245,7 @@ impl App {
             }
             self.reported_viewports
                 .insert(view, (first_line, last_line));
-            self.send_command(SessionCommand::SetViewport {
+            self.send_command(DocumentCommand::SetViewport {
                 doc,
                 view,
                 first_line,
@@ -302,45 +267,13 @@ impl App {
         if root == self.root {
             return;
         }
-        self.root = root;
+        self.root = root.clone();
         // Every listing was keyed to the old root and none of it applies.
         self.explorer.invalidate_all();
         self.build_explorer();
-        // The workspace's own lint rules live beside its code, wherever that is.
-        self.markdownlint_config = None;
-        self.markdownlint_requests.clear();
-        self.request_markdownlint_config();
-    }
-
-    /// Ask the backend for the workspace's files, to fill the quick-open picker.
-    pub(super) fn request_file_list(&mut self) {
-        let Some(id) = self.send(SessionCommand::ListFiles {
-            limit: QUICK_OPEN_LIMIT,
-        }) else {
-            return;
-        };
-        self.file_list_req = Some(id);
-    }
-
-    /// Fill the open quick-open picker with the workspace's files.
-    pub(super) fn on_files_listed(&mut self, id: RequestId, files: Vec<PathBuf>) {
-        if self.file_list_req != Some(id) {
-            return; // a stale answer; the overlay has moved on
-        }
+        // Nor does a file list walked from it.
         self.file_list_req = None;
-        let root = self.root.clone();
-        let items: Vec<(String, crate::overlay::OverlayEvent)> = files
-            .into_iter()
-            .map(|path| {
-                (
-                    display_path(&root, &path),
-                    crate::overlay::OverlayEvent::AcceptFile(path),
-                )
-            })
-            .collect();
-        if let Some(crate::overlay::Overlay::Picker(picker)) = self.overlay.as_mut() {
-            picker.set_items(items);
-        }
+        self.file_index.retarget(root);
     }
 }
 
@@ -373,7 +306,7 @@ impl App {
             if self.pending_listings.values().any(|open| *open == path) {
                 continue;
             }
-            let Some(id) = self.send(SessionCommand::ReadDirectory {
+            let Some(id) = self.send(WorkspaceCommand::ReadDirectory {
                 path: path.clone(),
                 show_hidden,
                 respect_gitignore,
@@ -418,21 +351,4 @@ impl App {
         }
         self.build_explorer();
     }
-}
-
-/// How many paths quick-open offers before the list is reported truncated.
-const QUICK_OPEN_LIMIT: usize = 2000;
-
-/// A path as quick-open shows it: relative to the workspace root when it is
-/// under one, so the rows read like the repository rather than the filesystem.
-fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Whether `kind` renders from a document rather than from raw bytes.
-fn is_text(kind: FileKind) -> bool {
-    matches!(kind, FileKind::Text | FileKind::Markdown | FileKind::Cbor)
 }

@@ -57,7 +57,7 @@ impl Framing for ContentLength {
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
     /// The underlying stream failed (including EOF mid-message).
-    #[error("i/o error on the language-server stream: {0}")]
+    #[error("i/o error on the message stream: {0}")]
     Io(#[from] io::Error),
     /// The header block ended without a `Content-Length` header.
     #[error("message headers carried no Content-Length")]
@@ -278,6 +278,64 @@ mod tests {
             let err = read_frame(&mut reader).await;
             assert!(matches!(err, Err(CodecError::Io(_))));
         }
+        Ok(())
+    }
+
+    /// The framing is protocol-agnostic (LSP, DAP, the broker), so the I/O
+    /// error names the message stream rather than any one protocol's peer.
+    #[test]
+    fn io_error_names_the_message_stream() {
+        let err = CodecError::Io(io::ErrorKind::UnexpectedEof.into());
+        let source = io::Error::from(io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            err.to_string(),
+            format!("i/o error on the message stream: {source}")
+        );
+    }
+
+    /// `count` bodies from a deterministic LCG (so a failure replays), over
+    /// an alphabet weighted toward the bytes a framing treats specially.
+    fn generated_bodies(seed: u64, count: usize) -> Vec<Vec<u8>> {
+        const ALPHABET: &[u8] = b"\r\n\r\n:{}\"\\ aZ0\x00\xff";
+        let mut state = seed;
+        let mut below = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or_default() % bound
+        };
+        (0..count)
+            .map(|_| {
+                let len = below(48);
+                (0..len).map(|_| ALPHABET[below(ALPHABET.len())]).collect()
+            })
+            .collect()
+    }
+
+    /// Falsified by any body -- empty, `\r`/`\n`-bearing, non-UTF-8 -- not
+    /// coming back byte for byte, in order, from a back-to-back stream.
+    #[tokio::test]
+    async fn roundtrips_generated_bodies() -> TestResult {
+        let bodies = generated_bodies(0x5eed, 300);
+        assert!(
+            bodies.iter().any(Vec::is_empty),
+            "the generator never hit an empty body"
+        );
+        let expected = bodies.clone();
+        let (reader, mut writer) = duplex(4096);
+        let feeder = tokio::spawn(async move {
+            for body in &bodies {
+                if write_frame(&mut writer, body).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let mut reader = BufReader::new(reader);
+        for body in &expected {
+            assert_eq!(read_frame(&mut reader).await?.as_ref(), Some(body));
+        }
+        assert!(read_frame(&mut reader).await?.is_none());
+        feeder.await?;
         Ok(())
     }
 

@@ -23,7 +23,7 @@ path = "src/main.rs"
 # `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
-default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid"]
+default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid", "aicommit", "terminal"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images"]
@@ -41,12 +41,31 @@ notebook-kernels = ["notebook", "karet-session/notebook-kernel"]
 # Render ```mermaid fences in the markdown preview as Unicode diagrams (pulls
 # the pure-Rust merman engine via karet-markdown's `mermaid` feature).
 mermaid = ["karet-markdown/mermaid"]
+# Draft commit messages from the staged diff with a local agent CLI. On here
+# rather than in the backend: a library crate must not force an AI CLI on its
+# embedders, but the shipped editor is exactly the embedder that wants one.
+# `git.aiCommit.enabled` still gates it at runtime, without a rebuild.
+aicommit = ["karet-session/aicommit"]
+# The integrated terminal pane: a shell on a pure-Rust PTY (`portable-pty`)
+# emulated by `alacritty_terminal`. Neither links a system C library; a lean
+# build drops both. Tasks run in it, so their problem matchers (`regex`) ride
+# along.
+terminal = ["dep:portable-pty", "dep:alacritty_terminal", "dep:filedescriptor", "dep:regex"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
 karet-core.workspace = true
 karet-filetype.workspace = true       # icon-style choice (`--icons`) shared with the widgets
-karet-seam = { workspace = true, features = ["lang-rust", "lang-python"] } # the --seam-query surface answers without a session
+karet-seam = { workspace = true, features = [
+    "lang-rust",
+    "lang-python",
+    "lang-typescript",
+    "lang-swift",
+    "lang-kotlin",
+    "lang-c",
+    "lang-cpp",
+    "lang-java",
+] } # the --seam-query surface answers without a session
 karet-session.workspace = true
 karet-supervisor.workspace = true     # hidden process-mode entry points (broker / supervisor)
 karet-text.workspace = true
@@ -54,7 +73,7 @@ karet-treesitter = { workspace = true, features = ["all-languages"] }
 karet-syntax.workspace = true
 karet-theme      = { workspace = true, features = ["view", "vscode"] }
 karet-diff = { workspace = true, features = ["view"] } # paint-only: diffs are prepared by the session
-karet-markdown   = { workspace = true, features = ["view", "highlight", "lint"] }
+karet-markdown   = { workspace = true, features = ["view", "highlight"] }
 karet-vcs.workspace = true
 karet-graph      = { workspace = true, features = ["view"] }
 karet-search.workspace = true
@@ -63,6 +82,9 @@ karet-widgets = { workspace = true, features = ["hover"] }
 karet-editor.workspace = true
 karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
 karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature
+portable-pty = { workspace = true, optional = true }       # integrated terminal PTY; behind `terminal`
+alacritty_terminal = { workspace = true, optional = true } # integrated terminal VT emulation; behind `terminal`
+regex = { workspace = true, optional = true }              # task problem matchers over terminal output; behind `terminal`
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true
@@ -78,6 +100,11 @@ directories.workspace = true
 thiserror.workspace = true           # error types for the merged clipboard/input modules
 base64.workspace = true              # `clipboard` module (OSC 52), merged from karet-clipboard
 serde_json.workspace = true          # loaded-settings inspector formatting
+serde.workspace = true               # deserialize keymap.jsonc entries
+jsonc-parser.workspace = true        # parse keymap.jsonc (same JSONC dialect as setting.jsonc)
+
+[target.'cfg(unix)'.dependencies]
+filedescriptor = { workspace = true, optional = true } # wake the terminal's PTY reader on close; behind `terminal`
 
 [dev-dependencies]
 # The tests build real workspaces and supply their listings the way the backend

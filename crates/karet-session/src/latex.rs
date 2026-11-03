@@ -16,13 +16,13 @@ use karet_core::Diagnostic;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Severity;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::cancellation::Cancellation;
 use crate::config::schema::Latex;
+use crate::event_tx::EventTx;
 
 /// One independent build request. Builds are serialized to avoid competing TeX
 /// processes writing the same auxiliary directory.
@@ -38,7 +38,7 @@ pub(crate) struct LatexJob {
 }
 
 /// Start the session's serialized external-build worker.
-pub(crate) fn spawn(events: UnboundedSender<(Option<RequestId>, Event)>) -> mpsc::Sender<LatexJob> {
+pub(crate) fn spawn(events: EventTx) -> mpsc::Sender<LatexJob> {
     let (tx, rx) = mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-latex".to_owned())
@@ -50,14 +50,14 @@ pub(crate) fn spawn(events: UnboundedSender<(Option<RequestId>, Event)>) -> mpsc
     tx
 }
 
-fn run(job: LatexJob, events: &UnboundedSender<(Option<RequestId>, Event)>) {
+fn run(job: LatexJob, events: &EventTx) {
     if job.cancel.is_cancelled() {
         return;
     }
     let root = match discover_root(&job.source) {
         Ok(root) => root,
         Err(error) => {
-            emit(job, events, PathBuf::new(), None, Vec::new(), Some(error));
+            finish(job, events, PathBuf::new(), None, Vec::new(), Some(error));
             return;
         },
     };
@@ -90,32 +90,32 @@ fn run(job: LatexJob, events: &UnboundedSender<(Option<RequestId>, Event)>) {
                     |line| format!("LaTeX build failed: {line}"),
                 ))
             };
-            emit(job, events, root, pdf, diagnostics, error);
+            finish(job, events, root, pdf, diagnostics, error);
         },
-        Err(error) => emit(job, events, root, None, Vec::new(), Some(error)),
+        Err(error) => finish(job, events, root, None, Vec::new(), Some(error)),
     }
 }
 
-fn emit(
+/// Answer `job` with its build outcome, unless it was cancelled.
+fn finish(
     job: LatexJob,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     root: PathBuf,
     pdf: Option<PathBuf>,
     diagnostics: Vec<Diagnostic>,
     error: Option<String>,
 ) {
-    if !job.cancel.is_cancelled() {
-        let _ = events.send((
-            job.id,
-            Event::LatexBuildFinished {
-                doc: job.doc,
-                root,
-                pdf,
-                diagnostics,
-                error,
-            },
-        ));
-    }
+    events.emit_if_live(
+        job.id,
+        &job.cancel,
+        Event::LatexBuildFinished {
+            doc: job.doc,
+            root,
+            pdf,
+            diagnostics,
+            error,
+        },
+    );
 }
 
 /// Follow TeXShop/LaTeX Workshop compatible `% !TeX root = …` magic comments.
@@ -164,9 +164,7 @@ fn output_directory(workspace: Option<&Path>, root: &Path, settings: &Latex) -> 
         let identity = workspace.or_else(|| root.parent()).unwrap_or(root);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         identity.hash(&mut hasher);
-        let project_cache = directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.cache_dir().to_path_buf())
-            .unwrap_or_else(std::env::temp_dir);
+        let project_cache = crate::dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
         return project_cache
             .join("latex")
             .join(format!("{:016x}", hasher.finish()));
@@ -346,6 +344,7 @@ fn parse_diagnostics(output: &CompilerOutput, source: &Path) -> Vec<Diagnostic> 
             message: message.to_owned(),
             source: Some("latex".to_owned()),
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         });
@@ -488,23 +487,35 @@ mod tests {
         let root = dir.path().join("main.tex");
         let output_dir = dir.path().join("out");
         std::fs::write(&root, "\\documentclass{article}\n")?;
+        // The compiler marks that it is running, then outlives any test: a build
+        // that returns at all was stopped, and one that was not would also have
+        // to outlast the default timeout, which reports itself differently.
+        let started = output_dir.join("started");
         let settings = Latex {
-            command: "sleep".to_owned(),
-            args: vec!["5".to_owned()],
+            command: "sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "touch \"$1\"; exec sleep 600".to_owned(),
+                "karet-test".to_owned(),
+                started.to_string_lossy().into_owned(),
+            ],
             ..Latex::default()
         };
         let hub = crate::cancellation::CancellationHub::default();
         let token = hub.register(RequestId(9));
-        let started = Instant::now();
         let error = std::thread::scope(|scope| {
             let build = scope.spawn(|| compile(&root, &output_dir, &settings, &token, None));
-            std::thread::sleep(Duration::from_millis(50));
+            // Cancel the compiler while it runs, not before it was spawned.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !started.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             hub.cancel(RequestId(9));
             build.join().ok().and_then(Result::err)
         });
 
+        assert!(started.exists(), "the compiler never started");
         assert!(error.is_some_and(|error| error.contains("cancelled")));
-        assert!(started.elapsed() < Duration::from_secs(2));
         Ok(())
     }
 
@@ -529,7 +540,7 @@ mod tests {
             ..Latex::default()
         };
         let hub = crate::cancellation::CancellationHub::default();
-        let (events, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut rx) = crate::event_tx::EventTx::channel();
         run(
             LatexJob {
                 id: Some(RequestId(3)),

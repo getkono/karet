@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use karet_seam::Configuration;
+use karet_seam::Node;
 use karet_seam::SeamId;
 use karet_seam::SeamIndex;
-use karet_seam::model::Node;
+use karet_seam::config::Configuration;
 
 use crate::api::SeamEdgeView;
 use crate::api::SeamFacetView;
@@ -32,18 +32,23 @@ pub(crate) fn node_view(index: &SeamIndex, node: &Node) -> Option<SeamNodeView> 
         range: node.location.range,
         selection: node.location.selection,
         parent: node
-            .parent
+            .parent()
             .and_then(|parent| index.path(parent).map(ToString::to_string)),
         children: node
-            .children
+            .children()
             .iter()
             .filter_map(|child| index.path(*child).map(ToString::to_string))
             .collect(),
         facets: node.facets.iter().map(facet_view).collect(),
-        rollups: node.rollups.counts(),
+        rollups: node.rollups().counts(),
         visibility: node.effective_visibility().map(|v| v.name().to_owned()),
         membership: node.membership.name().to_owned(),
         provisional: node.provisional,
+        unread_lenses: index
+            .unread_lenses(node.id)
+            .iter()
+            .map(|lens| lens.name().to_owned())
+            .collect(),
     })
 }
 
@@ -69,7 +74,11 @@ fn facet_view(facet: &karet_seam::Facet) -> SeamFacetView {
 #[must_use]
 pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
     let resolve = |id: SeamId| index.path(id).map(ToString::to_string);
-    let outgoing = index.edges().from(node).map(|edge| {
+    // Calls are one edge per call site, so a busy function would bury its structural
+    // relations under hundreds of rows. They stay out of the pane until it can show them
+    // aggregated per target.
+    let structural = |edge: &&karet_seam::Edge| edge.kind != karet_seam::EdgeKind::Calls;
+    let outgoing = index.edges().from(node).filter(structural).map(|edge| {
         let (state, resolvable) = endpoint_state(&edge.to);
         SeamEdgeView {
             kind: edge.kind.name().to_owned(),
@@ -81,15 +90,19 @@ pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
             site: edge.site,
         }
     });
-    let incoming = index.edges().to(node).map(|edge| SeamEdgeView {
-        kind: edge.kind.name().to_owned(),
-        outgoing: false,
-        target: resolve(edge.from),
-        display: None,
-        state: "resolved".to_owned(),
-        resolvable: true,
-        site: edge.site,
-    });
+    let incoming = index
+        .edges()
+        .to(node)
+        .filter(structural)
+        .map(|edge| SeamEdgeView {
+            kind: edge.kind.name().to_owned(),
+            outgoing: false,
+            target: resolve(edge.from),
+            display: None,
+            state: "resolved".to_owned(),
+            resolvable: true,
+            site: edge.site,
+        });
     outgoing.chain(incoming).collect()
 }
 
@@ -190,32 +203,8 @@ mod tests {
 
     #[test]
     fn a_workspace_is_named_for_its_directory_rather_than_one_arbitrary_member() {
-        let mut index = SeamIndex::new();
-        for name in ["alpha", "beta"] {
-            let id = index.intern(karet_seam::SeamPath::new(vec![
-                karet_seam::SeamSegment::new(name),
-            ]));
-            let file = index.intern_file(Path::new("Cargo.toml"));
-            index.insert(Node {
-                id,
-                kind: karet_seam::NodeKind::Package,
-                name: name.to_owned(),
-                detail: None,
-                location: karet_seam::SeamLocation {
-                    file,
-                    range: karet_core::Range::default(),
-                    span: karet_core::Span::default(),
-                    selection: karet_core::Range::default(),
-                },
-                parent: None,
-                children: Vec::new(),
-                facets: Vec::new(),
-                visibility: None,
-                rollups: karet_seam::Rollups::new(),
-                membership: karet_seam::ConfigMembership::Active,
-                provisional: false,
-            });
-        }
+        let manifest = Path::new("Cargo.toml");
+        let index = SeamIndex::from_packages([("alpha", manifest), ("beta", manifest)], []);
 
         let summary = summary_of(&index, Some(Path::new("/repo/myproject")), None, &[]);
         assert_eq!(summary.packages, 2);
@@ -225,30 +214,7 @@ mod tests {
 
     #[test]
     fn a_lone_package_is_still_named_for_itself() {
-        let mut index = SeamIndex::new();
-        let id = index.intern(karet_seam::SeamPath::new(vec![
-            karet_seam::SeamSegment::new("solo"),
-        ]));
-        let file = index.intern_file(Path::new("Cargo.toml"));
-        index.insert(Node {
-            id,
-            kind: karet_seam::NodeKind::Package,
-            name: "solo".to_owned(),
-            detail: None,
-            location: karet_seam::SeamLocation {
-                file,
-                range: karet_core::Range::default(),
-                span: karet_core::Span::default(),
-                selection: karet_core::Range::default(),
-            },
-            parent: None,
-            children: Vec::new(),
-            facets: Vec::new(),
-            visibility: None,
-            rollups: karet_seam::Rollups::new(),
-            membership: karet_seam::ConfigMembership::Active,
-            provisional: false,
-        });
+        let index = SeamIndex::from_packages([("solo", Path::new("Cargo.toml"))], []);
 
         let summary = summary_of(&index, Some(Path::new("/repo/elsewhere")), None, &[]);
         assert_eq!(summary.packages, 1);
@@ -281,5 +247,62 @@ mod tests {
     fn edges_of_an_unknown_node_are_empty_rather_than_a_failure() {
         let index = SeamIndex::new();
         assert!(edges_of(&index, SeamId(0)).is_empty());
+    }
+
+    #[test]
+    fn a_node_carries_the_lenses_its_language_does_not_read()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let module = dir.path().join("shop");
+        std::fs::create_dir_all(module.join("src/main/java"))?;
+        std::fs::write(module.join("pom.xml"), "<project></project>\n")?;
+        std::fs::write(module.join("src/main/java/Cart.java"), "class Cart {}\n")?;
+        let index = karet_seam::index_workspace(dir.path(), karet_seam::IndexOptions::default())?;
+        let cart = index
+            .nodes()
+            .find(|node| node.name == "Cart" && node.kind == karet_seam::NodeKind::Type)
+            .ok_or("no Cart")?;
+        let view = node_view(&index, cart).ok_or("no view")?;
+        assert_eq!(
+            view.unread_lenses,
+            ["substitution", "variation", "boundary", "hazard"]
+        );
+        let package = index
+            .roots()
+            .first()
+            .and_then(|id| index.node(*id))
+            .ok_or("no root")?;
+        assert!(
+            node_view(&index, package)
+                .ok_or("no view")?
+                .unread_lenses
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn call_edges_stay_out_of_the_facet_pane() {
+        let edge = |kind, from, to| karet_seam::Edge {
+            kind,
+            from: SeamId(from),
+            to: karet_seam::Endpoint::Resolved(SeamId(to)),
+            site: None,
+            resolution: None,
+        };
+        let index = SeamIndex::from_packages(
+            [],
+            [
+                edge(karet_seam::EdgeKind::Calls, 1, 2),
+                edge(karet_seam::EdgeKind::Calls, 3, 1),
+                edge(karet_seam::EdgeKind::Implements, 1, 4),
+            ],
+        );
+        let edges = edges_of(&index, SeamId(1));
+        assert_eq!(edges.len(), 1);
+        assert!(edges.iter().all(|edge| edge.kind == "implements"));
     }
 }

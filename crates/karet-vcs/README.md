@@ -8,7 +8,7 @@ worktree, plus untracked) changes — VS Code's default — and enumerates each 
 file's full *before*/*after* content so a consumer can diff it (e.g. with `karet-diff`),
 with binary detection and rename handling. Headless by default.
 
-The same headless API provides blame, staging, guarded commit undo, branch creation,
+The same headless API provides staging, guarded commit undo, branch creation,
 switching, rename and deletion, stash management, upstream-aware sync and publish,
 conflict recovery, and reusable pull-request branch checkout. Read-oriented repository
 inspection uses `gix`; mutations and network operations use the installed Git CLI so
@@ -18,7 +18,11 @@ Part of the [karet](https://github.com/getkono/karet) workspace.
 
 ## Features
 
-- `view` — ratatui source-control panels (reserved).
+- `signature` (default) — recover the signer's public key and fingerprint from an SSH
+  commit signature (via the pure-Rust `ssh-key` crate). Extraction only: this crate never
+  verifies a signature.
+- `serde` — `Serialize`/`Deserialize` on the public git-facts models (`Branch`,
+  `Commit`, `CommitDetail`, `FileChange`, `RepositoryState`, …).
 
 ## License
 

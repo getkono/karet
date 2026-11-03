@@ -10,6 +10,7 @@
 //! appears as `karet-core::model` because that is what it *is*; the file is an
 //! implementation detail of where the text lives.
 
+pub mod files;
 pub mod python;
 
 use std::path::Path;
@@ -125,6 +126,9 @@ pub fn resolve(
 }
 
 /// Whether `file` is a crate root — the entry point of a build target.
+///
+/// Nothing in the crate calls this, so only the tests pinning the rule compile it.
+#[cfg(test)]
 #[must_use]
 pub fn is_crate_root(file: &Path) -> bool {
     matches!(

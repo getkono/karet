@@ -10,15 +10,15 @@ fn commit_view_switches_at_104_columns_and_records_file_rows() {
     };
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Stacked));
     assert_eq!(view.file_anchors.len(), 3);
-    assert_eq!(app.pane_frames[0].commit_file_hits.len(), 3);
-    assert!(!app.pane_frames[0].commit_collapse_hits.is_empty());
+    assert_eq!(app.last_frame.panes[0].commit_file_hits.len(), 3);
+    assert!(!app.last_frame.panes[0].commit_collapse_hits.is_empty());
 
     let painted = screen(&mut app, 104, 16);
     let TabKind::Commit { view, .. } = &app.tabs[app.active].kind else {
         panic!("expected commit tab");
     };
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Wide));
-    assert_eq!(app.pane_frames[0].commit_file_hits.len(), 3);
+    assert_eq!(app.last_frame.panes[0].commit_file_hits.len(), 3);
     assert!(
         painted
             .iter()
@@ -39,8 +39,10 @@ fn stacked_sticky_header_and_resize_preserve_the_visible_file() {
         _ => panic!("expected commit tab"),
     };
     let stacked = screen(&mut app, 80, 8);
+    // Row 0 is the top-level view switcher and row 1 the pane's tab strip, so the
+    // content's first row — where the active file header sticks — is row 2.
     assert!(
-        stacked[1].contains("src/second.rs"),
+        stacked[2].contains("src/second.rs"),
         "the active file header sticks to the content's first row"
     );
 
@@ -55,7 +57,7 @@ fn stacked_sticky_header_and_resize_preserve_the_visible_file() {
         "wide layout removes the stacked TOC rows"
     );
     assert!(
-        wide[1].contains("src/second.rs"),
+        wide[2].contains("src/second.rs"),
         "the file header also sticks above the wide diff column"
     );
 }
@@ -69,8 +71,8 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
             view.scroll = view.file_anchors[0].saturating_add(1);
         }
         let sticky = screen(&mut app, width, 16);
-        let content_top = app.pane_frames[0].content_rect.y;
-        let hit = app.pane_frames[0]
+        let content_top = app.last_frame.panes[0].content_rect.y;
+        let hit = app.last_frame.panes[0]
             .commit_collapse_hits
             .iter()
             .find(|hit| hit.file == 0 && hit.rect.y == content_top)
@@ -107,7 +109,7 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
                 .any(|row| row.contains("\u{25b8}") && row.contains("src/first.rs"))
         );
 
-        let expand = app.pane_frames[0]
+        let expand = app.last_frame.panes[0]
             .commit_collapse_hits
             .iter()
             .find(|hit| hit.file == 0)

@@ -1,13 +1,15 @@
 //! `karet-dap` — an async Debug Adapter Protocol client for karet.
 //!
-//! Headless: drives one debug adapter over the Content-Length framing shared
-//! with `karet-lsp` ([`karet_lsp::codec`]), exposing typed requests and a
-//! broadcast of adapter events. Presentation and orchestration live with the
+//! Headless: drives one debug adapter through `karet-jsonrpc`'s correlation
+//! [`Actor`](karet_jsonrpc::Actor) — the pending map, timeouts, bounded queue
+//! and Content-Length framing it shares with `karet-lsp` — speaking DAP's own
+//! envelope, and exposes typed requests and a broadcast of adapter events. Presentation and orchestration live with the
 //! consumer (the karet backend); this crate speaks protocol only.
 //!
 //! The lifecycle is the DAP-mandated dance, capability-gated throughout:
 //!
-//! 1. [`DapClient::spawn`] (stdio or spawn-then-TCP) or [`DapClient::connect`];
+//! 1. [`DapClient::spawn`] / [`DapClient::spawn_with`] (stdio or
+//!    spawn-then-TCP) or [`DapClient::connect`];
 //! 2. [`DapClient::initialize`] → the adapter's [`Capabilities`];
 //! 3. [`DapClient::start`] sends `launch`/`attach` *without awaiting it*,
 //!    waits for the `initialized` event, replays breakpoints per file, sets
@@ -31,6 +33,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use karet_core::DebugScope;
+use karet_core::DebugVariable;
+use karet_core::FrameId;
+use karet_core::StackFrame;
+use karet_core::VariablesRef;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -40,10 +47,7 @@ pub use crate::types::Capabilities;
 pub use crate::types::DebugEvent;
 pub use crate::types::Evaluation;
 pub use crate::types::ExceptionFilter;
-pub use crate::types::Scope;
-pub use crate::types::StackFrame;
 pub use crate::types::Thread;
-pub use crate::types::Variable;
 
 /// How long [`DapClient::start`] waits for the `initialized` event before
 /// concluding the adapter is stuck.
@@ -145,28 +149,61 @@ impl DapClient {
 
     /// Launch the adapter described by `spec` and connect over its transport.
     ///
+    /// [`Self::spawn_with`] over a plain
+    /// `Command::new(&spec.command).args(&spec.args)`.
+    ///
     /// # Errors
     /// Returns [`DapError::Launch`] if the process cannot start or (under
     /// [`DapTransport::Tcp`]) its socket never accepts.
     pub async fn spawn(spec: &DapSpec) -> Result<Self, DapError> {
+        Self::spawn_with(spec, |spec| {
+            let mut command = tokio::process::Command::new(&spec.command);
+            command.args(&spec.args);
+            Ok(command)
+        })
+        .await
+    }
+
+    /// Launch the adapter described by `spec` through the command `prepare`
+    /// builds (e.g. one wrapped by a process supervisor), and connect over
+    /// its transport.
+    ///
+    /// The client owns transport dispatch and standard-I/O policy. `prepare`
+    /// receives the spec to launch — under [`DapTransport::Tcp`] with a free
+    /// loopback port already substituted for every `${port}` in its
+    /// arguments — and returns the command that runs it; any stdio it
+    /// configured is then overridden. Under [`DapTransport::Stdio`] the
+    /// protocol flows over piped stdin/stdout. Under [`DapTransport::Tcp`]
+    /// stdin is piped and held open, unwritten, for the client's lifetime (a
+    /// supervisor wrapper reads its EOF as the editor gone), and the client
+    /// connects to the port with retries while the adapter boots. Output the
+    /// protocol does not use is discarded, so no unread pipe can fill and
+    /// stall the adapter, and the process is killed when the client drops.
+    ///
+    /// # Errors
+    /// Propagates the error `prepare` returns. Returns [`DapError::Launch`]
+    /// if no free port is available, the process cannot start, or (under
+    /// [`DapTransport::Tcp`]) its socket never accepts.
+    pub async fn spawn_with<F>(spec: &DapSpec, prepare: F) -> Result<Self, DapError>
+    where
+        F: FnOnce(&DapSpec) -> Result<tokio::process::Command, DapError>,
+    {
         match spec.transport {
-            DapTransport::Stdio => Self::spawn_stdio(spec),
-            DapTransport::Tcp => Self::spawn_then_tcp(spec).await,
+            DapTransport::Stdio => Self::spawn_stdio(prepare(spec)?),
+            DapTransport::Tcp => {
+                let port =
+                    free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
+                let resolved = DapSpec {
+                    args: substitute_port(&spec.args, port),
+                    ..spec.clone()
+                };
+                Self::spawn_tcp(prepare(&resolved)?, port).await
+            },
         }
     }
 
-    fn spawn_stdio(spec: &DapSpec) -> Result<Self, DapError> {
-        let mut command = tokio::process::Command::new(&spec.command);
-        command.args(&spec.args);
-        Self::spawn_command(command)
-    }
-
-    /// Launch a *prepared* command (e.g. one wrapped by a process supervisor)
-    /// whose child speaks DAP on stdin/stdout.
-    ///
-    /// # Errors
-    /// Returns [`DapError::Launch`] if the process cannot start.
-    pub fn spawn_command(mut command: tokio::process::Command) -> Result<Self, DapError> {
+    /// Launch `command`, whose child speaks DAP on stdin/stdout.
+    fn spawn_stdio(mut command: tokio::process::Command) -> Result<Self, DapError> {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -184,39 +221,26 @@ impl DapClient {
         })
     }
 
-    /// Launch a prepared command whose child listens on `port` (already
-    /// substituted into its arguments — see [`substitute_port`]), then
-    /// connect with retries while it boots.
-    ///
-    /// # Errors
-    /// Returns [`DapError::Launch`] if the process cannot start or its socket
-    /// never accepts.
-    pub async fn spawn_command_tcp(
-        mut command: tokio::process::Command,
-        port: u16,
-    ) -> Result<Self, DapError> {
+    /// Launch `command`, whose child listens on `port` (already substituted
+    /// into its arguments), then connect with retries while it boots.
+    async fn spawn_tcp(mut command: tokio::process::Command, port: u16) -> Result<Self, DapError> {
+        // The piped stdin stays inside the held child, unwritten: a supervisor
+        // wrapper treats its EOF as the editor gone and kills the adapter, so
+        // it must not be null and must live exactly as long as the client.
         let child = command
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| DapError::Launch(e.to_string()))?;
-        let stream = connect_with_retries(port).await?;
+        let stream = connect_with_retries(port, TCP_CONNECT_TIMEOUT).await?;
         let (read, write) = stream.into_split();
         Ok(Self {
             conn: conn::Connection::start(read, write),
             capabilities: Capabilities::default(),
             _child: Some(child),
         })
-    }
-
-    async fn spawn_then_tcp(spec: &DapSpec) -> Result<Self, DapError> {
-        let port = free_port().map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
-        let mut command = tokio::process::Command::new(&spec.command);
-        command
-            .args(substitute_port(&spec.args, port))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        Self::spawn_command_tcp(command, port).await
     }
 
     /// Perform the `initialize` handshake, storing and returning the
@@ -438,7 +462,7 @@ impl DapClient {
                 list.iter()
                     .filter_map(|f| {
                         Some(StackFrame {
-                            id: f.get("id").and_then(Value::as_i64)?,
+                            id: FrameId(f.get("id").and_then(Value::as_i64)?),
                             name: f
                                 .get("name")
                                 .and_then(Value::as_str)
@@ -462,26 +486,23 @@ impl DapClient {
     ///
     /// # Errors
     /// Returns [`DapError::Adapter`] on failure.
-    pub async fn scopes(&self, frame_id: i64) -> Result<Vec<Scope>, DapError> {
+    pub async fn scopes(&self, frame_id: FrameId) -> Result<Vec<DebugScope>, DapError> {
         let body = self
             .conn
-            .request("scopes", json!({ "frameId": frame_id }))
+            .request("scopes", json!({ "frameId": frame_id.0 }))
             .await?;
         Ok(body
             .get("scopes")
             .and_then(Value::as_array)
             .map(|list| {
                 list.iter()
-                    .map(|s| Scope {
+                    .map(|s| DebugScope {
                         name: s
                             .get("name")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_owned(),
-                        variables_reference: s
-                            .get("variablesReference")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0),
+                        variables_reference: reference_of(s),
                         expensive: s.get("expensive").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .collect()
@@ -494,12 +515,15 @@ impl DapClient {
     ///
     /// # Errors
     /// Returns [`DapError::Adapter`] on failure.
-    pub async fn variables(&self, variables_reference: i64) -> Result<Vec<Variable>, DapError> {
+    pub async fn variables(
+        &self,
+        variables_reference: VariablesRef,
+    ) -> Result<Vec<DebugVariable>, DapError> {
         let body = self
             .conn
             .request(
                 "variables",
-                json!({ "variablesReference": variables_reference }),
+                json!({ "variablesReference": variables_reference.0 }),
             )
             .await?;
         Ok(body
@@ -507,7 +531,7 @@ impl DapClient {
             .and_then(Value::as_array)
             .map(|list| {
                 list.iter()
-                    .map(|v| Variable {
+                    .map(|v| DebugVariable {
                         name: v
                             .get("name")
                             .and_then(Value::as_str)
@@ -519,10 +543,7 @@ impl DapClient {
                             .unwrap_or_default()
                             .to_owned(),
                         ty: v.get("type").and_then(Value::as_str).map(str::to_owned),
-                        variables_reference: v
-                            .get("variablesReference")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0),
+                        variables_reference: reference_of(v),
                     })
                     .collect()
             })
@@ -536,11 +557,11 @@ impl DapClient {
     pub async fn evaluate(
         &self,
         expression: &str,
-        frame_id: Option<i64>,
+        frame_id: Option<FrameId>,
     ) -> Result<Evaluation, DapError> {
         let mut arguments = json!({ "expression": expression, "context": "repl" });
         if let (Some(frame_id), Some(object)) = (frame_id, arguments.as_object_mut()) {
-            object.insert("frameId".to_owned(), json!(frame_id));
+            object.insert("frameId".to_owned(), json!(frame_id.0));
         }
         let body = self.conn.request("evaluate", arguments).await?;
         Ok(Evaluation {
@@ -549,10 +570,7 @@ impl DapClient {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            variables_reference: body
-                .get("variablesReference")
-                .and_then(Value::as_i64)
-                .unwrap_or(0),
+            variables_reference: reference_of(&body),
         })
     }
 
@@ -592,9 +610,16 @@ fn zero_based(value: Option<&Value>) -> u32 {
         .unwrap_or(0)
 }
 
+/// An object's `variablesReference`; absent means no children.
+fn reference_of(object: &Value) -> VariablesRef {
+    object
+        .get("variablesReference")
+        .and_then(Value::as_i64)
+        .map_or(VariablesRef::NONE, VariablesRef)
+}
+
 /// Replace every `${port}` occurrence in `args` (see [`DapTransport::Tcp`]).
-#[must_use]
-pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
+fn substitute_port(args: &[String], port: u16) -> Vec<String> {
     args.iter()
         .map(|arg| arg.replace("${port}", &port.to_string()))
         .collect()
@@ -605,16 +630,35 @@ pub fn substitute_port(args: &[String], port: u16) -> Vec<String> {
 ///
 /// # Errors
 /// Propagates the bind failure (exotic: no loopback at all).
-pub fn free_port() -> std::io::Result<u16> {
+fn free_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(listener.local_addr()?.port())
 }
 
-/// Connect to the adapter's socket, retrying while it boots.
-async fn connect_with_retries(port: u16) -> Result<tokio::net::TcpStream, DapError> {
-    let deadline = tokio::time::Instant::now() + TCP_CONNECT_TIMEOUT;
+/// Connect to the adapter's socket, retrying while it boots, for at most
+/// `timeout` (a parameter so tests can exercise the deadline quickly).
+///
+/// A connection to itself is dropped and retried like a refusal: while the
+/// adapter has not bound its port yet, a loopback connect can pick that very
+/// port as its source port, and the TCP simultaneous open then "succeeds"
+/// without any adapter on the other end.
+async fn connect_with_retries(
+    port: u16,
+    timeout: Duration,
+) -> Result<tokio::net::TcpStream, DapError> {
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        let attempt = match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(stream) if is_self_connect(&stream) => {
+                discard_self_connect(stream);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "connected to itself (nothing listening yet)",
+                ))
+            },
+            other => other,
+        };
+        match attempt {
             Ok(stream) => return Ok(stream),
             Err(e) if tokio::time::Instant::now() >= deadline => {
                 return Err(DapError::Launch(format!(
@@ -624,6 +668,26 @@ async fn connect_with_retries(port: u16) -> Result<tokio::net::TcpStream, DapErr
             Err(_) => tokio::time::sleep(TCP_RETRY_DELAY).await,
         }
     }
+}
+
+/// Whether `stream` is a TCP self-connection: its local and peer addresses are
+/// the same socket, so no other process is on the far end.
+fn is_self_connect(stream: &tokio::net::TcpStream) -> bool {
+    matches!(
+        (stream.local_addr(), stream.peer_addr()),
+        (Ok(local), Ok(peer)) if local == peer
+    )
+}
+
+/// Drop a self-connected `stream` with an abortive close (zero linger, so an
+/// RST rather than a FIN). A normal close would leave the adapter's port in
+/// `TIME_WAIT` for about a minute, and the adapter could then never bind it
+/// before the connect deadline.
+fn discard_self_connect(stream: tokio::net::TcpStream) {
+    // Best effort: if the option cannot be set, the normal close is all
+    // that is left, and the deadline still bounds the launch.
+    let _ = stream.set_zero_linger();
+    drop(stream);
 }
 
 #[cfg(test)]

@@ -73,15 +73,33 @@ pub enum LoadError {
     /// The bytes are not valid UTF-8; `offset` is the first invalid byte.
     #[error("not valid utf-8 at byte {offset}")]
     NotUtf8 {
-        /// Byte offset of the first invalid sequence.
+        /// Byte offset of the first invalid sequence, counted from the start of
+        /// the content after any leading UTF-8 BOM (so it is 3 less than the
+        /// file offset when the file starts with a BOM).
         offset: usize,
     },
     /// An I/O error while reading the file.
-    #[error("load i/o error: {0}")]
-    Io(String),
+    #[error("load i/o error: {message}")]
+    Io {
+        /// The kind of failure, so a caller can tell a missing file or a
+        /// permission problem from any other error without re-reading the file.
+        kind: std::io::ErrorKind,
+        /// The operating system's description of the failure.
+        message: String,
+    },
 }
 
-const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+impl From<std::io::Error> for LoadError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+}
+
+/// The UTF-8 byte-order mark: stripped on load, re-added on save.
+pub(crate) const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 impl TextBuffer {
     /// Build a buffer from in-memory file bytes: strip a BOM, validate UTF-8
@@ -124,7 +142,7 @@ impl TextBuffer {
     /// Returns [`LoadError::Io`] if the file cannot be read, or
     /// [`LoadError::NotUtf8`] if its contents are not valid UTF-8.
     pub fn load(path: &Path) -> Result<Self, LoadError> {
-        let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
+        let bytes = std::fs::read(path)?;
         let mut buf = Self::from_bytes(&bytes)?;
         buf.record_disk_state(path, &bytes);
         Ok(buf)
@@ -138,6 +156,11 @@ impl TextBuffer {
     /// building a buffer from text whose on-disk form you already have — e.g. a
     /// binary format decoded into an editable buffer, where the disk bytes are the
     /// undecoded original.
+    ///
+    /// If `path`'s metadata cannot be read, this silently records nothing and
+    /// leaves any earlier fingerprint in place. A buffer that never had one then
+    /// stays without it, so a later [`save`](Self::save) or
+    /// [`save_bytes`](Self::save_bytes) skips its on-disk conflict check.
     pub fn record_disk_state(&mut self, path: &Path, disk_bytes: &[u8]) {
         if let Ok(meta) = std::fs::metadata(path) {
             self.saved_state = Some(SavedState {
@@ -188,6 +211,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eol_bytes_and_labels() {
+        assert_eq!(Eol::Lf.as_bytes(), b"\n");
+        assert_eq!(Eol::Crlf.as_bytes(), b"\r\n");
+        assert_eq!(Eol::Lf.to_string(), "LF");
+        assert_eq!(Eol::Crlf.to_string(), "CRLF");
+    }
+
+    #[test]
+    fn encoding_labels() {
+        assert_eq!(Encoding::Utf8.to_string(), "UTF-8");
+        assert_eq!(Encoding::Utf8Bom.to_string(), "UTF-8 BOM");
+    }
+
+    /// A missing file reports its `io::ErrorKind`, so a caller can tell "does not
+    /// exist" from any other failure without reading the file a second time.
+    #[test]
+    fn loading_a_missing_file_keeps_the_error_kind() -> Result<(), std::io::Error> {
+        let dir = tempfile::tempdir()?;
+        let result = TextBuffer::load(&dir.path().join("absent.txt"));
+        assert!(
+            matches!(
+                &result,
+                Err(LoadError::Io { kind: std::io::ErrorKind::NotFound, message })
+                    if !message.is_empty()
+            ),
+            "{:?}",
+            result.err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn plain_lf_loads_clean() {
         let b = TextBuffer::from_bytes(b"a\nb\n").unwrap_or_default();
         assert_eq!(b.eol(), Eol::Lf);
@@ -212,6 +267,46 @@ mod tests {
         assert!(b.has_mixed_eol());
         assert_eq!(b.eol(), Eol::Crlf); // 2 CRLF vs 1 LF → majority CRLF
         assert_eq!(b.text(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn a_leading_lf_is_an_lf() {
+        // The `\n` at byte 0 has no byte before it to be a `\r`.
+        let b = TextBuffer::from_bytes(b"\na\r\n").unwrap_or_default();
+        assert!(b.has_mixed_eol());
+        assert_eq!(b.text(), "\na\n");
+    }
+
+    #[test]
+    fn lone_cr_is_kept_as_content() {
+        // Only `\r\n` is normalized; an old-Mac `\r` stays and is not counted as
+        // a line ending when choosing the one to save with.
+        let b = TextBuffer::from_bytes(b"a\rb\r\nc").unwrap_or_default();
+        assert_eq!(b.text(), "a\rb\nc");
+        assert_eq!(b.eol(), Eol::Crlf);
+        assert!(!b.has_mixed_eol());
+
+        let b = TextBuffer::from_bytes(b"a\rb\rc").unwrap_or_default();
+        assert_eq!(b.text(), "a\rb\rc");
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(!b.has_mixed_eol());
+
+        // A `\r` right before a CRLF survives, so in memory it pairs with the
+        // normalized `\n`.
+        let b = TextBuffer::from_bytes(b"a\r\r\nb").unwrap_or_default();
+        assert_eq!(b.text(), "a\r\nb");
+        assert_eq!(b.eol(), Eol::Crlf);
+    }
+
+    #[test]
+    fn majority_line_ending_wins_and_a_tie_is_lf() {
+        let b = TextBuffer::from_bytes(b"a\nb\r\nc\n").unwrap_or_default();
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(b.has_mixed_eol());
+        let b = TextBuffer::from_bytes(b"a\r\nb\n").unwrap_or_default();
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(b.has_mixed_eol());
+        assert_eq!(b.text(), "a\nb\n");
     }
 
     #[test]

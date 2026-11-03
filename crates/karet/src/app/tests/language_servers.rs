@@ -1,35 +1,6 @@
 use super::support::*;
 use crate::app::*;
 
-fn language_server_status(
-    server: LanguageServerId,
-    language: &str,
-    managed: bool,
-) -> LanguageServerStatus {
-    LanguageServerStatus {
-        server,
-        languages: vec![language.to_string()],
-        enabled: true,
-        managed,
-        manual_install_reason: (!managed).then(|| "install with the project toolchain".to_string()),
-        installed: managed.then(|| "1.2.3".to_string()),
-        cleanup_pending: false,
-        instances: vec![karet_session::LanguageServerInstanceStatus {
-            root: PathBuf::from("/workspace"),
-            source: if managed {
-                karet_session::LanguageServerSource::Managed
-            } else {
-                karet_session::LanguageServerSource::Path
-            },
-            command: Some("/bin/server".to_string()),
-            args: vec!["--stdio".to_string()],
-            runtime: karet_session::LanguageServerRuntimeState::Running,
-            open_documents: 2,
-            error: None,
-        }],
-    }
-}
-
 #[test]
 fn language_server_manager_is_a_singleton_and_requests_inventory() {
     let backend = Arc::new(RecordingBackend::new());
@@ -50,7 +21,12 @@ fn language_server_manager_is_a_singleton_and_requests_inventory() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -63,8 +39,8 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -81,9 +57,9 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::CheckLanguageServerUpdates {
+                    SessionCommand::LanguageServer(LanguageServerCommand::CheckUpdates {
                         server: Some(server)
-                    } if *server == LanguageServerId::RustAnalyzer
+                    }) if *server == LanguageServerId::RustAnalyzer
                 )
             })
         })
@@ -92,16 +68,19 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let TabKind::LanguageServers(view) = &app.tabs[app.active].kind else {
         panic!("expected language-server manager");
     };
-    assert_eq!(view.visible_indices().len(), 1);
-    assert_eq!(view.selected_id(), Some(LanguageServerId::RustAnalyzer));
+    assert_eq!(view.visible_indices(&app.lsp_runtime.servers).len(), 1);
+    assert_eq!(
+        view.selected_id(&app.lsp_runtime.servers),
+        Some(LanguageServerId::RustAnalyzer)
+    );
 }
 
 #[test]
 fn language_server_manager_renders_inventory_controls_and_detail() {
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c, cpp", false),
@@ -125,14 +104,38 @@ fn language_server_manager_renders_inventory_controls_and_detail() {
     assert!(rendered.contains("install with the project toolchain"));
 }
 
+/// A server compiled into karet is neither managed nor manual: the detail pane
+/// says it is built in, and the instance names its source, so nobody goes
+/// looking for an install that never happened.
+#[test]
+fn language_server_manager_names_a_built_in_provider() {
+    let mut app = app();
+    app.open_language_servers();
+    let mut taplo = language_server_status(LanguageServerId::new("taplo"), "toml", false);
+    taplo.manual_install_reason = None;
+    taplo.instances[0].source = karet_session::LanguageServerSource::Builtin;
+    taplo.instances[0].command = Some("karet-builtin:taplo".to_string());
+    taplo.instances[0].args = Vec::new();
+    answer_inventory(&mut app, vec![taplo]);
+    app.language_server_select(0);
+
+    let rendered = screen(&mut app, 120, 24).join("\n");
+    assert!(
+        rendered.contains("built into Karet"),
+        "manager screen:\n{rendered}"
+    );
+    assert!(rendered.contains("built-in"), "manager screen:\n{rendered}");
+    assert!(!rendered.contains("manual install"));
+}
+
 #[test]
 fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -172,7 +175,12 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -215,8 +223,8 @@ fn language_server_manager_only_renders_applicable_row_actions() {
 
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             installed.clone(),
             missing.clone(),
@@ -263,8 +271,8 @@ fn language_server_row_action_targets_its_own_server() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -293,9 +301,9 @@ fn language_server_row_action_targets_its_own_server() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::CheckLanguageServerUpdates {
+                    SessionCommand::LanguageServer(LanguageServerCommand::CheckUpdates {
                         server: Some(server)
-                    } if *server == LanguageServerId::RustAnalyzer
+                    }) if *server == LanguageServerId::RustAnalyzer
                 )
             })
         })
@@ -304,7 +312,7 @@ fn language_server_row_action_targets_its_own_server() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if view.selected_id() == Some(LanguageServerId::RustAnalyzer)
+            if view.selected_id(&app.lsp_runtime.servers) == Some(LanguageServerId::RustAnalyzer)
     ));
 }
 
@@ -316,7 +324,7 @@ fn language_server_install_action_is_the_only_install_approval() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
 
     app.language_server_action(
         crate::tab::LanguageServerAction::Primary,
@@ -330,14 +338,14 @@ fn language_server_install_action_is_the_only_install_approval() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::InstallLanguageServer { server }
+                    SessionCommand::LanguageServer(LanguageServerCommand::Install { server })
                         if *server == LanguageServerId::Texlab
                 )
             })
         })
         .unwrap_or_default();
     assert!(install_sent);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
@@ -357,7 +365,7 @@ fn language_server_installs_are_independent_per_provider() {
     texlab.installed = None;
     let mut zls = language_server_status(LanguageServerId::Zls, "zig", true);
     zls.installed = None;
-    app.show_language_server_status(None, vec![texlab, zls]);
+    answer_inventory(&mut app, vec![texlab, zls]);
 
     app.language_server_action(
         crate::tab::LanguageServerAction::Primary,
@@ -374,7 +382,9 @@ fn language_server_installs_are_independent_per_provider() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::InstallLanguageServer { server } => Some(server.clone()),
+                    SessionCommand::LanguageServer(LanguageServerCommand::Install { server }) => {
+                        Some(server.clone())
+                    },
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -388,12 +398,14 @@ fn language_server_installs_are_independent_per_provider() {
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view) if view.pending.len() == 2
     ));
+    // Two provider rows, plus the single shared card: one download at a time is
+    // what the user needs told, not a stack of five.
     assert_eq!(
         screen(&mut app, 120, 24)
             .join("\n")
             .matches("Installing")
             .count(),
-        2
+        3
     );
 }
 
@@ -405,12 +417,12 @@ fn language_server_install_state_survives_manager_reopen() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing.clone()]);
+    answer_inventory(&mut app, vec![missing.clone()]);
     app.begin_language_server_install(LanguageServerId::Texlab);
 
     app.close_tab_at(app.active);
     app.open_language_servers();
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
 
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -430,8 +442,9 @@ fn language_server_install_progress_stays_in_manager() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
-    app.status = None;
+    answer_inventory(&mut app, vec![missing]);
+    // Drop the cards the setup raised, so what survives below is the install's.
+    app.notifications.dismiss_all();
     app.begin_language_server_install(LanguageServerId::Texlab);
     let request = backend
         .sent
@@ -448,7 +461,16 @@ fn language_server_install_progress_stays_in_manager() {
         },
     );
 
-    assert_eq!(app.status, None);
+    // The bytes reach the manager tab and the one tagged operation card. The
+    // progress event raises no second notification of its own — a card per tick
+    // would bury whatever else the editor is trying to say.
+    let tags: Vec<Option<&str>> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|note| note.tag.as_deref())
+        .collect();
+    assert_eq!(tags, vec![Some("lsp.operation")]);
     assert!(
         screen(&mut app, 100, 18)
             .join("\n")
@@ -463,13 +485,22 @@ fn language_server_install_progress_stays_in_manager() {
             restart_required: false,
         },
     );
+    // Success supersedes the progress card under the same tag, and the manager's
+    // own row-level label goes back to idle.
+    let cards: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
     assert!(
-        app.notifications
-            .active()
-            .iter()
-            .all(|notification| notification.kind != NotificationKind::Lsp)
+        cards.iter().any(|title| title.contains("1.3.0")),
+        "the outcome is reported: {cards:?}"
     );
-    assert!(!screen(&mut app, 100, 18).join("\n").contains("Installing"));
+    assert!(
+        !cards.iter().any(|title| title.contains("Installing")),
+        "the progress card was replaced, not stacked: {cards:?}"
+    );
 }
 
 #[test]
@@ -480,7 +511,7 @@ fn language_server_install_failure_stays_in_manager() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
     app.begin_language_server_install(LanguageServerId::Texlab);
     let request = backend
         .sent
@@ -497,12 +528,17 @@ fn language_server_install_failure_stays_in_manager() {
         },
     );
 
-    assert!(
-        app.notifications
-            .active()
-            .iter()
-            .all(|notification| notification.kind != NotificationKind::Lsp)
-    );
+    // A failure the user never sees is the worst outcome of the three, so it is
+    // reported wherever they are — and errors never auto-expire.
+    let failure = app
+        .notifications
+        .active()
+        .iter()
+        .find(|notification| notification.kind == NotificationKind::Lsp)
+        .map(|notification| (notification.title.clone(), notification.timeout));
+    let (title, timeout) = failure.unwrap_or_default();
+    assert!(title.contains("checksum mismatch"), "{title}");
+    assert!(timeout.is_none(), "an error card waits to be dismissed");
     assert!(
         screen(&mut app, 120, 18)
             .join("\n")
@@ -516,8 +552,8 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -548,16 +584,16 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::ApplyLanguageServerPlan {
+                    SessionCommand::LanguageServer(LanguageServerCommand::ApplyPlan {
                         plan: applied,
                         servers,
-                    } if *applied == plan && servers == &[LanguageServerId::RustAnalyzer]
+                    }) if *applied == plan && servers == &[LanguageServerId::RustAnalyzer]
                 )
             })
         })
         .unwrap_or_default();
     assert!(apply_sent);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
@@ -571,8 +607,8 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
 fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -595,7 +631,7 @@ fn language_server_table_borders_and_runtime_text_are_semantic() {
     status.instances[0].error = Some("protocol failure".to_string());
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(None, vec![status]);
+    answer_inventory(&mut app, vec![status]);
 
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("test terminal");
     terminal
@@ -636,9 +672,11 @@ fn language_server_table_borders_and_runtime_text_are_semantic() {
             })
         })
     };
+    // An open breaker is an error in this table, matching the editor's badge: the
+    // provider crashed repeatedly and is not being retried.
     assert_eq!(
         semantic_cell("circuit open").map(|cell| cell.fg),
-        Some(app.theme.role(ThemeRole::DiagnosticHint).to_ratatui())
+        Some(app.theme.role(ThemeRole::DiagnosticError).to_ratatui())
     );
     assert_eq!(
         semantic_cell("Error: protocol failure").map(|cell| cell.fg),
@@ -653,8 +691,8 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
 
     let mut app = app();
     app.push_tab(text_tab("/workspace/src/main.rs", "fn main() {}\n"));
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -670,7 +708,7 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let running_row = (0..100)
         .map(|x| running[(x, 11)].symbol())
         .collect::<String>();
-    let running_x = running_row.find("LSP in sync").expect("running LSP badge");
+    let running_x = running_row.find("LSP ready").expect("running LSP badge");
     assert_eq!(
         running[(u16::try_from(running_x).unwrap_or_default(), 11)].fg,
         app.theme.role(ThemeRole::DiagnosticHint).to_ratatui()
@@ -692,9 +730,9 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let crashed_row = (0..100)
         .map(|x| crashed[(x, 11)].symbol())
         .collect::<String>();
-    let crashed_x = crashed_row.find("LSP crashed").expect("crashed LSP badge");
+    let failed_x = crashed_row.find("LSP failed").expect("failed LSP badge");
     assert_eq!(
-        crashed[(u16::try_from(crashed_x).unwrap_or_default(), 11)].fg,
+        crashed[(u16::try_from(failed_x).unwrap_or_default(), 11)].fg,
         app.theme.role(ThemeRole::DiagnosticError).to_ratatui()
     );
 }
@@ -702,8 +740,8 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
 #[test]
 fn runtime_protocol_failures_remain_as_deduplicated_notifications() {
     let mut app = app();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -746,8 +784,8 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -765,7 +803,7 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
                 .filter_map(|(request, command)| {
                     matches!(
                         command,
-                        SessionCommand::UninstallLanguageServer { server }
+                        SessionCommand::LanguageServer(LanguageServerCommand::Uninstall { server })
                             if *server == LanguageServerId::RustAnalyzer
                     )
                     .then_some(*request)
@@ -808,4 +846,18 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     let rendered = screen(&mut app, 100, 18).join("\n");
     assert!(!rendered.contains("Uninstalling"));
     assert!(rendered.contains("Install"));
+    let cards: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
+    assert!(
+        cards.iter().any(|title| title.starts_with("uninstalled")),
+        "the outcome replaced the progress card: {cards:?}"
+    );
+    assert!(
+        !cards.iter().any(|title| title.contains("Uninstalling")),
+        "the progress card went with the operation: {cards:?}"
+    );
 }

@@ -3,25 +3,31 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use karet_core::Change;
+use karet_core::CompletionItem;
+use karet_core::CompletionTrigger;
+use karet_core::EditCause;
 use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::Symbol;
 use karet_core::TextEdit;
-use karet_text::EditCause;
-use serde_json::Value;
 use serde_json::json;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use server_double::Behavior;
+use server_double::failing_connector;
+// The framing helpers live with the double but belong to `lsp::tests`: a test
+// that scripts its own server inline speaks the same wire this one does.
+use server_double::read_msg;
+use server_double::test_connector;
+use server_double::write_msg;
 use tokio::io::BufReader;
-use tokio::io::DuplexStream;
-use tokio::io::ReadHalf;
-use tokio::io::WriteHalf;
 
 use super::*;
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::Event;
+use crate::api::LanguageServerCommand;
 use crate::api::LanguageServerInstanceStatus;
 use crate::api::LanguageServerStatus;
+use crate::api::LspCommand;
 use crate::backend::Backend;
 use crate::backend::local_session;
 use crate::session::EventRx;
@@ -38,7 +44,8 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         request: RequestId(1),
         doc: DocumentId(1),
         version: 1,
-        items: Vec::new(),
+        list: karet_core::CompletionList::default(),
+        options: karet_core::CompletionOptions::default(),
     };
     assert!(manager.accepts(&old));
 
@@ -46,12 +53,53 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         enabled: false,
         ..LspSettings::default()
     };
-    assert!(manager.reconfigure(settings.clone()));
+    assert!(manager.reconfigure(settings.clone()).is_some());
     assert!(!manager.accepts(&old));
     assert!(
-        !manager.reconfigure(settings),
+        manager.reconfigure(settings).is_none(),
         "an identical snapshot is a no-op"
     );
+}
+
+/// `commit_pending_format_saves` drains every parked save on any `lsp.*`
+/// change, which is exact only while a reload retires every slot. This pins
+/// that half: an edit naming a language no open document uses still retires
+/// the servers of the documents that are open. Narrow `reconfigure` and this
+/// fails, pointing at the drain that has to narrow with it.
+#[tokio::test]
+async fn reconfigure_retires_slots_its_change_did_not_name() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let rust = PathBuf::from("/tmp/untouched.rs");
+    let typescript = PathBuf::from("/tmp/untouched.ts");
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &rust, 1, String::new);
+    let _ = manager.document_opened(
+        Some("typescript"),
+        Some("typescript"),
+        &typescript,
+        1,
+        String::new,
+    );
+    assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
+    assert!(manager.is_running(&LanguageServerId::TypeScript));
+
+    let mut settings = LspSettings::default();
+    settings.languages.insert(
+        "python".to_owned(),
+        crate::config::schema::LspLanguage {
+            formatter: Some("ruff".to_owned()),
+            ..Default::default()
+        },
+    );
+    let retired = manager.reconfigure(settings).unwrap_or_default();
+
+    assert_eq!(retired.document_paths(), vec![rust, typescript]);
+    assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
+    assert!(!manager.is_running(&LanguageServerId::TypeScript));
 }
 
 #[tokio::test]
@@ -63,11 +111,11 @@ async fn last_document_close_retires_the_server_slot() {
         Arc::new(AtomicUsize::new(0)),
     ));
     let path = PathBuf::from("/tmp/owned.rs");
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
     assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
 }
 
@@ -79,14 +127,14 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         None,
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("javascript"),
         Some("javascript"),
         Path::new("/tmp/a.js"),
         1,
         String::new,
     );
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("typescript"),
         Some("typescript"),
         Path::new("/tmp/b.ts"),
@@ -94,9 +142,9 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         String::new,
     );
     assert_eq!(manager.servers.len(), 1);
-    manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
+    let _ = manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
     assert!(manager.is_running(&LanguageServerId::TypeScript));
-    manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
+    let _ = manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
     assert!(!manager.is_running(&LanguageServerId::TypeScript));
 }
 
@@ -109,7 +157,7 @@ async fn tsx_routes_to_typescript_with_protocol_specific_language_id() -> TestRe
         Some(observed_tx),
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("tsx"),
         Some("typescriptreact"),
         Path::new("/tmp/component.tsx"),
@@ -145,12 +193,13 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
         Arc::new(AtomicUsize::new(0)),
     ));
 
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
-    manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
+    let changed = karet_text::TextBuffer::from_text("fn changed() {}");
+    let _ = manager.document_changed(Some("rust"), &path, &changed, None);
     manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
 
     let mut methods = Vec::new();
     while methods
@@ -186,166 +235,6 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
     Ok(())
 }
 
-// --- a minimal LSP wire for the fake server (framing + JSON) -----------
-
-async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Value> {
-    let mut len: Option<usize> = None;
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line).await.ok()? == 0 {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&line);
-        let text = text.trim_end();
-        if text.is_empty() {
-            break;
-        }
-        if let Some(value) = text.strip_prefix("Content-Length:") {
-            len = value.trim().parse().ok();
-        }
-    }
-    let mut body = vec![0_u8; len?];
-    reader.read_exact(&mut body).await.ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-async fn write_msg(writer: &mut WriteHalf<DuplexStream>, message: &Value) {
-    let body = serde_json::to_vec(message).unwrap_or_default();
-    let head = format!("Content-Length: {}\r\n\r\n", body.len());
-    let _ = writer.write_all(head.as_bytes()).await;
-    let _ = writer.write_all(&body).await;
-    let _ = writer.flush().await;
-}
-
-/// What the scripted server should do after the initialize handshake.
-#[derive(Clone, Copy)]
-enum Behavior {
-    /// Serve completions; echo every received message to `observed`.
-    Normal,
-    /// Hang up right after the handshake (a crashing server).
-    DieAfterHandshake,
-    /// Crash the first process, then serve normally after the supervisor retries.
-    DieOnce,
-}
-
-/// A connector that runs a scripted in-memory server per "spawn".
-fn test_connector(
-    behavior: Behavior,
-    observed: Option<mpsc::UnboundedSender<Value>>,
-    spawns: Arc<AtomicUsize>,
-) -> Connector {
-    Arc::new(move |_spec, root| {
-        let observed = observed.clone();
-        let spawns = Arc::clone(&spawns);
-        Box::pin(async move {
-            let attempt = spawns.fetch_add(1, Ordering::SeqCst);
-            let behavior = if matches!(behavior, Behavior::DieOnce) && attempt > 0 {
-                Behavior::Normal
-            } else {
-                behavior
-            };
-            let (client_end, server_end) = tokio::io::duplex(1 << 20);
-            let (server_read, mut server_write) = tokio::io::split(server_end);
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(server_read);
-                // Handshake.
-                let Some(init) = read_msg(&mut reader).await else {
-                    return;
-                };
-                write_msg(
-                    &mut server_write,
-                    &json!({"jsonrpc": "2.0", "id": init["id"],
-                                "result": {"capabilities": {}}}),
-                )
-                .await;
-                let _initialized = read_msg(&mut reader).await;
-                if matches!(behavior, Behavior::DieAfterHandshake | Behavior::DieOnce) {
-                    return; // both halves drop: the client sees EOF
-                }
-                while let Some(msg) = read_msg(&mut reader).await {
-                    if let Some(tx) = &observed {
-                        let _ = tx.send(msg.clone());
-                    }
-                    match msg["method"].as_str() {
-                        Some("textDocument/completion") => {
-                            // A fixed item whose textEdit range is in UTF-16:
-                            // chars 2..4 on the requested line.
-                            let line = msg["params"]["position"]["line"].clone();
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
-                                    "label": "emoji_aware",
-                                    "kind": 5,
-                                    "textEdit": {
-                                        "range": {
-                                            "start": {"line": line, "character": 2},
-                                            "end": {"line": line, "character": 4}
-                                        },
-                                        "newText": "emoji_aware"
-                                    }
-                                }]}),
-                            )
-                            .await;
-                        },
-                        Some("textDocument/documentSymbol") => {
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
-                                    "name": "emoji_name",
-                                    "kind": 12,
-                                    "range": {
-                                        "start": {"line": 0, "character": 0},
-                                        "end": {"line": 0, "character": 4}
-                                    },
-                                    "selectionRange": {
-                                        "start": {"line": 0, "character": 2},
-                                        "end": {"line": 0, "character": 4}
-                                    }
-                                }]}),
-                            )
-                            .await;
-                        },
-                        Some("textDocument/didOpen") => {
-                            let uri = msg["params"]["textDocument"]["uri"]
-                                .as_str()
-                                .unwrap_or_default();
-                            if uri.ends_with("Status.java") {
-                                write_msg(
-                                    &mut server_write,
-                                    &json!({"jsonrpc": "2.0", "method": "language/status",
-                                        "params": {"type": "Starting",
-                                            "message": "37% Importing projects"}}),
-                                )
-                                .await;
-                            }
-                        },
-                        Some("shutdown") => {
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
-                            )
-                            .await;
-                        },
-                        Some("exit") => break,
-                        _ => {},
-                    }
-                }
-            });
-            let (read, write) = tokio::io::split(client_end);
-            LspClient::connect(read, write, &root).await
-        })
-    })
-}
-
-/// A connector that always fails as if the binary were missing.
-fn failing_connector(spawns: Arc<AtomicUsize>) -> Connector {
-    Arc::new(move |_spec, _root| {
-        spawns.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(LspError::Spawn) })
-    })
-}
-
 // --- session-level helpers ---------------------------------------------
 
 fn rust_file(dir: &tempfile::TempDir, name: &str, text: &str) -> Option<PathBuf> {
@@ -378,12 +267,34 @@ async fn await_completions(
             doc,
             version,
             items,
+            ..
         } = event
         {
             return Some((rid, doc, version, items));
         }
     }
     None
+}
+
+async fn await_inlay_hints(
+    events: &mut EventRx,
+) -> Option<(
+    Option<RequestId>,
+    DocumentId,
+    u64,
+    Vec<karet_core::InlayHint>,
+)> {
+    loop {
+        let (id, event) = next_event(events).await?;
+        if let Event::InlayHints {
+            doc,
+            version,
+            hints,
+        } = event
+        {
+            return Some((id, doc, version, hints));
+        }
+    }
 }
 
 async fn await_symbols(
@@ -396,7 +307,6 @@ async fn await_symbols(
     }
     None
 }
-
 fn session_with_connector(connector: Connector) -> (Session, EventRx) {
     let (mut session, events, _snaps) = Session::new(SessionConfig::default());
     session.set_lsp_connector(connector);
@@ -404,181 +314,6 @@ fn session_with_connector(connector: Connector) -> (Session, EventRx) {
 }
 
 // --- the tests -----------------------------------------------------------
-
-#[tokio::test]
-async fn completion_round_trips_with_utf16_conversion() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    // '😀' is 1 buffer column but 2 UTF-16 units.
-    let path = rust_file(&dir, "main.rs", "😀ab\n").ok_or("write failed")?;
-    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
-    let spawns = Arc::new(AtomicUsize::new(0));
-    let (session, mut events) =
-        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
-    let backend = local_session(session, None);
-
-    backend.send(
-        backend.next_id(),
-        Command::OpenDocument {
-            path,
-            language: None,
-        },
-    )?;
-    let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
-
-    // Caret after "😀ab" = buffer col 3.
-    let request = backend.next_id();
-    backend.send(
-        request,
-        Command::Completion {
-            doc,
-            position: LineCol::new(0, 3),
-        },
-    )?;
-
-    let (rid, cdoc, cversion, items) = await_completions(&mut events)
-        .await
-        .ok_or("no Completions event")?;
-    assert_eq!(rid, Some(request), "answer tagged with the request id");
-    assert_eq!(cdoc, doc);
-    assert_eq!(cversion, version);
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].label, "emoji_aware");
-    // The server's UTF-16 range 2..4 is buffer cols 1..3 (after the emoji).
-    let edit = items[0].edit.clone().ok_or("expected an edit")?;
-    assert_eq!(edit.range.start, LineCol::new(0, 1));
-    assert_eq!(edit.range.end, LineCol::new(0, 3));
-
-    // And the outgoing request carried the UTF-16 position (col 3 → 4).
-    let mut saw_utf16 = false;
-    while let Ok(msg) = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv()).await {
-        let Some(msg) = msg else { break };
-        if msg["method"] == "textDocument/completion" {
-            assert_eq!(
-                msg["params"]["position"],
-                json!({"line": 0, "character": 4})
-            );
-            saw_utf16 = true;
-            break;
-        }
-    }
-    assert!(saw_utf16, "the completion request should reach the server");
-    Ok(())
-}
-
-#[tokio::test]
-async fn document_symbols_round_trip_with_utf16_conversion() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let path = rust_file(&dir, "main.rs", "😀ab\n").ok_or("write failed")?;
-    let spawns = Arc::new(AtomicUsize::new(0));
-    let (session, mut events) =
-        session_with_connector(test_connector(Behavior::Normal, None, spawns));
-    let backend = local_session(session, None);
-    backend.send(
-        backend.next_id(),
-        Command::OpenDocument {
-            path,
-            language: None,
-        },
-    )?;
-    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
-    let request = backend.next_id();
-    backend.send(request, Command::DocumentSymbols { doc })?;
-    let (answer, answer_doc, symbols) =
-        await_symbols(&mut events).await.ok_or("no Symbols event")?;
-    assert_eq!(answer, Some(request));
-    assert_eq!(answer_doc, doc);
-    assert_eq!(symbols[0].selection_range.start, LineCol::new(0, 1));
-    assert_eq!(symbols[0].selection_range.end, LineCol::new(0, 3));
-    Ok(())
-}
-
-#[tokio::test]
-async fn open_and_debounced_changes_reach_the_server() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let path = rust_file(&dir, "lib.rs", "fn a() {}\n").ok_or("write failed")?;
-    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
-    let spawns = Arc::new(AtomicUsize::new(0));
-    let (session, mut events) =
-        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
-    let backend = local_session(session, None);
-
-    backend.send(
-        backend.next_id(),
-        Command::OpenDocument {
-            path,
-            language: None,
-        },
-    )?;
-    let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
-
-    // Two rapid single-char inserts; the debounce coalesces them.
-    for (i, ch) in ["x", "y"].iter().enumerate() {
-        let range =
-            Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
-        backend.send(
-            backend.next_id(),
-            Command::ApplyChange {
-                doc,
-                change: Change::new(
-                    version + i as u64,
-                    vec![TextEdit {
-                        range,
-                        new_text: (*ch).to_owned(),
-                    }],
-                ),
-                cause: EditCause::Type,
-            },
-        )?;
-    }
-    // A completion flushes the pending change ahead of itself.
-    backend.send(
-        backend.next_id(),
-        Command::Completion {
-            doc,
-            position: LineCol::new(1, 1),
-        },
-    )?;
-    let _ = await_completions(&mut events).await.ok_or("no answer")?;
-
-    // Server-side order: didOpen (with the original text), then didChange(s)
-    // whose final text is the current buffer, then the completion.
-    let mut methods = Vec::new();
-    let mut last_change_text = String::new();
-    while let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv()).await
-    {
-        let method = msg["method"].as_str().unwrap_or_default().to_owned();
-        if method == "textDocument/didChange" {
-            last_change_text = msg["params"]["contentChanges"][0]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-        }
-        if method == "textDocument/didOpen" {
-            assert_eq!(msg["params"]["textDocument"]["text"], json!("fn a() {}\n"));
-            assert_eq!(msg["params"]["textDocument"]["languageId"], json!("rust"));
-        }
-        let done = method == "textDocument/completion";
-        methods.push(method);
-        if done {
-            break;
-        }
-    }
-    assert_eq!(
-        methods.first().map(String::as_str),
-        Some("textDocument/didOpen")
-    );
-    assert_eq!(
-        methods.last().map(String::as_str),
-        Some("textDocument/completion")
-    );
-    assert!(
-        methods.iter().any(|m| m == "textDocument/didChange"),
-        "edits must be forwarded, got {methods:?}"
-    );
-    // Both single-char inserts are visible in the last forwarded text.
-    assert_eq!(last_change_text, "fn a() {}\nyx");
-    Ok(())
-}
 
 #[tokio::test]
 async fn unsupported_language_answers_empty_immediately() -> TestResult {
@@ -591,19 +326,22 @@ async fn unsupported_language_answers_empty_immediately() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
     let (rid, cdoc, cversion, items) = await_completions(&mut events).await.ok_or("no answer")?;
     assert_eq!(rid, Some(request));
@@ -619,26 +357,29 @@ async fn disabled_setting_spawns_nothing() -> TestResult {
     let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
     let spawns = Arc::new(AtomicUsize::new(0));
     let mut config = SessionConfig::default();
-    config.settings.lsp.enabled = false;
+    config.loaded_config.settings.lsp.enabled = false;
     let (mut session, mut events, _snaps) = Session::new(config);
     session.set_lsp_connector(test_connector(Behavior::Normal, None, Arc::clone(&spawns)));
     let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
     let (rid, _, _, items) = await_completions(&mut events).await.ok_or("no answer")?;
     assert_eq!(rid, Some(request));
@@ -660,20 +401,23 @@ async fn missing_binary_warns_once_and_answers_empty() -> TestResult {
     for path in [first, second] {
         backend.send(
             backend.next_id(),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
-            },
+            }
+            .into(),
         )?;
     }
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
 
     // Drain until the completion answer; count LSP warnings seen on the way.
@@ -714,19 +458,22 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
 
     let mut died_notice = false;
@@ -773,53 +520,86 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     backend.send(
         backend.next_id(),
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
     let _ = await_completions(&mut events)
         .await
         .ok_or("no outage answer")?;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Await the replay itself rather than sleeping past the restart delay. Only
+    // the restarted server echoes what it receives (the first hangs up during
+    // the handshake), so this `didOpen` is the replay; and the server task sends
+    // it inside the reconnect, so the next command is handled on the new
+    // connection. `Running` is no signal here: the doomed first connection can
+    // report it too, and that event may still be queued.
+    let mut replayed = false;
+    while !replayed {
+        let message = tokio::time::timeout(Duration::from_secs(10), observed_rx.recv())
+            .await
+            .map_err(|_elapsed| "the reconnected server never received the latest full text")?
+            .ok_or("the server stream ended before the replay")?;
+        replayed = message["method"] == "textDocument/didOpen"
+            && message["params"]["textDocument"]["text"] == "fn recovered() {}\n";
+    }
     backend.send(
         backend.next_id(),
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
-        },
+            trigger: CompletionTrigger::Invoked,
+        }
+        .into(),
     )?;
     let (_, _, _, items) = await_completions(&mut events)
         .await
         .ok_or("no recovered answer")?;
     assert_eq!(items.len(), 1);
     assert!(spawns.load(Ordering::SeqCst) >= 2);
-    let mut replayed = false;
-    while let Ok(Some(message)) =
-        tokio::time::timeout(Duration::from_millis(100), observed_rx.recv()).await
-    {
-        if message["method"] == "textDocument/didOpen"
-            && message["params"]["textDocument"]["text"] == "fn recovered() {}\n"
-        {
-            replayed = true;
-            break;
-        }
-    }
-    assert!(
-        replayed,
-        "reconnected server must receive the latest full text"
-    );
     Ok(())
 }
 
+mod code_action_tests;
+mod code_lens_tests;
+mod completion_tests;
+mod disabled_tests;
+mod document_highlight_tests;
+mod editing_tests;
+mod failure_policy_tests;
+mod folding_tests;
+mod format_tests;
+mod hierarchy_tests;
+mod hint_tests;
+mod incremental_sync_tests;
+mod inline_completion_tests;
+mod intelligence_tests;
 mod inventory_tests;
 mod jdtls_tests;
+mod launch_tests;
+mod link_color_tests;
+mod liveness_tests;
+mod manual_provider_tests;
+mod pull_tests;
+mod reopen_tests;
+mod resolve_hint_tests;
+mod restart_tests;
+mod retirement_tests;
+mod roundtrip_tests;
+mod routing_tests;
+mod selection_range_tests;
+mod semantic_token_tests;
+mod server_double;
+mod window_tests;

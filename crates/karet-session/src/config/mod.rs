@@ -1,13 +1,17 @@
 //! The layered JSONC configuration system.
 //!
-//! [`Settings`] is the typed schema; [`load`] discovers and merges the project, user,
-//! and system `setting.jsonc` files over the sane defaults, verifying each against the
-//! schema and returning any [`ConfigDiagnostic`]s. [`json_schema`] emits the external
-//! `settings.schema.json` (referenced by a file's `"$schema"` for editor
-//! autocomplete) from the same [`Settings`] type, so the schema can never drift from
-//! the parser.
+//! [`schema::Settings`] is the typed schema, and [`schema`] holds every type in its
+//! tree; [`load_report`] discovers and merges the project, user, and system
+//! `setting.jsonc` files over the sane defaults, verifying each against the schema
+//! and reporting any [`ConfigDiagnostic`]s in its [`LoadedConfig`].
+//! [`json_schema`] emits the external `settings.schema.json` (referenced by a
+//! file's `"$schema"` for editor autocomplete) from the same type, so the schema
+//! can never drift from the parser.
+//!
+//! Writing a setting back to a file is the session's business, done in answer to
+//! a [`Command`](crate::Command), so the writers are not public.
 
-pub mod load;
+pub(crate) mod load;
 pub mod schema;
 
 use std::io::Write;
@@ -21,17 +25,15 @@ pub use load::ConfigLayer;
 pub use load::ConfigLayerReport;
 pub use load::ConfigLayerStatus;
 pub use load::LoadedConfig;
-pub use load::load;
 pub use load::load_report;
-pub use schema::Seam;
-pub use schema::SeamLensFilter;
-pub use schema::SeamSpine;
-pub use schema::Settings;
+pub use load::project_config_dir;
+pub use load::user_config_dir;
+pub(crate) use schema::Settings;
 
 /// Errors while updating a user-owned JSONC setting.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum ConfigWriteError {
+pub(crate) enum ConfigWriteError {
     /// The platform has no discoverable user configuration directory.
     #[error("user configuration directory is unavailable")]
     NoUserDirectory,
@@ -57,7 +59,7 @@ pub enum ConfigWriteError {
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// is invalid JSONC, or the atomic write fails.
-pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
+pub(crate) fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
     let current = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -69,13 +71,100 @@ pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     Ok(path)
 }
 
+/// Persist `git.aiCommit.*` in the user layer while retaining JSONC comments and
+/// unrelated formatting. Returns the updated file path.
+///
+/// Only the keys that differ from the defaults are written: a settings file
+/// should record what the user chose, not restate the whole schema back at them.
+/// A key that returns to its default is removed rather than pinned, so a later
+/// change of default is still inherited.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
+/// is invalid JSONC, or the atomic write fails.
+pub(crate) fn set_user_ai_commit(options: &schema::AiCommit) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_ai_commit_jsonc(&current, options)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
+fn update_ai_commit_jsonc(
+    text: &str,
+    options: &schema::AiCommit,
+) -> Result<String, ConfigWriteError> {
+    let defaults = schema::AiCommit::default();
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_set();
+    let git = object.object_value_or_set("git");
+    let ai = git.object_value_or_set("aiCommit");
+
+    // `set` writes a key, or removes it when the value is back to its default.
+    let set =
+        |key: &str, value: Option<jsonc_parser::cst::CstInputValue>| match (ai.get(key), value) {
+            (Some(property), Some(value)) => property.set_value(value),
+            (Some(property), None) => property.remove(),
+            (None, Some(value)) => {
+                ai.append(key, value);
+            },
+            (None, None) => {},
+        };
+    set(
+        "enabled",
+        (options.enabled != defaults.enabled).then(|| json!(options.enabled)),
+    );
+    set(
+        "agent",
+        (options.agent != defaults.agent).then(|| json!(options.agent.as_str())),
+    );
+    set(
+        "model",
+        (options.model != defaults.model).then(|| json!(options.model.clone())),
+    );
+    set(
+        "effort",
+        options.effort.map(|effort| json!(effort.as_str())),
+    );
+    set(
+        "timeoutMs",
+        (options.timeout_ms != defaults.timeout_ms).then(|| json!(options.timeout_ms as f64)),
+    );
+    set(
+        "binary",
+        options
+            .binary
+            .as_ref()
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| json!(path.clone())),
+    );
+    set(
+        "instructions",
+        (options.instructions != defaults.instructions).then(|| {
+            jsonc_parser::cst::CstInputValue::Array(
+                options
+                    .instructions
+                    .iter()
+                    .map(|line| json!(line.clone()))
+                    .collect(),
+            )
+        }),
+    );
+    Ok(root.to_string())
+}
+
 /// Add `word` to the user-layer spell-check dictionary while preserving JSONC
 /// comments and unrelated settings. A missing user settings file is created.
 ///
 /// # Errors
 /// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
 /// has an incompatible JSON shape, or the atomic write fails.
-pub fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError> {
+pub(crate) fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError> {
     if word.trim().is_empty() {
         return Err(ConfigWriteError::Parse(
             "dictionary word cannot be empty".to_string(),
@@ -96,7 +185,7 @@ pub fn add_user_dictionary_word(word: &str) -> Result<PathBuf, ConfigWriteError>
 /// Returns [`ConfigWriteError`] when no project layer can be resolved, creation was
 /// not confirmed, the existing file has an incompatible JSON shape, or the atomic
 /// write fails.
-pub fn add_project_dictionary_word(
+pub(crate) fn add_project_dictionary_word(
     roots: &[PathBuf],
     word: &str,
     allow_create: bool,
@@ -304,6 +393,79 @@ mod tests {
     }
 
     #[test]
+    fn ai_commit_writer_records_only_what_differs_from_the_defaults() -> Result<(), ConfigWriteError>
+    {
+        let source = "{\n  // keep me\n  \"editor\": { \"tabSize\": 2 },\n}\n";
+        let options = schema::AiCommit {
+            agent: schema::AiCommitAgent::Codex,
+            effort: Some(schema::AiCommitEffort::High),
+            ..schema::AiCommit::default()
+        };
+
+        let updated = update_ai_commit_jsonc(source, &options)?;
+        assert!(
+            updated.contains("// keep me"),
+            "comments survive: {updated}"
+        );
+        assert!(updated.contains("\"tabSize\""), "unrelated keys survive");
+        assert!(updated.contains("\"agent\""), "the changed key is written");
+        assert!(updated.contains("codex"), "{updated}");
+        assert!(updated.contains("\"effort\""), "{updated}");
+        // Defaults are not restated back at the user, so a later change of
+        // default is still inherited rather than silently pinned.
+        assert!(
+            !updated.contains("\"enabled\""),
+            "default omitted: {updated}"
+        );
+        assert!(!updated.contains("\"model\""), "default omitted: {updated}");
+        assert!(!updated.contains("timeoutMs"), "default omitted: {updated}");
+        assert!(!updated.contains("\"binary\""), "unset omitted: {updated}");
+        Ok(())
+    }
+
+    #[test]
+    fn ai_commit_writer_removes_a_key_that_returns_to_its_default() -> Result<(), ConfigWriteError>
+    {
+        let source =
+            "{ \"git\": { \"aiCommit\": { \"agent\": \"codex\", \"effort\": \"high\" } } }";
+        // Back to stock: both keys must disappear rather than be pinned.
+        let updated = update_ai_commit_jsonc(source, &schema::AiCommit::default())?;
+        assert!(!updated.contains("codex"), "{updated}");
+        assert!(!updated.contains("\"effort\""), "{updated}");
+        Ok(())
+    }
+
+    #[test]
+    fn ai_commit_writer_round_trips_through_the_settings_parser() -> Result<(), ConfigWriteError> {
+        let options = schema::AiCommit {
+            agent: schema::AiCommitAgent::Codex,
+            effort: Some(schema::AiCommitEffort::XHigh),
+            model: "gpt-5".to_string(),
+            instructions: vec!["be terse".to_string()],
+            binary: Some("/opt/bin/codex".to_string()),
+            timeout_ms: 30_000,
+            ..schema::AiCommit::default()
+        };
+
+        // What we write must be what we read back — the property that keeps the
+        // form's saved state and the running configuration from diverging.
+        let updated = update_ai_commit_jsonc("{}", &options)?;
+        let value: Option<serde_json::Value> =
+            jsonc_parser::parse_to_serde_value(&updated, &Default::default())
+                .map_err(|e| ConfigWriteError::Parse(e.to_string()))?;
+        let section = value
+            .as_ref()
+            .and_then(|root| root.get("git"))
+            .and_then(|git| git.get("aiCommit"))
+            .cloned()
+            .unwrap_or_default();
+        let parsed: schema::AiCommit =
+            serde_json::from_value(section).map_err(|e| ConfigWriteError::Parse(e.to_string()))?;
+        assert_eq!(parsed, options);
+        Ok(())
+    }
+
+    #[test]
     fn public_user_dictionary_writer_rejects_empty_words_before_path_discovery() {
         assert!(matches!(
             add_user_dictionary_word("  "),
@@ -311,10 +473,11 @@ mod tests {
         ));
     }
 
-    /// Guards the checked-in schema against drift: regenerate with
-    /// `cargo run -p karet --bin karet -- ...` is not needed — the schema is emitted
-    /// by this crate, so if this fails, refresh `settings.schema.json` from
-    /// [`json_schema`]. Skipped when the file is absent (e.g. isolated crate checkout).
+    /// Guards the checked-in schema against drift. If this fails, regenerate
+    /// `settings.schema.json` from [`json_schema`] by running, at the repository root,
+    /// `cargo run -p karet-session --features schema --example settings-schema >
+    /// settings.schema.json`. Skipped when the file is absent (e.g. isolated crate
+    /// checkout).
     #[cfg(feature = "schema")]
     #[test]
     fn checked_in_schema_is_current() {

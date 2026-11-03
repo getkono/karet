@@ -24,6 +24,15 @@ fn package(name: &str, files: &[(&str, &str)]) -> Result<tempfile::TempDir, std:
     Ok(dir)
 }
 
+/// Write a file under `root`, creating the directories above it.
+fn write(root: &Path, relative: &str, contents: &str) -> Result<(), std::io::Error> {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)
+}
+
 fn paths(index: &SeamIndex) -> Vec<String> {
     let mut out: Vec<String> = index
         .nodes()
@@ -344,9 +353,14 @@ fn the_file_budget_is_shared_across_packages() -> TestResult {
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .count();
     assert_eq!(scanned, 2, "the budget is per index, not per package");
-    // The third package never got a root at all: absent, which `truncated_after`
-    // explains, rather than present and falsely empty.
-    assert_eq!(root_names(&index), ["alpha", "beta"]);
+    // Every discovered package keeps its root, including the one the budget never
+    // reached. Discovery is complete and cheap; only *reading* is capped, so the
+    // package list is a fact the cap does not touch — and `truncated_after` says the
+    // contents are partial. Dropping the root instead would claim the workspace has no
+    // such member, which is the confusion this crate exists to avoid. It would also be
+    // unanswerable now that packages are read concurrently: which member fell off the
+    // end would depend on which core finished first.
+    assert_eq!(root_names(&index), ["alpha", "beta", "gamma"]);
     Ok(())
 }
 
@@ -585,5 +599,85 @@ fn reindexing_one_file_replaces_only_its_own_nodes() -> TestResult {
         .and_then(|id| index.node(*id))
         .ok_or("package root")?;
     assert!(root.rollups.get(crate::model::Lens::Hazard) >= 1);
+    Ok(())
+}
+
+// --- the file-tree ecosystems -----------------------------------------------
+
+#[test]
+fn a_node_package_becomes_a_module_per_file_and_a_namespace_per_directory() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "package.json", "{}")?;
+    write(dir.path(), "src/index.ts", "")?;
+    write(dir.path(), "src/widget.ts", "")?;
+    write(dir.path(), "src/model/index.ts", "")?;
+    write(dir.path(), "src/model/shape.ts", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // `index.ts` *is* its directory, exactly as `__init__.py` and `mod.rs` are.
+    assert!(found.iter().any(|p| p.ends_with("::widget")), "{found:?}");
+    assert!(found.iter().any(|p| p.ends_with("::model")), "{found:?}");
+    assert!(
+        found.iter().any(|p| p.ends_with("::model::shape")),
+        "{found:?}"
+    );
+    assert!(!found.iter().any(|p| p.ends_with("::index")), "{found:?}");
+    Ok(())
+}
+
+#[test]
+fn a_swift_package_becomes_one_root_per_target() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "Package.swift", "")?;
+    write(dir.path(), "Sources/Widgets/Widget.swift", "")?;
+    write(dir.path(), "Sources/Support/Util.swift", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    assert!(found.contains(&"Support::Util".to_owned()), "{found:?}");
+    assert!(found.contains(&"Widgets::Widget".to_owned()), "{found:?}");
+    Ok(())
+}
+
+#[test]
+fn a_gradle_module_becomes_a_namespace_per_package_directory() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "build.gradle.kts", "")?;
+    write(dir.path(), "src/main/kotlin/com/acme/Widget.kt", "")?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // The directory tree mirrors the package declaration by convention, and it is what a
+    // reader navigating the spine actually sees.
+    assert!(
+        found
+            .iter()
+            .any(|path| path.ends_with("::com::acme::Widget")),
+        "{found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_directory_with_no_module_file_still_becomes_one_node() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(dir.path(), "Package.swift", "")?;
+    write(
+        dir.path(),
+        "Sources/Widgets/model/Shape.swift",
+        "struct Shape {}\n",
+    )?;
+    let index = index_workspace(dir.path(), IndexOptions::default())?;
+    let found = paths(&index);
+    // `model` is a namespace with no file of its own, so it points at `Shape.swift` for
+    // somewhere to open. Extracting that file into `model` as well would give the struct
+    // two nodes, one under each — so `Shape` the module holds `Shape` the struct, once.
+    assert_eq!(
+        found,
+        [
+            "Widgets",
+            "Widgets::model",
+            "Widgets::model::Shape",
+            "Widgets::model::Shape::Shape",
+        ]
+    );
     Ok(())
 }

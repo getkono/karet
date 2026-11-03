@@ -54,6 +54,15 @@ impl NotificationCenter {
         id
     }
 
+    /// Dismiss whatever card currently holds `tag`, if any.
+    ///
+    /// The counterpart to tagged replacement: a condition that ends (a download
+    /// finishing, a worker going idle) has to be able to take its card away, not
+    /// only overwrite it.
+    pub(crate) fn dismiss_tagged(&mut self, tag: &str) {
+        self.active.retain(|a| a.note.tag.as_deref() != Some(tag));
+    }
+
     /// Dismiss the notification with `id`, if present.
     pub(crate) fn dismiss(&mut self, id: NotificationId) {
         self.active.retain(|a| a.note.id != id);

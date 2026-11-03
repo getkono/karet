@@ -1,5 +1,12 @@
 use super::*;
 
+mod color;
+mod conflict_side;
+pub(in crate::ui) mod diff;
+mod overview;
+mod scans;
+pub(in crate::ui) mod select;
+mod server_log;
 mod swatches;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
@@ -16,7 +23,8 @@ pub(super) fn draw_pane_content(
     let Some(tab) = tabs.get_mut(active) else {
         return PaneContent::default();
     };
-    let word_wrap = crate::app::effective_word_wrap(tab, ctx.word_wrap);
+    let word_wrap = tab.word_wrap(ctx.word_wrap);
+    let markdown = tab.is_markdown();
     // Written by the image/PDF render arms; stays `None` (and non-`mut`) when neither
     // media feature is compiled in.
     #[cfg(any(feature = "images", feature = "pdf"))]
@@ -25,20 +33,30 @@ pub(super) fn draw_pane_content(
     let image_area: Option<Rect> = None;
     let mut badge_rect = None;
     let mut file_hits = Vec::new();
+    let mut dir_hits = Vec::new();
+    let mut rail_rect = None;
     let mut collapse_hits = Vec::new();
     let mut blame_rect = None;
+    let mut inlay_hits = Vec::new();
     let mut markdown_link_hits = Vec::new();
+    let mut select_regions = Vec::new();
     let mut editor_rect = area;
     let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
+        #[cfg(feature = "terminal")]
+        TabKind::Terminal(pane) => {
+            super::terminal::draw_terminal(f.buffer_mut(), theme, area, pane, ctx.editor_focused);
+        },
         TabKind::Seam(state) => super::seam::draw_seam(f, theme, area, state, ctx.icon_style),
-        TabKind::LanguageServers(view) => draw_language_servers(f, theme, area, view, hits),
-        TabKind::Github(view) => draw_github(f, theme, area, view, hits),
+        TabKind::LanguageServers(view) => {
+            draw_language_servers(f, theme, area, view, ctx.language_servers, hits)
+        },
         TabKind::Code {
             path,
             doc,
             buffer,
+            text,
             highlights,
             semantic_blocks,
             folds,
@@ -56,7 +74,7 @@ pub(super) fn draw_pane_content(
                     .is_none_or(|(cached, _)| *cached != version)
                 {
                     tab.conflict_decorations =
-                        Some((version, karet_editor::conflict_decorations(&buffer.text())));
+                        Some((version, scans::conflict_decorations(buffer, text)));
                 }
                 let conflict_decorations = tab
                     .conflict_decorations
@@ -112,58 +130,68 @@ pub(super) fn draw_pane_content(
                     .is_none_or(|(cached, _)| *cached != version)
                 {
                     tab.conflict_decorations =
-                        Some((version, karet_editor::conflict_decorations(&buffer.text())));
+                        Some((version, scans::conflict_decorations(buffer, text)));
                 }
                 let conflict_decorations = tab
                     .conflict_decorations
                     .as_ref()
                     .map_or(&[][..], |(_, decorations)| decorations.as_slice());
-                let table_lines = if karet_filetype::file_type_for_path(path).name() == "Markdown" {
-                    if tab
-                        .markdown_table_lines
-                        .as_ref()
-                        .is_none_or(|(cached, _)| *cached != version)
-                    {
-                        tab.markdown_table_lines =
-                            Some((version, karet_markdown::table_line_ranges(&buffer.text())));
-                    }
-                    tab.markdown_table_lines
-                        .as_ref()
-                        .map_or(&[][..], |(_, ranges)| ranges.as_slice())
-                } else {
-                    &[]
-                };
+                // The highlight worker's ranges, published on the snapshot: reading
+                // them copies nothing, however large the document.
+                let table_lines = tab.markdown_table_lines.as_slice();
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
                 let mut frame_decos =
-                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
+                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line(), area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
+                // The lightbulb shares the marker lane too: after a breakpoint,
+                // which is state the user set.
+                frame_decos.extend(ctx.code_action_bulb.iter().cloned());
+                let diagnostics = swatches::doc_diagnostics(ctx, *doc);
+                let problems = swatches::problems(diagnostics);
+                frame_decos.extend(karet_editor::diagnostic_signs(&problems));
+                // Change markers draw in the change lane, reserved below while
+                // `git.decorations` is on, so none of the above hides them.
+                let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
+                frame_decos.extend(line_changes.into_iter().flatten().cloned());
+                // Last, so a search match on a bracket keeps its own color.
+                let cursors = tab.editor.cursors();
+                frame_decos.extend(karet_editor::bracket_decorations(
+                    buffer,
+                    Some(highlights),
+                    cursors,
+                ));
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
-                    .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
+                    .chain(ctx.occurrences.iter())
                     .chain(frame_decos.iter())
                     .cloned()
                     .collect();
-                let diagnostics = doc
-                    .and_then(|doc| ctx.diagnostics.get(&doc))
-                    .map_or(&[][..], Vec::as_slice);
+                let (virtual_text, inlay_parts, blame_index, lens_lines) =
+                    swatches::frame_virtual_text(ctx, *doc, buffer, (&problems, cursors));
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
                     .semantic_blocks(semantic_blocks)
                     .theme(theme)
                     .decorations(&combined)
                     .diagnostics(diagnostics)
+                    .virtual_text(&virtual_text)
+                    .virtual_lines(&lens_lines)
                     .folds(&fold_lines)
                     .focused(ctx.editor_focused)
                     .cell_caret(!ctx.graphical_cursor)
                     .word_wrap(word_wrap)
                     .tab_width(ctx.tab_width)
-                    .unwrapped_lines(table_lines);
-                let editor = editor.sticky_scroll(ctx.sticky_scroll);
+                    .unwrapped_lines(table_lines)
+                    .change_lane(ctx.line_changes.is_some());
+                let editor = ctx.display.apply(editor);
+                let changes = line_changes.map_or(&[][..], Vec::as_slice);
+                let found = decos.iter().chain(search_decos.iter());
+                let markers = overview::scroll_markers(theme, &problems, changes, found, cursors);
                 // Reserve the tracks before rendering, and keep `editor_rect` as the
                 // reserved rect: it is the single value used both to paint the widget
                 // and to map a click back to a caret, so shrinking it once keeps
@@ -177,59 +205,70 @@ pub(super) fn draw_pane_content(
                     },
                 );
                 editor_rect = text_rect;
-                f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                if let Some(error) = tab.fill_error.as_ref().filter(|_| tab.fill_caret.is_some()) {
+                    // The session could not load the file: say so rather
+                    // than leave an empty editor that ignores typing.
+                    f.render_widget(
+                        Paragraph::new(error.as_str())
+                            .style(theme.style(ThemeRole::DiagnosticError)),
+                        editor_rect,
+                    );
+                } else if tab.fill_caret.is_some() && tab.fill_since.is_some_and(Pending::visible) {
+                    // The session is still loading the file: past the reveal
+                    // delay, a muted placeholder replaces the empty editor.
+                    f.render_widget(
+                        Paragraph::new("Loading file…").style(theme.style(ThemeRole::Muted)),
+                        editor_rect,
+                    );
+                } else {
+                    f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                    let source = swatches::LinkSource {
+                        buffer,
+                        path,
+                        markdown,
+                        root: ctx.root,
+                    };
+                    swatches::source_link_osc8(
+                        f.buffer_mut(),
+                        &source,
+                        &tab.editor,
+                        &fold_lines,
+                        editor_rect,
+                    );
+                }
                 // Read the extents back after the render: the widget clamps the
                 // offsets and measures the viewport as it paints, so the bar is
                 // correct on the very first frame.
                 hits.record_both(
-                    tracks.paint(
+                    tracks.paint_marked(
                         f.buffer_mut(),
                         ScrollbarStyles::from_theme(theme),
                         ScrollExtent::new(
                             buffer.line_count(),
-                            tab.editor.scroll_line as usize,
+                            tab.editor.scroll_line() as usize,
                             tab.editor.visible_lines() as usize,
                         ),
                         ScrollExtent::new(
                             tab.editor.longest_col() as usize,
-                            tab.editor.scroll_col as usize,
+                            tab.editor.scroll_col() as usize,
                             tab.editor.content_width().into(),
                         ),
+                        &markers,
                     ),
                     ScrollSurface::TabRows,
                     ScrollSurface::TabColumns,
                 );
-                if ctx.blame_clickable
-                    && let Some(Decoration {
-                        range,
-                        kind:
-                            karet_core::DecorationKind::InlineText {
-                                text,
-                                before: false,
-                            },
-                        ..
-                    }) = ctx.blame.as_ref()
-                {
-                    let end = buffer
-                        .line(range.start.line as usize)
-                        .map_or(0, |line| line.chars().count() as u32);
-                    if let Some((x, y)) = tab.editor.screen_cell(
-                        editor_rect,
-                        buffer,
-                        &fold_lines,
-                        karet_core::LineCol::new(range.start.line, end),
-                    ) {
-                        let width = u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
-                        let visible = width.min(editor_rect.right().saturating_sub(x));
-                        if visible > 0 {
-                            blame_rect = Some(Rect::new(x, y, visible, 1));
-                        }
-                    }
+                // The cells the widget actually painted the label in: after any
+                // trailing inlay hint or fold marker, not at the end-of-line
+                // caret, and only what a short slot left of it.
+                if ctx.blame_clickable {
+                    blame_rect = blame_index.and_then(|index| tab.editor.virtual_text_rect(index));
                 }
+                inlay_hits = swatches::inlay_hits(&inlay_parts, *doc, &tab.editor);
                 if let Some(preview) = tab.markdown_preview.as_mut()
                     && markdown_preview_rect.width > 0
                 {
-                    markdown_link_hits = draw_markdown_preview(
+                    let (links, region) = draw_markdown_preview(
                         f,
                         theme,
                         markdown_preview_rect,
@@ -241,12 +280,15 @@ pub(super) fn draw_pane_content(
                             hover: ctx.markdown_link_hover,
                             source: path,
                             root: ctx.root,
-                            source_scroll: Some(tab.editor.scroll_line as usize),
-                            mermaid: ctx.mermaid,
+                            source_scroll: Some(tab.editor.scroll_line() as usize),
+                            env: ctx.preview,
+                            selection: ctx.selection,
                         },
                         hits,
                         ScrollSurface::EditorPreview,
                     );
+                    markdown_link_hits = links;
+                    select_regions = vec![region];
                 }
             }
         },
@@ -258,7 +300,7 @@ pub(super) fn draw_pane_content(
             scroll,
             ..
         } => {
-            markdown_link_hits = draw_markdown_preview(
+            let (links, region) = draw_markdown_preview(
                 f,
                 theme,
                 area,
@@ -271,11 +313,14 @@ pub(super) fn draw_pane_content(
                     source: path,
                     root: ctx.root,
                     source_scroll: None,
-                    mermaid: ctx.mermaid,
+                    env: ctx.preview,
+                    selection: ctx.selection,
                 },
                 hits,
                 ScrollSurface::TabRows,
             );
+            markdown_link_hits = links;
+            select_regions = vec![region];
         },
         TabKind::Diff {
             file,
@@ -285,16 +330,18 @@ pub(super) fn draw_pane_content(
             pager,
             ..
         } => match (file, &*error) {
-            (Some(file), _) => draw_diff(
-                f,
-                theme,
-                area,
-                file,
-                *view,
-                &mut pager.scroll,
-                &mut pager.column,
-                hits,
-            ),
+            (Some(file), _) => {
+                select_regions = diff::draw_diff(
+                    f,
+                    ctx,
+                    area,
+                    file,
+                    *view,
+                    &mut pager.scroll,
+                    &mut pager.column,
+                    hits,
+                );
+            },
             (None, Some(error)) => f.render_widget(
                 Paragraph::new(error.as_str()).style(theme.style(ThemeRole::DiagnosticError)),
                 area,
@@ -320,6 +367,39 @@ pub(super) fn draw_pane_content(
                 ScrollSurface::TabRows,
                 ScrollSurface::TabColumns,
             );
+        },
+        TabKind::ServerLog {
+            entries,
+            loading_since,
+            pager,
+            ..
+        } => {
+            if entries.is_empty() {
+                // Blank until the reveal delay, so a fast read never flashes.
+                let placeholder = match loading_since {
+                    Some(since) if since.visible() => "Loading log…",
+                    Some(_) => "",
+                    None => "Nothing logged yet.",
+                };
+                f.render_widget(
+                    Paragraph::new(placeholder).style(theme.style(ThemeRole::Muted)),
+                    area,
+                );
+            } else {
+                let lines = server_log::lines(theme, entries);
+                hits.record_both(
+                    draw_scrollable_lines(
+                        f,
+                        theme,
+                        area,
+                        lines,
+                        &mut pager.scroll,
+                        &mut pager.column,
+                    ),
+                    ScrollSurface::TabRows,
+                    ScrollSurface::TabColumns,
+                );
+            }
         },
         TabKind::Graph { title, view, pager } => draw_graph(
             f,
@@ -348,10 +428,31 @@ pub(super) fn draw_pane_content(
             explain_since,
             view,
         } => {
-            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view, hits);
+            let painted = draw_commit(
+                f,
+                theme,
+                area,
+                detail,
+                files,
+                *explain_since,
+                view,
+                ctx.icon_style,
+                hits,
+            );
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
+            dir_hits = painted.dir_hits;
+            rail_rect = painted.rail_rect;
             collapse_hits = painted.collapse_hits;
+            select_regions = painted.select_regions;
+            select::commit_cards(
+                f,
+                theme,
+                ctx.selection,
+                &select_regions,
+                &files.files,
+                &view.toggled_files,
+            );
         },
         TabKind::CommitLoading {
             rev,
@@ -385,46 +486,63 @@ pub(super) fn draw_pane_content(
                 *merge_base,
                 files,
                 view,
+                ctx.icon_style,
                 hits,
             );
             file_hits = painted.file_hits;
+            dir_hits = painted.dir_hits;
+            rail_rect = painted.rail_rect;
             collapse_hits = painted.collapse_hits;
+            select_regions = painted.select_regions;
+            select::commit_cards(
+                f,
+                theme,
+                ctx.selection,
+                &select_regions,
+                &files.files,
+                &view.toggled_files,
+            );
         },
         TabKind::CommitGraph {
-            history_path: _,
+            history_path,
             commits,
+            rails,
             has_more,
             loading,
             loading_since,
             selected,
-            detail_loading_since,
-            detail,
-            files,
             compare_base: _,
             list_offset,
-            detail_column,
+            column,
+            list_rect,
         } => draw_commit_graph(
             f,
             theme,
             area,
-            commits,
-            ctx.ref_labels,
-            *has_more,
-            *loading,
-            *loading_since,
-            *selected,
-            *detail_loading_since,
-            detail.as_deref(),
-            files,
+            &CommitGraphInput {
+                history_path: history_path.as_deref(),
+                commits,
+                rails,
+                labels: ctx.ref_labels,
+                repo_state: ctx.repo_state,
+                has_more: *has_more,
+                loading: *loading,
+                loading_since: *loading_since,
+                selected: *selected,
+            },
+            CommitGraphScroll {
+                list_offset,
+                column,
+                list_rect,
+            },
             hits,
-            list_offset,
-            detail_column,
         ),
         TabKind::Hex { bytes, scroll, .. } => {
-            let rows = bytes.len().div_ceil(16);
+            let rows = karet_fileview::hex::row_count(bytes);
             *scroll = (*scroll).min(rows.saturating_sub(1));
             let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);
+            select_regions = select::hex(f, theme, ctx.selection, dump, bytes, *scroll);
             hits.record(
                 tracks.paint(
                     f.buffer_mut(),
@@ -572,9 +690,13 @@ pub(super) fn draw_pane_content(
         image_area,
         badge_rect,
         file_hits,
+        dir_hits,
+        rail_rect,
         collapse_hits,
         blame_rect,
+        inlay_hits,
         markdown_link_hits,
+        select_regions,
     }
 }
 
@@ -643,11 +765,9 @@ fn draw_merge_conflict(
         columns[3],
     );
 
-    conflict.current_editor.scroll_line = merged_editor.scroll_line;
-    conflict.current_editor.scroll_col = merged_editor.scroll_col;
-    conflict.incoming_editor.scroll_line = merged_editor.scroll_line;
-    conflict.incoming_editor.scroll_col = merged_editor.scroll_col;
-    draw_conflict_side(
+    conflict.current_editor.mirror_scroll(merged_editor);
+    conflict.incoming_editor.mirror_scroll(merged_editor);
+    conflict_side::draw_conflict_side(
         f,
         theme,
         columns[0],
@@ -659,7 +779,7 @@ fn draw_merge_conflict(
         ctx,
         hits,
     );
-    draw_conflict_side(
+    conflict_side::draw_conflict_side(
         f,
         theme,
         columns[4],
@@ -671,30 +791,36 @@ fn draw_merge_conflict(
         ctx,
         hits,
     );
+    let (decorations, messages) = swatches::merged_pane_diagnostics(
+        ctx.display.inline_diagnostics(),
+        decorations,
+        diagnostics,
+        merged_editor.cursors(),
+    );
     let editor = Editor::new(merged)
         .highlights(highlights)
         .semantic_blocks(semantic_blocks)
         .theme(theme)
-        .decorations(decorations)
+        .decorations(&decorations)
         .diagnostics(diagnostics)
+        .virtual_text(&messages)
         .folds(folds)
         .focused(ctx.editor_focused)
         .cell_caret(!ctx.graphical_cursor)
         .word_wrap(word_wrap)
-        .tab_width(ctx.tab_width)
-        .sticky_scroll(ctx.sticky_scroll);
+        .tab_width(ctx.tab_width);
     // The three panes are already narrow and share one horizontal offset, so this
     // view reserves vertical tracks only. The merged rect is returned shrunk: it is
     // the caller's `editor_rect`, and so also its click-to-caret mapping.
     let (merged_rect, tracks) = reserve_tracks(columns[2], ScrollAxes::VERTICAL);
-    f.render_stateful_widget(editor, merged_rect, merged_editor);
+    f.render_stateful_widget(ctx.display.apply(editor), merged_rect, merged_editor);
     hits.record(
         tracks.paint(
             f.buffer_mut(),
             ScrollbarStyles::from_theme(theme),
             ScrollExtent::new(
                 merged.line_count(),
-                merged_editor.scroll_line as usize,
+                merged_editor.scroll_line() as usize,
                 merged_editor.visible_lines() as usize,
             ),
             ScrollExtent::default(),
@@ -702,137 +828,4 @@ fn draw_merge_conflict(
         ScrollSurface::TabRows,
     );
     merged_rect
-}
-
-#[allow(clippy::too_many_arguments)] // presentation state and delayed-load state are independent
-fn draw_conflict_side(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    buffer: Option<&TextBuffer>,
-    editor: &mut EditorState,
-    loading_since: Pending,
-    error: Option<&str>,
-    word_wrap: bool,
-    ctx: &PaneCtx,
-    hits: &mut ScrollHits,
-) {
-    if let Some(buffer) = buffer {
-        let (text_rect, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
-        f.render_stateful_widget(
-            Editor::new(buffer)
-                .theme(theme)
-                .focused(false)
-                .read_only(true)
-                .word_wrap(word_wrap)
-                .tab_width(ctx.tab_width),
-            text_rect,
-            editor,
-        );
-        // The side panes copy the merged editor's offset every frame, so their bars
-        // grab the same thing the middle one does.
-        hits.record(
-            tracks.paint(
-                f.buffer_mut(),
-                ScrollbarStyles::from_theme(theme),
-                ScrollExtent::new(
-                    buffer.line_count(),
-                    editor.scroll_line as usize,
-                    editor.visible_lines() as usize,
-                ),
-                ScrollExtent::default(),
-            ),
-            ScrollSurface::TabRows,
-        );
-    } else if let Some(error) = error {
-        f.render_widget(
-            Paragraph::new(error).style(theme.style(ThemeRole::DiagnosticError)),
-            area,
-        );
-    } else if loading_since.visible() {
-        f.render_widget(
-            Paragraph::new("Loading conflict side…").style(theme.style(ThemeRole::Muted)),
-            area,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)] // diff model, layout mode, scroll offsets and the track sink are independent
-pub(super) fn draw_diff(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    file: &render::FileView,
-    view: ViewMode,
-    scroll: &mut u16,
-    column: &mut u16,
-    hits: &mut ScrollHits,
-) {
-    match view {
-        ViewMode::Unified => {
-            let mut lines = render::unified_lines(file, theme);
-            render::pad_diff_lines(&mut lines, area.width);
-            hits.record_both(
-                draw_scrollable_lines(f, theme, area, lines, scroll, column),
-                ScrollSurface::TabRows,
-                ScrollSurface::TabColumns,
-            );
-        },
-        ViewMode::SideBySide => {
-            // The panes scroll together, so the view carries one vertical track for
-            // the pair — but each pane has its own content width, so the horizontal
-            // track is split to match the panes above it.
-            let (body, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
-            let (mut left, mut right) = render::side_by_side_lines(file, theme);
-            let height = left.len().max(right.len());
-            let max = u16::try_from(height)
-                .unwrap_or(u16::MAX)
-                .saturating_sub(body.height);
-            *scroll = (*scroll).min(max);
-            let constraints = [
-                Constraint::Percentage(50),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ];
-            let panes = Layout::horizontal(constraints).split(body);
-            let left_width = left.iter().map(line_width).max().unwrap_or_default();
-            let right_width = right.iter().map(line_width).max().unwrap_or_default();
-            let content_width = left_width.max(right_width);
-            let pane_width = panes[0].width.min(panes[2].width);
-            let max_column = content_width.saturating_sub(usize::from(pane_width));
-            *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-            render::pad_diff_lines(&mut left, panes[0].width);
-            render::pad_diff_lines(&mut right, panes[2].width);
-            f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
-            f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
-            f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);
-            let styles = ScrollbarStyles::from_theme(theme);
-            if let Some(track) = tracks.vertical {
-                let extent = ScrollExtent::new(height, usize::from(*scroll), body.height.into());
-                f.render_widget(ScrollBar::vertical(extent, styles), track);
-                hits.record_track(
-                    Some(ScrollTrack::new(track, ScrollAxis::Vertical, extent)),
-                    ScrollSurface::TabRows,
-                );
-            }
-            if let Some(track) = tracks.horizontal {
-                let halves = Layout::horizontal(constraints).split(track);
-                let offset = usize::from(*column);
-                for (half, width, pane) in [
-                    (halves[0], left_width, panes[0]),
-                    (halves[2], right_width, panes[2]),
-                ] {
-                    let extent = ScrollExtent::new(width, offset, pane.width.into());
-                    f.render_widget(ScrollBar::horizontal(extent, styles), half);
-                    // Both halves drive the one shared column offset, each at its own
-                    // pane's scale — so a drag on either is measured against the text
-                    // actually under it.
-                    hits.record_track(
-                        Some(ScrollTrack::new(half, ScrollAxis::Horizontal, extent)),
-                        ScrollSurface::TabColumns,
-                    );
-                }
-            }
-        },
-    }
 }

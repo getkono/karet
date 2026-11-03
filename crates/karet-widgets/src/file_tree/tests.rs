@@ -311,13 +311,13 @@ fn inline_edit_cursor_keys_match_a_text_field() {
     build_from_disk(&mut state, &dir.path);
     state.begin_new(false);
     state.edit_paste("abcd");
-    state.edit_left();
-    state.edit_left();
+    state.edit_left(false);
+    state.edit_left(false);
     state.edit_delete();
     state.edit_push('X');
-    state.edit_home();
+    state.edit_home(false);
     state.edit_push('^');
-    state.edit_end();
+    state.edit_end(false);
     state.edit_push('$');
     build_from_disk(&mut state, &dir.path);
     assert!(
@@ -562,6 +562,38 @@ fn select_visible_maps_viewport_rows_via_offset() {
 }
 
 #[test]
+fn extend_visible_maps_viewport_rows_via_offset() {
+    let dir = temp_dir();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&dir.path, name, b"x");
+    }
+    let mut state = FileTreeState::new();
+    build_from_disk(&mut state, &dir.path);
+    state.select_index(1);
+    state.offset = 1;
+    state.extend_visible(2); // viewport row 2 is absolute row 3
+    let paths = ["b.txt", "c.txt", "d.txt"].map(|name| dir.path.join(name));
+    assert_eq!(state.selected_paths(), paths);
+    assert_eq!(state.selected_path(), Some(paths[2].as_path()));
+}
+
+#[test]
+fn hiding_dotfiles_drops_them_from_the_listing() {
+    let dir = temp_dir();
+    write(&dir.path, ".env", b"x");
+    write(&dir.path, "a.txt", b"a");
+    let listed = |show| -> Vec<_> {
+        let entries = read_dir_sorted(&dir.path, show, true);
+        entries
+            .iter()
+            .map(|entry| entry.label().to_owned())
+            .collect()
+    };
+    assert_eq!(listed(true), [".env", "a.txt"]);
+    assert_eq!(listed(false), ["a.txt"]);
+}
+
+#[test]
 fn active_file_row_is_bold() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");
@@ -749,14 +781,14 @@ fn render_draws_status_glyph() {
     let theme = Theme::dark();
     let status = vec![(
         dir.path.join("a.txt"),
-        Decoration {
-            range: Range {
+        Decoration::new(
+            Range {
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, 0),
             },
-            kind: DecorationKind::GutterMarker { glyph: 'M' },
-            role: Some(ThemeRole::DiffModified),
-        },
+            DecorationKind::GutterMarker { glyph: 'M' },
+            Some(ThemeRole::DiffModified),
+        ),
     )];
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
@@ -833,5 +865,79 @@ fn file_icons_are_tinted_by_category() {
     assert_eq!(
         buf.content()[2].fg,
         theme.role(ThemeRole::FileIconText).to_ratatui()
+    );
+}
+
+#[test]
+fn inline_edit_motions_extend_a_selection_and_the_clipboard_reaches_it() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    state.begin_new(false);
+    state.edit_paste("readme.md");
+
+    // Shift with a motion extends back from the caret at the end.
+    state.edit_left(true);
+    state.edit_left(true);
+    state.edit_left(true);
+    assert_eq!(state.edit_selected_text(), Some(".md"));
+
+    // Cutting takes exactly that run away.
+    assert_eq!(state.edit_cut().as_deref(), Some(".md"));
+    assert_eq!(state.edit_selected_text(), None);
+    state.ensure_built(&dir.path);
+    assert!(
+        state
+            .rows()
+            .iter()
+            .any(|r| r.editing && r.label == "readme")
+    );
+
+    // Select-all then cut empties the field.
+    state.edit_select_all();
+    assert_eq!(state.edit_cut().as_deref(), Some("readme"));
+}
+
+#[test]
+fn a_click_in_the_inline_edit_places_the_caret_at_that_cell() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    state.begin_new(false);
+    state.edit_paste("alphabet");
+
+    // Anchor at cell 5, then extend to cell 8.
+    state.edit_place_cursor(5, false);
+    state.edit_place_cursor(8, true);
+    assert_eq!(state.edit_selected_text(), Some("bet"));
+}
+
+#[test]
+fn the_renderer_records_where_the_inline_edit_field_landed() {
+    let dir = temp_dir();
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    assert_eq!(state.edit_rect(), None, "nothing is being edited yet");
+
+    state.begin_new(false);
+    state.edit_paste("name");
+    let area = Rect::new(3, 0, 40, 10);
+    let mut buf = Buffer::empty(area);
+    FileTree::new(&dir.path).render(area, &mut buf, &mut state);
+
+    let rect = state.edit_rect();
+    assert!(rect.is_some(), "the editing row reports its field");
+    let Some(rect) = rect else { return };
+    assert!(
+        rect.x > area.x,
+        "the field starts after the row's indent, chevron and icon"
+    );
+    assert_eq!(rect.height, 1);
+    assert!(rect.right() <= area.right());
+    // The recorded rect is where the name actually is: the cell at its left edge
+    // holds the first character of the buffer.
+    assert_eq!(
+        buf.cell((rect.x, rect.y)).map(|cell| cell.symbol()),
+        Some("n")
     );
 }

@@ -11,22 +11,23 @@
 
 mod client;
 mod connection;
+mod control;
 mod spec;
 mod transport;
 
 pub use client::CellOutcome;
 pub use client::KernelClient;
+pub use connection::Connection;
 pub use connection::local_connection;
 pub use connection::substitute_argv;
 pub use connection::write_connection_file;
-pub use jupyter_protocol::ConnectionInfo;
+pub use control::KernelControl;
 pub use spec::KernelSpec;
 pub use spec::default_dirs;
 pub use spec::discover;
 pub use spec::discover_in;
 pub use spec::find;
-pub use transport::KernelChannel;
-pub use transport::KernelControl;
+pub(crate) use transport::KernelChannel;
 pub use transport::KernelTransport;
 pub use transport::ZmqTransport;
 

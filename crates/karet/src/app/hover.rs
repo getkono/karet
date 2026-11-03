@@ -1,10 +1,13 @@
 //! Hover request/response handling on the [`App`] (model in [`crate::hover`]).
 
 use karet_core::Hover;
-use karet_session::Command as SessionCommand;
+use karet_core::NotificationKind;
+use karet_session::LspCommand;
 use karet_session::RequestId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
 use crate::hover::HoverUi;
 use crate::hover::PendingHover;
 
@@ -13,7 +16,11 @@ impl App {
     /// composed with the diagnostics under the caret when it arrives.
     pub(super) fn request_hover(&mut self) {
         if !self.settings.editor.hover.enabled {
-            self.status = Some("hover is disabled (editor.hover.enabled)".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "hover is disabled (editor.hover.enabled)",
+            );
             return;
         }
         let Some((doc, at)) = self.completion_target() else {
@@ -24,10 +31,15 @@ impl App {
         };
         let id = backend.next_id();
         if backend
-            .send(id, SessionCommand::Hover { doc, position: at })
+            .send(id, LspCommand::Hover { doc, position: at }.into())
             .is_ok()
         {
-            self.pending_hover = Some(PendingHover { id, doc, at });
+            self.pending_hover = Some(PendingHover {
+                id,
+                doc,
+                at,
+                refused: false,
+            });
         }
     }
 
@@ -49,16 +61,24 @@ impl App {
         let diagnostics = self.docs.diagnostics.get(&pending.doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, pending.at);
         let hint = self.manifest_hint_markdown(pending.doc, pending.at.line);
-        let pretty = self.settings.editor.pretty_errors;
-        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref(), pretty) {
+        let render = (self.settings.editor.pretty_errors, self.root.as_path());
+        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref(), render) {
             Some(markup) => {
                 self.hover_ui = Some(HoverUi {
                     markup,
                     doc: pending.doc,
                     at: pending.at,
+                    scroll: 0,
+                    rect: Rect::default(),
                 });
             },
-            None => self.status = Some("no hover information".to_owned()),
+            // Already explained: the server does not offer hover at all.
+            None if pending.refused => {},
+            None => self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "no hover information",
+            ),
         }
     }
 
@@ -97,12 +117,16 @@ impl App {
         let diagnostics = self.docs.diagnostics.get(&doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, at);
         if at_caret.is_empty() {
-            self.status = Some("no diagnostic under the caret".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "no diagnostic under the caret",
+            );
             return;
         }
-        let pretty = self.settings.editor.pretty_errors;
+        let render = (self.settings.editor.pretty_errors, self.root.as_path());
         self.diagnostic_view = Some(crate::hover::DiagnosticView {
-            markdown: crate::hover::diagnostic_document(&at_caret, pretty),
+            markdown: crate::hover::diagnostic_document(&at_caret, render),
             ..Default::default()
         });
     }

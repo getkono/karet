@@ -34,10 +34,10 @@ fn move_active_tab_reorders_and_clamps() {
 fn wrap_mode_uses_file_defaults_and_global_overrides() {
     let markdown = text_tab("notes.md", "a long prose line");
     let rust = text_tab("main.rs", "fn main() {}");
-    assert!(effective_word_wrap(&markdown, None));
-    assert!(!effective_word_wrap(&rust, None));
-    assert!(!effective_word_wrap(&markdown, Some(false)));
-    assert!(effective_word_wrap(&rust, Some(true)));
+    assert!(markdown.word_wrap(None));
+    assert!(!rust.word_wrap(None));
+    assert!(!markdown.word_wrap(Some(false)));
+    assert!(rust.word_wrap(Some(true)));
 }
 
 #[test]
@@ -55,19 +55,19 @@ fn word_wrap_resolves_against_the_tab_language() {
     let rust = text_tab("main.rs", "fn main() {}");
     let resolved = settings
         .editor
-        .for_language(tab_language(&rust))
+        .for_language(rust.config_file_type())
         .word_wrap();
-    assert!(effective_word_wrap(&rust, resolved));
+    assert!(rust.word_wrap(resolved));
 
     let mut python = text_tab("main.py", "print('hi')");
-    if let TabKind::Code { language, .. } = &mut python.kind {
-        *language = "Python";
+    if let TabKind::Code { file_type, .. } = &mut python.kind {
+        *file_type = language_type("Python");
     }
     let resolved = settings
         .editor
-        .for_language(tab_language(&python))
+        .for_language(python.config_file_type())
         .word_wrap();
-    assert!(!effective_word_wrap(&python, resolved));
+    assert!(!python.word_wrap(resolved));
 }
 
 #[test]
@@ -79,8 +79,8 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
         "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nsecond\nthird\nfourth",
     ));
     let _ = screen(&mut app, 24, 8);
-    let column = app.editor_rect.x.saturating_add(5);
-    let row = app.editor_rect.y;
+    let column = app.last_frame.editor_rect().x.saturating_add(5);
+    let row = app.last_frame.editor_rect().y;
     let mouse = |kind, modifiers| MouseEvent {
         kind,
         column,
@@ -89,18 +89,18 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
     };
 
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 3);
     app.handle_mouse(mouse(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 0);
     app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::SHIFT));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 3);
     app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 3);
 
     app.tabs[app.active] = text_tab("notes.md", "prose that is much wider than the pane");
     let _ = screen(&mut app, 24, 8);
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 0);
 
     app.tabs[app.active] = Tab::stash_preview(
         "stash@{0}",
@@ -152,10 +152,7 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
     assert!(matches!(
         app.tabs[app.active].kind,
-        TabKind::CommitGraph {
-            detail_column: 3,
-            ..
-        }
+        TabKind::CommitGraph { column: 3, .. }
     ));
 }
 
@@ -163,11 +160,11 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
 fn markdown_app(text: &str) -> App {
     let mut app = app();
     let mut tab = text_tab("notes.md", text);
-    if let TabKind::Code { language, .. } = &mut tab.kind {
-        *language = "Markdown";
+    if let TabKind::Code { file_type, .. } = &mut tab.kind {
+        *file_type = language_type("Markdown");
     }
     app.push_tab(tab);
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     app
 }
 
@@ -182,7 +179,7 @@ fn markdown_preview_is_view_local_editor_state() {
     assert_eq!(app.tabs.len(), 1, "no preview tab was created");
     assert_eq!(app.tabs[app.active].view, source_view);
     assert!(app.tabs[app.active].markdown_preview.is_some());
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
 }
 
@@ -190,12 +187,15 @@ fn markdown_preview_is_view_local_editor_state() {
 fn markdown_preview_is_a_no_op_on_a_non_markdown_tab() {
     let mut app = app();
     app.push_tab(text_tab("main.rs", "fn main() {}"));
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
 
     app.dispatch(Command::MarkdownPreviewSide);
 
     assert!(app.tabs[app.active].markdown_preview.is_none());
-    assert!(app.status.is_some(), "the refusal is surfaced, not silent");
+    assert!(
+        last_message(&app).is_some(),
+        "the refusal is surfaced, not silent"
+    );
 }
 
 #[test]
@@ -249,10 +249,10 @@ fn preview_scroll(app: &App) -> u16 {
 #[test]
 fn source_scroll_aligns_the_in_editor_preview_on_draw() {
     let mut app = rendered_preview_app();
-    app.tabs[app.active].editor.scroll_line = 4;
+    app.tabs[app.active].editor.scroll_to_line(4);
     let _ = screen(&mut app, 100, 12);
     assert_eq!(preview_scroll(&app), 4);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 4);
 }
 
 #[test]
@@ -260,25 +260,25 @@ fn scrolling_the_in_editor_preview_moves_the_source_to_its_anchor() {
     let mut app = rendered_preview_app();
     app.scroll_markdown_preview(4);
     assert_eq!(preview_scroll(&app), 4);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 4);
 }
 
 #[test]
 fn preview_geometry_and_wheel_are_routed_inside_the_editor_view() {
     let mut app = rendered_preview_app();
-    assert!(app.editor_rect.width > 0);
-    assert!(app.markdown_preview_rect.width > 0);
-    assert!(app.editor_rect.right() < app.markdown_preview_rect.x);
+    assert!(app.last_frame.editor_rect().width > 0);
+    assert!(app.last_frame.markdown_preview_rect().width > 0);
+    assert!(app.last_frame.editor_rect().right() < app.last_frame.markdown_preview_rect().x);
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
-        column: app.markdown_preview_rect.x,
-        row: app.markdown_preview_rect.y,
+        column: app.last_frame.markdown_preview_rect().x,
+        row: app.last_frame.markdown_preview_rect().y,
         modifiers: KeyModifiers::NONE,
     });
 
     assert_eq!(preview_scroll(&app), 3);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 3);
 }
 
 #[test]
@@ -317,12 +317,15 @@ fn docx_preview_tab(md: &str, scroll: u16) -> Tab {
 fn preview_side_is_a_no_op_on_a_focused_docx_preview() {
     let mut app = app();
     app.push_tab(docx_preview_tab("# doc", 0));
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
 
     app.dispatch(Command::MarkdownPreviewSide);
 
     assert_eq!(app.layout.pane_count(), 1, "no pane was opened");
-    assert!(app.status.is_some(), "the refusal is surfaced, not silent");
+    assert!(
+        last_message(&app).is_some(),
+        "the refusal is surfaced, not silent"
+    );
 }
 
 /// The unified close guard (#51) protects dirty *documents*; a docx preview has
@@ -352,7 +355,7 @@ fn closing_a_docx_preview_never_arms_the_close_guard() {
 #[cfg(feature = "docx")]
 #[test]
 fn a_snapshot_never_touches_a_docx_preview() {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     let mut app = app();
     app.push_tab(docx_preview_tab("# original", 0));
@@ -365,10 +368,10 @@ fn a_snapshot_never_touches_a_docx_preview() {
             version,
             buffer,
             highlights: Arc::new(Highlights::default()),
-            semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+            semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
             folds: Arc::new(FoldRegions::default()),
-            decorations: Arc::new(Vec::new()),
             syntax_error_lines: Arc::new(Vec::new()),
+            table_lines: Arc::default(),
             language: Some("Markdown"),
             dirty: true,
             cursor: None,
@@ -418,7 +421,11 @@ fn closing_a_converting_docx_preview_cancels_the_conversion() {
     app.open_path(&file);
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::Convert { .. })
+            )
+            .then_some(*request)
         })
     });
     assert!(request.is_some(), "the conversion request was sent");
@@ -445,6 +452,7 @@ fn closing_a_converting_docx_preview_cancels_the_conversion() {
     );
 }
 
+#[cfg(feature = "docx")]
 #[test]
 fn reopening_the_same_docx_focuses_the_existing_tab() {
     let dir = test_dir("docx-dedup");
@@ -466,7 +474,11 @@ fn reopening_the_same_docx_focuses_the_existing_tab() {
     // fills and its outline reflects the converted markdown.
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::ConvertDocument { .. }).then_some(*request)
+            matches!(
+                command,
+                SessionCommand::Document(DocumentCommand::Convert { .. })
+            )
+            .then_some(*request)
         })
     });
     assert!(request.is_some(), "the conversion request was sent");
@@ -612,8 +624,8 @@ fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
     assert!(edited.version() > 0, "the edit must move the version");
 
     if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
-        *buffer = edited.content_snapshot();
-        *text = edited.text();
+        *buffer = edited.content_snapshot().into();
+        *text = edited.text_snapshot();
     }
 
     let after = screen(&mut app, 100, 12).join("\n");
@@ -621,4 +633,105 @@ fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
         after.contains("after") && !after.contains("before"),
         "the preview must re-render once the document version moves:\n{after}"
     );
+}
+
+/// The labels of the active tab's outline rows.
+fn outline_labels(app: &App) -> Vec<String> {
+    app.active_outline_rows()
+        .into_iter()
+        .map(|row| row.label)
+        .collect()
+}
+
+/// Asking for a Markdown outline again, as every frame does, reuses the rows
+/// built the first time instead of parsing the document again.
+#[test]
+fn markdown_outline_is_reused_while_the_text_is_unchanged() {
+    let app = markdown_app("# Title\n\n## Part\n");
+    assert_eq!(outline_labels(&app), ["Title", "Part"]);
+    assert_eq!(outline_labels(&app), ["Title", "Part"]);
+    let _ = app.active_outline_rows();
+    assert_eq!(app.outline.markdown.builds(), 1, "parsed once, then reused");
+}
+
+/// An edit moves the buffer version, so the next ask parses the new text.
+#[test]
+fn markdown_outline_refreshes_after_an_edit() {
+    let mut app = markdown_app("# before\n");
+    assert_eq!(outline_labels(&app), ["before"]);
+
+    let mut edited = karet_text::TextBuffer::from_text("# before\n");
+    let change = karet_core::Change::new(
+        edited.version(),
+        vec![karet_core::TextEdit {
+            range: Range {
+                start: LineCol::new(0, 2),
+                end: LineCol::new(0, 8),
+            },
+            new_text: "after".to_string(),
+        }],
+    );
+    edited.apply_simple(&change).expect("apply the edit");
+    if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
+        *buffer = edited.content_snapshot().into();
+        *text = edited.text_snapshot();
+    }
+
+    assert_eq!(outline_labels(&app), ["after"]);
+    assert_eq!(outline_labels(&app), ["after"]);
+    assert_eq!(app.outline.markdown.builds(), 2, "one parse per text");
+}
+
+/// A version can repeat over different text — a reserved tab's placeholder and
+/// the loaded file share one — so text replaced at the same version is parsed
+/// again rather than served from the stale entry.
+#[test]
+fn markdown_outline_refreshes_when_text_changes_at_the_same_version() {
+    let mut app = markdown_app("");
+    assert!(outline_labels(&app).is_empty());
+
+    if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
+        let loaded = karet_text::TextBuffer::from_text("# Loaded\n");
+        assert_eq!(loaded.version(), buffer.version());
+        *text = loaded.text_snapshot();
+        *buffer = loaded.into();
+    }
+
+    assert_eq!(outline_labels(&app), ["Loaded"]);
+}
+
+/// Switching tabs keys the cache on the newly active view, so each tab shows its
+/// own headings even where both buffers sit at the same version.
+#[test]
+fn markdown_outline_follows_the_active_tab() {
+    let mut app = markdown_app("# First\n");
+    let mut second = text_tab("other.md", "# Second\n");
+    if let TabKind::Code { file_type, .. } = &mut second.kind {
+        *file_type = language_type("Markdown");
+    }
+    app.push_tab(second);
+    assert_eq!(outline_labels(&app), ["Second"]);
+    app.prev_tab();
+    assert_eq!(outline_labels(&app), ["First"]);
+}
+
+/// A standalone rendered preview reads its outline through the same cache, and
+/// a regenerated preview (a kernel re-render restarts the buffer at version 0)
+/// shows the new headings.
+#[test]
+fn markdown_preview_outline_is_cached_and_refreshed() {
+    let mut app = app();
+    app.push_tab(Tab::document_preview(
+        PathBuf::from("run.ipynb"),
+        "# Out 1\n",
+    ));
+    assert_eq!(outline_labels(&app), ["Out 1"]);
+    assert_eq!(outline_labels(&app), ["Out 1"]);
+    assert_eq!(app.outline.markdown.builds(), 1);
+
+    if let TabKind::MarkdownPreview { buffer, .. } = &mut app.tabs[app.active].kind {
+        *buffer = karet_text::TextBuffer::from_text("# Out 2\n");
+    }
+    assert_eq!(outline_labels(&app), ["Out 2"]);
+    assert_eq!(app.outline.markdown.builds(), 2);
 }

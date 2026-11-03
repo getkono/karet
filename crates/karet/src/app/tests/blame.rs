@@ -8,7 +8,7 @@ fn blame_without_a_code_tab_reports_status() {
     app.dispatch(Command::ToggleInlineBlame);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
     assert!(app.settings.git.blame);
-    assert_eq!(app.status.as_deref(), Some("inline blame: on"));
+    assert_eq!(last_message(&app).as_deref(), Some("inline blame: on"));
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn live_blame_coalesces_motion_and_resolves_the_latest_cursor_line() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "zero\none\ntwo\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.settings.git.blame = true;
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(9));
@@ -73,14 +73,14 @@ fn mouse_cursor_motion_requests_inline_blame_without_typing() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "zero\none\ntwo\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.settings.git.blame = true;
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(9));
     }
     let area = Rect::new(0, 0, 40, 4);
-    app.editor_rect = area;
-    app.pane_frames = vec![content_frame(&app, area)];
+    app.last_frame.panes = vec![content_frame(&app, area)];
+    app.last_frame.focused_pane = Some(app.focus_pane());
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -108,15 +108,16 @@ fn committed_blame_is_compact_muted_text_and_opens_commit_detail() {
             author_time: i64::MAX,
         })),
     });
-    let decoration = app.live_blame.as_ref().and_then(LiveBlame::decoration);
-    assert!(decoration.is_some());
-    let Some(decoration) = decoration else { return };
-    assert_eq!(decoration.role, Some(ThemeRole::Muted));
-    assert!(matches!(
-        decoration.kind,
-        DecorationKind::InlineText { ref text, before: false }
-            if text == "  Ada just now"
-    ));
+    let text = app.live_blame.as_ref().and_then(LiveBlame::virtual_text);
+    assert_eq!(
+        text,
+        Some(karet_core::VirtualText::end_of_line(
+            4,
+            "  Ada just now",
+            ThemeRole::Muted,
+            LiveBlame::BLAME_EOL_PRIORITY,
+        ))
+    );
 
     app.dispatch(Command::OpenBlameDetail);
     assert!(matches!(
@@ -156,7 +157,7 @@ fn blame_requires_a_double_click_and_consumes_the_first_press() {
             author_time: 0,
         })),
     });
-    app.blame_rect = Some(Rect::new(20, 5, 12, 1));
+    app.focused_frame_mut().blame_rect = Some(Rect::new(20, 5, 12, 1));
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 22,
@@ -177,4 +178,64 @@ fn blame_requires_a_double_click_and_consumes_the_first_press() {
         &app.tabs[app.active].kind,
         TabKind::CommitLoading { rev, .. } if rev == "abc123"
     ));
+}
+
+#[test]
+fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
+    let mut app = app();
+    app.push_tab(text_tab("main.rs", "let a\n"));
+    app.keyboard.focus_editor();
+    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+        *doc = Some(DocumentId(7));
+    }
+    app.docs.inlay_hints.insert(
+        DocumentId(7),
+        vec![karet_core::InlayHint::new(
+            LineCol::new(0, 5),
+            ": i32",
+            karet_core::InlayHintKind::Type,
+        )],
+    );
+    app.live_blame = Some(LiveBlame {
+        doc: DocumentId(7),
+        version: 0,
+        line: 0,
+        attribution: Some(BlameAttribution::Commit(karet_core::BlameCommit {
+            hash: "abc123".to_string(),
+            author: "Ada".to_string(),
+            author_time: 0,
+        })),
+    });
+    let painted = frame(&mut app, 100, 12);
+    let Some(rect) = app.last_frame.blame_rect() else {
+        unreachable!("the label is on screen");
+    };
+    let label: String = (rect.x..rect.right())
+        .map(|x| painted[(x, rect.y)].symbol().to_owned())
+        .collect();
+    assert!(label.starts_with("  Ada"), "the region covers {label:?}");
+    // The hint ends right before it, outside the region, which used to start
+    // at the end-of-line caret cell -- on the hint's `:`.
+    assert_eq!(painted[(rect.x.saturating_sub(1), rect.y)].symbol(), "2");
+}
+
+#[test]
+fn a_single_click_on_the_blame_label_focuses_its_pane() {
+    let mut app = app();
+    app.keyboard.focus_sidebar();
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 10))];
+    app.focused_frame_mut().blame_rect = Some(Rect::new(20, 5, 12, 1));
+    let tabs = app.tabs.len();
+    assert!(app.handle_blame_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 22,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Editor,
+        "the click is not swallowed"
+    );
+    assert_eq!(app.tabs.len(), tabs, "and still does not activate");
 }

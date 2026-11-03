@@ -42,7 +42,9 @@ fn strip_cr(line: &str) -> (&str, bool) {
 /// Parse unified diff text into a [`Diff`].
 ///
 /// # Errors
-/// Returns [`DiffError::Parse`] if a hunk header or range is malformed.
+/// Returns [`DiffError::Parse`] if a `diff --git` header's `a/`/`b/` paths
+/// cannot be split, if a hunk header or range is malformed, or if a hunk's
+/// line numbers run past `u32::MAX`.
 pub fn parse(raw: &str) -> Result<Diff, DiffError> {
     let mut files = Vec::new();
     for block in split_blocks(raw) {
@@ -236,6 +238,18 @@ index aaa..bbb 100644
         assert_eq!(diff.files[1].new_mode, Some(0o120000));
         // The symlink target has no trailing newline.
         assert!(diff.files[1].hunks[0].lines[0].no_newline);
+        Ok(())
+    }
+
+    #[test]
+    fn typechange_pairs_are_relabelled_when_the_addition_comes_first() -> Result<(), DiffError> {
+        // The added side listed before the removed one: the old mode still comes
+        // from the removal and the new mode from the addition.
+        let raw = "diff --git a/t b/t\nnew file mode 100644\nindex 0000000..bbb\n--- /dev/null\n+++ b/t\n@@ -0,0 +1 @@\n+a\ndiff --git a/t b/t\ndeleted file mode 120000\nindex aaa..0000000\n--- a/t\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n";
+        let diff = parse(raw)?;
+        assert_eq!(diff.files.len(), 2);
+        assert_eq!(diff.files[0].status, FileStatus::TypeChanged);
+        assert_eq!(diff.files[1].status, FileStatus::TypeChanged);
         Ok(())
     }
 

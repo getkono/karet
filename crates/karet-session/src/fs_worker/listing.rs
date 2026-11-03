@@ -14,18 +14,9 @@ use karet_core::DirEntry;
 /// Returns the paths and whether the walk was cut short, so a client can say its
 /// list is partial rather than implying the workspace is that small.
 pub(super) fn workspace_files(root: &Path, limit: usize) -> (Vec<PathBuf>, bool) {
-    use std::ops::ControlFlow;
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    let mut truncated = false;
-    let _ = karet_search::walk_file_paths(root, &[], &[], |path| {
-        if files.len() >= limit {
-            truncated = true;
-            return ControlFlow::Break(());
-        }
-        files.push(path.to_path_buf());
-        ControlFlow::Continue(())
-    });
+    let mut walk = karet_search::walk_files(root);
+    let mut files: Vec<PathBuf> = walk.by_ref().take(limit).collect();
+    let truncated = walk.next().is_some();
     files.sort();
     (files, truncated)
 }

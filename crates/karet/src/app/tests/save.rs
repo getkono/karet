@@ -46,13 +46,18 @@ fn duplicate_save_command_is_debounced_while_in_flight() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Save { .. }))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::Save { .. })
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
     assert_eq!(sent_saves, 1, "only one save may be in flight per document");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("save already in progress"),
         "the second shortcut is ignored because the first save is still pending"
     );
@@ -105,7 +110,7 @@ fn focus_change_auto_save_only_fires_when_the_edited_document_loses_focus() {
         saved_docs(&backend).is_empty(),
         "the same editor keeps focus"
     );
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.auto_save_context_changed(Some(DocumentId(2)));
     assert_eq!(saved_docs(&backend), [DocumentId(2)]);
 }
@@ -120,7 +125,7 @@ fn a_late_dirty_snapshot_saves_when_its_document_already_lost_focus() {
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(2));
     }
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     app.schedule_auto_save(DocumentId(2), 1, Instant::now());
 
@@ -269,7 +274,7 @@ fn scm_log_pages_replace_then_append() {
 #[test]
 fn hover_maps_to_explorer_and_scm_rows() {
     let mut app = app();
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -277,10 +282,16 @@ fn hover_maps_to_explorer_and_scm_rows() {
     };
     // Explorer: hover at y=4 with offset 0 → absolute row 2.
     app.hover = Some((5, 4));
-    assert_eq!(app.hovered_explorer_row(), Some(2));
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        Some(2)
+    );
     // Above the content area → no hovered row.
     app.hover = Some((5, 1));
-    assert_eq!(app.hovered_explorer_row(), None);
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        None
+    );
 
     // Source control: display 0 is a section header, 1 and 2 are changes. Hover
     // maps against the changes region rect.
@@ -302,13 +313,13 @@ fn hover_maps_to_explorer_and_scm_rows() {
 fn sidebar_header_hover_tracks_header_only() {
     let mut app = app();
     app.sidebar_visible = true;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 20,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -337,8 +348,8 @@ fn sidebar_header_hover_tracks_header_only() {
 #[test]
 fn notify_makes_errors_persistent_and_info_transient() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Io, "save failed");
-    app.notify(Severity::Information, NotificationKind::Vcs, "committed");
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    app.notify(Report::Outcome, NotificationKind::Vcs, "committed");
     let active = app.notifications.active();
     assert_eq!(active.len(), 2);
     // Newest (info) is first; it auto-expires. The error persists.
@@ -349,7 +360,7 @@ fn notify_makes_errors_persistent_and_info_transient() {
 #[test]
 fn esc_dismisses_a_toast_before_normal_handling() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Io, "boom");
+    app.notify(Report::Failure, NotificationKind::Io, "boom");
     assert!(!app.notifications.is_empty());
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
     assert!(app.notifications.is_empty());
@@ -360,7 +371,7 @@ fn esc_dismisses_a_toast_before_normal_handling() {
 #[test]
 fn starts_explorer_focused_with_welcome_tab() {
     let app = app();
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
     assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
 }
@@ -371,7 +382,7 @@ fn focus_target_tracks_focus_and_panel() {
     assert_eq!(app.focus_target(), FocusTarget::Explorer);
     app.sidebar_panel = SidebarPanel::SourceControl;
     assert_eq!(app.focus_target(), FocusTarget::SourceControl);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     assert_eq!(app.focus_target(), FocusTarget::Editor);
 }
 
@@ -386,7 +397,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
     let _ = std::fs::write(&file, [0x81u8, 0x01]);
 
     let mut app = app();
-    let len = karet_fileview::viewer::SIZE_GUARD + 1;
+    let len = karet_filetype::SIZE_GUARD + 1;
     app.tabs = vec![Tab::new(
         "big.cbor",
         TabKind::Placeholder {
@@ -397,7 +408,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         },
     )];
     app.active = 0;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // A too-large placeholder gets the override layer, so Enter is bound.
     assert_eq!(app.focus_target(), FocusTarget::Oversize);
 
@@ -408,13 +419,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         "the placeholder is replaced, not appended"
     );
     assert!(
-        matches!(
-            app.tabs[0].kind,
-            TabKind::Code {
-                language: "CBOR",
-                ..
-            }
-        ),
+        matches!(app.tabs[0].kind, TabKind::Code { .. }) && app.tabs[0].status_label() == "CBOR",
         "open-anyway decodes the CBOR in place"
     );
 
@@ -423,4 +428,462 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
     assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_message_no_longer_takes_the_hint_bar_or_its_click_targets() {
+    // The defect this replaced: a message rendered into the hint region, which
+    // skipped the pass that records `status_hits` — so while one showed, the bar
+    // named no shortcuts and every shortcut on it stopped answering clicks.
+    let mut app = app();
+    let _ = frame(&mut app, 120, 8);
+    let hints_before = app.last_frame.status_hits.len();
+    assert!(hints_before > 0, "the bar starts with clickable hints");
+
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    let rows = screen(&mut app, 120, 8).join("\n");
+
+    assert_eq!(
+        app.last_frame.status_hits.len(),
+        hints_before,
+        "the hints and their click targets survive an active notification"
+    );
+    assert!(
+        rows.contains("save failed"),
+        "the message is on screen:\n{rows}"
+    );
+}
+
+#[test]
+fn a_failure_is_painted_in_the_error_role_rather_than_the_status_bar_style() {
+    // The other half of the defect: the status line drew every message in the
+    // bar's own style, so an error was exactly the colour of ordinary chrome.
+    let mut app = app();
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    let error = app.theme.role(ThemeRole::DiagnosticError).to_ratatui();
+    let chrome = app.theme.role(ThemeRole::StatusBarForeground).to_ratatui();
+    assert_ne!(
+        error, chrome,
+        "the roles must differ for this to prove anything"
+    );
+
+    let buffer = frame(&mut app, 120, 8);
+    assert!(
+        buffer.content().iter().any(|cell| cell.fg == error),
+        "the card is painted in the error role"
+    );
+}
+
+#[test]
+fn a_refusal_clears_itself_while_a_failure_waits_to_be_read() {
+    // Lifetime is the axis that separates them: a refusal the user provoked goes
+    // away on its own, a failure stays until it is dismissed.
+    let mut app = app();
+    app.notify(
+        Report::Refusal,
+        NotificationKind::Io,
+        "save: open a text file",
+    );
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+
+    let active = app.notifications.active();
+    let refusal = active
+        .iter()
+        .find(|note| note.title.starts_with("save: open"))
+        .expect("the refusal is active");
+    let failure = active
+        .iter()
+        .find(|note| note.title == "save failed")
+        .expect("the failure is active");
+    assert!(refusal.timeout.is_some(), "a refusal expires");
+    assert!(failure.timeout.is_none(), "a failure waits");
+    assert_eq!(refusal.severity, Severity::Warning);
+    assert_eq!(failure.severity, Severity::Error);
+}
+
+#[test]
+fn a_save_batch_card_is_retired_when_the_batch_finishes() {
+    // A progress card carries no timeout, so whatever raises one owes it a
+    // retirement on *every* exit. This is the success exit: the saves land, the
+    // parked close runs, and the card must not outlive the batch.
+    let dir = test_dir("save-batch-card");
+    write_file(&dir, "a.rs", b"fn main() {}\n");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.notify_progress(
+        NotificationKind::Io,
+        App::SAVE_BATCH_TAG.to_string(),
+        "saving 1 file(s) before quitting…",
+        None,
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("save.batch")),
+        "the batch card is up"
+    );
+
+    // Nothing is pending, so the next backend event settles the batch.
+    app.on_backend_event(
+        None,
+        SessionEvent::VcsStatus {
+            staged: Vec::new(),
+            working: Vec::new(),
+        },
+    );
+
+    assert!(
+        !app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("save.batch")),
+        "the card is retired once no save is pending"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_dependency_check_card_is_retired_when_the_hints_arrive() {
+    // The hints are the answer to an explicit re-check, so they retire its card.
+    let mut app = app();
+    app.notify_progress(
+        NotificationKind::System,
+        App::DEPS_CHECK_TAG.to_string(),
+        "re-checking dependencies",
+        None,
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("deps.check")),
+        "the check card is up"
+    );
+
+    app.on_backend_event(
+        None,
+        SessionEvent::ManifestHints {
+            doc: DocumentId(1),
+            version: 1,
+            hints: Vec::new(),
+        },
+    );
+
+    assert!(
+        !app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("deps.check")),
+        "the card does not outlive the check it describes"
+    );
+}
+
+/// The session decides whether to run the formatter from the cause the client
+/// reports, so the client has to report it honestly. An inactivity save that
+/// claimed to be manual would reformat the buffer under the caret.
+#[test]
+fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
+    let causes = |drive: fn(&mut App, DocumentId)| {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        drive(&mut app, DocumentId(2));
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(_, command)| match command {
+                        SessionCommand::Document(DocumentCommand::Save { cause, .. }) => {
+                            Some(*cause)
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    assert_eq!(
+        causes(|app, _| app.save_active()),
+        vec![SaveCause::Manual],
+        "the keybinding is the user asking"
+    );
+
+    assert_eq!(
+        causes(|app, doc| {
+            app.settings.files.auto_save = AutoSave::AfterDelay;
+            app.settings.files.auto_save_delay = 0;
+            app.schedule_auto_save(doc, 1, Instant::now());
+            app.fire_auto_save(Instant::now() + Duration::from_millis(1));
+        }),
+        vec![SaveCause::AutoDelay],
+        "the inactivity timer must not be mistaken for a manual save"
+    );
+
+    assert_eq!(
+        causes(|app, doc| {
+            app.settings.files.auto_save = AutoSave::OnFocusChange;
+            app.keyboard.focus_editor();
+            app.schedule_auto_save(doc, 1, Instant::now());
+            app.auto_save_focus_lost();
+        }),
+        vec![SaveCause::FocusChange],
+        "leaving the document is a safe moment to reformat it"
+    );
+}
+
+/// The branch-switch guard parks on the same save drain a close does, and it read
+/// the same count the same wrong way: with every dirty document's save already in
+/// flight, it found nothing to wait for and switched branches out from under the
+/// writes that were still parked on their formatter.
+#[test]
+fn switching_branches_waits_for_a_save_already_in_flight() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.push_tab(text_tab("t.rs", "x"));
+    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+        *doc = Some(DocumentId(4));
+    }
+    app.tabs[app.active].dirty = true;
+    app.pending_saves
+        .insert(RequestId(12), PendingSave { doc: DocumentId(4) });
+
+    app.save_then_switch(karet_vcs::BranchTarget::Local("other".to_string()));
+
+    assert!(
+        app.vcs_after_save.is_some(),
+        "the switch must wait on the write the in-flight save still owes"
+    );
+    let switched = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(command, SessionCommand::Vcs(VcsCommand::Action { .. }))
+            })
+        })
+        .unwrap_or_default();
+    assert!(
+        !switched,
+        "no branch switch may run while a write is parked"
+    );
+}
+
+/// Open a dirty code tab for `doc`, returning its index in the focused pane.
+fn dirty_tab(app: &mut App, name: &str, doc: u64) -> usize {
+    app.push_tab(text_tab(name, "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[idx].kind {
+        *d = Some(DocumentId(doc));
+    }
+    app.tabs[idx].dirty = true;
+    idx
+}
+
+/// Whether the abandoned-close report is on screen. Looked up across every active
+/// card rather than through `last_message`: the failing event raises its own
+/// notification too, and which lands last is not what this is about.
+fn close_cancelled(app: &App) -> bool {
+    app.notifications
+        .active()
+        .iter()
+        .any(|note| note.title == "close cancelled: save failed")
+}
+
+/// A save deferred on a formatter answers seconds later, and for whatever document
+/// asked. Reading "some save failed" globally let document A's failure cancel the
+/// parked close of an unrelated tab B — nothing about B had failed, and its own
+/// write was still on its way.
+#[test]
+fn a_failed_save_for_another_document_leaves_a_parked_close_alone() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    // A stays open, parked on its formatter.
+    dirty_tab(&mut app, "a.rs", 31);
+    app.pending_saves.insert(
+        RequestId(80),
+        PendingSave {
+            doc: DocumentId(31),
+        },
+    );
+    // B is the tab the user answered "Save & close" for.
+    let b = dirty_tab(&mut app, "b.rs", 32);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    assert_eq!(app.saving_close, Some(CloseRequest::Tab { view }));
+
+    app.on_backend_event(
+        Some(RequestId(80)),
+        SessionEvent::ExternalConflict {
+            doc: DocumentId(31),
+        },
+    );
+
+    assert_eq!(
+        app.saving_close,
+        Some(CloseRequest::Tab { view }),
+        "a failure for a document this close keeps open is none of its business"
+    );
+    assert!(
+        !close_cancelled(&app),
+        "nothing about the closing tab failed"
+    );
+
+    let pending = *app
+        .pending_saves
+        .keys()
+        .next()
+        .expect("B's own save is still in flight");
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(32),
+        },
+    );
+    assert!(app.saving_close.is_none());
+    assert!(
+        !app.all_tabs().any(|tab| tab.view == view),
+        "B closes once the write it owed landed"
+    );
+}
+
+/// The counterpart: a close is still cancelled by a failure for a write it *does*
+/// owe. Scoping the check must not turn the guard off.
+#[test]
+fn a_failed_save_the_parked_close_owns_still_cancels_it() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    let b = dirty_tab(&mut app, "b.rs", 33);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = *app
+        .pending_saves
+        .keys()
+        .next()
+        .expect("the close issued a save");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::ExternalConflict {
+            doc: DocumentId(33),
+        },
+    );
+
+    assert!(app.saving_close.is_none(), "the close is abandoned");
+    assert!(close_cancelled(&app), "and says why");
+    assert!(
+        app.all_tabs().any(|tab| tab.view == view),
+        "the tab stays open with its unsaved changes"
+    );
+}
+
+/// The release half of the same guard. Waiting on `pending_saves` globally held a
+/// tab close hostage to a save for a document it never touches — one a formatter can
+/// keep in flight for seconds, or forever if the server never answers.
+#[test]
+fn a_parked_close_runs_once_the_saves_it_owns_land() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    dirty_tab(&mut app, "a.rs", 41);
+    app.pending_saves.insert(
+        RequestId(90),
+        PendingSave {
+            doc: DocumentId(41),
+        },
+    );
+    let b = dirty_tab(&mut app, "b.rs", 42);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = app
+        .pending_saves
+        .keys()
+        .find(|id| **id != RequestId(90))
+        .copied()
+        .expect("B's save is in flight alongside A's");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(42),
+        },
+    );
+
+    assert!(
+        app.saving_close.is_none(),
+        "B's close owed one write, and it landed"
+    );
+    assert!(!app.all_tabs().any(|tab| tab.view == view));
+    assert!(
+        app.pending_saves
+            .values()
+            .any(|save| save.doc == DocumentId(41)),
+        "A's save is untouched by B's close"
+    );
+}
+
+/// A tab close and a branch switch can be parked at the same time, and they share
+/// one tagged progress card — so the close's card is whatever the user is looking
+/// at. Retiring it when the close's own writes land left the switch, which rewrites
+/// the whole worktree, about to run with no indicator at all.
+#[test]
+fn a_released_close_leaves_the_branch_switch_its_progress_card() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    dirty_tab(&mut app, "a.rs", 41);
+    app.pending_saves.insert(
+        RequestId(90),
+        PendingSave {
+            doc: DocumentId(41),
+        },
+    );
+    app.vcs_after_save = Some(VcsAction::SwitchBranch(karet_vcs::BranchTarget::Local(
+        "other".to_string(),
+    )));
+    let b = dirty_tab(&mut app, "b.rs", 42);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = app
+        .pending_saves
+        .keys()
+        .find(|id| **id != RequestId(90))
+        .copied()
+        .expect("B's save is in flight alongside A's");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(42),
+        },
+    );
+
+    assert!(
+        !app.all_tabs().any(|tab| tab.view == view),
+        "B owed one write and it landed, so its close runs"
+    );
+    assert!(
+        app.vcs_after_save.is_some(),
+        "the switch is still parked on A's write"
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title.contains("before switching")),
+        "and the card has to describe the work that is still outstanding"
+    );
 }

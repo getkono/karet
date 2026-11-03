@@ -99,6 +99,8 @@ fn matching(index: &SeamIndex, candidates: &[SeamId], kind: &TermKind) -> HashSe
                 .chain(index.edges().to_of_kind(source, *edge).map(|e| e.from))
                 .collect()
         },
+        TermKind::Reach(path) => transitive(index, path, true),
+        TermKind::Callers(path) => transitive(index, path, false),
         _ => candidates
             .iter()
             .copied()
@@ -109,6 +111,48 @@ fn matching(index: &SeamIndex, candidates: &[SeamId], kind: &TermKind) -> HashSe
             })
             .collect(),
     }
+}
+
+/// Every node reached from `path` along established call edges, in one direction.
+///
+/// The start is included only when a cycle leads back to it — "what does this call"
+/// answers with itself exactly when it is recursive. An unknown path reaches nothing,
+/// as `pivot:` does.
+fn transitive(index: &SeamIndex, path: &crate::id::SeamPath, forward: bool) -> HashSet<SeamId> {
+    let Some(start) = index.resolve(path) else {
+        return HashSet::new();
+    };
+    let follows = |edge: &crate::edge::Edge| {
+        edge.kind == crate::edge::EdgeKind::Calls
+            && edge
+                .resolution
+                .is_some_and(crate::edge::Resolution::in_lower)
+    };
+    let mut seen = HashSet::new();
+    let mut queue = std::collections::VecDeque::from([start]);
+    while let Some(at) = queue.pop_front() {
+        let next: Vec<SeamId> = if forward {
+            index
+                .edges()
+                .from(at)
+                .filter(|edge| follows(edge))
+                .filter_map(|edge| edge.to.resolved())
+                .collect()
+        } else {
+            index
+                .edges()
+                .to(at)
+                .filter(|edge| follows(edge))
+                .map(|edge| edge.from)
+                .collect()
+        };
+        for id in next {
+            if seen.insert(id) {
+                queue.push_back(id);
+            }
+        }
+    }
+    seen
 }
 
 /// Match the terms that need only the node itself.
@@ -135,7 +179,11 @@ fn simple_match(index: &SeamIndex, node: &crate::model::Node, kind: &TermKind) -
                     .filter_map(|facet| facet.detail.as_deref())
                     .any(|detail| detail.contains(text.as_str()))
         },
-        TermKind::Name(_) | TermKind::Phrase(_) | TermKind::Pivot { .. } => false,
+        TermKind::Name(_)
+        | TermKind::Phrase(_)
+        | TermKind::Pivot { .. }
+        | TermKind::Reach(_)
+        | TermKind::Callers(_) => false,
     }
 }
 

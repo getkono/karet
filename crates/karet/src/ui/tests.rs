@@ -11,8 +11,16 @@ use super::scm::change_line;
 use super::*;
 use crate::app::CommitInput;
 
+#[path = "tests/commit_graph.rs"]
+mod commit_graph;
+#[path = "tests/merge_conflict.rs"]
+mod merge_conflict;
 #[path = "tests/save_mark.rs"]
 mod save_mark;
+#[path = "tests/scroll_markers.rs"]
+mod scroll_markers;
+#[path = "tests/search_panel.rs"]
+mod search_panel;
 
 #[test]
 fn scm_change_rows_show_colored_added_and_removed_counts() {
@@ -121,59 +129,9 @@ fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
 }
 
 #[test]
-fn osc8_link_cells_are_self_contained_and_share_an_explicit_id() {
-    let uri = "https://example.com";
-    let id = osc8_id(uri);
-    let first = osc8_symbol(uri, "x");
-    let second = osc8_symbol(uri, "y");
-
-    assert_eq!(
-        first,
-        format!("\u{1b}]8;id={id};{uri}\u{1b}\\x\u{1b}]8;;\u{1b}\\")
-    );
-    assert!(second.starts_with(&format!("\u{1b}]8;id={id};{uri}\u{1b}\\")));
-    assert_ne!(id, osc8_id("https://example.org"));
-    assert!(
-        id.bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    );
-}
-
-#[test]
-fn osc8_link_bytes_reach_the_crossterm_backend() -> Result<(), Box<dyn std::error::Error>> {
-    use std::num::NonZeroU16;
-
-    use ratatui::backend::Backend;
-    use ratatui::backend::CrosstermBackend;
-    use ratatui::buffer::Cell;
-    use ratatui::buffer::CellDiffOption;
-
-    let sequence = osc8_symbol("https://example.com", "x");
-    let mut cell = Cell::default();
-    cell.set_symbol(&sequence);
-    if let Some(width) = NonZeroU16::new(1) {
-        cell.set_diff_option(CellDiffOption::ForcedWidth(width));
-    }
-    let mut output = Vec::new();
-    {
-        let mut backend = CrosstermBackend::new(&mut output);
-        backend.draw(std::iter::once((0, 0, &cell)))?;
-        Backend::flush(&mut backend)?;
-    }
-
-    assert!(
-        output
-            .windows(sequence.len())
-            .any(|window| window == sequence.as_bytes())
-    );
-    Ok(())
-}
-
-#[test]
 fn commit_input_display_preserves_lines_and_marks_the_caret() {
     let mut input = CommitInput {
         text: "subject\nbody".to_string(),
-        focused: true,
         ..CommitInput::default()
     };
     input.edit.set_cursor(&input.text, 8, false);
@@ -235,19 +193,6 @@ fn breadcrumb_spans_of_no_components_are_empty() {
 }
 
 #[test]
-fn relative_time_uses_compact_git_style_units() {
-    let now = 40_000_000;
-    assert_eq!(scm::relative_time_at(now + 1, now), "just now");
-    assert_eq!(scm::relative_time_at(now - 42, now), "42s ago");
-    assert_eq!(scm::relative_time_at(now - 120, now), "2m ago");
-    assert_eq!(scm::relative_time_at(now - 10_800, now), "3h ago");
-    assert_eq!(scm::relative_time_at(now - 172_800, now), "2d ago");
-    assert_eq!(scm::relative_time_at(now - 1_209_600, now), "2w ago");
-    assert_eq!(scm::relative_time_at(now - 5_184_000, now), "2mo ago");
-    assert_eq!(scm::relative_time_at(now - 63_072_000, now), "2y ago");
-}
-
-#[test]
 fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
     // The padding needs 4 columns and 2 rows; below that there is no content rect.
     assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
@@ -267,14 +212,14 @@ fn test_code_tab(path: &str) -> Tab {
             .unwrap_or(path),
         TabKind::Code {
             path: PathBuf::from(path),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(path)),
             doc: None,
             next_version: 0,
-            buffer,
-            text: String::new(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
-            folds: karet_syntax::FoldRegions::default(),
+            buffer: buffer.into(),
+            text: Default::default(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
+            folds: karet_core::FoldRegions::default(),
             folded: std::collections::BTreeSet::new(),
             decos: Vec::new(),
             search_decos: Vec::new(),
@@ -423,14 +368,16 @@ fn verified_badge_reflects_forge_and_signature() {
 
 #[test]
 fn file_cards_are_boxed_and_width_sized() {
-    let files = vec![crate::render::test_file_view(
+    let files = [crate::tab::test_changed_file(
         "src/main.rs",
         "fn a() {}\n",
         "fn b() {}\n",
     )];
     let width = 60u16;
     let theme = Theme::dark();
-    let lines = changed_files_lines(&theme, &files, width);
+    let mut lines = vec![file_card_header(&theme, &files[0], width, false)];
+    lines.extend(file_card_body(&theme, &files[0], 0, usize::MAX, width));
+    lines.push(file_card_footer(&theme, width));
     let text: Vec<String> = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -484,9 +431,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
     use ratatui::widgets::Widget;
 
     let theme = Theme::dark();
-    let file = crate::render::test_file_view("notes.txt", "old\n", "new\n");
-    let mut lines = render::unified_lines(&file, &theme);
-    render::pad_diff_lines(&mut lines, 40);
+    let file = crate::tab::test_changed_file("notes.txt", "old\n", "new\n");
+    let mut lines = diff_paint::unified_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut lines, 40);
     let removed = lines
         .iter()
         .position(|line| line.style.bg == Some(theme.role(ThemeRole::DiffRemoved).to_ratatui()))
@@ -509,9 +456,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
         theme.role(ThemeRole::DiffAdded).to_ratatui()
     );
 
-    let (mut left, mut right) = render::side_by_side_lines(&file, &theme);
-    render::pad_diff_lines(&mut left, 20);
-    render::pad_diff_lines(&mut right, 20);
+    let (mut left, mut right) = diff_paint::side_by_side_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut left, 20);
+    karet_diff::view::pad_diff_lines(&mut right, 20);
     let changed: Vec<_> = [left, right]
         .into_iter()
         .filter_map(|lines| lines.into_iter().find(|line| line.style.bg.is_some()))
@@ -536,12 +483,9 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
     use unicode_width::UnicodeWidthStr;
 
     let file =
-        crate::render::test_file_view("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
+        crate::tab::test_changed_file("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
     for width in 1..24u16 {
-        let top = file_card(&Theme::dark(), &file, width)
-            .into_iter()
-            .next()
-            .expect("a card header");
+        let top = file_card_header(&Theme::dark(), &file, width, false);
         let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(
             UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
@@ -549,7 +493,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
         );
     }
     assert_eq!(
-        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        karet_widgets::text::fit_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
         "\u{2026}file.rs"
     );
 }
@@ -569,7 +513,6 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -586,7 +529,8 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
 
     // Without a forge verdict, a signed commit reads "Signed"; the reported hit
     // must land exactly on that badge text within its line.
-    let (lines, hit) = commit_detail_lines(&Theme::dark(), &detail, &files, false, 80);
+    let (lines, hit) =
+        commit_metadata_lines(&Theme::dark(), &detail, files.verification.as_ref(), false);
     let hit = hit.expect("a signed commit has a badge");
     let chars: Vec<char> = flat(&lines[hit.line as usize]).chars().collect();
     let span: String = chars[hit.col as usize..(hit.col + hit.width) as usize]
@@ -604,7 +548,8 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     );
 
     // Revealing inserts the badge's plain-language meaning.
-    let (revealed, _) = commit_detail_lines(&Theme::dark(), &detail, &files, true, 80);
+    let (revealed, _) =
+        commit_metadata_lines(&Theme::dark(), &detail, files.verification.as_ref(), true);
     assert!(
         revealed
             .iter()
@@ -623,14 +568,14 @@ fn cursor_status_label_reports_position_and_selection_extent() {
         "a.txt",
         TabKind::Code {
             path: std::path::PathBuf::from("/x/a.txt"),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("/x/a.txt")),
             doc: None,
             next_version: 0,
-            buffer: buffer.clone(),
-            text: "hello\nworld\n".to_string(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
-            folds: karet_syntax::FoldRegions::default(),
+            buffer: buffer.clone().into(),
+            text: "hello\nworld\n".into(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
+            folds: karet_core::FoldRegions::default(),
             folded: std::collections::BTreeSet::new(),
             decos: Vec::new(),
             search_decos: Vec::new(),
@@ -832,11 +777,14 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
     let theme = app.theme.clone();
     let mut header = |app: &mut App| {
+        let mut hits = crate::app::FrameHits::default();
         let _ = terminal.draw(|frame| {
             let area = frame.area();
-            super::sidebar::draw_sidebar_header(frame, app, &theme, area);
+            super::sidebar::draw_sidebar_header(frame, app, &theme, area, &mut hits);
         });
-        app.panel_hits
+        app.last_frame = hits;
+        app.last_frame
+            .panel_hits
             .iter()
             .map(|&(_, _, panel)| panel)
             .collect::<Vec<_>>()
@@ -851,6 +799,7 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
             SidebarPanel::Spelling,
             SidebarPanel::Todos,
             SidebarPanel::Debug,
+            SidebarPanel::Problems,
         ],
         "every panel needs a switcher button, in activity-bar order"
     );
@@ -866,16 +815,30 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
             SidebarPanel::Search,
             SidebarPanel::SourceControl,
             SidebarPanel::Debug,
+            SidebarPanel::Problems,
         ],
     );
     app.settings.editor.semantic_comments.enabled = true;
     app.settings.spellcheck.enabled = true;
-    let _ = header(&mut app);
+    // The Hierarchy button appears, last, only while there is a tree to
+    // return to.
+    app.hierarchy.tree = Some(crate::app::hierarchy::HierarchyTree::new(
+        karet_core::HierarchyDirection::IncomingCalls,
+        DocumentId(1),
+        dir.clone(),
+        RequestId(1),
+    ));
+    assert_eq!(
+        header(&mut app).last(),
+        Some(&SidebarPanel::Hierarchy),
+        "{:?}",
+        app.last_frame.panel_hits
+    );
     // Two cells each, marching left to right and staying inside the header.
-    for window in app.panel_hits.windows(2) {
-        assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);
+    for window in app.last_frame.panel_hits.windows(2) {
+        assert_eq!(window[1].0, window[0].1, "{:?}", app.last_frame.panel_hits);
     }
-    for &(start, end, _) in &app.panel_hits {
+    for &(start, end, _) in &app.last_frame.panel_hits {
         assert_eq!(end - start, 2);
         assert!(
             end <= 40,

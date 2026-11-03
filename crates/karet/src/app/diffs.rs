@@ -1,4 +1,21 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::PreparedChange;
+use karet_session::RequestId;
+use karet_session::VcsCommand;
+use karet_session::ViewId;
+use karet_vcs::StatusKind;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::pending::Pending;
+use crate::tab::ChangedFile;
+use crate::tab::PagerState;
+use crate::tab::Section;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
 
 /// A trivially-constructible prepared change for a binary pair: an empty diff
 /// flagged binary, so the painter shows the standard placeholder without a
@@ -15,6 +32,46 @@ pub(super) fn binary_prepared_change(path: &Path) -> PreparedChange {
     }
 }
 
+/// The 0-based `\n`-delimited line of `text` that holds the start of editor row
+/// `row`, the line numbering a diff of `text` itself uses.
+///
+/// The editor also breaks rows on a lone `\r`, VT, FF, NEL, LS and PS
+/// ([`karet_text::lines`]), which the diff does not, so past such a break an
+/// editor row and a diff line part ways. A row past the last line (the empty
+/// row after a final break) maps to the line after every `\n`.
+pub(super) fn diff_line_of_row(text: &str, row: u32) -> u32 {
+    let start = usize::try_from(row)
+        .ok()
+        .and_then(|row| karet_text::lines(text).nth(row))
+        .map_or(text.len(), |line| {
+            line.as_ptr().addr().saturating_sub(text.as_ptr().addr())
+        });
+    let newlines = text.get(..start).unwrap_or(text).matches('\n').count();
+    u32::try_from(newlines).unwrap_or(u32::MAX)
+}
+
+/// The display row, in `layout`, of the hunk a change marker on 0-based diff
+/// line `line` (see [`diff_line_of_row`]) stands for: the first hunk whose new
+/// side reaches that line, covering it or (a pure deletion) sitting just below
+/// it. A line past every
+/// hunk lands on the last one; a binary or hunkless diff has no row.
+fn landing_row(prepared: &karet_diff::PreparedDiff, layout: ViewMode, line: u32) -> Option<usize> {
+    let line = line.saturating_add(1);
+    let hunks = &prepared.diff().hunks;
+    let index = hunks
+        .iter()
+        .position(|hunk| {
+            // A hunk with no new-side lines sits on the line above its gap,
+            // which `new_start` names.
+            hunk.new_start.saturating_add(hunk.new_count.max(1)) > line
+        })
+        .or_else(|| hunks.len().checked_sub(1))?;
+    match layout {
+        ViewMode::Unified => karet_diff::unified_hunk_row(prepared, index),
+        ViewMode::SideBySide => karet_diff::side_by_side_hunk_row(prepared, index),
+    }
+}
+
 impl App {
     /// Ask the backend to prepare `summary`'s displayable diff. The answering
     /// [`SessionEvent::ChangePrepared`] fills the reserved tab (matched by path
@@ -22,10 +79,14 @@ impl App {
     pub(super) fn request_change_diff(&mut self, path: PathBuf, section: Section) {
         let staged = section == Section::Staged;
         if self
-            .send(SessionCommand::PrepareChange { path, staged })
+            .send(VcsCommand::PrepareChange { path, staged })
             .is_none()
         {
-            self.status = Some("diff backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "diff backend is unavailable",
+            );
         }
     }
 
@@ -43,18 +104,26 @@ impl App {
             ..
         }) = self.tabs.get(self.active).map(|tab| &tab.kind)
         else {
-            self.status = Some("stage hunk: open a diff first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "stage hunk: open a diff first",
+            );
             return;
         };
         // Staged-side diffs un-stage; working-side diffs stage. Mismatched
         // verbs are a no-op with a hint rather than a surprising inversion.
         let staged_side = *section == Section::Staged;
         if reverse != staged_side {
-            self.status = Some(if reverse {
-                "unstage hunk: this diff shows unstaged changes (press s)".to_string()
-            } else {
-                "stage hunk: this diff shows staged changes (press u)".to_string()
-            });
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                if reverse {
+                    "unstage hunk: this diff shows unstaged changes (press s)"
+                } else {
+                    "stage hunk: this diff shows staged changes (press u)"
+                },
+            );
             return;
         }
         let prepared = &file.change.diff;
@@ -63,24 +132,36 @@ impl App {
             ViewMode::Unified => karet_diff::unified_hunk_at_row(prepared, row),
             ViewMode::SideBySide => karet_diff::side_by_side_hunk_at_row(prepared, row),
         };
-        let Some(hunk) = hunk_index.and_then(|index| prepared.diff.hunks.get(index)) else {
-            self.status = Some("stage hunk: no hunk here".to_string());
+        let Some(hunk) = hunk_index.and_then(|index| prepared.diff().hunks.get(index)) else {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "stage hunk: no hunk here",
+            );
             return;
         };
-        let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
+        let patch = karet_diff::format_hunk_patch(prepared.diff(), hunk);
         let (path, section) = (path.clone(), *section);
         if self
-            .send(SessionCommand::ApplyIndexPatch { patch, reverse })
+            .send(VcsCommand::ApplyIndexPatch { patch, reverse })
             .is_none()
         {
-            self.status = Some("stage hunk: backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "stage hunk: backend is unavailable",
+            );
             return;
         }
-        self.status = Some(if reverse {
-            "hunk unstaged".to_string()
-        } else {
-            "hunk staged".to_string()
-        });
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            if reverse {
+                "hunk unstaged"
+            } else {
+                "hunk staged"
+            },
+        );
         // Reserve the tab's loading state and ask for the now-current diff.
         if let Some(TabKind::Diff {
             file,
@@ -125,7 +206,7 @@ impl App {
             }
             match result {
                 Ok(prepared) => {
-                    *file = Some(Box::new(FileView::new(*prepared)));
+                    *file = Some(Box::new(ChangedFile::new(*prepared)));
                     *loading_since = None;
                     *error = None;
                 },
@@ -139,15 +220,18 @@ impl App {
     }
 
     /// Fill the reserved ad-hoc diff tab (revision or two-file diff) owned by the
-    /// request. A failure closes the reserved tab and reports through the status
-    /// line instead — a diff that could not even be computed should not linger as
-    /// a dead tab. A closed tab drops the answer.
+    /// request. A failure closes the reserved tab and reports the reason as a
+    /// notification instead — a diff that could not even be computed should not
+    /// linger as a dead tab. A closed tab drops the answer. A request carrying
+    /// a landing line scrolls the filled tab so that line's hunk is at the
+    /// top of the viewport, in the tab's current layout.
     pub(super) fn apply_diff_prepared(
         &mut self,
         id: Option<RequestId>,
         result: Result<Box<PreparedChange>, String>,
     ) {
-        let Some(view) = id.and_then(|id| self.pending_prepared_diffs.remove(&id)) else {
+        let Some((view, landing)) = id.and_then(|id| self.pending_prepared_diffs.remove(&id))
+        else {
             return;
         };
         match result {
@@ -160,10 +244,17 @@ impl App {
                         file,
                         loading_since,
                         error,
+                        view: layout,
+                        pager,
                         ..
                     } = &mut tab.kind
                     {
-                        *file = Some(Box::new(FileView::new(*prepared)));
+                        if let Some(row) =
+                            landing.and_then(|line| landing_row(&prepared.diff, *layout, line))
+                        {
+                            pager.scroll = u16::try_from(row).unwrap_or(u16::MAX);
+                        }
+                        *file = Some(Box::new(ChangedFile::new(*prepared)));
                         *loading_since = None;
                         *error = None;
                     }
@@ -176,7 +267,7 @@ impl App {
                 }) {
                     self.close_tab_at(index);
                 }
-                self.status = Some(message);
+                self.notify(Report::Failure, NotificationKind::Vcs, message);
             },
         }
     }
@@ -258,6 +349,11 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("diff")
             .to_string();
+        // The tab keeps its view id while it is re-targeted, so a revision or two-file
+        // diff still being prepared for it would otherwise land on the new file: the
+        // superseded request is dropped before the tab changes underneath it.
+        let replaced = self.tabs[self.active].view;
+        self.cancel_loading_for_views(&std::collections::HashSet::from([replaced]));
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.title = title;
             tab.kind = TabKind::Diff {

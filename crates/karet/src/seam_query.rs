@@ -48,9 +48,10 @@ pub(crate) fn run(
 
     // A named configuration changes what the tree even contains, so it is applied
     // before the query rather than filtered afterwards.
-    let active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
-        karet_seam::Configuration::named(name, Vec::new())
-    });
+    let active = configuration
+        .map_or_else(karet_seam::config::Configuration::unconfigured, |name| {
+            karet_seam::config::Configuration::named(name, Vec::new())
+        });
     karet_seam::config::apply(&mut index, &active);
 
     let parsed = karet_seam::query::parse(query).map_err(|error| QueryFailure {
@@ -66,7 +67,16 @@ pub(crate) fn run(
     })?;
 
     let result = karet_seam::query::evaluate(&parsed, &index);
-    Ok(render(&index, &result.nodes, query, &active.name))
+    // Measured under the same configuration the tree is shown under, so a function the
+    // configuration excludes is not counted as anyone's callee.
+    let graph = karet_seam::CallGraph::build(
+        &index,
+        &karet_seam::GraphOptions {
+            configuration: active.clone(),
+            ..karet_seam::GraphOptions::default()
+        },
+    );
+    Ok(render(&index, &graph, &result.nodes, query, &active.name))
 }
 
 /// Render a result set as JSON.
@@ -76,6 +86,7 @@ pub(crate) fn run(
 /// side effect of a field rename somewhere in the engine.
 fn render(
     index: &SeamIndex,
+    graph: &karet_seam::CallGraph,
     nodes: &[karet_seam::SeamId],
     query: &str,
     configuration: &str,
@@ -87,7 +98,7 @@ fn render(
     out.push_str("  \"nodes\": [\n");
     let rendered: Vec<String> = nodes
         .iter()
-        .filter_map(|id| node_json(index, *id))
+        .filter_map(|id| node_json(index, graph, *id))
         .collect();
     out.push_str(&rendered.join(",\n"));
     if !rendered.is_empty() {
@@ -98,7 +109,11 @@ fn render(
 }
 
 /// One node as a JSON object.
-fn node_json(index: &SeamIndex, id: karet_seam::SeamId) -> Option<String> {
+fn node_json(
+    index: &SeamIndex,
+    graph: &karet_seam::CallGraph,
+    id: karet_seam::SeamId,
+) -> Option<String> {
     let node = index.node(id)?;
     let path = index.path(id)?.to_string();
     let file = index
@@ -125,14 +140,25 @@ fn node_json(index: &SeamIndex, id: karet_seam::SeamId) -> Option<String> {
 
     // Rollups travel with every node so seam density is readable without walking
     // the subtree, which is what makes "where is the risk concentrated" a cheap question.
+    // A lens the node's language never reads has no count to give: `null`, not zero.
+    let unread = index.unread_lenses(id);
     let rollups: Vec<String> = LENSES
         .iter()
-        .map(|lens| format!("{}: {}", quote(lens.name()), node.rollups.get(*lens)))
+        .map(|lens| {
+            let count = if unread.contains(lens) {
+                "null".to_owned()
+            } else {
+                node.rollups().get(*lens).to_string()
+            };
+            format!("{}: {count}", quote(lens.name()))
+        })
         .collect();
+    let unread: Vec<String> = unread.iter().map(|lens| quote(lens.name())).collect();
 
     Some(format!(
         "    {{\"id\": {}, \"name\": {}, \"kind\": {}, \"file\": {}, \"line\": {}, \
-         \"visibility\": {}, \"membership\": {}, \"facets\": [{}], \"rollups\": {{{}}}}}",
+         \"visibility\": {}, \"membership\": {}, \"facets\": [{}], \"rollups\": {{{}}}, \
+         \"unread_lenses\": [{}], \"loc\": {}, \"calls\": [{}]}}",
         quote(&path),
         quote(&node.name),
         quote(node.kind.name()),
@@ -142,8 +168,77 @@ fn node_json(index: &SeamIndex, id: karet_seam::SeamId) -> Option<String> {
             .map_or_else(|| "null".to_owned(), |v| quote(v.name())),
         quote(node.membership.name()),
         facets.join(", "),
-        rollups.join(", ")
+        rollups.join(", "),
+        unread.join(", "),
+        loc_json(index, graph, id),
+        calls_json(index, id).join(", ")
     ))
+}
+
+/// A callable's sizes, or `null` for a node that is not one.
+///
+/// Its own lines are always known; the graph's numbers are `null` when the active
+/// configuration leaves the function out, which is a different answer from zero.
+fn loc_json(index: &SeamIndex, graph: &karet_seam::CallGraph, id: karet_seam::SeamId) -> String {
+    let Some(callable) = index.calls().callable(id) else {
+        return "null".to_owned();
+    };
+    let measured = graph.metrics(id);
+    let field = |value: Option<String>| value.unwrap_or_else(|| "null".to_owned());
+    format!(
+        "{{\"code\": {}, \"span\": {}, \"inclusive\": {}, \"inclusive_upper\": {}, \
+         \"tree_weighted\": {}, \"fan_in\": {}, \"fan_out\": {}, \"external_apis\": {}, \
+         \"depth\": {}, \"scc_size\": {}, \"recursive\": {}}}",
+        callable.code_lines,
+        callable.span_lines,
+        field(measured.map(|m| m.inclusive_lower.to_string())),
+        field(measured.map(|m| m.inclusive_upper.to_string())),
+        field(measured.map(|m| m.tree_weighted.to_string())),
+        field(measured.map(|m| m.fan_in.to_string())),
+        field(measured.map(|m| m.fan_out.to_string())),
+        field(measured.map(|m| m.external_apis.to_string())),
+        field(measured.map(|m| m.depth.to_string())),
+        field(measured.map(|m| m.scc_size.to_string())),
+        field(measured.map(|m| m.recursive.to_string())),
+    )
+}
+
+/// The node's outgoing calls, one entry per target and resolution, with a site count.
+fn calls_json(index: &SeamIndex, id: karet_seam::SeamId) -> Vec<String> {
+    let mut grouped: std::collections::BTreeMap<(String, &'static str), (usize, u32)> =
+        std::collections::BTreeMap::new();
+    for edge in index.edges().from_of_kind(id, karet_seam::EdgeKind::Calls) {
+        let target = match &edge.to {
+            karet_seam::Endpoint::Resolved(to) => {
+                format!(
+                    "\"to\": {}",
+                    quote(&index.path(*to).map(ToString::to_string).unwrap_or_default())
+                )
+            },
+            other => format!(
+                "\"display\": {}",
+                quote(other.display_hint().unwrap_or_default())
+            ),
+        };
+        let resolution = edge
+            .resolution
+            .map_or("unresolved", karet_seam::Resolution::name);
+        let line = edge
+            .site
+            .map_or(0, |site| site.start.line.saturating_add(1));
+        let entry = grouped.entry((target, resolution)).or_insert((0, line));
+        entry.0 += 1;
+        entry.1 = entry.1.min(line);
+    }
+    grouped
+        .into_iter()
+        .map(|((target, resolution), (count, line))| {
+            format!(
+                "{{{target}, \"resolution\": {}, \"count\": {count}, \"line\": {line}}}",
+                quote(resolution)
+            )
+        })
+        .collect()
 }
 
 /// A JSON string literal, escaping what the format requires.
@@ -220,7 +315,7 @@ mod tests {
     #[test]
     fn a_result_carries_identities_locations_facets_and_rollups()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -250,9 +345,79 @@ mod tests {
     }
 
     #[test]
+    fn a_function_carries_its_sizes_and_its_calls() -> Result<(), Box<dyn std::error::Error>> {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"q\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::create_dir_all(dir.path().join("src"))?;
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n\
+             pub fn afar() {\n    elsewhere::send();\n}\n",
+        )?;
+
+        let json = run(dir.path(), "outer", None)?;
+        assert!(
+            json.contains("\"loc\": {\"code\": 4, \"span\": 4, \"inclusive\": 5,"),
+            "{json}"
+        );
+        // Two sites, one entry.
+        assert!(
+            json.contains(
+                "{\"to\": \"q::inner\", \"resolution\": \"exact\", \"count\": 2, \"line\": 2}"
+            ),
+            "{json}"
+        );
+        // A callee outside the index has no path, so it is named by its display text.
+        let json = run(dir.path(), "afar", None)?;
+        assert!(
+            json.contains(
+                "{\"display\": \"elsewhere::send\", \"resolution\": \"external\", \"count\": 1, \
+                 \"line\": 8}"
+            ),
+            "{json}"
+        );
+        // A type has no lines of its own to report.
+        let json = run(dir.path(), "kind:type", None)?;
+        assert!(json.contains("\"loc\": null, \"calls\": []"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_lens_a_language_does_not_read_reports_null_rather_than_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let module = dir.path().join("shop");
+        std::fs::create_dir_all(module.join("src/main/java"))?;
+        std::fs::write(module.join("pom.xml"), "<project></project>\n")?;
+        std::fs::write(
+            module.join("src/main/java/Cart.java"),
+            "public class Cart {\n    int size() { return 1; }\n}\n",
+        )?;
+        let json = run(dir.path(), "kind:member", None)?;
+        assert!(
+            json.contains(
+                "\"rollups\": {\"api\": 1, \"substitution\": null, \"variation\": null, \
+                 \"boundary\": null, \"hazard\": null}, \"unread_lenses\": [\"substitution\", \
+                 \"variation\", \"boundary\", \"hazard\"]"
+            ),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_query_matching_nothing_is_a_success_with_no_nodes()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;

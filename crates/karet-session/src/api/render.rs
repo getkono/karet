@@ -12,13 +12,14 @@
 //! optimistically, so [`TextUpdate`] describes only what the *backend* did to the
 //! text — usually nothing.
 
+use std::ops::RangeInclusive;
+
 use karet_core::Change;
 use karet_core::CursorState;
-use karet_core::Decoration;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_core::Span;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 
 /// What the backend did to a document's text to reach a version.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,10 +85,10 @@ pub struct RenderUpdate {
     /// Semantic blocks for sticky scroll. Whole-document: the header that stays
     /// pinned usually sits above the viewport.
     pub semantic_blocks: Option<SemanticBlocks>,
-    /// Decorations merged across producers (diagnostics, VCS markers, …).
-    pub decorations: Option<Vec<Decoration>>,
     /// Inclusive 0-based line ranges covered by syntax errors.
     pub syntax_error_lines: Option<Vec<(u32, u32)>>,
+    /// Inclusive 0-based line ranges occupied by GFM tables.
+    pub table_lines: Option<Vec<RangeInclusive<u32>>>,
     /// The display language name, when it changed.
     ///
     /// Doubly optional on purpose, and the one field where "unchanged" and "none"
@@ -124,8 +125,8 @@ impl RenderUpdate {
             && self.highlights.is_none()
             && self.folds.is_none()
             && self.semantic_blocks.is_none()
-            && self.decorations.is_none()
             && self.syntax_error_lines.is_none()
+            && self.table_lines.is_none()
             && self.language.is_none()
             && self.cursor.is_none()
     }

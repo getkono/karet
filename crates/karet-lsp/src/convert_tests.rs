@@ -113,6 +113,28 @@ fn numeric_codes_become_strings() {
     assert_eq!(diagnostic_from_lsp(lsp).code.as_deref(), Some("404"));
 }
 
+#[test]
+fn a_code_description_keeps_its_link() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let href = "https://doc.rust-lang.org/error_codes/E0308.html";
+    let lsp = lsp_types::Diagnostic {
+        range: lsp_range(0, 0, 0, 1),
+        code: Some(lsp_types::NumberOrString::String("E0308".into())),
+        code_description: Some(lsp_types::CodeDescription {
+            href: lsp_types::Uri::from_str(href)?,
+        }),
+        message: "x".into(),
+        ..lsp_types::Diagnostic::default()
+    };
+    assert_eq!(diagnostic_from_lsp(lsp).code_href.as_deref(), Some(href));
+    let bare = lsp_types::Diagnostic {
+        range: lsp_range(0, 0, 0, 1),
+        message: "x".into(),
+        ..lsp_types::Diagnostic::default()
+    };
+    assert_eq!(diagnostic_from_lsp(bare).code_href, None);
+    Ok(())
+}
+
 fn bare_item(label: &str) -> lsp_types::CompletionItem {
     lsp_types::CompletionItem {
         label: label.to_owned(),
@@ -122,17 +144,95 @@ fn bare_item(label: &str) -> lsp_types::CompletionItem {
 
 #[test]
 fn empty_and_list_and_array_responses_flatten() {
-    assert!(completions_from_lsp(None).is_empty());
+    assert_eq!(completions_from_lsp(None, true), CompletionList::default());
     let array = lsp_types::CompletionResponse::Array(vec![bare_item("a")]);
-    assert_eq!(completions_from_lsp(Some(array)).len(), 1);
-    // `isIncomplete` is flattened away by design.
+    let mapped = completions_from_lsp(Some(array), false);
+    assert_eq!(mapped.items.len(), 1);
+    assert!(!mapped.incomplete);
     let list = lsp_types::CompletionResponse::List(lsp_types::CompletionList {
         is_incomplete: true,
         items: vec![bare_item("b"), bare_item("c")],
     });
-    let mapped = completions_from_lsp(Some(list));
-    assert_eq!(mapped.len(), 2);
-    assert_eq!(mapped[0].label, "b");
+    let mapped = completions_from_lsp(Some(list), false);
+    assert!(mapped.incomplete, "isIncomplete is kept");
+    assert_eq!(mapped.items.len(), 2);
+    assert_eq!(mapped.items[0].label, "b");
+    assert!(mapped.items.iter().all(|item| item.payload.is_none()));
+}
+
+/// Falsified by keeping a payload a server that cannot resolve would never
+/// read, or by a payload that is not the item exactly as the server sent it
+/// (`data` included), which is what `completionItem/resolve` must hand back.
+#[test]
+fn a_resolvable_list_keeps_each_items_wire_form() -> Result<(), serde_json::Error> {
+    let item: lsp_types::CompletionItem =
+        serde_json::from_value(serde_json::json!({"label": "push", "data": {"id": 7}}))?;
+    let mapped = completions_from_lsp(
+        Some(lsp_types::CompletionResponse::Array(vec![item.clone()])),
+        true,
+    );
+    let payload = mapped.items[0].payload.as_deref().unwrap_or_default();
+    let back: lsp_types::CompletionItem = serde_json::from_str(payload)?;
+    assert_eq!(back, item);
+    Ok(())
+}
+
+/// Falsified by dropping the replace range of an insert/replace edit, or
+/// putting it where the insert range belongs.
+#[test]
+fn an_insert_replace_edit_keeps_both_ranges() {
+    let mut item = bare_item("push");
+    item.text_edit = Some(lsp_types::CompletionTextEdit::InsertAndReplace(
+        lsp_types::InsertReplaceEdit {
+            new_text: "push".into(),
+            insert: lsp_range(0, 2, 0, 4),
+            replace: lsp_range(0, 2, 0, 7),
+        },
+    ));
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(
+        mapped.edit.map(|edit| edit.range),
+        Some(Range {
+            start: LineCol::new(0, 2),
+            end: LineCol::new(0, 4),
+        })
+    );
+    assert_eq!(
+        mapped.replace_range,
+        Some(Range {
+            start: LineCol::new(0, 2),
+            end: LineCol::new(0, 7),
+        })
+    );
+}
+
+/// Falsified by dropping `additionalTextEdits`, `filterText` or
+/// `commitCharacters`, or by keeping a commit "character" longer than one.
+#[test]
+fn additional_edits_filter_text_and_commit_characters_carry_over() {
+    let mut item = bare_item("HashMap");
+    item.filter_text = Some("hashmap".into());
+    item.commit_characters = Some(vec![".".into(), "::".into(), "(".into()]);
+    item.additional_text_edits = Some(vec![lsp_types::TextEdit {
+        range: lsp_range(0, 0, 0, 0),
+        new_text: "use std::collections::HashMap;\n".into(),
+    }]);
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.filter_text.as_deref(), Some("hashmap"));
+    assert_eq!(mapped.commit_characters, Some(vec!['.', '(']));
+    assert_eq!(
+        mapped.additional_edits,
+        vec![TextEdit {
+            range: Range::default(),
+            new_text: "use std::collections::HashMap;\n".into(),
+        }]
+    );
+    let bare = completion_item_from_lsp(bare_item("x"));
+    assert_eq!(
+        bare.commit_characters, None,
+        "none given defers to the list"
+    );
+    assert!(bare.additional_edits.is_empty());
 }
 
 #[test]
@@ -172,7 +272,7 @@ fn insert_text_resolution_precedence() {
 }
 
 #[test]
-fn snippet_format_degrades_everywhere() {
+fn snippet_format_expands_everywhere_and_keeps_its_stops() {
     let mut item = bare_item("push");
     item.insert_text_format = Some(lsp_types::InsertTextFormat::SNIPPET);
     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
@@ -182,19 +282,26 @@ fn snippet_format_degrades_everywhere() {
     let mapped = completion_item_from_lsp(item);
     assert_eq!(mapped.insert_text, "push(ch)");
     assert_eq!(mapped.edit.map(|e| e.new_text), Some("push(ch)".into()));
+    let spans: Vec<_> = mapped
+        .tabstops
+        .iter()
+        .map(|t| (t.index, t.spans.clone()))
+        .collect();
+    assert_eq!(spans, vec![(1, vec![(5, 7)]), (0, vec![(8, 8)])]);
 
     let mut item = bare_item("if");
     item.insert_text_format = Some(lsp_types::InsertTextFormat::SNIPPET);
     item.insert_text = Some("if ${1:cond} {\n\t$0\n}".into());
-    assert_eq!(
-        completion_item_from_lsp(item).insert_text,
-        "if cond {\n\t\n}"
-    );
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.insert_text, "if cond {\n\t\n}");
+    assert_eq!(mapped.tabstops.len(), 2);
 
     // Plain-text format is left untouched even if it looks snippety.
     let mut item = bare_item("x");
     item.insert_text = Some("literal $1".into());
-    assert_eq!(completion_item_from_lsp(item).insert_text, "literal $1");
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.insert_text, "literal $1");
+    assert!(mapped.tabstops.is_empty());
 }
 
 #[test]
@@ -391,9 +498,9 @@ fn maps_hover_definitions_and_inlay_hints() -> Result<(), Box<dyn std::error::Er
         "kind": 2,
         "paddingLeft": true
     }]))?;
-    let mapped = inlay_hints_from_lsp(Some(hints));
+    let mapped = crate::inlay::inlay_hints_from_lsp(Some(hints));
     assert_eq!(mapped[0].label, "value: i32");
-    assert_eq!(mapped[0].kind, InlayHintKind::Parameter);
+    assert_eq!(mapped[0].kind, karet_core::InlayHintKind::Parameter);
     assert!(mapped[0].padding_left);
     Ok(())
 }
@@ -417,9 +524,25 @@ fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::erro
             }]
         }]
     }))?;
-    let mapped = workspace_edit_from_lsp(edit);
-    assert_eq!(mapped.changes.len(), 2);
-    assert_eq!(mapped.changes[0].0, PathBuf::from("/tmp/a.rs"));
+    // A client that understands `documentChanges` uses them and ignores
+    // `changes` (LSP 3.17, `WorkspaceEdit`): applying both would edit a.rs
+    // although the server meant the versioned b.rs edit alone.
+    let mapped = workspace_edit_from_lsp(edit)?;
+    assert!(mapped.changes.is_empty());
+    assert_eq!(
+        mapped.document_changes,
+        vec![DocumentChange::Edit(DocumentEdit {
+            path: PathBuf::from("/tmp/b.rs"),
+            version: Some(4),
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 3),
+                },
+                new_text: "new".into(),
+            }],
+        })]
+    );
 
     let help: lsp_types::SignatureHelp = serde_json::from_value(serde_json::json!({
         "signatures": [{
@@ -443,8 +566,218 @@ fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::erro
         {"title": "Unavailable", "disabled": {"reason": "nope"}}
     ]))?;
     let mapped = code_actions_from_lsp(Some(actions));
-    assert_eq!(mapped.len(), 1);
+    assert_eq!(mapped.len(), 2);
     assert_eq!(mapped[0].command, Some(CommandId("fix.run".into())));
+    // A disabled action is listed with its reason rather than hidden.
+    assert_eq!(mapped[1].disabled.as_deref(), Some("nope"));
+    Ok(())
+}
+
+#[test]
+fn unversioned_changes_map_sorted_by_path() -> Result<(), Box<dyn std::error::Error>> {
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "changes": {
+            "file:///tmp/z.rs": [{
+                "range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 1}},
+                "newText": "z"
+            }],
+            "file:///tmp/a.rs": []
+        }
+    }))?;
+    let mapped = workspace_edit_from_lsp(edit)?;
+    assert!(mapped.document_changes.is_empty());
+    let paths: Vec<_> = mapped
+        .changes
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![PathBuf::from("/tmp/a.rs"), PathBuf::from("/tmp/z.rs")]
+    );
+    Ok(())
+}
+
+#[test]
+fn resource_operations_keep_their_order_and_options() -> Result<(), Box<dyn std::error::Error>> {
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "documentChanges": [
+            {"kind": "create", "uri": "file:///tmp/new.rs",
+             "options": {"ignoreIfExists": true}},
+            {"textDocument": {"uri": "file:///tmp/new.rs", "version": null},
+             "edits": [{
+                "range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 0}},
+                "newText": "fn main() {}"
+             }]},
+            {"kind": "rename", "oldUri": "file:///tmp/old.rs",
+             "newUri": "file:///tmp/moved.rs", "options": {"overwrite": true}},
+            {"kind": "delete", "uri": "file:///tmp/gone",
+             "options": {"recursive": true, "ignoreIfNotExists": true}}
+        ]
+    }))?;
+    let mapped = workspace_edit_from_lsp(edit)?;
+    // Order matters: the edit lands in the file the step before it created.
+    assert_eq!(
+        mapped.document_changes,
+        vec![
+            DocumentChange::Create {
+                path: PathBuf::from("/tmp/new.rs"),
+                options: FileOptions {
+                    overwrite: false,
+                    ignore_if_exists: true,
+                },
+            },
+            DocumentChange::Edit(DocumentEdit {
+                path: PathBuf::from("/tmp/new.rs"),
+                version: None,
+                edits: vec![TextEdit {
+                    range: Range {
+                        start: LineCol::new(0, 0),
+                        end: LineCol::new(0, 0),
+                    },
+                    new_text: "fn main() {}".into(),
+                }],
+            }),
+            DocumentChange::Rename {
+                from: PathBuf::from("/tmp/old.rs"),
+                to: PathBuf::from("/tmp/moved.rs"),
+                options: FileOptions {
+                    overwrite: true,
+                    ignore_if_exists: false,
+                },
+            },
+            DocumentChange::Delete {
+                path: PathBuf::from("/tmp/gone"),
+                options: DeleteOptions {
+                    recursive: true,
+                    ignore_if_not_exists: true,
+                },
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_non_file_uri_refuses_the_whole_edit() -> Result<(), Box<dyn std::error::Error>> {
+    // Dropping the step would apply the rest and report success for an edit
+    // the server meant as a whole.
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "documentChanges": [
+            {"kind": "create", "uri": "file:///tmp/a.rs"},
+            {"kind": "create", "uri": "untitled:Untitled-1"}
+        ]
+    }))?;
+    let Err(LspError::Protocol(message)) = workspace_edit_from_lsp(edit) else {
+        return Err("expected a protocol error".into());
+    };
+    assert!(message.contains("untitled:Untitled-1"), "{message}");
+    // A code action carrying such an edit still lists, but offers no edit.
+    let actions: lsp_types::CodeActionResponse = serde_json::from_value(serde_json::json!([{
+        "title": "Fix",
+        "edit": {"changes": {"untitled:Untitled-1": []}}
+    }]))?;
+    let mapped = code_actions_from_lsp(Some(actions));
+    assert_eq!(mapped.len(), 1);
+    assert_eq!(mapped[0].edit, None);
+    // ...and says why it cannot run, instead of offering to do nothing.
+    assert!(
+        mapped[0]
+            .disabled
+            .as_deref()
+            .is_some_and(|reason| reason.contains("untitled:Untitled-1")),
+        "{:?}",
+        mapped[0].disabled
+    );
+    Ok(())
+}
+
+#[test]
+fn prepare_rename_answers_map_to_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let answer = |value: serde_json::Value| -> Result<_, serde_json::Error> {
+        Ok(prepare_rename_from_lsp(serde_json::from_value(value)?))
+    };
+    let range = serde_json::json!({"start": {"line": 2, "character": 4},
+                                   "end": {"line": 2, "character": 9}});
+    let expected_range = Range {
+        start: LineCol::new(2, 4),
+        end: LineCol::new(2, 9),
+    };
+    assert_eq!(
+        answer(range.clone())?,
+        Some(PrepareRename::Range {
+            range: expected_range,
+            placeholder: None,
+        })
+    );
+    assert_eq!(
+        answer(serde_json::json!({"range": range, "placeholder": "value"}))?,
+        Some(PrepareRename::Range {
+            range: expected_range,
+            placeholder: Some("value".into()),
+        })
+    );
+    assert_eq!(
+        answer(serde_json::json!({"defaultBehavior": true}))?,
+        Some(PrepareRename::DefaultBehavior)
+    );
+    // Out of spec, but unambiguous: a server saying "false" is saying no.
+    assert_eq!(answer(serde_json::json!({"defaultBehavior": false}))?, None);
+    assert_eq!(answer(serde_json::Value::Null)?, None);
+    Ok(())
+}
+
+#[test]
+fn apply_results_map_to_the_wire_reply() {
+    let reply = apply_result_to_lsp(ApplyWorkspaceEditResult::failed("stale", Some(3)));
+    assert!(!reply.applied);
+    assert_eq!(reply.failure_reason.as_deref(), Some("stale"));
+    assert_eq!(reply.failed_change, Some(3));
+    let reply = apply_result_to_lsp(ApplyWorkspaceEditResult::applied());
+    assert!(reply.applied);
+    assert_eq!(reply.failure_reason, None);
+    assert_eq!(reply.failed_change, None);
+}
+
+#[test]
+fn nested_workspace_symbols_keep_their_file_even_without_a_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let symbols: lsp_types::WorkspaceSymbolResponse = serde_json::from_value(serde_json::json!([
+        {
+            "name": "run",
+            "kind": 12,
+            "containerName": "Runner",
+            "location": {
+                "uri": "file:///w/src/run.rs",
+                "range": {"start": {"line": 7, "character": 3},
+                          "end": {"line": 7, "character": 6}}
+            }
+        },
+        {"name": "Lazy", "kind": 5, "location": {"uri": "file:///w/src/lazy.rs"}},
+        {"name": "Remote", "kind": 5, "location": {"uri": "untitled:Untitled-1"}}
+    ]))?;
+    assert!(matches!(
+        symbols,
+        lsp_types::WorkspaceSymbolResponse::Nested(_)
+    ));
+    let mapped = workspace_symbols_from_lsp(Some(symbols));
+    assert_eq!(mapped.len(), 2, "a symbol outside any file is dropped");
+    assert_eq!(mapped[0].path, PathBuf::from("/w/src/run.rs"));
+    assert_eq!(mapped[0].container_name.as_deref(), Some("Runner"));
+    assert_eq!(mapped[0].kind, SymbolKind::Function);
+    assert_eq!(
+        mapped[0].range.map(|range| range.start),
+        Some(LineCol::new(7, 3))
+    );
+    assert_eq!(mapped[1].name, "Lazy");
+    assert_eq!(mapped[1].path, PathBuf::from("/w/src/lazy.rs"));
+    assert_eq!(
+        mapped[1].range, None,
+        "the URI-only form names just the file"
+    );
+    assert!(workspace_symbols_from_lsp(None).is_empty());
     Ok(())
 }
 
@@ -462,6 +795,14 @@ fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::erro
     let mapped = workspace_symbols_from_lsp(Some(symbols));
     assert_eq!(mapped[0].name, "Runner");
     assert_eq!(mapped[0].kind, SymbolKind::Struct);
+    assert_eq!(mapped[0].path, PathBuf::from("/tmp/a.rs"));
+    assert_eq!(
+        mapped[0].range,
+        Some(Range {
+            start: LineCol::new(4, 2),
+            end: LineCol::new(4, 8),
+        })
+    );
 
     let edits: Vec<lsp_types::TextEdit> = serde_json::from_value(serde_json::json!([{
         "range": {"start": {"line": 0, "character": 0},
@@ -471,5 +812,53 @@ fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::erro
     let mapped = text_edits_from_lsp(Some(edits));
     assert_eq!(mapped[0].new_text, "  ");
     assert_eq!(mapped[0].range.end, LineCol::new(0, 2));
+    Ok(())
+}
+
+/// Kind and preference survive the mapping, and the payload carries the wire
+/// form back: the command with its arguments, and the literal with its
+/// `data`, which is what a later resolve or execute needs.
+#[test]
+fn code_actions_keep_their_kind_and_wire_form() -> Result<(), Box<dyn std::error::Error>> {
+    let actions: lsp_types::CodeActionResponse = serde_json::from_value(serde_json::json!([
+        {"title": "Import Foo", "kind": "quickfix", "isPreferred": true,
+         "data": {"id": 7},
+         "command": {"title": "after", "command": "fix.after", "arguments": [1, "two"]}},
+        {"title": "Run tests", "command": "test.run", "arguments": [{"path": "a.rs"}]}
+    ]))?;
+    let mapped = code_actions_from_lsp(Some(actions));
+    let [literal, bare] = mapped.as_slice() else {
+        return Err("expected two actions".into());
+    };
+    assert_eq!(literal.kind.as_deref(), Some("quickfix"));
+    assert!(literal.preferred);
+    assert_eq!(literal.disabled, None);
+    assert_eq!(literal.command, Some(CommandId("fix.after".into())));
+    let resolvable = code_action_literal(literal).ok_or("a literal resolves")?;
+    assert_eq!(resolvable.data, Some(serde_json::json!({"id": 7})));
+    let after = code_action_command(literal).ok_or("the literal runs a command")?;
+    assert_eq!(after.command, "fix.after");
+    assert_eq!(
+        after.arguments,
+        Some(vec![serde_json::json!(1), serde_json::json!("two")])
+    );
+
+    assert_eq!(bare.kind, None);
+    assert!(!bare.preferred);
+    assert!(
+        code_action_literal(bare).is_none(),
+        "a bare command has nothing to resolve"
+    );
+    let run = code_action_command(bare).ok_or("the command runs")?;
+    assert_eq!(run.command, "test.run");
+    assert_eq!(
+        run.arguments,
+        Some(vec![serde_json::json!({"path": "a.rs"})])
+    );
+
+    // An action without a payload (built by hand, not by a server) has neither.
+    let plain = CodeAction::default();
+    assert!(code_action_literal(&plain).is_none());
+    assert!(code_action_command(&plain).is_none());
     Ok(())
 }

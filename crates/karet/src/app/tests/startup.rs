@@ -1,4 +1,5 @@
 use super::support::*;
+use crate::app::theme_picker::load_theme;
 use crate::app::*;
 
 #[test]
@@ -29,16 +30,69 @@ fn with_settings_none_panel_collapses_the_sidebar() {
     assert!(!app.sidebar_visible);
 }
 
-#[test]
-fn missing_language_server_requires_typed_install_approval() {
+/// Raise the install prompt for Texlab, enabled or not.
+fn offer_texlab(enabled: bool) -> App {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.on_backend_event(
         None,
         SessionEvent::LanguageServerInstallRequired {
             server: karet_session::LanguageServerId::Texlab,
+            language: "latex".into(),
+            enabled,
         },
     );
-    assert!(matches!(app.overlay, Some(Overlay::Text(_))));
+    app
+}
+
+#[test]
+fn a_missing_language_server_offers_to_install_and_declines_by_default() {
+    let mut app = offer_texlab(true);
+    let painted = screen(&mut app, 100, 20).join("\n");
+    assert!(painted.contains("Install"), "{painted}");
+    assert!(
+        painted.contains("latex"),
+        "the language is named: {painted}"
+    );
+    assert!(painted.contains("Not now"), "{painted}");
+
+    // Installing spends bandwidth the user did not ask to spend, so the answer
+    // Enter takes must be the one that spends none.
+    let selected = app
+        .confirm
+        .as_ref()
+        .and_then(|d| d.selected_choice())
+        .map(|choice| choice.action.clone());
+    assert_eq!(selected, Some(crate::app::confirm::ConfirmAction::Cancel));
+}
+
+#[test]
+fn a_disabled_language_server_is_asked_about_differently() {
+    let mut app = offer_texlab(false);
+    let painted = screen(&mut app, 100, 20).join("\n");
+    assert!(
+        painted.contains("Enable and install"),
+        "turning it on is part of the question: {painted}"
+    );
+}
+
+#[test]
+fn the_install_prompt_offers_a_permanent_refusal() {
+    let app = offer_texlab(true);
+    let labels: Vec<String> = app
+        .confirm
+        .as_ref()
+        .map(|d| {
+            d.choices
+                .entries()
+                .iter()
+                .map(|entry| entry.label.clone().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        labels.iter().any(|label| label.starts_with("Never ask")),
+        "{labels:?}"
+    );
 }
 
 #[test]
@@ -59,6 +113,10 @@ fn update_plan_displays_exact_versions_before_approval() {
     let painted = screen(&mut app, 100, 16).join("\n");
     assert!(painted.contains("5.25.0"), "{painted}");
     assert!(painted.contains("5.26.0"), "{painted}");
+    assert!(
+        painted.contains("Keep current versions"),
+        "the update is declined by default: {painted}"
+    );
 }
 
 #[test]
@@ -107,11 +165,11 @@ fn open_startup_goto_positions_caret_and_focuses_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.open_startup_goto(&path, 2, 5);
-    deliver_content(&mut app, &path, "fn main() {\n    println!(\"hi\");\n}\n");
+    fill_reserved_tabs(&mut app);
 
     // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -144,13 +202,13 @@ fn open_startup_split_creates_a_second_pane_with_the_file() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 120, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 120, 40);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
 
     assert_eq!(app.layout.panes().len(), 2, "the split adds a second pane");
     // The new pane is focused and holds exactly the split file.
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(
         app.tabs[app.active].path(),
@@ -176,7 +234,7 @@ fn open_startup_split_chains_panes_left_to_right() {
     write_file(&dir, "c.rs", b"fn c() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 200, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 200, 40);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
     app.open_startup_split(&dir.join("c.rs"));
@@ -199,7 +257,7 @@ fn open_startup_split_falls_back_to_a_tab_when_there_is_no_room() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     // Too narrow for two panes at the minimum pane width.
-    app.main_rect = Rect::new(0, 0, 12, 10);
+    app.last_frame.main_rect = Rect::new(0, 0, 12, 10);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
 
@@ -252,7 +310,7 @@ fn open_startup_diff_opens_a_text_diff_tab() {
         _ => panic!("expected a diff tab"),
     }
     assert_eq!(app.tabs[app.active].title, "old.rs ↔ new.rs");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(
         app.pending_startup_diffs
             .iter()
@@ -375,9 +433,7 @@ fn outline_panel_toggles_and_jumps_to_a_bookmarked_page() {
 5 0 obj<</Type/Outlines/First 6 0 R/Last 6 0 R/Count 1>>endobj\n\
 6 0 obj<</Title(Page Two)/Parent 5 0 R/Dest[4 0 R/Fit]>>endobj\n\
 trailer<</Size 7/Root 1 0 R>>\n%%EOF";
-    let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
-        return;
-    };
+    let doc = karet_pdf::Document::load(PDF.to_vec()).expect("the bookmarked fixture parses");
     let page_count = doc.page_count();
     let outline = doc.outline();
     let mut app = app();
@@ -402,7 +458,7 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     // Toggling shows and focuses the panel (it has content).
     app.dispatch(Command::ToggleOutline);
     assert!(app.outline.visible);
-    assert_eq!(app.focus, Focus::Outline);
+    assert_eq!(app.keyboard.focus(), Focus::Outline);
 
     // Activating the bookmark jumps the document to its page.
     app.dispatch(Command::OutlineActivate);
@@ -415,13 +471,54 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     // Toggling again hides the panel and returns focus to the editor.
     app.dispatch(Command::ToggleOutline);
     assert!(!app.outline.visible);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
+}
+
+#[cfg(feature = "pdf")]
+#[test]
+fn page_keys_turn_a_documents_pages() {
+    // A document tab has no caret, so the editor layer's caret paging falls back
+    // to the page turn: PageDown/PageUp step one page, clamped at either end.
+    const PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+trailer<</Size 5/Root 1 0 R>>\n%%EOF";
+    let doc = karet_pdf::Document::load(PDF.to_vec()).expect("the two-page fixture parses");
+    let page_count = doc.page_count();
+    assert_eq!(page_count, 2);
+    let mut app = app();
+    app.tabs.push(Tab::new(
+        "doc.pdf",
+        TabKind::Document {
+            path: PathBuf::from("doc.pdf"),
+            doc,
+            page_count,
+            page: 0,
+            rendered: None,
+            outline: Vec::new(),
+        },
+    ));
+    app.active = app.tabs.len() - 1;
+    app.keyboard.focus_editor();
+    let page = |app: &App| match app.tabs.get(app.active).map(|t| &t.kind) {
+        Some(TabKind::Document { page, .. }) => Some(*page),
+        _ => None,
+    };
+
+    send_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(1));
+    send_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(1), "the last page is the end");
+    send_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(0));
 }
 
 #[test]
 fn sidebar_resize_sets_width_and_collapses_below_min() {
     let mut app = app();
-    app.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
+    app.last_frame.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
     app.sidebar_resizing = true;
     // Dragging the divider to column 45 widens the sidebar.
     app.resize_sidebar_to(45);
@@ -439,7 +536,7 @@ fn sidebar_resize_sets_width_and_collapses_below_min() {
 fn scm_commit_divider_resizes_and_clamps() {
     let mut app = app();
     // A 20-row list area (rows 2..22); the changes list starts at row 2.
-    app.sidebar_content_rect = Rect::new(0, 2, 30, 20);
+    app.last_frame.sidebar_content_rect = Rect::new(0, 2, 30, 20);
     app.scm_ui.changes_rect = Rect::new(0, 2, 30, 10);
     // Drag the divider up to row 12 → commits region = rows 13..22 = 9 rows.
     app.resize_scm_commits_to(12);
@@ -457,7 +554,7 @@ fn pointer_shape_hint_tracks_divider_hover_when_supported() {
     let mut app = app();
     app.caps.pointer_shapes = true;
     app.sidebar_visible = true;
-    app.sidebar_divider_x = 30;
+    app.last_frame.sidebar_divider_x = 30;
 
     let moved = |col, row| MouseEvent {
         kind: MouseEventKind::Moved,
@@ -480,7 +577,7 @@ fn pointer_shape_hint_is_a_no_op_when_unsupported() {
     let mut app = app();
     // `pointer_shapes_supported` defaults to false (never confirmed at startup).
     app.sidebar_visible = true;
-    app.sidebar_divider_x = 30;
+    app.last_frame.sidebar_divider_x = 30;
     app.update_pointer_shape_hint(&MouseEvent {
         kind: MouseEventKind::Moved,
         column: 30,
@@ -515,8 +612,8 @@ fn graphical_cursor_requires_kitty_keyboard_and_graphics() {
 fn graphical_cursor_blink_schedules_a_repaint_when_active() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
-    app.focus = Focus::Editor;
-    app.editor_rect = Rect::new(0, 0, 20, 5);
+    app.keyboard.focus_editor();
+    app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
     app.caps.kitty_keyboard = true;
@@ -529,8 +626,8 @@ fn graphical_cursor_blink_schedules_a_repaint_when_active() {
 fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
-    app.focus = Focus::Editor;
-    app.editor_rect = Rect::new(0, 0, 20, 5);
+    app.keyboard.focus_editor();
+    app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
     app.caps.kitty_keyboard = true;
@@ -552,7 +649,7 @@ fn queued_startup_commands_wait_for_the_active_document() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "fn main() {}\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
 
     app.run_startup_commands_when_ready();
@@ -572,6 +669,36 @@ fn queued_startup_commands_wait_for_the_active_document() {
 }
 
 #[test]
+fn queued_startup_commands_wait_for_the_active_document_to_fill() {
+    // A tab bound to its document but still showing the empty placeholder
+    // holds the queue too: the command would act on no text. The first
+    // snapshot fills the tab and drains it.
+    let dir = test_dir("startup-command-fill");
+    write_file(&dir, "main.rs", b"fn main() {}\n");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.open_path(&dir.join("main.rs"));
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(9));
+    }
+    app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
+
+    app.run_startup_commands_when_ready();
+    assert_eq!(
+        app.startup_commands.len(),
+        1,
+        "an unfilled tab holds the queue"
+    );
+
+    let snapshot = buffer_snapshot(TextBuffer::from_text("fn main() {}\n"));
+    app.on_snapshot(DocumentId(9), &snapshot);
+    assert!(app.startup_commands.is_empty(), "the fill drains the queue");
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn queued_startup_commands_run_at_once_without_a_code_tab() {
     // Nothing to wait for: a session with no open document must not strand its
     // `--command` work forever.
@@ -583,4 +710,61 @@ fn queued_startup_commands_run_at_once_without_a_code_tab() {
 
     assert!(app.startup_commands.is_empty());
     assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+}
+
+#[test]
+fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
+    use crate::term_caps::placeholders_in;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    };
+    assert!(placeholders_in(env(&[("TERM_PROGRAM", "ghostty")])));
+    assert!(placeholders_in(env(&[])));
+    assert!(!placeholders_in(env(&[("TERM_PROGRAM", "WezTerm")])));
+    assert!(!placeholders_in(env(&[(
+        "TMUX",
+        "/tmp/tmux-1/default,1,0"
+    )])));
+    assert!(!placeholders_in(env(&[("KONSOLE_VERSION", "240401")])));
+}
+
+/// The app's capabilities are read off the same probe `--doctor` reports: a
+/// confirmed handshake upgrades halfblocks to Kitty, only a positive OSC 22
+/// answer enables pointer shapes, and an unanswered terminal keeps every
+/// confirmed capability off.
+#[test]
+fn terminal_caps_are_read_off_the_doctor_probe() {
+    use crate::color_depth::ColorDepth;
+    use crate::term_caps::TerminalCapabilities;
+    let answered = TerminalCapabilities {
+        keyboard_enhancement: true,
+        graphics_env: GraphicsProtocol::Halfblocks,
+        kitty_graphics: Some(true),
+        osc22_pointer_shape: Some(true),
+        undercurl: true,
+        color_depth: ColorDepth::TrueColor,
+        placeholders: true,
+    };
+    let caps = TerminalCaps::from_capabilities(&answered);
+    assert_eq!(caps.graphics, GraphicsProtocol::Kitty);
+    assert!(caps.kitty_graphics && caps.kitty_keyboard && caps.pointer_shapes);
+    assert!(caps.placeholders && caps.undercurl);
+    assert_eq!(caps.pointer_shape, None);
+
+    let silent = TerminalCapabilities {
+        keyboard_enhancement: false,
+        kitty_graphics: None,
+        osc22_pointer_shape: None,
+        undercurl: false,
+        ..answered
+    };
+    let caps = TerminalCaps::from_capabilities(&silent);
+    assert_eq!(caps.graphics, GraphicsProtocol::Halfblocks);
+    assert!(!caps.kitty_graphics && !caps.kitty_keyboard && !caps.pointer_shapes);
+    assert!(!caps.placeholders && !caps.undercurl);
 }

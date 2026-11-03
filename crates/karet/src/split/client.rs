@@ -33,7 +33,7 @@ pub(crate) fn source(endpoint: Endpoint) -> app::runtime::Source {
 
 async fn open(
     endpoint: Endpoint,
-) -> color_eyre::Result<(Arc<dyn Backend>, karet_session::local::SnapshotRx)> {
+) -> color_eyre::Result<(Arc<dyn Backend>, karet_session::SnapshotRx)> {
     match endpoint {
         Endpoint::Socket(path) => {
             let stream = tokio::net::UnixStream::connect(&path)
@@ -96,7 +96,7 @@ fn spawn(command: &str) -> color_eyre::Result<tokio::process::Child> {
 async fn connect<R, W>(
     reader: R,
     writer: W,
-) -> color_eyre::Result<(Arc<dyn Backend>, karet_session::local::SnapshotRx)>
+) -> color_eyre::Result<(Arc<dyn Backend>, karet_session::SnapshotRx)>
 where
     R: tokio::io::AsyncBufRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
