@@ -268,9 +268,17 @@ impl DapClient {
     /// when the child exits before the connect, or, where the owner cannot be
     /// told, when it exits within [`TCP_SETTLE`] after it. Any connection made
     /// is then dropped, and the child killed.
-    async fn spawn_tcp(
+    async fn spawn_tcp(command: tokio::process::Command, port: u16) -> Result<TcpLaunch, DapError> {
+        Self::spawn_tcp_judged(command, port, port_owner::owner).await
+    }
+
+    /// [`Self::spawn_tcp`] with the port's owner read through `owner` rather
+    /// than [`port_owner::owner`], so a test can stage an owner that changes
+    /// between the checks before and after the connect.
+    async fn spawn_tcp_judged(
         mut command: tokio::process::Command,
         port: u16,
+        mut owner: impl FnMut(u16, Option<u32>) -> PortOwner,
     ) -> Result<TcpLaunch, DapError> {
         // The piped stdin stays inside the held child, unwritten: a supervisor
         // wrapper treats its EOF as the editor gone and kills the adapter, so
@@ -283,11 +291,11 @@ impl DapClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| DapError::Launch(e.to_string()))?;
-        let ready = |child: &mut tokio::process::Child| {
+        let mut ready = |child: &mut tokio::process::Child| {
             if let Some(why) = exit_of(child) {
                 return Readiness::Lost(format!("exited ({why})"));
             }
-            match port_owner::owner(port, child.id()) {
+            match owner(port, child.id()) {
                 PortOwner::Vacant => Readiness::NotYet,
                 PortOwner::Adapter | PortOwner::Unknown => Readiness::Try,
                 PortOwner::Foreign => Readiness::Lost(foreign(port)),
@@ -301,7 +309,7 @@ impl DapClient {
         // Checked again past the connect: the listener checked could have
         // closed and another taken the port before it. A vacant port is the
         // adapter's listener closed after accepting this one connection.
-        match port_owner::owner(port, child.id()) {
+        match owner(port, child.id()) {
             PortOwner::Adapter | PortOwner::Vacant => {},
             PortOwner::Foreign => return Ok(TcpLaunch::Lost(foreign(port))),
             PortOwner::Unknown => {
