@@ -58,7 +58,9 @@ impl OutlineExtractor {
     /// Host and injected declarations share document coordinates, so component
     /// scripts naturally nest under host sections. Markdown and MDX are deliberate
     /// exceptions: fenced examples are illustrative code, not document symbols.
-    /// MDX keeps its heading tree and merges its own declarations at the top level.
+    /// The same holds for any layer nested inside embedded markdown, such as a
+    /// Rust doc comment's examples. MDX keeps its heading tree and merges its own
+    /// declarations at the top level.
     #[must_use]
     pub fn analyze_layers(&mut self, tree: &LayeredTree, text: &str) -> Vec<Symbol> {
         if let Some(symbols) = structured::analyze(tree.root().language(), text) {
@@ -81,7 +83,9 @@ impl OutlineExtractor {
 
         let mut candidates = root_candidates;
         for layer in tree.children() {
-            candidates.extend(self.candidates(layer, text));
+            if !inside_markdown(tree, layer) {
+                candidates.extend(self.candidates(layer, text));
+            }
         }
         finish(candidates)
     }
@@ -153,6 +157,16 @@ impl OutlineExtractor {
         }
         candidates
     }
+}
+
+/// Whether `layer` sits inside a markdown layer: a code example in a doc comment
+/// (or any other embedded markdown), whose declarations illustrate code rather than
+/// declare it. The same rule a markdown root applies to its own fenced examples.
+fn inside_markdown(tree: &LayeredTree, layer: &SyntaxTree) -> bool {
+    tree.layers_at(layer.span().start).into_iter().any(|outer| {
+        !std::ptr::eq(outer, layer)
+            && Some(outer.language()) == karet_treesitter::languages::MARKDOWN
+    })
 }
 
 fn finish(mut candidates: Vec<Candidate>) -> Vec<Symbol> {
