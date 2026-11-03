@@ -23,19 +23,12 @@ use crate::backend::Backend;
 use crate::session::Session;
 use crate::session::SessionConfig;
 
-/// How many outgoing events are retained for a reattaching client to replay.
-///
-/// Sized for a disconnect measured in minutes of ordinary editing. Beyond it the
-/// client is told to resynchronize, which costs one document's text rather than a
-/// wrong screen — the trade the ring exists to make cheap, not to eliminate.
-const REPLAY_CAPACITY: usize = 4096;
-
 /// Serve one client over `reader`/`writer` until either side closes.
 ///
-/// The session is created here and dropped when the connection ends, so a served
-/// session lives exactly as long as the process hosting it — which, in the
-/// intended deployment, is a terminal pane the multiplexer keeps alive across
-/// client disconnects.
+/// The session is created here and dropped when the connection ends: a served
+/// session lives exactly as long as its one connection. Nothing survives a
+/// disconnect to resume from, so every attach is answered as a fresh one (see
+/// `docs/remote.md`).
 ///
 /// # Errors
 /// Returns [`RemoteError`] on a transport failure or an unusable handshake. A
@@ -60,11 +53,9 @@ struct Connection<R, W> {
     /// loses the race whenever an event or a snapshot is ready first.
     reader: FrameReader<R>,
     writer: W,
-    /// Monotonic sequence for outgoing events, so a reattaching client can name
-    /// where it got to.
+    /// Monotonic sequence for outgoing events. The wire carries it so a future
+    /// resume can name where a client got to; no frame is retained for one.
     seq: u64,
-    /// Recently sent frames, oldest first, for replay on reattach.
-    replay: std::collections::VecDeque<(u64, Vec<u8>)>,
     projection: Projection,
     /// Commands the client submitted that will move a document, so their
     /// answering versions can be attributed to the client rather than the backend.
@@ -88,7 +79,6 @@ where
             reader: FrameReader::new(reader),
             writer,
             seq: 0,
-            replay: std::collections::VecDeque::new(),
             projection: Projection::default(),
             pending_edits: std::collections::HashMap::new(),
             latest: std::collections::HashMap::new(),
@@ -221,8 +211,10 @@ where
         };
         match frame {
             ClientFrame::Hello(_) => Ok(true), // a repeated greeting is harmless
-            ClientFrame::Attach { last_seq } => {
-                self.attach(last_seq).await?;
+            // The position a client names is not consulted: this session began
+            // with the connection, so it has nothing earlier to resume from.
+            ClientFrame::Attach { last_seq: _ } => {
+                self.attach().await?;
                 Ok(true)
             },
             ClientFrame::Resync { doc } => {
@@ -243,36 +235,16 @@ where
         }
     }
 
-    /// Answer an attach, replaying from `last_seq` when it is still in the ring.
-    async fn attach(&mut self, last_seq: u64) -> Result<(), RemoteError> {
-        let resumable = last_seq > 0
-            && self
-                .replay
-                .front()
-                .is_some_and(|(oldest, _)| *oldest <= last_seq.saturating_add(1));
-        if !resumable {
-            // The client holds no usable replicas; everything it is told next
-            // must be complete.
-            self.projection.reset();
-        }
+    /// Answer an attach as a fresh one: never resumed, and with no view state.
+    async fn attach(&mut self) -> Result<(), RemoteError> {
+        // The client holds no usable replicas; everything it is told next must
+        // be complete.
+        self.projection.reset();
         let attached = super::wire::encode(&ServerFrame::Attached {
-            resumed: resumable,
+            resumed: false,
             view_state: None,
         })?;
-        frame::write(&mut self.writer, &attached).await?;
-        if !resumable {
-            return Ok(());
-        }
-        let pending: Vec<Vec<u8>> = self
-            .replay
-            .iter()
-            .filter(|(seq, _)| *seq > last_seq)
-            .map(|(_, body)| body.clone())
-            .collect();
-        for body in pending {
-            frame::write(&mut self.writer, &body).await?;
-        }
-        Ok(())
+        frame::write(&mut self.writer, &attached).await
     }
 
     /// Forward one session event, attributing edit versions on the way past.
@@ -309,27 +281,59 @@ where
         self.send_event(id, event).await
     }
 
-    /// Number, record and write one event.
+    /// Number and write one event.
+    ///
+    /// An event that cannot travel is skipped, never fatal: one lost answer is
+    /// better than a lost session. When it answered a request, a notification
+    /// takes its place on that request id, so the caller is not left waiting.
     async fn send_event(&mut self, id: Option<RequestId>, event: Event) -> Result<(), RemoteError> {
-        self.seq = self.seq.saturating_add(1);
-        let frame = ServerFrame::Event {
-            seq: self.seq,
-            id,
-            event: Box::new(event),
-        };
         // A payload that refuses to encode is one that must not travel — a GitHub
-        // token is the deliberate case. Drop the event, keep the session.
-        let body = match super::wire::encode(&frame) {
+        // token is the deliberate case.
+        let body = match self.encode_event(id, event) {
             Ok(body) => body,
             Err(error) => {
                 tracing::warn!(%error, "dropping an event that cannot cross a connection");
                 return Ok(());
             },
         };
-        if self.replay.len() >= REPLAY_CAPACITY {
-            self.replay.pop_front();
+        if frame::fits(body.len()) {
+            return frame::write(&mut self.writer, &body).await;
         }
-        self.replay.push_back((self.seq, body.clone()));
-        frame::write(&mut self.writer, &body).await
+        tracing::warn!(
+            bytes = body.len(),
+            "dropping an event too large for one frame"
+        );
+        if id.is_none() {
+            return Ok(());
+        }
+        let refusal = Event::Notification {
+            severity: karet_core::Severity::Error,
+            kind: karet_core::NotificationKind::System,
+            message: format!(
+                "an answer of {} MiB is too large to send over the remote connection",
+                body.len() / (1024 * 1024)
+            ),
+        };
+        match self.encode_event(id, refusal) {
+            Ok(body) => frame::write(&mut self.writer, &body).await,
+            Err(error) => {
+                tracing::warn!(%error, "dropping the refusal of an oversized event");
+                Ok(())
+            },
+        }
+    }
+
+    /// Number one event and encode its frame.
+    fn encode_event(
+        &mut self,
+        id: Option<RequestId>,
+        event: Event,
+    ) -> Result<Vec<u8>, RemoteError> {
+        self.seq = self.seq.saturating_add(1);
+        super::wire::encode(&ServerFrame::Event {
+            seq: self.seq,
+            id,
+            event: Box::new(event),
+        })
     }
 }

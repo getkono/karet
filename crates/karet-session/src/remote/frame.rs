@@ -35,12 +35,22 @@ const CODEC_DEFLATE: u8 = 1;
 /// The length prefix plus the codec tag.
 const HEADER: usize = 5;
 
-/// The largest frame that will be read or written.
+/// The bound on a frame: its body, before compression, must be shorter.
 ///
 /// A remote session ships whole file contents (a document on open, a PDF chunk),
 /// so this is generous — but it is still a bound, because a corrupted length
 /// prefix must fail rather than allocate whatever it happened to say.
+///
+/// Both ends apply it to the same quantity, the *uncompressed* body. Capping the
+/// compressed size when writing but the inflated size when reading would let a
+/// writer send a body no reader can take, which the client would ask for again
+/// for ever.
 pub(super) const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// Whether a body of `len` bytes fits in one frame.
+pub(super) fn fits(len: usize) -> bool {
+    len < MAX_FRAME
+}
 
 /// Bodies at least this large are compressed before writing.
 ///
@@ -57,14 +67,17 @@ pub(super) async fn write<W>(writer: &mut W, body: &[u8]) -> Result<(), RemoteEr
 where
     W: AsyncWrite + Unpin,
 {
+    if !fits(body.len()) {
+        return Err(RemoteError::Protocol(format!(
+            "a body of {} bytes exceeds the {MAX_FRAME}-byte frame cap",
+            body.len()
+        )));
+    }
+    // Compression never grows a body (`encode_body` falls back to raw), so the
+    // payload plus its tag fits the length prefix whenever the body fits.
     let (codec, payload) = encode_body(body);
     let len = u32::try_from(payload.len().saturating_add(1))
         .map_err(|_| RemoteError::Protocol("frame exceeds the length prefix".to_owned()))?;
-    if payload.len() + 1 > MAX_FRAME {
-        return Err(RemoteError::Protocol(
-            "frame exceeds the size cap".to_owned(),
-        ));
-    }
     writer.write_all(&len.to_be_bytes()).await?;
     writer.write_all(&[codec]).await?;
     writer.write_all(&payload).await?;
@@ -185,10 +198,17 @@ fn decode_body(codec: u8, payload: Vec<u8>) -> Result<Vec<u8>, RemoteError> {
         CODEC_RAW => Ok(payload),
         CODEC_DEFLATE => {
             let mut body = Vec::new();
+            // Read at most the cap: a body that reaches it is refused rather than
+            // cut short, since truncated text would be taken for the real thing.
             flate2::read::DeflateDecoder::new(&payload[..])
                 .take(MAX_FRAME as u64)
                 .read_to_end(&mut body)
                 .map_err(|error| RemoteError::Protocol(format!("corrupt frame: {error}")))?;
+            if !fits(body.len()) {
+                return Err(RemoteError::Protocol(format!(
+                    "a frame inflates past the {MAX_FRAME}-byte cap"
+                )));
+            }
             Ok(body)
         },
         other => Err(RemoteError::Protocol(format!(
@@ -329,6 +349,52 @@ mod tests {
             .to_be_bytes()
             .to_vec();
         stream.push(CODEC_RAW);
+
+        assert!(reader_over(&stream).next().await.is_err());
+    }
+
+    /// The writer refuses a body at the cap before a byte reaches the stream, so
+    /// the caller can skip it and keep the connection.
+    #[tokio::test]
+    async fn a_body_at_the_cap_is_refused_before_writing() {
+        let mut stream = Vec::new();
+
+        let written = write(&mut stream, &vec![0_u8; MAX_FRAME]).await;
+
+        assert!(written.is_err());
+        assert!(stream.is_empty());
+    }
+
+    /// A body just under the cap that compresses well must be readable: the
+    /// reader caps the inflated body, the same quantity the writer capped.
+    #[tokio::test]
+    async fn a_compressible_body_just_under_the_cap_round_trips() {
+        let body = vec![b'a'; MAX_FRAME - 1];
+        let mut stream = Vec::new();
+        assert!(write(&mut stream, &body).await.is_ok());
+
+        let read = reader_over(&stream).next().await.ok().flatten();
+
+        assert_eq!(read.map(|read| read.len()), Some(body.len()));
+    }
+
+    /// A deflate frame that inflates past the cap is refused, not truncated:
+    /// a cut-short document would be taken for the real text.
+    #[tokio::test]
+    async fn a_frame_inflating_past_the_cap_is_refused_rather_than_truncated() {
+        use std::io::Write;
+
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        let wrote = encoder.write_all(&vec![0_u8; MAX_FRAME]);
+        let payload = encoder.finish().unwrap_or_default();
+        assert!(wrote.is_ok() && !payload.is_empty());
+        let mut stream = u32::try_from(payload.len() + 1)
+            .unwrap_or(u32::MAX)
+            .to_be_bytes()
+            .to_vec();
+        stream.push(CODEC_DEFLATE);
+        stream.extend_from_slice(&payload);
 
         assert!(reader_over(&stream).next().await.is_err());
     }

@@ -152,14 +152,20 @@ type enforces that rather than trusting the transport.
 
 ## Reattaching
 
-The backend outlives its client. Events carry a monotonic sequence number and a
-bounded replay ring, so a reattaching client presents what it last saw and is
-either replayed from there or told to resynchronize.
+**Not implemented yet.** A served session lives for exactly one connection:
+`karet --serve` creates the `Session` when a client attaches and drops it when the
+connection ends, so there is nothing for a later client to resume. The protocol
+leaves room for it — events carry a monotonic sequence number, `Attach` names the
+last one a client saw, and a client may checkpoint its view state as an opaque
+blob — but this build's backend retains no frames to replay, always answers an
+attach with `resumed: false`, and always sends no view state. A checkpoint is
+accepted and kept for the connection's lifetime, never replayed. The client, in
+turn, always attaches as fresh (sequence 0).
 
-A client also checkpoints its view state — tabs, panes, carets — as an opaque
-blob the backend stores and never interprets. The client owns the meaning; the
-backend owns the durability, because a client process does not outlive its
-connection.
+A frame is capped at 64 MiB of uncompressed body, the same quantity on both ends.
+An event too large for one frame is skipped rather than ending the connection;
+when it answered a request, an error notification takes its place on that request
+id.
 
 ## Multiplexer integration
 
@@ -205,6 +211,8 @@ declares its revision, `--client-exec` is the way to run a split session.
   resolve a path that is not on this machine, so tab de-duplication compares
   lexically. Two spellings of one file that differ only through a symlink would
   open twice.
-- **No reconnection UI.** A dropped connection ends the client. The backend
-  survives, and reattaching resumes the session, but nothing yet retries
-  automatically or shows a "reconnecting" state.
+- **No resume, no reattach, no reconnection UI.** A dropped connection ends the
+  backend's session with it: unsaved edits there are covered only by the
+  backend's crash-recovery swaps. The client tells the user the backend is gone
+  and refuses further commands, but nothing retries, resumes from a sequence
+  number, or restores checkpointed view state.

@@ -100,10 +100,14 @@ pub(super) enum ServerFrame {
     Attached {
         /// Whether the server could resume from the client's `last_seq`.
         ///
-        /// `false` means the client fell too far behind and must discard its
-        /// replicas; the server follows with full state for every open document.
+        /// `false` means the client must discard its replicas; the server
+        /// follows with full state for every open document. This build's server
+        /// always answers `false`: its session lives for one connection, so
+        /// there is nothing to resume.
         resumed: bool,
-        /// The opaque view state a previous connection checkpointed.
+        /// The opaque view state a previous connection checkpointed. This build's
+        /// server always answers `None`; a checkpoint is accepted but not
+        /// replayed.
         view_state: Option<Vec<u8>>,
     },
     /// One event, in order.
@@ -169,17 +173,18 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_below_the_floor_is_refused_with_a_directing_message() {
+    fn a_peer_below_the_floor_is_refused_with_a_directing_message() -> Result<(), &'static str> {
         let ancient = Hello {
             protocol: 0,
             karet_version: "0.0.1".to_owned(),
         };
 
         let Err(RemoteError::Protocol(message)) = ancient.accept() else {
-            return;
+            return Err("a peer below the floor must be refused");
         };
 
         assert!(message.contains("upgrade"), "{message}");
+        Ok(())
     }
 
     /// Version skew must not gate: a client one patch release ahead of its server

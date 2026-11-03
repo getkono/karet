@@ -31,6 +31,10 @@ use crate::session::SessionConfig;
 /// and a loaded machine should not turn that into a flake.
 const PATIENCE: Duration = Duration::from_secs(10);
 
+/// What a test returns: a setup step that fails fails the test, rather than
+/// letting it pass without exercising anything.
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 /// A served session and a client connected to it over a duplex pair.
 struct Pair {
     dir: tempfile::TempDir,
@@ -196,35 +200,28 @@ fn replace_first_line(base_version: u64, columns: u32, text: &str) -> Change {
 }
 
 #[tokio::test]
-async fn a_client_opens_a_document_and_receives_its_text() {
-    let Some(mut pair) = pair(&[("hello.txt", "hello\n")]).await else {
-        return;
-    };
+async fn a_client_opens_a_document_and_receives_its_text() -> TestResult {
+    let mut pair = pair(&[("hello.txt", "hello\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("hello.txt");
 
-    let Some((doc, _version)) = pair.open(path).await else {
-        return;
-    };
+    let (doc, _version) = pair.open(path).await.ok_or("the open")?;
     let text = pair.await_text(doc, |text| text.contains("hello")).await;
 
     assert_eq!(text.as_deref(), Some("hello\n"));
+    Ok(())
 }
 
 /// The load-bearing property of the whole design: the client's replica must
 /// converge on the backend's text after an edit, with the backend never sending
 /// the document back.
 #[tokio::test]
-async fn an_edit_converges_between_the_client_replica_and_the_backend() {
-    let Some(mut pair) = pair(&[("edit.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn an_edit_converges_between_the_client_replica_and_the_backend() -> TestResult {
+    let mut pair = pair(&[("edit.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("edit.txt");
-    let Some((doc, version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
 
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
@@ -239,22 +236,19 @@ async fn an_edit_converges_between_the_client_replica_and_the_backend() {
 
     let text = pair.await_text(doc, |text| text.starts_with("omega")).await;
     assert_eq!(text.as_deref(), Some("omega\n"));
+    Ok(())
 }
 
 /// The echo path. The client must render its own edit without waiting for the
 /// backend — that is the entire reason the replica exists.
 #[tokio::test]
-async fn a_local_edit_appears_before_the_backend_answers() {
-    let Some(mut pair) = pair(&[("echo.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn a_local_edit_appears_before_the_backend_answers() -> TestResult {
+    let mut pair = pair(&[("echo.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("echo.txt");
-    let Some((doc, version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
 
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
@@ -269,31 +263,24 @@ async fn a_local_edit_appears_before_the_backend_answers() {
 
     // The very next snapshot is the local echo, minted client-side before any
     // frame could have made the round trip.
-    let echoed = tokio::time::timeout(PATIENCE, pair.snapshots.recv())
-        .await
-        .ok()
-        .flatten();
-    let Some((echoed_doc, snapshot)) = echoed else {
-        return;
-    };
+    let (echoed_doc, snapshot) = tokio::time::timeout(PATIENCE, pair.snapshots.recv())
+        .await?
+        .ok_or("the echo")?;
     assert_eq!(echoed_doc, doc);
     assert_eq!(snapshot.buffer.text(), "omega\n");
+    Ok(())
 }
 
 /// A backend-originated edit — here an undo — must reach the client as an edit it
 /// can apply, converging without the document being resent.
 #[tokio::test]
-async fn a_backend_originated_edit_converges_on_the_client() {
-    let Some(mut pair) = pair(&[("undo.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn a_backend_originated_edit_converges_on_the_client() -> TestResult {
+    let mut pair = pair(&[("undo.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("undo.txt");
-    let Some((doc, version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
     let id = pair.backend.next_id();
     let _ = pair.backend.send(
         id,
@@ -304,9 +291,9 @@ async fn a_backend_originated_edit_converges_on_the_client() {
         }
         .into(),
     );
-    let Some(_) = pair.await_text(doc, |text| text.starts_with("omega")).await else {
-        return;
-    };
+    pair.await_text(doc, |text| text.starts_with("omega"))
+        .await
+        .ok_or("the edited text")?;
 
     let undo = pair.backend.next_id();
     let _ = pair
@@ -315,29 +302,29 @@ async fn a_backend_originated_edit_converges_on_the_client() {
 
     let text = pair.await_text(doc, |text| text.starts_with("alpha")).await;
     assert_eq!(text.as_deref(), Some("alpha\n"));
+    Ok(())
 }
 
 /// Commands with no document behind them must work identically over a connection
 /// — this is the whole non-editing surface (git, search, quick-open) in miniature.
 #[tokio::test]
-async fn a_workspace_command_is_answered_over_the_connection() {
-    let Some(mut pair) = pair(&[("a.rs", "x\n"), ("b.rs", "y\n")]).await else {
-        return;
-    };
+async fn a_workspace_command_is_answered_over_the_connection() -> TestResult {
+    let mut pair = pair(&[("a.rs", "x\n"), ("b.rs", "y\n")])
+        .await
+        .ok_or("a pair")?;
 
     let event = pair.ask(WorkspaceCommand::ListFiles { limit: 100 }).await;
 
     let Some(Event::FilesListed { files, .. }) = event else {
-        return;
+        return Err(format!("expected a listing, got {event:?}").into());
     };
     assert_eq!(files.len(), 2);
+    Ok(())
 }
 
 #[tokio::test]
-async fn bytes_of_a_workspace_file_cross_the_connection() {
-    let Some(mut pair) = pair(&[("media.bin", "0123456789")]).await else {
-        return;
-    };
+async fn bytes_of_a_workspace_file_cross_the_connection() -> TestResult {
+    let mut pair = pair(&[("media.bin", "0123456789")]).await.ok_or("a pair")?;
     let path = pair.root().join("media.bin");
 
     let event = pair
@@ -349,28 +336,23 @@ async fn bytes_of_a_workspace_file_cross_the_connection() {
         .await;
 
     let Some(Event::FileBytes { result, .. }) = event else {
-        return;
+        return Err(format!("expected bytes, got {event:?}").into());
     };
-    let Ok(chunk) = result else {
-        return;
-    };
+    let chunk = result.map_err(|error| format!("{error:?}"))?;
     assert_eq!(chunk.bytes, b"2345".to_vec());
+    Ok(())
 }
 
 /// Saving clears the unsaved marker without touching the text or any derived
 /// data, so it is the case a naive "send only what changed" would drop.
 #[tokio::test]
-async fn saving_clears_the_dirty_flag_on_the_client() {
-    let Some(mut pair) = pair(&[("save.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn saving_clears_the_dirty_flag_on_the_client() -> TestResult {
+    let mut pair = pair(&[("save.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("save.txt");
-    let Some((doc, version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
     let edit = pair.backend.next_id();
     let _ = pair.backend.send(
         edit,
@@ -381,9 +363,9 @@ async fn saving_clears_the_dirty_flag_on_the_client() {
         }
         .into(),
     );
-    let Some(_) = pair.await_text(doc, |text| text.starts_with("omega")).await else {
-        return;
-    };
+    pair.await_text(doc, |text| text.starts_with("omega"))
+        .await
+        .ok_or("the edited text")?;
 
     let _ = pair
         .ask(DocumentCommand::Save {
@@ -403,40 +385,47 @@ async fn saving_clears_the_dirty_flag_on_the_client() {
     .await
     .unwrap_or(false);
     assert!(clean, "a save should reach the client as a clean document");
+    Ok(())
 }
 
 /// A GitHub token is authenticated on the host that holds the repository. The
 /// type refuses to serialize; the connection must drop the command rather than
-/// ship the secret — and must stay usable afterwards.
+/// ship the secret — answer the sign-in as failed on its own request id, so the
+/// caller is not left waiting — and stay usable afterwards.
 #[tokio::test]
-async fn a_command_that_cannot_be_serialized_is_dropped_without_killing_the_session() {
-    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
-        return;
-    };
+async fn a_command_that_cannot_be_serialized_is_refused_without_killing_the_session() -> TestResult
+{
+    let mut pair = pair(&[("a.rs", "x\n")]).await.ok_or("a pair")?;
 
-    let id = pair.backend.next_id();
-    let _ = pair.backend.send(
-        id,
-        GithubCommand::Login {
+    let refused = pair
+        .ask(GithubCommand::Login {
             token: crate::api::GithubToken::new("ghp_example".to_owned()),
-        }
-        .into(),
-    );
+        })
+        .await;
 
+    assert!(
+        matches!(
+            refused,
+            Some(Event::GithubError {
+                operation: crate::api::GithubOperation::SignIn,
+                ..
+            })
+        ),
+        "the sign-in must be answered on its request id: {refused:?}"
+    );
     let event = pair.ask(WorkspaceCommand::ListFiles { limit: 8 }).await;
     assert!(
         matches!(event, Some(Event::FilesListed { .. })),
         "the session must survive an unsendable command: {event:?}"
     );
+    Ok(())
 }
 
 /// A client that attaches knowing nothing is told so, and must be sent complete
 /// state rather than a resumed stream.
 #[tokio::test]
-async fn a_fresh_client_is_told_it_did_not_resume() {
-    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
-        return;
-    };
+async fn a_fresh_client_is_told_it_did_not_resume() -> TestResult {
+    let mut pair = pair(&[("a.rs", "x\n")]).await.ok_or("a pair")?;
 
     let restored = tokio::time::timeout(PATIENCE, async {
         while let Some((_, event)) = pair.events.recv().await {
@@ -451,6 +440,7 @@ async fn a_fresh_client_is_told_it_did_not_resume() {
     .flatten();
 
     assert_eq!(restored, Some(None), "a fresh session has no view state");
+    Ok(())
 }
 
 /// The regression this guards: an event stream and a snapshot stream racing meant
@@ -458,17 +448,13 @@ async fn a_fresh_client_is_told_it_did_not_resume() {
 /// misplaced edit, and the document went blank for the rest of the session.
 /// Several cycles, because the race only lost sometimes.
 #[tokio::test]
-async fn repeated_edit_and_undo_cycles_keep_converging() {
-    let Some(mut pair) = pair(&[("cycle.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn repeated_edit_and_undo_cycles_keep_converging() -> TestResult {
+    let mut pair = pair(&[("cycle.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("cycle.txt");
-    let Some((doc, mut version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, mut version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
 
     for round in 0..6_u32 {
         let typed = format!("omega{round}");
@@ -506,15 +492,14 @@ async fn repeated_edit_and_undo_cycles_keep_converging() {
         // Each cycle leaves the document two versions further along.
         version += 2;
     }
+    Ok(())
 }
 
 /// A client cannot assume its own working directory is the workspace — the files
 /// may be on another machine — so the backend names it on attach.
 #[tokio::test]
-async fn a_client_is_told_which_workspace_it_is_rendering() {
-    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
-        return;
-    };
+async fn a_client_is_told_which_workspace_it_is_rendering() -> TestResult {
+    let mut pair = pair(&[("a.rs", "x\n")]).await.ok_or("a pair")?;
     let expected = pair.root();
 
     let roots = tokio::time::timeout(PATIENCE, async {
@@ -530,15 +515,14 @@ async fn a_client_is_told_which_workspace_it_is_rendering() {
     .flatten();
 
     assert_eq!(roots, Some(vec![expected]));
+    Ok(())
 }
 
 /// The workspace's configuration describes the code and lives beside it, so the
 /// backend resolves it and the client is told.
 #[tokio::test]
-async fn a_client_is_told_the_workspaces_configuration() {
-    let Some(mut pair) = pair(&[("a.rs", "x\n")]).await else {
-        return;
-    };
+async fn a_client_is_told_the_workspaces_configuration() -> TestResult {
+    let mut pair = pair(&[("a.rs", "x\n")]).await.ok_or("a pair")?;
 
     let announced = tokio::time::timeout(PATIENCE, async {
         while let Some((_, event)) = pair.events.recv().await {
@@ -552,6 +536,7 @@ async fn a_client_is_told_the_workspaces_configuration() {
     .unwrap_or(false);
 
     assert!(announced);
+    Ok(())
 }
 
 /// A replica is numbered by the *document*, not by a count of its own edits. A
@@ -560,24 +545,21 @@ async fn a_client_is_told_the_workspaces_configuration() {
 /// counting from its own zero — so the two disagreed and every edit after that
 /// was refused, silently, for the rest of the session.
 #[tokio::test]
-async fn a_re_described_document_is_still_editable() {
-    let Some(mut pair) = pair(&[("resync.txt", "alpha\n")]).await else {
-        return;
-    };
+async fn a_re_described_document_is_still_editable() -> TestResult {
+    let mut pair = pair(&[("resync.txt", "alpha\n")]).await.ok_or("a pair")?;
     let path = pair.root().join("resync.txt");
-    let Some((doc, version)) = pair.open(path).await else {
-        return;
-    };
-    let Some(_) = pair.await_text(doc, |text| text == "alpha\n").await else {
-        return;
-    };
+    let (doc, version) = pair.open(path).await.ok_or("the open")?;
+    pair.await_text(doc, |text| text == "alpha\n")
+        .await
+        .ok_or("the opened text")?;
 
     // Move the document off version zero first: a replica counting from its own
     // zero agrees with the document by accident there, and would hide the bug.
     pair.edit(doc, replace_first_line(version, 5, "beta"));
-    let Some(edited) = pair.await_snapshot(doc, |text| text == "beta\n").await else {
-        return;
-    };
+    let edited = pair
+        .await_snapshot(doc, |text| text == "beta\n")
+        .await
+        .ok_or("the edited snapshot")?;
     assert!(edited.version > 0, "the document must have moved");
 
     // A change against a version the document is not at. The session refuses it,
@@ -585,9 +567,10 @@ async fn a_re_described_document_is_still_editable() {
     // replica no longer represents the document and it is described afresh.
     pair.edit(doc, replace_first_line(edited.version + 7, 4, "nope"));
 
-    let Some(described) = pair.await_snapshot(doc, |text| text == "beta\n").await else {
-        return;
-    };
+    let described = pair
+        .await_snapshot(doc, |text| text == "beta\n")
+        .await
+        .ok_or("the re-description")?;
     // The re-description carries the document's version, not the replica's own.
     assert_eq!(
         described.buffer.version(),
@@ -600,4 +583,7 @@ async fn a_re_described_document_is_still_editable() {
 
     let text = pair.await_text(doc, |text| text == "gamma\n").await;
     assert_eq!(text.as_deref(), Some("gamma\n"));
+    Ok(())
 }
+
+mod connection;
