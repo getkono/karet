@@ -349,7 +349,7 @@ pub(crate) struct Session {
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
     events: EventTx,
-    snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: crate::local::SnapshotTx,
     store: DocumentStore,
     /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered
     /// highlighting is too heavy to run inline on this actor.

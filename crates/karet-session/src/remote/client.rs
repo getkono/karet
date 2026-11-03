@@ -32,21 +32,29 @@ use crate::api::RequestId;
 use crate::api::TextUpdate;
 use crate::backend::Backend;
 use crate::backend::BackendError;
-use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
+use crate::local::SnapshotTx;
 use crate::session::EventRx;
 
 /// A [`Backend`] whose session lives at the other end of a byte stream.
 pub struct RemoteBackend {
-    commands: mpsc::UnboundedSender<(RequestId, Command)>,
+    commands: mpsc::UnboundedSender<(RequestId, Command, u64)>,
     next: AtomicU64,
+    /// The newest connection position among the snapshots the presentation
+    /// layer has taken (see [`SnapshotRx`]).
+    taken: Arc<AtomicU64>,
     events: std::sync::Mutex<Option<EventRx>>,
 }
 
 impl Backend for RemoteBackend {
+    /// Stamped here, on the presentation layer's own thread, rather than when
+    /// the connection dequeues it: the connection may have received a
+    /// re-description since the command was composed, and an edit composed on
+    /// the text before it must still read as such to the backend's fence.
     fn send(&self, id: RequestId, command: Command) -> Result<(), BackendError> {
+        let seen = self.taken.load(Ordering::Relaxed);
         self.commands
-            .send((id, command))
+            .send((id, command, seen))
             .map_err(|_| BackendError::Closed)
     }
 
@@ -113,6 +121,7 @@ where
         RemoteBackend {
             commands: commands_tx,
             next: AtomicU64::new(1),
+            taken: snapshots_rx.taken(),
             events: std::sync::Mutex::new(Some(events_rx)),
         },
         snapshots_rx,
@@ -127,9 +136,9 @@ where
 async fn pump<R, W>(
     reader: FrameReader<R>,
     writer: W,
-    commands: mpsc::UnboundedReceiver<(RequestId, Command)>,
+    commands: mpsc::UnboundedReceiver<(RequestId, Command, u64)>,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    snapshots: &mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: &SnapshotTx,
 ) -> Result<(), RemoteError>
 where
     R: AsyncBufRead + Unpin + Send,
@@ -149,6 +158,17 @@ where
     }
 }
 
+/// The documents this client holds, and where on the connection each was last
+/// described whole.
+#[derive(Default)]
+struct Replicas {
+    held: std::collections::HashMap<DocumentId, Replica>,
+    /// The connection position of the full update each held replica was built
+    /// from. An edit stamped with an older `seen` was composed on text the
+    /// presentation layer held before that description, not on this replica.
+    since: std::collections::HashMap<DocumentId, u64>,
+}
+
 /// Queue one frame body for the connection's writer.
 fn queue(outgoing: &mpsc::UnboundedSender<Vec<u8>>, body: Vec<u8>) -> Result<(), RemoteError> {
     outgoing
@@ -159,24 +179,19 @@ fn queue(outgoing: &mpsc::UnboundedSender<Vec<u8>>, body: Vec<u8>) -> Result<(),
 /// Read backend frames and forward client commands until either side closes.
 async fn read_loop<R>(
     mut reader: FrameReader<R>,
-    mut commands: mpsc::UnboundedReceiver<(RequestId, Command)>,
+    mut commands: mpsc::UnboundedReceiver<(RequestId, Command, u64)>,
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    snapshots: &mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: &SnapshotTx,
 ) -> Result<(), RemoteError>
 where
     R: AsyncBufRead + Unpin + Send,
 {
-    let mut replicas: std::collections::HashMap<DocumentId, Replica> =
-        std::collections::HashMap::new();
-    // The newest event this client has received, reported with every command so
-    // the backend can tell an edit composed before a re-description from one
-    // composed after it (see `ClientFrame::Command::seen`).
-    let mut seen = 0_u64;
+    let mut replicas = Replicas::default();
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some((id, command)) => {
+                Some((id, command, seen)) => {
                     on_command(id, command, seen, &mut replicas, &outgoing, events, snapshots)?;
                 },
                 None => return Ok(()), // the backend handle was dropped
@@ -194,7 +209,7 @@ where
                         ServerFrame::Hello(_) => {},
                         ServerFrame::Attached { resumed, view_state } => {
                             if !resumed {
-                                replicas.clear();
+                                replicas.held.clear();
                             }
                             let _ = events.send((
                                 None,
@@ -202,11 +217,11 @@ where
                             ));
                         },
                         ServerFrame::Event { seq, id, event } => {
-                            seen = seen.max(seq);
                             // A diverged replica is discarded here; asking for it
                             // again is what makes that recoverable rather than a
                             // document stuck blank for the rest of the session.
-                            if let Some(doc) = deliver(*event, id, &mut replicas, events, snapshots)
+                            if let Some(doc) =
+                                deliver(*event, id, seq, &mut replicas, events, snapshots)
                                 && let Ok(body) = super::wire::encode(&ClientFrame::Resync { doc })
                             {
                                 queue(&outgoing, body)?;
@@ -231,10 +246,10 @@ fn on_command(
     id: RequestId,
     command: Command,
     seen: u64,
-    replicas: &mut std::collections::HashMap<DocumentId, Replica>,
+    replicas: &mut Replicas,
     outgoing: &mpsc::UnboundedSender<Vec<u8>>,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    snapshots: &mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: &SnapshotTx,
 ) -> Result<(), RemoteError> {
     let sign_in = matches!(command, Command::Github(GithubCommand::Login { .. }));
     let frame = ClientFrame::Command {
@@ -274,7 +289,7 @@ fn on_command(
         // which the backend will now never see. Describing the document again
         // puts the tab back on the text the backend holds.
         if let Some((doc, ..)) = edited {
-            replicas.remove(&doc);
+            replicas.held.remove(&doc);
             queue(outgoing, super::wire::encode(&ClientFrame::Resync { doc })?)?;
         }
         return Ok(());
@@ -286,23 +301,30 @@ fn on_command(
     // from advances at local speed rather than at the connection's.
     let mut diverged = None;
     if let Some((doc, change, cause)) = edited {
+        // Composed before the presentation layer took the full description this
+        // replica was rebuilt from: its positions describe the older text, so
+        // placing it on this replica would misplace it here as the backend's
+        // fence keeps it from being misplaced there.
+        let stale = replicas.since.get(&doc).is_some_and(|since| seen < *since);
         match replicas
+            .held
             .get_mut(&doc)
+            .filter(|_| !stale)
             .and_then(|replica| replica.apply_local(&change, cause))
         {
             Some(snapshot) => {
-                let _ = snapshots.send((doc, snapshot));
+                let _ = snapshots.send((doc, snapshot, 0));
             },
-            // Either there is no replica yet or the change did not fit the one
-            // there is; either way this client does not hold the text its own
-            // edit produces. Saying so matters as much as the echo does: the
-            // backend suppresses text for versions it believes the client made,
-            // so a silent failure here left the document stuck at the last text
-            // both sides agreed on while every later keystroke was acknowledged
-            // and dropped.
+            // Either there is no replica yet, the edit predates it, or the
+            // change did not fit the one there is; either way this client does
+            // not hold the text its own edit produces. Saying so matters as much
+            // as the echo does: the backend suppresses text for versions it
+            // believes the client made, so a silent failure here left the
+            // document stuck at the last text both sides agreed on while every
+            // later keystroke was acknowledged and dropped.
             None => {
                 tracing::warn!(?doc, "a local edit did not fit its replica");
-                replicas.remove(&doc);
+                replicas.held.remove(&doc);
                 diverged = Some(doc);
             },
         }
@@ -357,17 +379,17 @@ fn too_large(bytes: usize) -> Event {
 fn deliver(
     event: Event,
     id: Option<RequestId>,
-    replicas: &mut std::collections::HashMap<DocumentId, Replica>,
+    seq: u64,
+    replicas: &mut Replicas,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    snapshots: &mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: &SnapshotTx,
 ) -> Option<DocumentId> {
     match event {
         Event::Render { doc, update } => {
-            let replica = match replicas.entry(doc) {
+            let full = matches!(update.text, TextUpdate::Full(_));
+            let replica = match replicas.held.entry(doc) {
                 std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
-                std::collections::hash_map::Entry::Vacant(slot)
-                    if matches!(update.text, TextUpdate::Full(_)) =>
-                {
+                std::collections::hash_map::Entry::Vacant(slot) if full => {
                     slot.insert(Replica::default())
                 },
                 // No replica, and no text to build one from: the update is
@@ -386,7 +408,14 @@ fn deliver(
             };
             match replica.apply(*update) {
                 Some(snapshot) => {
-                    let _ = snapshots.send((doc, snapshot));
+                    // A full description replaces whatever the presentation layer
+                    // composed its pending edits on (a re-description after a
+                    // refusal, say): an edit it sends before taking this one is
+                    // not placeable on the replica.
+                    if full {
+                        replicas.since.insert(doc, seq);
+                    }
+                    let _ = snapshots.send((doc, snapshot, seq));
                     None
                 },
                 // The replica could not apply what the backend said, so it no
@@ -394,13 +423,14 @@ fn deliver(
                 // document again rather than render text the backend never sent.
                 None => {
                     tracing::warn!(?doc, "resetting a diverged document replica");
-                    replicas.remove(&doc);
+                    replicas.held.remove(&doc);
                     Some(doc)
                 },
             }
         },
         Event::Closed { doc } => {
-            replicas.remove(&doc);
+            replicas.held.remove(&doc);
+            replicas.since.remove(&doc);
             let _ = events.send((id, Event::Closed { doc }));
             None
         },

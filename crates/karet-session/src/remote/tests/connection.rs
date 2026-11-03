@@ -259,6 +259,74 @@ async fn a_render_the_replica_cannot_apply_asks_for_the_document_again() -> Test
     Ok(())
 }
 
+/// An edit reports, as `seen`, the newest description the presentation layer
+/// had taken when it composed the edit, not the newest frame the connection had
+/// received: an edit typed on the text before a re-description it has not yet
+/// drawn must read as such to the backend's fence, and is not echoed onto the
+/// re-described replica either.
+#[tokio::test]
+async fn an_edit_reports_the_newest_description_the_presentation_layer_took() -> TestResult {
+    let (backend, mut snapshots, mut scripted) = connected().await?;
+    let mut events = backend.take_events().ok_or("the event stream")?;
+    let doc = DocumentId(7);
+    let edit = |base| -> crate::api::Command {
+        DocumentCommand::ApplyChange {
+            doc,
+            change: replace_first_line(base, 3, "xyz"),
+            cause: karet_core::EditCause::Type,
+        }
+        .into()
+    };
+    scripted.send(&described(5, doc, 1, "abc\n")).await?;
+    tokio::time::timeout(PATIENCE, snapshots.recv())
+        .await?
+        .ok_or("the first description")?;
+
+    // A re-description the connection receives (the event after it proves so)
+    // but the presentation layer has not taken.
+    scripted.send(&described(9, doc, 1, "def\n")).await?;
+    scripted
+        .send(&ServerFrame::Event {
+            seq: 10,
+            id: None,
+            event: Box::new(crate::api::Event::Notification {
+                severity: karet_core::Severity::Error,
+                kind: karet_core::NotificationKind::System,
+                message: "after".to_owned(),
+            }),
+        })
+        .await?;
+    tokio::time::timeout(PATIENCE, events.recv())
+        .await?
+        .ok_or("the event after the re-description")?;
+    backend.send(backend.next_id(), edit(1))?;
+
+    let ClientFrame::Command { seen, .. } = scripted.next().await? else {
+        return Err("the edit must reach the backend".into());
+    };
+    assert_eq!(seen, Some(5), "composed on the description taken at 5");
+    let ClientFrame::Resync { doc: asked } = scripted.next().await? else {
+        return Err("an edit the replica cannot hold asks for the document".into());
+    };
+    assert_eq!(asked, doc);
+    let (_, taken) = tokio::time::timeout(PATIENCE, snapshots.recv())
+        .await?
+        .ok_or("the re-description")?;
+    assert_eq!(
+        taken.buffer.text(),
+        "def\n",
+        "the stale edit is not echoed onto the re-described replica"
+    );
+
+    // Once taken, the re-description is what the next edit was composed on.
+    backend.send(backend.next_id(), edit(1))?;
+    let ClientFrame::Command { seen, .. } = scripted.next().await? else {
+        return Err("the second edit must reach the backend".into());
+    };
+    assert_eq!(seen, Some(9));
+    Ok(())
+}
+
 /// A frame this build cannot decode comes from a newer peer; the client skips
 /// it and keeps reading rather than losing the session.
 #[tokio::test]

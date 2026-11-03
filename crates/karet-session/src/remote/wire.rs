@@ -88,8 +88,10 @@ pub(super) enum ClientFrame {
         /// The command itself, boxed so the frame stays small for the common
         /// keystroke rather than sizing every variant to the largest.
         command: Box<Command>,
-        /// The highest event sequence number this client had received when it
-        /// sent the command.
+        /// The highest sequence number among the document descriptions the
+        /// client's presentation layer had taken when it composed the command
+        /// -- not the newest frame the connection had received, which can be a
+        /// re-description the edit was not composed on.
         ///
         /// An edit's base version alone cannot say what text the edit was
         /// composed on: a client numbers its optimistic edits with the same

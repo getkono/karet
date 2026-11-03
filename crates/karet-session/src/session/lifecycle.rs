@@ -13,7 +13,7 @@ impl Session {
     #[must_use]
     pub fn new(config: SessionConfig) -> (Self, EventRx, SnapshotRx) {
         let (events, erx) = EventTx::channel();
-        let (snapshots, srx) = mpsc::unbounded_channel();
+        let (snapshots, srx) = crate::local::snapshot_channel();
         // Discover the source-control repository (from the first root) before the
         // watcher, so its git-metadata directories can be watched for index/HEAD/refs
         // changes — that is what keeps the status fresh after external `git` commands.
@@ -160,7 +160,7 @@ impl Session {
         };
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
-        (session, EventRx(erx), SnapshotRx(srx))
+        (session, EventRx(erx), srx)
     }
 
     /// Kick off the work deferred until the session is actually being driven: the

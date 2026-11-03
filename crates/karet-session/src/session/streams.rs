@@ -25,7 +25,7 @@ impl Session {
                 dirty: doc.buffer.is_dirty(),
                 cursor,
             });
-            self.snapshots.send((doc_id, snapshot)).ok();
+            self.snapshots.send((doc_id, snapshot, 0)).ok();
         }
     }
 

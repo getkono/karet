@@ -114,9 +114,12 @@ refused one can name exactly the version the backend's move produced, while
 describing text the backend never held. Two rules keep such an edit out. The
 backend forwards one client edit to the session at a time, so a stacked edit is
 never applied before the backend knows whether the one beneath it was. And each
-command reports `seen`, the newest event the client had received: after a
-refusal, an edit of that document sent before the complete re-description is
-dropped. The keystroke is lost; the re-description puts the tab back on the
+command reports `seen`, the newest document description the client's
+presentation layer had taken when the command was composed (stamped as it is
+sent, not when the connection writes it, since the connection may already hold
+a re-description the editor has not drawn): after a refusal, an edit of that
+document composed before the complete re-description is dropped, and the
+client does not echo it onto the re-described replica either. The keystroke is lost; the re-description puts the tab back on the
 backend's text.
 
 ## Who owns what
