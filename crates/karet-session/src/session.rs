@@ -541,6 +541,7 @@ impl Session {
                 first_line,
                 last_line,
             } => self.set_viewport(doc, view, first_line, last_line),
+            DocumentCommand::ClearViewport { doc, view } => self.clear_viewport(doc, view),
         }
     }
 

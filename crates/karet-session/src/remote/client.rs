@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+use karet_core::NotificationKind;
+use karet_core::Severity;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
@@ -24,6 +26,8 @@ use crate::api::Command;
 use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::api::Event;
+use crate::api::GithubCommand;
+use crate::api::GithubOperation;
 use crate::api::RequestId;
 use crate::backend::Backend;
 use crate::backend::BackendError;
@@ -159,15 +163,19 @@ where
                             },
                         }
                     }
+                    let sign_in = matches!(command, Command::Github(GithubCommand::Login { .. }));
                     let body = match super::wire::encode(&ClientFrame::Command {
                         id,
                         command: Box::new(command),
                     }) {
                         Ok(body) => body,
                         // The deliberate case is a GitHub token, which must be
-                        // authenticated on the workspace host instead.
+                        // authenticated on the workspace host instead. `send`
+                        // already returned Ok, so the refusal is answered on the
+                        // request id, or a caller waiting on it never resolves.
                         Err(error) => {
                             tracing::warn!(%error, "dropping a command that cannot cross a connection");
+                            let _ = events.send((Some(id), refusal(sign_in)));
                             continue;
                         },
                     };
@@ -218,6 +226,26 @@ where
                 None => return Ok(()), // the backend closed
             },
         }
+    }
+}
+
+/// The answer to a command that cannot cross a connection.
+///
+/// A sign-in answers as the GitHub failure its caller already handles; anything
+/// else as a notification, so the user is told rather than left waiting.
+fn refusal(sign_in: bool) -> Event {
+    if sign_in {
+        return Event::GithubError {
+            operation: GithubOperation::SignIn,
+            message: "a GitHub token is not sent over a remote connection; sign in on the \
+                      workspace host"
+                .to_owned(),
+        };
+    }
+    Event::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::System,
+        message: "a command could not be sent to the remote backend".to_owned(),
     }
 }
 

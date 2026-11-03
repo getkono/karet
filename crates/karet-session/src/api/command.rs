@@ -181,6 +181,16 @@ pub enum DocumentCommand {
         /// Last visible 0-based line, inclusive.
         last_line: u32,
     },
+    /// `view` no longer displays `doc`: forget the range it declared with
+    /// [`SetViewport`](Self::SetViewport), so a closed view stops widening the
+    /// highlight window of a document another view still shows. Fire-and-forget,
+    /// and a no-op for a view that declared nothing.
+    ClearViewport {
+        /// The document the view displayed.
+        doc: DocumentId,
+        /// The view that closed.
+        view: ViewId,
+    },
 }
 
 /// Language intelligence requests about an open document ([`Command::Lsp`]).

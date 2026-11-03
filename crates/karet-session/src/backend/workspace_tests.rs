@@ -531,3 +531,37 @@ fn closing_a_document_forgets_its_viewport() {
 
     assert_eq!(session.viewport_lines(doc), None);
 }
+
+/// A closed view must stop widening the window: the document stays open while
+/// another view shows it, so waiting for the document to close is too late.
+#[test]
+fn clearing_a_view_narrows_the_range_to_the_views_left() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("two_views.rs");
+    std::fs::write(&path, "fn main() {}\n")?;
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+    let doc = open_document(&mut session, &mut events, path).ok_or("the document opened")?;
+    for (view, first_line) in [(ViewId(1), 0), (ViewId(2), 5_000)] {
+        session.handle(
+            RequestId(2),
+            DocumentCommand::SetViewport {
+                doc,
+                view,
+                first_line,
+                last_line: first_line + 40,
+            },
+        );
+    }
+
+    session.handle(
+        RequestId(3),
+        DocumentCommand::ClearViewport {
+            doc,
+            view: ViewId(2),
+        },
+    );
+
+    let margin = crate::session::VIEWPORT_MARGIN;
+    assert_eq!(session.viewport_lines(doc), Some((0, 40 + margin)));
+    Ok(())
+}

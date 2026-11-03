@@ -57,6 +57,17 @@ impl Session {
         }
     }
 
+    /// Forget the range `view` declared for `doc`, once that view closed.
+    ///
+    /// A document stays open while any view shows it, so this cannot wait for
+    /// the document to close: a closed view's stale range would keep widening
+    /// the window every other view is highlighted within.
+    pub(super) fn clear_viewport(&mut self, doc: DocumentId, view: ViewId) {
+        if self.viewports.remove(&(doc, view)).is_some() {
+            self.publish(doc, None);
+        }
+    }
+
     /// The widest line range any view of `doc` is displaying, padded by
     /// [`VIEWPORT_MARGIN`](crate::session::VIEWPORT_MARGIN).
     ///

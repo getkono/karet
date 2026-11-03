@@ -53,6 +53,13 @@ impl Replica {
     /// the replica has diverged from. The caller resynchronizes rather than
     /// rendering something the backend never said.
     pub(super) fn apply(&mut self, update: RenderUpdate) -> Option<Arc<DocSnapshot>> {
+        // An update that moves no text but names an older version than the
+        // replica holds was overtaken by a local edit on the way here: the client
+        // typed while it was in flight. Its derived data is still the newest the
+        // backend has, but its version and cursor describe text the replica has
+        // already moved past.
+        let stale =
+            matches!(update.text, TextUpdate::Unchanged) && update.version < self.buffer.version();
         match update.text {
             TextUpdate::Unchanged => {},
             TextUpdate::Full(text) => {
@@ -71,8 +78,12 @@ impl Replica {
         // layer bases its next edit on the version a snapshot reports, so a
         // replica numbering from zero refused every edit that followed — no echo,
         // no warning, and the stale replica text overwriting the tab on the next
-        // snapshot.
-        self.buffer.set_version(update.version);
+        // snapshot. A stale update must not move it back, though: the next
+        // keystroke is based on the version the replica last reported, and a
+        // replica numbered backwards refuses it and forces a full resync.
+        if !stale {
+            self.buffer.set_version(update.version);
+        }
         if let Some(slice) = update.highlights {
             self.highlights = Arc::new(slice.highlights);
         }
@@ -90,6 +101,9 @@ impl Replica {
         }
         if let Some(language) = update.language {
             self.language = language.as_deref().and_then(intern_language);
+        }
+        if stale {
+            return Some(self.snapshot(self.buffer.version(), None));
         }
         self.dirty = update.dirty;
         Some(self.snapshot(update.version, update.cursor))

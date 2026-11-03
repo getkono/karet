@@ -16,10 +16,11 @@
 //! reformat it degrades to "replace nearly everything", which is an honest
 //! description of a whole-file reformat.
 
+use karet_core::BytePos;
 use karet_core::Change;
-use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TextEdit;
+use karet_text::TextBuffer;
 
 /// One edit turning `old` into `new`, relative to `base_version`.
 ///
@@ -28,13 +29,26 @@ pub(super) fn minimal_change(old: &str, new: &str, base_version: u64) -> Option<
     if old == new {
         return None;
     }
-    let prefix = common_prefix(old, new);
+    let mut prefix = common_prefix(old, new);
+    // A rope treats CRLF as one line break, so a position between its two bytes
+    // names no column the client's buffer can resolve.
+    if splits_crlf(old, prefix) || splits_crlf(new, prefix) {
+        prefix -= 1;
+    }
     // The suffix may not overlap the prefix, or the replaced range would be
     // inverted — which happens whenever one text is a prefix of the other.
     let max_suffix = (old.len() - prefix).min(new.len() - prefix);
-    let suffix = common_suffix(&old[prefix..], &new[prefix..], max_suffix);
-    let start = position_of(old, prefix);
-    let end = position_of(old, old.len() - suffix);
+    let mut suffix = common_suffix(&old[prefix..], &new[prefix..], max_suffix);
+    if suffix > 0 && (splits_crlf(old, old.len() - suffix) || splits_crlf(new, new.len() - suffix))
+    {
+        suffix -= 1;
+    }
+    // Lines are numbered the way the client's rope numbers them, which breaks on
+    // more than `\n` (a lone CR, VT, FF, NEL, U+2028, U+2029): counting only `\n`
+    // would land an edit below such a character on the wrong client line.
+    let rope = TextBuffer::from_text(old);
+    let start = rope.byte_to_line_col(BytePos(prefix));
+    let end = rope.byte_to_line_col(BytePos(old.len() - suffix));
     let range = Range::new(start, end);
     Some(Change::new(
         base_version,
@@ -79,16 +93,10 @@ fn common_suffix(old: &str, new: &str, max: usize) -> usize {
     shared
 }
 
-/// The line/column of byte offset `offset` in `text`.
-///
-/// Columns count Unicode scalar values, matching [`LineCol`]'s contract — a
-/// column measured in bytes would land mid-character on any non-ASCII line.
-fn position_of(text: &str, offset: usize) -> LineCol {
-    let before = &text[..offset];
-    let line = before.matches('\n').count() as u32;
-    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-    let col = text[line_start..offset].chars().count() as u32;
-    LineCol { line, col }
+/// Whether byte offset `offset` falls between the `\r` and `\n` of a CRLF.
+fn splits_crlf(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+    offset > 0 && bytes.get(offset - 1) == Some(&b'\r') && bytes.get(offset) == Some(&b'\n')
 }
 
 #[cfg(test)]
@@ -102,7 +110,9 @@ mod tests {
     /// a change built against a version it is not at, and what is under test here
     /// is the edit's *content*, not its version bookkeeping.
     fn apply(old: &str, change: &Change) -> Option<String> {
-        let mut buffer = karet_text::TextBuffer::from_bytes(old.as_bytes()).ok()?;
+        // In-memory text, as the backend's buffer holds it: `from_bytes` would
+        // normalize the line endings some tests exercise.
+        let mut buffer = TextBuffer::from_text(old);
         let rebased = Change::new(buffer.version(), change.edits.clone());
         buffer
             .apply(&rebased, karet_text::EditContext::default())
@@ -121,20 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn a_single_word_replacement_converges_and_stays_local() {
+    fn a_single_word_replacement_converges_and_stays_local() -> Result<(), &'static str> {
         let old = "fn alpha() {}\nfn beta() {}\n";
         let new = "fn alpha() {}\nfn gamma() {}\n";
 
-        let change = minimal_change(old, new, 4);
+        let change = minimal_change(old, new, 4).ok_or("the texts differ")?;
 
-        let Some(change) = change else {
-            return;
-        };
         assert_eq!(change.base_version, 4);
         assert_eq!(change.edits.len(), 1);
         // The edit must touch only the changed line, not the whole document.
         assert_eq!(change.edits[0].range.start.line, 1);
         assert_eq!(apply(old, &change).as_deref(), Some(new));
+        Ok(())
     }
 
     #[test]
@@ -199,16 +207,15 @@ mod tests {
     /// Columns are Unicode scalars, not bytes: a byte column on an accented line
     /// would place the edit in the wrong place.
     #[test]
-    fn a_column_after_multibyte_text_counts_scalars_not_bytes() {
+    fn a_column_after_multibyte_text_counts_scalars_not_bytes() -> Result<(), &'static str> {
         let old = "héllo X\n";
         let new = "héllo Y\n";
 
-        let Some(change) = minimal_change(old, new, 1) else {
-            return;
-        };
+        let change = minimal_change(old, new, 1).ok_or("the texts differ")?;
 
         assert_eq!(change.edits[0].range.start.col, 6);
         assert_eq!(apply(old, &change).as_deref(), Some(new));
+        Ok(())
     }
 
     /// A whole-file reformat has no shared prefix or suffix worth speaking of.
@@ -236,6 +243,34 @@ mod tests {
     fn repeated_text_converges() {
         assert_eq!(round_trip("aaaa", "aaaaa").as_deref(), Some("aaaaa"));
         assert_eq!(round_trip("aaaaa", "aaaa").as_deref(), Some("aaaa"));
+    }
+
+    /// The client's rope breaks lines on more than `\n`. An edit below any of
+    /// these must be placed on the line the rope numbers it, or the replica
+    /// diverges silently.
+    #[test]
+    fn an_edit_below_a_non_lf_line_break_lands_on_the_ropes_line() -> Result<(), &'static str> {
+        for separator in ["\r", "\u{b}", "\u{c}", "\u{85}", "\u{2028}", "\u{2029}"] {
+            let old = format!("one{separator}two\nthree X\n");
+            let new = format!("one{separator}two\nthree Y\n");
+
+            let change = minimal_change(&old, &new, 1).ok_or("the texts differ")?;
+
+            assert_eq!(change.edits[0].range.start.line, 2, "{separator:?}");
+            assert_eq!(apply(&old, &change), Some(new), "{separator:?}");
+        }
+        Ok(())
+    }
+
+    /// A rope holds CRLF as one break, so an edit boundary must never fall
+    /// between its two bytes.
+    #[test]
+    fn an_edit_next_to_a_crlf_converges() {
+        assert_eq!(
+            round_trip("a\r\nb\r\n", "a\r\nb\n").as_deref(),
+            Some("a\r\nb\n")
+        );
+        assert_eq!(round_trip("a\r\nb\n", "a\nb\n").as_deref(), Some("a\nb\n"));
     }
 
     #[test]
