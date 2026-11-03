@@ -88,6 +88,29 @@ pub(crate) fn extract(tree: &tree_sitter::Tree, query: &Query, text: &str) -> Ve
     if is_rustdoc_markdown(tree, text) {
         add_rustdoc_doctests(tree, text, &mut out);
     }
+    let included = tree.included_ranges();
+    for region in &mut out {
+        region.ranges = clip_to_included(&region.ranges, &included);
+    }
+    out.retain(|r| !r.ranges.is_empty());
+    out
+}
+
+/// `ranges` restricted to the bytes `tree`'s own layer parses.
+///
+/// A node of an injected layer spans the host text between that layer's included
+/// ranges — a code block in a doc comment covers the next line's `///` — so a region
+/// cut from it would hand the embedded language the host's comment markers too.
+fn clip_to_included(ranges: &[Span], included: &[tree_sitter::Range]) -> Vec<Span> {
+    let mut out = Vec::new();
+    for span in ranges {
+        for r in included {
+            out.extend(non_empty(
+                span.start.0.max(r.start_byte),
+                span.end.0.min(r.end_byte),
+            ));
+        }
+    }
     out
 }
 
@@ -110,17 +133,30 @@ fn is_rustdoc_markdown(tree: &tree_sitter::Tree, text: &str) -> bool {
         .any(|marker| before.ends_with(marker))
 }
 
-/// Inject Rust into every fence rustdoc compiles as a doctest that the query did not
-/// already resolve.
+/// Inject Rust into every code block rustdoc compiles as a doctest that the query did
+/// not already resolve.
 ///
 /// Rustdoc treats a bare fence, and one whose info string holds only doctest
 /// attributes (` ```no_run `, ` ```should_panic,edition2021 `), as Rust. Markdown's
 /// own injections query resolves a fence by its first word, so it finds no grammar
-/// for those and would leave the doctest unhighlighted.
+/// for those and would leave the doctest unhighlighted. Rustdoc also compiles an
+/// indented code block as Rust, and markdown's query never injects one at all.
 fn add_rustdoc_doctests(tree: &tree_sitter::Tree, text: &str, out: &mut Vec<InjectionRegion>) {
     let Some(rust) = crate::languages::RUST else {
         return;
     };
+    let mut indented = Vec::new();
+    collect_kind(tree.root_node(), "indented_code_block", &mut indented);
+    for block in indented {
+        let ranges = content_ranges(block, false);
+        if !ranges.is_empty() {
+            out.push(InjectionRegion {
+                lang: rust,
+                ranges,
+                combined: false,
+            });
+        }
+    }
     let mut fences = Vec::new();
     collect_kind(tree.root_node(), "fenced_code_block", &mut fences);
     for fence in fences {
@@ -439,12 +475,49 @@ mod tests {
 
     #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
     #[test]
+    fn rustdoc_multiline_code_blocks_are_rust_without_comment_markers() -> Result<(), crate::TsError>
+    {
+        // Rustdoc compiles an indented code block as a doctest too. Every line of a
+        // multi-line block is Rust, and the next line's `///` stays the host's: it
+        // must not reach the Rust layer as a nested doc comment.
+        let rust =
+            language_id_from_injection_name("rust").ok_or(crate::TsError::UnknownLanguage)?;
+        for (open, cont, close) in [("///", "///", ""), ("//!", "//!", ""), ("/**", "", "\n*/")] {
+            let indented = format!(
+                "{open} Adds one.\n{cont}\n{cont}     let y = 1;\n{cont}     let z = y;{close}\npub fn f() {{}}\n"
+            );
+            let fenced = format!(
+                "{open} ```\n{cont} let y = 1;\n{cont} let z = y;\n{cont} ```{close}\npub fn f() {{}}\n"
+            );
+            for src in [indented, fenced] {
+                let tree = crate::LayeredParser::new().parse(rust, &src)?;
+                let end = src.find("pub fn").unwrap_or(0);
+                let layers: Vec<_> = tree
+                    .children()
+                    .iter()
+                    .filter(|c| c.language() == rust && c.span().end.0 <= end)
+                    .collect();
+                assert_eq!(layers.len(), 1, "{src}");
+                for line in ["let y", "let z"] {
+                    let at = BytePos(src.find(line).unwrap_or(0));
+                    let langs = tree.languages_at(at);
+                    assert_eq!(langs.first(), Some(&rust), "{line} in {src}");
+                    // Rust (the doctest), markdown, then the host: no layer between.
+                    assert_eq!(langs.len(), 3, "{line} in {src}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-rust", feature = "lang-markdown"))]
+    #[test]
     fn a_bare_fence_in_a_markdown_file_stays_plain() -> Result<(), crate::TsError> {
         // The rustdoc default belongs to doc comments only.
         let lang =
             |name| language_id_from_injection_name(name).ok_or(crate::TsError::UnknownLanguage);
         let (md, rust) = (lang("markdown")?, lang("rust")?);
-        let src = "```\nlet y = 1;\n```\n\n```no_run\nlet z = 2;\n```\n";
+        let src = "```\nlet y = 1;\n```\n\n```no_run\nlet z = 2;\n```\n\n    let w = 3;\n";
         let tree = crate::LayeredParser::new().parse(md, src)?;
         assert!(!tree.children().iter().any(|c| c.language() == rust));
         Ok(())
