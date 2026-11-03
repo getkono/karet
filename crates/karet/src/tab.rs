@@ -517,6 +517,12 @@ pub struct Tab {
     /// Why the session could not load a reserved code tab's text, which then
     /// never arrives: the editor pane shows this instead of waiting forever.
     pub(crate) fill_error: Option<String>,
+    /// A code tab reserved from its name alone, whose file has not yet been
+    /// checked against the [size guard](karet_filetype::SIZE_GUARD). Its
+    /// document is not opened until the check passes: the session loads the
+    /// whole file, so a multi-gigabyte log must become a too-large placeholder
+    /// first, not after.
+    pub(crate) size_unchecked: bool,
 }
 
 /// A code view's cursors and viewport, held for a reserved tab until its text
@@ -576,6 +582,7 @@ impl Tab {
             fill_since: None,
             fill_view: None,
             fill_error: None,
+            size_unchecked: false,
         }
     }
 

@@ -794,6 +794,11 @@ impl App {
             },
             _ => return,
         };
+        if self.tabs.get(idx).is_some_and(|tab| tab.size_unchecked)
+            && !self.check_size_guard(idx, &path)
+        {
+            return;
+        }
         let Some(backend) = &self.backend else {
             return;
         };

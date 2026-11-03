@@ -35,6 +35,22 @@ use crate::tab::open;
 /// few round trips as the backend is willing to answer in.
 const CHUNK: u64 = 1024 * 1024;
 
+/// Whether `tab` is a code tab on `path` whose document waits on the size guard.
+fn size_waiting(tab: &crate::tab::Tab, path: &Path) -> bool {
+    tab.size_unchecked && matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if p == path)
+}
+
+/// Whether `tab` is still waiting for its content: a byte view with no bytes, a
+/// placeholder, or a code tab with no document. Only these are replaced when
+/// content or a verdict arrives; a tab already showing the file is left alone.
+fn is_reservation(tab: &crate::tab::Tab) -> bool {
+    match &tab.kind {
+        TabKind::Hex { bytes, .. } => bytes.is_empty(),
+        TabKind::Placeholder { .. } | TabKind::Code { doc: None, .. } => true,
+        _ => false,
+    }
+}
+
 /// A file being fetched a chunk at a time.
 pub(super) struct PendingBytes {
     /// The file being read.
@@ -91,12 +107,42 @@ impl App {
         let Some(expected) = self.pending_classify.remove(&id) else {
             return; // an answer to a request this shell has forgotten
         };
+        if expected != path {
+            return;
+        }
         let Ok(class) = result else {
-            // Unreadable: the reserved tab already renders as a placeholder, which
+            // A text tab waiting on the size guard opens anyway: the session
+            // decides what an unreadable path is (a file not yet created opens
+            // empty, anything else reports why), and nothing over the guard
+            // can be read without a classification succeeding first.
+            if self.any_tab(|tab| size_waiting(tab, path)) {
+                self.for_each_tab(|tab| {
+                    if size_waiting(tab, path) {
+                        tab.size_unchecked = false;
+                    }
+                });
+                self.register_unregistered(path);
+            }
+            // Otherwise the reserved tab already renders as a placeholder, which
             // is the honest thing to show for a file that cannot be read.
             return;
         };
-        if expected != path {
+        // A text tab waiting on the size guard: under it, the document opens;
+        // over it, or not text after all, the tab becomes what the bytes say.
+        if self.any_tab(|tab| size_waiting(tab, path)) {
+            self.for_each_tab(|tab| {
+                if size_waiting(tab, path) {
+                    tab.size_unchecked = false;
+                }
+            });
+            if open::is_text_kind(class.kind) {
+                self.register_unregistered(path);
+                return;
+            }
+            self.replace_tab_for(path, || open::reserve(path, class.kind));
+            if open::needs_bytes(class.kind) {
+                self.request_bytes(path, class.kind, 0);
+            }
             return;
         }
         if open::needs_bytes(class.kind) {
@@ -110,21 +156,97 @@ impl App {
         if open::kind_from_path(path) == class.kind {
             return;
         }
-        self.replace_tab_for(path, open::reserve(path, class.kind));
+        self.replace_tab_for(path, || open::reserve(path, class.kind));
         if open::is_text_kind(class.kind) {
-            let unregistered: Vec<usize> = self
-                .tabs
-                .iter()
+            self.register_unregistered(path);
+        }
+    }
+
+    /// Settle the size guard for the text tab at `idx` before its document
+    /// opens; `true` when it may open now.
+    ///
+    /// The session loads a document's whole file, so a file over the guard must
+    /// become a too-large placeholder before it is asked to. A co-located
+    /// workspace answers with a stat, at once. A remote one is asked to
+    /// classify the path, and the answer opens the document or replaces the tab
+    /// (see [`on_path_classified`](Self::on_path_classified)).
+    pub(super) fn check_size_guard(&mut self, idx: usize, path: &Path) -> bool {
+        if self.workspace_remote {
+            if !self
+                .pending_classify
+                .values()
+                .any(|pending| pending == path)
+            {
+                self.request_classification(path, false);
+            }
+            return false;
+        }
+        let len = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
+        let Some(tab) = self.tabs.get_mut(idx) else {
+            return false;
+        };
+        tab.size_unchecked = false;
+        if len <= karet_filetype::SIZE_GUARD {
+            return true;
+        }
+        let mut placeholder = open::reserve(path, FileKind::TooLarge { len });
+        placeholder.view = tab.view;
+        placeholder.is_preview = tab.is_preview;
+        *tab = placeholder;
+        false
+    }
+
+    /// Open the document of every not-yet-registered code tab on `path`, in
+    /// every pane.
+    fn register_unregistered(&mut self, path: &Path) {
+        let waiting = |tabs: &[crate::tab::Tab]| -> Vec<usize> {
+            tabs.iter()
                 .enumerate()
                 .filter(|(_, tab)| {
                     matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if p == path)
                 })
                 .map(|(idx, _)| idx)
-                .collect();
-            for idx in unregistered {
+                .collect()
+        };
+        for idx in waiting(&self.tabs) {
+            self.register_doc(idx);
+        }
+        let panes: Vec<_> = self.stored.keys().copied().collect();
+        for pane in panes {
+            let Some(mut stored) = self.stored.remove(&pane) else {
+                continue;
+            };
+            // `register_doc` reads the focused pane's tabs; lend it this pane's.
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            for idx in waiting(&self.tabs) {
                 self.register_doc(idx);
             }
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            self.stored.insert(pane, stored);
         }
+    }
+
+    fn any_tab(&self, matches: impl Fn(&crate::tab::Tab) -> bool) -> bool {
+        self.all_tabs().any(matches)
+    }
+
+    fn for_each_tab(&mut self, mut apply: impl FnMut(&mut crate::tab::Tab)) {
+        for tab in self.all_tabs_mut() {
+            apply(tab);
+        }
+    }
+
+    /// Fetch `path`'s bytes for the hex view a text open fell back to, unless
+    /// they are already on the way.
+    pub(super) fn request_fallback_bytes(&mut self, path: &Path) {
+        if self
+            .pending_bytes
+            .values()
+            .any(|pending| pending.path == path)
+        {
+            return;
+        }
+        self.request_bytes(path, FileKind::Binary, 0);
     }
 
     /// Request the next chunk of `path`.
@@ -172,8 +294,8 @@ impl App {
         pending.bytes.extend_from_slice(&chunk.bytes);
         if chunk.is_final() {
             let total = chunk.total_len;
-            let tab = open::realize(path, pending.kind, pending.bytes, total);
-            self.replace_tab_for(path, tab);
+            let (kind, bytes) = (pending.kind, pending.bytes);
+            self.replace_tab_for(path, || open::realize(path, kind, bytes.clone(), total));
             return;
         }
         let next = chunk.offset.saturating_add(chunk.bytes.len() as u64);
@@ -196,26 +318,27 @@ impl App {
         }
     }
 
-    /// Swap in `tab` wherever `path` is currently open, across every pane.
+    /// Swap a tab built by `make` in wherever `path` is currently open, in every
+    /// pane.
     ///
     /// The tab was reserved when the open began, so the user is already looking at
     /// its position; replacing it in place is what makes the content appear rather
-    /// than a second tab open beside the first.
-    fn replace_tab_for(&mut self, path: &Path, tab: crate::tab::Tab) {
-        let mut replacement = Some(tab);
+    /// than a second tab open beside the first. Each replacement keeps the view
+    /// it replaces: MRU order, viewport reports and every other view-keyed
+    /// lookup name the tab by it, and a second pane showing the same file is
+    /// filled too rather than left an empty reservation.
+    fn replace_tab_for(&mut self, path: &Path, make: impl Fn() -> crate::tab::Tab) {
         for existing in self.all_tabs_mut() {
-            let matches = !existing.is_diff() && existing.path().is_some_and(|open| open == path);
+            let matches = !existing.is_diff()
+                && existing.path().is_some_and(|open| open == path)
+                && is_reservation(existing);
             if !matches {
                 continue;
             }
-            let Some(tab) = replacement.take() else {
-                break;
-            };
-            let preview = existing.is_preview;
-            let mut tab = tab;
-            tab.is_preview = preview;
+            let mut tab = make();
+            tab.view = existing.view;
+            tab.is_preview = existing.is_preview;
             *existing = tab;
-            break;
         }
     }
 

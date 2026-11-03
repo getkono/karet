@@ -39,18 +39,25 @@ impl Tab {
     /// Returns immediately with an empty tab of the right shape; the content
     /// follows from the backend, which also corrects the guess when the bytes
     /// disagree with the name or the file is over the
-    /// [size guard](karet_filetype::SIZE_GUARD).
+    /// [size guard](karet_filetype::SIZE_GUARD). A text tab is marked
+    /// [`size_unchecked`](Self::size_unchecked), so its document is opened only
+    /// once the file is known to be under the guard.
     #[must_use]
     pub fn open(path: &Path) -> Self {
-        reserve(path, kind_from_path(path))
+        let kind = kind_from_path(path);
+        let mut tab = reserve(path, kind);
+        tab.size_unchecked = is_text_kind(kind);
+        tab
     }
 
     /// [`Self::open`] for the "open anyway" override on a too-large placeholder:
-    /// the same reservation, which the caller pairs with a classification that
-    /// bypasses the size guard.
+    /// the same reservation with the size check waived, which the caller pairs
+    /// with a classification that bypasses the size guard.
     #[must_use]
     pub fn open_ignoring_size(path: &Path) -> Self {
-        Self::open(path)
+        let mut tab = Self::open(path);
+        tab.size_unchecked = false;
+        tab
     }
 
     /// Open `path` as an editable code tab whatever its file type, its buffer

@@ -93,6 +93,37 @@ fn find_request(
         .map(|(id, _)| id)
 }
 
+/// The id of the first request `matches` accepts; a test that needs one fails
+/// here, by name, rather than passing without it.
+fn request(backend: &RecordingBackend, matches: impl Fn(&SessionCommand) -> bool) -> RequestId {
+    find_request(backend, matches).expect("the request was sent")
+}
+
+/// Answer the classification `path`'s open asked for with `kind`.
+fn classify_as(app: &mut App, backend: &RecordingBackend, path: &Path, kind: FileKind) {
+    let classify = request(backend, is_classify);
+    app.on_backend_event(
+        Some(classify),
+        SessionEvent::PathClassified {
+            path: path.to_path_buf(),
+            result: Ok(PathClass {
+                kind,
+                len: 5,
+                head: b"text\n".to_vec(),
+            }),
+        },
+    );
+}
+
+/// Open the text file at `path` in a remote app, answer the size check it
+/// asks for first, and return the id of the document open that follows.
+fn open_text(backend: &RecordingBackend, app: &mut App, path: &Path) -> RequestId {
+    app.open_path(path);
+    app.register_open_tabs();
+    classify_as(app, backend, path, FileKind::Text);
+    request(backend, is_open)
+}
+
 #[test]
 fn opening_a_source_file_reserves_a_tab_and_registers_the_document() {
     let (backend, mut app) = remote_app();
@@ -100,6 +131,7 @@ fn opening_a_source_file_reserves_a_tab_and_registers_the_document() {
 
     app.open_path(&path);
     app.register_open_tabs();
+    classify_as(&mut app, &backend, &path, FileKind::Text);
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert!(
@@ -133,16 +165,131 @@ fn opening_media_asks_the_backend_what_it_really_is() {
     );
 }
 
-/// A text-shaped name needs no classification round trip: opening the document
-/// answers the same question, and answers `NotUtf8` when the bytes disagree.
+/// The session loads a document's whole file, so a remote text file is checked
+/// against the size guard before its document is opened.
 #[test]
-fn opening_a_text_shaped_file_costs_no_classification_round_trip() {
+fn a_remote_text_file_is_size_checked_before_its_document_opens() {
     let (backend, mut app) = remote_app();
 
-    app.open_path(Path::new("/not/on/this/machine/blob.bin"));
+    app.open_path(Path::new("/not/on/this/machine/notes.txt"));
     app.register_open_tabs();
 
-    assert!(find_request(&backend, is_classify).is_none());
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert!(find_request(&backend, is_classify).is_some());
+    assert!(find_request(&backend, is_open).is_none());
+}
+
+/// A multi-gigabyte log becomes a too-large placeholder, and its document is
+/// never opened: the session would read all of it.
+#[test]
+fn a_remote_text_file_over_the_guard_becomes_a_too_large_placeholder() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/huge.log");
+    app.open_path(&path);
+    let view = app.tabs[app.active].view;
+    app.register_open_tabs();
+
+    let len = karet_filetype::SIZE_GUARD * 300;
+    classify_as(&mut app, &backend, &path, FileKind::TooLarge { len });
+
+    assert!(matches!(
+        app.tabs[app.active].kind,
+        TabKind::Placeholder {
+            kind: FileKind::TooLarge { .. },
+            ..
+        }
+    ));
+    assert_eq!(app.tabs[app.active].view, view, "the view is kept");
+    assert!(find_request(&backend, is_open).is_none());
+}
+
+/// A co-located file over the guard is caught by a stat, at once.
+#[test]
+fn a_local_text_file_over_the_guard_becomes_a_too_large_placeholder() {
+    let dir = test_dir("open-too-large");
+    let path = dir.join("huge.log");
+    let file = std::fs::File::create(&path).expect("a scratch file");
+    file.set_len(karet_filetype::SIZE_GUARD + 1)
+        .expect("a sparse length");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+
+    app.open_path(&path);
+
+    assert!(matches!(
+        app.tabs[app.active].kind,
+        TabKind::Placeholder {
+            kind: FileKind::TooLarge { .. },
+            ..
+        }
+    ));
+    assert!(find_request(&backend, is_open).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A text file whose bytes turn out not to be UTF-8 falls back to a hex view,
+/// and its bytes are read outright: classifying again would say "text" (the
+/// head can look like it) and leave the view empty.
+#[test]
+fn a_text_open_that_is_not_utf8_reads_its_bytes_into_the_hex_view() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/latin1.txt");
+    let open = open_text(&backend, &mut app, &path);
+
+    app.on_backend_event(Some(open), SessionEvent::NotUtf8 { path: path.clone() });
+    let read = request(&backend, is_read);
+    app.on_backend_event(
+        Some(read),
+        SessionEvent::FileBytes {
+            path: path.clone(),
+            result: Ok(FileChunk {
+                offset: 0,
+                bytes: vec![0xe9, b'\n'],
+                total_len: 2,
+            }),
+        },
+    );
+
+    let TabKind::Hex { bytes, .. } = &app.tabs[app.active].kind else {
+        panic!("the fallback is a hex view");
+    };
+    assert_eq!(bytes, &vec![0xe9, b'\n']);
+}
+
+/// Media open in two panes fills both, each keeping its own view.
+#[test]
+fn media_open_in_two_panes_fills_both_and_keeps_their_views() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/blob.dat");
+    app.open_path(&path);
+    app.split_focused(SplitDir::Right);
+    app.register_open_tabs();
+    let views: Vec<ViewId> = app.all_tabs().map(|tab| tab.view).collect();
+    classify_as(&mut app, &backend, &path, FileKind::Binary);
+    let read = request(&backend, is_read);
+
+    app.on_backend_event(
+        Some(read),
+        SessionEvent::FileBytes {
+            path: path.clone(),
+            result: Ok(FileChunk {
+                offset: 0,
+                bytes: vec![7, 7],
+                total_len: 2,
+            }),
+        },
+    );
+
+    let filled: Vec<ViewId> = app
+        .all_tabs()
+        .filter(|tab| matches!(&tab.kind, TabKind::Hex { bytes, .. } if !bytes.is_empty()))
+        .map(|tab| tab.view)
+        .collect();
+    assert_eq!(filled.len(), 2, "both panes are filled");
+    for view in views {
+        assert!(filled.contains(&view), "view {view:?} is kept");
+    }
 }
 
 /// Attaching a backend re-walks every open tab, and a user can reopen a file
@@ -168,9 +315,7 @@ fn a_classified_binary_file_has_its_bytes_requested_and_rendered() {
     let path = PathBuf::from("/not/on/this/machine/logo.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, is_classify) else {
-        return;
-    };
+    let classify = request(&backend, is_classify);
 
     app.on_backend_event(
         Some(classify),
@@ -183,9 +328,7 @@ fn a_classified_binary_file_has_its_bytes_requested_and_rendered() {
             }),
         },
     );
-    let Some(read) = find_request(&backend, is_read) else {
-        return;
-    };
+    let read = request(&backend, is_read);
     app.on_backend_event(
         Some(read),
         SessionEvent::FileBytes {
@@ -199,7 +342,7 @@ fn a_classified_binary_file_has_its_bytes_requested_and_rendered() {
     );
 
     let TabKind::Hex { bytes, .. } = &app.tabs[app.active].kind else {
-        return;
+        panic!("the bytes render as a hex view");
     };
     assert_eq!(bytes, &vec![0, 1, 2, 3]);
 }
@@ -212,9 +355,7 @@ fn a_chunked_file_assembles_across_reads() {
     let path = PathBuf::from("/not/on/this/machine/logo.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, is_classify) else {
-        return;
-    };
+    let classify = request(&backend, is_classify);
     app.on_backend_event(
         Some(classify),
         SessionEvent::PathClassified {
@@ -229,14 +370,12 @@ fn a_chunked_file_assembles_across_reads() {
 
     // Two chunks: the first short of the end, the second completing the file.
     for (offset, bytes) in [(0_u64, vec![1_u8, 2, 3]), (3, vec![4, 5, 6])] {
-        let Some(read) = sent(&backend)
+        let read = sent(&backend)
             .into_iter()
             .rev()
             .find(|(_, command)| is_read(command))
             .map(|(id, _)| id)
-        else {
-            return;
-        };
+            .expect("each chunk is asked for");
         app.on_backend_event(
             Some(read),
             SessionEvent::FileBytes {
@@ -251,7 +390,7 @@ fn a_chunked_file_assembles_across_reads() {
     }
 
     let TabKind::Hex { bytes, .. } = &app.tabs[app.active].kind else {
-        return;
+        panic!("the assembled bytes render as a hex view");
     };
     assert_eq!(bytes, &vec![1, 2, 3, 4, 5, 6]);
 }
@@ -265,9 +404,7 @@ fn a_lying_extension_is_corrected_by_the_backends_verdict() {
     let path = PathBuf::from("/not/on/this/machine/report.pdf");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, is_classify) else {
-        return;
-    };
+    let classify = request(&backend, is_classify);
 
     app.on_backend_event(
         Some(classify),
@@ -280,9 +417,7 @@ fn a_lying_extension_is_corrected_by_the_backends_verdict() {
             }),
         },
     );
-    let Some(read) = find_request(&backend, is_read) else {
-        return;
-    };
+    let read = request(&backend, is_read);
     app.on_backend_event(
         Some(read),
         SessionEvent::FileBytes {
@@ -306,9 +441,7 @@ fn an_unreadable_file_keeps_its_placeholder() {
     let path = PathBuf::from("/not/on/this/machine/gone.png");
     app.open_path(&path);
     app.register_open_tabs();
-    let Some(classify) = find_request(&backend, is_classify) else {
-        return;
-    };
+    let classify = request(&backend, is_classify);
 
     app.on_backend_event(
         Some(classify),
@@ -366,12 +499,10 @@ fn a_local_quick_open_asks_the_backend_for_no_walk() {
 #[test]
 fn the_file_list_fills_the_open_picker_with_workspace_relative_rows() {
     let (backend, mut app) = remote_quick_open();
-    let Some(request) = find_request(&backend, is_list) else {
-        return;
-    };
+    let listing = request(&backend, is_list);
 
     app.on_backend_event(
-        Some(request),
+        Some(listing),
         SessionEvent::FilesListed {
             files: vec![
                 PathBuf::from("/not/on/this/machine/src/main.rs"),
@@ -389,9 +520,7 @@ fn the_file_list_fills_the_open_picker_with_workspace_relative_rows() {
 #[test]
 fn a_stale_file_list_is_ignored() {
     let (backend, mut app) = remote_quick_open();
-    let Some(request) = find_request(&backend, is_list) else {
-        return;
-    };
+    let listing = request(&backend, is_list);
     // The backend named a different workspace, superseding the first walk.
     app.on_backend_event(
         None,
@@ -401,7 +530,7 @@ fn a_stale_file_list_is_ignored() {
     );
 
     app.on_backend_event(
-        Some(request),
+        Some(listing),
         SessionEvent::FilesListed {
             files: vec![PathBuf::from("/not/on/this/machine/stale.rs")],
             truncated: false,
@@ -418,11 +547,7 @@ fn a_stale_file_list_is_ignored() {
 fn a_laid_out_editor_reports_its_visible_lines() {
     let (backend, mut app) = remote_app();
     let path = PathBuf::from("/not/on/this/machine/main.rs");
-    app.open_path(&path);
-    app.register_open_tabs();
-    let Some(open) = find_request(&backend, is_open) else {
-        return;
-    };
+    let open = open_text(&backend, &mut app, &path);
     app.on_backend_event(
         Some(open),
         SessionEvent::Opened {
@@ -450,11 +575,7 @@ fn a_laid_out_editor_reports_its_visible_lines() {
 fn an_unmoved_viewport_is_not_reported_again() {
     let (backend, mut app) = remote_app();
     let path = PathBuf::from("/not/on/this/machine/main.rs");
-    app.open_path(&path);
-    app.register_open_tabs();
-    let Some(open) = find_request(&backend, is_open) else {
-        return;
-    };
+    let open = open_text(&backend, &mut app, &path);
     app.on_backend_event(
         Some(open),
         SessionEvent::Opened {
@@ -480,11 +601,7 @@ fn an_unmoved_viewport_is_not_reported_again() {
 fn scrolling_reports_the_new_viewport() {
     let (backend, mut app) = remote_app();
     let path = PathBuf::from("/not/on/this/machine/main.rs");
-    app.open_path(&path);
-    app.register_open_tabs();
-    let Some(open) = find_request(&backend, is_open) else {
-        return;
-    };
+    let open = open_text(&backend, &mut app, &path);
     app.on_backend_event(
         Some(open),
         SessionEvent::Opened {
@@ -537,9 +654,11 @@ fn a_local_workspace_reports_no_viewport() -> Result<(), &'static str> {
 #[test]
 fn a_closed_view_withdraws_its_viewport() -> Result<(), &'static str> {
     let (backend, mut app) = remote_app();
-    app.open_path(&PathBuf::from("/not/on/this/machine/main.rs"));
-    app.register_open_tabs();
-    let open = find_request(&backend, is_open).ok_or("the open was sent")?;
+    let open = open_text(
+        &backend,
+        &mut app,
+        &PathBuf::from("/not/on/this/machine/main.rs"),
+    );
     app.on_backend_event(
         Some(open),
         SessionEvent::Opened {

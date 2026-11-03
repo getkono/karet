@@ -77,6 +77,9 @@ impl App {
                 let mut tab = Tab::open(&pdf);
                 tab.view = view;
                 self.tabs[index] = tab;
+                // The tab is only a reservation: asking for its content is what
+                // fetches the PDF's bytes and renders the preview.
+                self.register_doc(index);
                 self.set_active(index);
                 self.notify(
                     Report::Outcome,

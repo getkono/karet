@@ -186,8 +186,11 @@ impl App {
                 needs_bytes = true;
             }
         }
+        // Read the bytes outright rather than classify first: the head can
+        // look like text (Latin-1, or a bad byte past the sampled 8 KiB), and a
+        // classification that says "text" again would leave the view empty.
         if needs_bytes {
-            self.request_content(&path);
+            self.request_fallback_bytes(&path);
         }
         self.notify_tagged(
             Report::Alert,
