@@ -33,9 +33,18 @@ pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
 /// whose grammar's `lang-*` feature is off return `None`, and the caller simply
 /// leaves that region unhighlighted. When two grammars claim the same alias, the
 /// one registered first wins.
+///
+/// A whole fence info string resolves by its first word, as CommonMark reads it:
+/// the name ends at the first comma, whitespace or `{`, so rustdoc's
+/// `rust,no_run` and `rust compile_fail` both name Rust.
 #[must_use]
 pub fn language_id_from_injection_name(name: &str) -> Option<LanguageId> {
-    let name = name.trim().to_ascii_lowercase();
+    let name = name
+        .trim()
+        .split(|c: char| c == ',' || c == '{' || c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     registry::all()
         .iter()
         .find(|g| g.names.contains(&name.as_str()))
@@ -77,6 +86,25 @@ mod tests {
             assert_eq!(language_id_from_injection_name("rs"), Some(rust));
             assert_eq!(language_id_from_injection_name("  RuSt "), Some(rust));
         }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn fence_info_strings_resolve_by_their_first_word() {
+        let rust = language_id_from_injection_name("rust");
+        assert!(rust.is_some());
+        for info in [
+            "rust,no_run",
+            "rust,compile_fail",
+            "rust,ignore",
+            "rust no_run",
+            "rust{.class}",
+        ] {
+            assert_eq!(language_id_from_injection_name(info), rust, "{info:?}");
+        }
+        // The first word decides: an attribute alone names no language.
+        assert_eq!(language_id_from_injection_name("no_run,rust"), None);
+        assert_eq!(language_id_from_injection_name(",rust"), None);
     }
 
     #[test]
