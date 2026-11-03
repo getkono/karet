@@ -55,7 +55,7 @@ pub(crate) fn owner(port: u16, root: Option<u32>) -> PortOwner {
     }
     let tree = match root {
         Some(root) => match sys::parents() {
-            Some(parents) => Some(descendants(root, &parents)),
+            Some(parents) => Some(descendants(root, &parents, sys::linked)),
             None => return PortOwner::Unknown,
         },
         None => None,
@@ -92,15 +92,20 @@ fn port_from_network_order(raw: u32) -> u16 {
 }
 
 /// `root` followed by every pid whose chain of `(pid, parent)` links
-/// reaches it.
+/// reaches it, following only the links `linked(child, parent)` accepts (a
+/// recorded parent pid that may since have been reused is checked there).
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
-fn descendants(root: u32, parents: &[(u32, u32)]) -> Vec<u32> {
+fn descendants(
+    root: u32,
+    parents: &[(u32, u32)],
+    mut linked: impl FnMut(u32, u32) -> bool,
+) -> Vec<u32> {
     let mut tree = vec![root];
     let mut next = 0;
     while let Some(&pid) = tree.get(next) {
         next += 1;
         for &(child, parent) in parents {
-            if parent == pid && !tree.contains(&child) {
+            if parent == pid && !tree.contains(&child) && linked(child, parent) {
                 tree.push(child);
             }
         }
@@ -192,7 +197,8 @@ mod linux {
                 Some((pid, parent_pid(&stat)?))
             })
             .collect();
-        Some(descendants(root, &parents))
+        // The kernel reparents an orphan, so a recorded parent is live.
+        Some(descendants(root, &parents, |_, _| true))
     }
 
     /// The parent pid from a `/proc/PID/stat` line. The command name sits in
@@ -395,6 +401,12 @@ mod sys {
         Some(holders)
     }
 
+    /// Whether `child`'s recorded `parent` is its live parent: always, since
+    /// launchd adopts an orphan, so a recorded parent pid is never stale.
+    pub(super) fn linked(_child: u32, _parent: u32) -> bool {
+        true
+    }
+
     /// Every `(pid, parent)` pair; `None` when processes cannot be listed.
     pub(super) fn parents() -> Option<Vec<(u32, u32)>> {
         Some(
@@ -527,6 +539,7 @@ mod sys {
 
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Foundation::NO_ERROR;
     use windows_sys::Win32::NetworkManagement::IpHelper::GetExtendedTcpTable;
@@ -539,6 +552,9 @@ mod sys {
     use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32FirstW;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::Process32NextW;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPPROCESS;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 
     /// `AF_INET` / `AF_INET6` as `GetExtendedTcpTable` takes them.
     const AF_INET: u32 = 2;
@@ -614,6 +630,46 @@ mod sys {
         None
     }
 
+    /// Whether `child`'s recorded `parent` pid still names its parent.
+    /// Windows never reparents an orphan, so the pid of a parent that exited
+    /// can since have been reused by an unrelated process; only a process
+    /// created no later than the child can be its parent. A link whose
+    /// creation times cannot be read is not followed.
+    pub(super) fn linked(child: u32, parent: u32) -> bool {
+        match (created(parent), created(child)) {
+            (Some(parent), Some(child)) => parent <= child,
+            _ => false,
+        }
+    }
+
+    /// When process `pid` was created, in 100ns ticks; `None` when it cannot
+    /// be opened (exited, or not this user's).
+    fn created(pid: u32) -> Option<u64> {
+        // SAFETY: no pointers; a null handle is checked below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: `process` is open with query rights, and each pointer is a
+        // live `FILETIME`.
+        let read = unsafe {
+            GetProcessTimes(
+                process,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        } != 0;
+        // SAFETY: `process` is open and closed only here.
+        unsafe { CloseHandle(process) };
+        read.then(|| u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
+    }
+
     /// Every `(pid, parent)` pair in a process snapshot; `None` when no
     /// snapshot can be taken.
     pub(super) fn parents() -> Option<Vec<(u32, u32)>> {
@@ -652,15 +708,25 @@ mod tests {
     fn descendants_follow_every_generation_and_nothing_else() {
         // 10 → 11 → 12, 10 → 13; 20 → 21 is another tree.
         let parents = [(11, 10), (12, 11), (13, 10), (21, 20), (10, 1)];
-        assert_eq!(descendants(10, &parents), [10, 11, 13, 12]);
-        assert_eq!(descendants(12, &parents), [12]);
+        assert_eq!(descendants(10, &parents, |_, _| true), [10, 11, 13, 12]);
+        assert_eq!(descendants(12, &parents, |_, _| true), [12]);
     }
 
     #[test]
     fn descendants_stop_at_a_parent_cycle() {
         // A reused pid can make two processes each other's parent.
         let parents = [(11, 10), (10, 11)];
-        assert_eq!(descendants(10, &parents), [10, 11]);
+        assert_eq!(descendants(10, &parents, |_, _| true), [10, 11]);
+    }
+
+    #[test]
+    fn descendants_skip_a_link_the_check_refuses_and_everything_below_it() {
+        // 12 records a parent pid 10 that the adapter reused after 12's real
+        // parent exited: neither 12 nor its own child 14 is the adapter's.
+        let parents = [(11, 10), (12, 10), (14, 12)];
+        let tree = descendants(10, &parents, |child, _| child != 12);
+        assert_eq!(tree, [10, 11]);
+        assert_eq!(judge(&[12], Some(&tree)), PortOwner::Foreign);
     }
 
     #[test]
