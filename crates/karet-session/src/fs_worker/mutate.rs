@@ -15,10 +15,22 @@ pub(super) fn run(mutation: &PathMutation) -> Result<(), String> {
         PathMutation::CreateDirectory { path } => {
             std::fs::create_dir_all(path).map_err(|error| error.to_string())
         },
-        PathMutation::Rename { from, to } => rename(from, to),
-        PathMutation::Copy { from, to } => copy(from, to),
-        PathMutation::Delete { path } => delete(path),
+        PathMutation::Rename { from, to } => rename(&entry(from), &entry(to)),
+        PathMutation::Copy { from, to } => copy(&entry(from), &entry(to)),
+        PathMutation::Delete { path } => delete(&entry(path)),
     }
+}
+
+/// `path` naming the entry itself rather than what it resolves to.
+///
+/// A trailing separator (or a trailing `.`) makes the OS resolve a final
+/// symlink: `link/` is the directory the link points at, so `symlink_metadata`
+/// reports a directory and a delete would empty the target — the one thing the
+/// "never followed" rule below exists to prevent. Rebuilding the path from its
+/// components drops both, so every mutation acts on the entry the explorer
+/// listed.
+fn entry(path: &Path) -> std::path::PathBuf {
+    path.components().collect()
 }
 
 /// Create an empty file, failing if something is already there.

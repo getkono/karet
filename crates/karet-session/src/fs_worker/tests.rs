@@ -401,6 +401,54 @@ fn deleting_a_symlink_to_a_directory_leaves_the_target() -> TestResult {
     Ok(())
 }
 
+/// A trailing separator makes the OS resolve a final link, so `link/` names the
+/// directory it points at. Any client can send the path, and the delete must
+/// still remove the link and leave the target whole.
+#[cfg(unix)]
+#[test]
+fn deleting_a_directory_link_named_with_a_trailing_slash_leaves_the_target() -> TestResult {
+    let dir = tree(&[("real/keep.rs", b"keep")]).ok_or("a scratch tree")?;
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(dir.path().join("real"), &link)?;
+
+    let (_, result) = mutate(PathMutation::Delete {
+        path: dir.path().join("link/"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    assert!(link.symlink_metadata().is_err(), "the link itself is gone");
+    assert_eq!(
+        std::fs::read(dir.path().join("real/keep.rs")).ok(),
+        Some(b"keep".to_vec())
+    );
+    Ok(())
+}
+
+/// The same for a copy: `link/` is copied as the link, not as the tree it
+/// reaches.
+#[cfg(unix)]
+#[test]
+fn copying_a_directory_link_named_with_a_trailing_slash_copies_the_link() -> TestResult {
+    let dir = tree(&[("real/keep.rs", b"keep")]).ok_or("a scratch tree")?;
+    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link"))?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("link/"),
+        to: dir.path().join("copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        dir.path()
+            .join("copy")
+            .symlink_metadata()
+            .is_ok_and(|entry| entry.is_symlink())
+    );
+    Ok(())
+}
+
 #[test]
 fn deleting_a_missing_path_reports_why() -> TestResult {
     let dir = tree(&[]).ok_or("a scratch tree")?;
