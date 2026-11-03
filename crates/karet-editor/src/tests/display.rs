@@ -432,6 +432,7 @@ fn rows_of(text: &str, width: u32, column: Option<u32>, indent: WrappingIndent) 
         wrap: true,
         wrap_column: column,
         wrapping_indent: indent,
+        wraps: &crate::text::WrapCache::default(),
     };
     crate::visual::visual_ranges(&buffer, 0, layout)
         .iter()

@@ -71,6 +71,12 @@ impl LineHints<'_> {
             .fold(0_u32, |total, span| total.saturating_add(span.width))
     }
 
+    /// The `(column, cells)` of each inline text, in column order: all a
+    /// layout reads of them.
+    pub(super) fn cells(self) -> impl Iterator<Item = (u32, u32)> {
+        self.spans.iter().map(|span| (span.col, span.width))
+    }
+
     /// The source indices of the inline text at exactly `col`, in paint order.
     pub(super) fn at(self, col: u32) -> impl Iterator<Item = usize> {
         self.spans
