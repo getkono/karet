@@ -19,6 +19,7 @@ use crate::api::Command;
 use crate::api::DocumentCommand;
 use crate::api::Event;
 use crate::api::RequestId;
+use crate::api::TextUpdate;
 use crate::backend::Backend;
 use crate::session::Session;
 use crate::session::SessionConfig;
@@ -73,6 +74,21 @@ struct Connection<R> {
     /// Commands the client submitted that will move a document, so their
     /// answering versions can be attributed to the client rather than the backend.
     pending_edits: std::collections::HashMap<RequestId, crate::api::DocumentId>,
+    /// A client edit forwarded to the session and not yet answered. While one is
+    /// outstanding no further client frame is read: an edit stacked on it is only
+    /// placeable if it was applied, and the session processes commands in order,
+    /// so forwarding the next one before this answer lands would let the session
+    /// apply it after refusing the edit it was composed on.
+    awaiting: Option<RequestId>,
+    /// Per document, the sequence number of the re-description a client must have
+    /// received before its edits to that document can be placed. Set when the
+    /// session refuses one of the client's edits — `u64::MAX` until the complete
+    /// render that follows is sent, then that render's number. The client numbers
+    /// optimistic edits with the backend's own counter, so an edit composed on a
+    /// refused one can carry a base version that matches the document's while
+    /// describing text the document never held; only what the client had seen
+    /// tells the two apart.
+    fences: std::collections::HashMap<crate::api::DocumentId, u64>,
     /// The most recent snapshot of each open document, so a resync can be
     /// answered immediately rather than when the document next happens to change.
     /// An `Arc` sharing the session's own rope, so retaining it costs a pointer.
@@ -93,6 +109,8 @@ where
             seq: 0,
             projection: Projection::default(),
             pending_edits: std::collections::HashMap::new(),
+            awaiting: None,
+            fences: std::collections::HashMap::new(),
             latest: std::collections::HashMap::new(),
         }
     }
@@ -134,7 +152,7 @@ where
                     Some((id, event)) => self.on_event(id, event).await?,
                     None => return Ok(()), // the session ended
                 },
-                incoming = self.reader.next() => match incoming? {
+                incoming = self.reader.next(), if self.awaiting.is_none() => match incoming? {
                     Some(body) => {
                         if !self.on_client_frame(&body, backend).await? {
                             return Ok(()); // the client said goodbye
@@ -173,6 +191,16 @@ where
         let Some(update) = update else {
             return Ok(());
         };
+        // The re-description a refusal is waiting for: the client's edits to this
+        // document are placeable again once it has received this frame. Only the
+        // first one counts — a resync answered after it describes the same text
+        // again, and an edit composed on the first is already placeable.
+        if matches!(update.text, TextUpdate::Full(_))
+            && let Some(fence) = self.fences.get_mut(&doc)
+            && *fence == u64::MAX
+        {
+            *fence = self.seq.saturating_add(1);
+        }
         self.send_event(
             None,
             Event::Render {
@@ -244,11 +272,23 @@ where
                 self.resync(doc).await?;
                 Ok(true)
             },
-            ClientFrame::Command { id, command } => {
+            ClientFrame::Command { id, command, seen } => {
                 if let Command::Document(DocumentCommand::ApplyChange { doc, .. }) =
                     command.as_ref()
                 {
+                    // Composed before the client heard that an earlier edit was
+                    // refused, so its positions describe that edit's text, not the
+                    // document's. The re-description already on its way puts the
+                    // client back on the document; nothing is answered, because
+                    // the refusal that set the fence already told the user.
+                    if let (Some(seen), Some(fence)) = (seen, self.fences.get(doc))
+                        && seen < *fence
+                    {
+                        tracing::debug!(?doc, "dropping a client edit composed on refused text");
+                        return Ok(true);
+                    }
                     self.pending_edits.insert(id, *doc);
+                    self.awaiting = Some(id);
                 }
                 backend
                     .send(id, *command)
@@ -272,6 +312,9 @@ where
 
     /// Forward one session event, attributing edit versions on the way past.
     async fn on_event(&mut self, id: Option<RequestId>, event: Event) -> Result<(), RemoteError> {
+        if id.is_some() && id == self.awaiting {
+            self.awaiting = None;
+        }
         match &event {
             // The client produced this version itself, so its text must not be
             // echoed back at it.
@@ -283,6 +326,7 @@ where
             Event::Closed { doc } => {
                 self.projection.forget(*doc);
                 self.latest.remove(doc);
+                self.fences.remove(doc);
             },
             // Any other answer to a pending edit is the session refusing it — a
             // stale or overlapping change, or a document that has gone. The
@@ -292,12 +336,21 @@ where
             // follows describe the document from scratch rather than as a delta
             // the client can no longer place. Clearing the entry also stops one
             // leaking per refused edit for the life of the connection.
+            //
+            // Every other edit of the document still pending stops counting as the
+            // client's too, as a resync does: each was composed on the refused one,
+            // and crediting the version one produces would project the document as
+            // unchanged after the re-description and leave the client a version
+            // ahead of text it never received. The fence then refuses whatever the
+            // client composes before that re-description reaches it.
             _ => {
                 if let Some(id) = id
                     && let Some(doc) = self.pending_edits.remove(&id)
                 {
                     tracing::warn!(?doc, "the session refused a client edit; re-describing it");
+                    self.pending_edits.retain(|_, pending| *pending != doc);
                     self.projection.forget(doc);
+                    self.fences.insert(doc, u64::MAX);
                 }
             },
         }
@@ -378,7 +431,6 @@ mod tests {
 
     use super::*;
     use crate::api::DocumentId;
-    use crate::api::TextUpdate;
     use crate::local::DocSnapshot;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -507,6 +559,152 @@ mod tests {
         };
         assert!(matches!(update.text, TextUpdate::Full(ref text) if text == "abd\n"));
         Ok(())
+    }
+
+    /// The session's answer refusing one edit.
+    fn refusal() -> Event {
+        Event::Notification {
+            severity: karet_core::Severity::Warning,
+            kind: karet_core::NotificationKind::Io,
+            message: "refused".to_owned(),
+        }
+    }
+
+    /// An edit the client stacked on a refused one was composed on text the
+    /// document never held. Were it still credited when the session applies it,
+    /// the re-description would be projected as unchanged and the client left on
+    /// its own text.
+    #[tokio::test]
+    async fn a_refusal_stops_crediting_every_pending_edit_of_the_document() -> TestResult {
+        let (mut connection, mut queued) = connection();
+        let doc = DocumentId(1);
+        connection.on_snapshot(doc, snapshot(1, "abc\n")).await?;
+        next_event(&mut queued)?;
+        connection.pending_edits.insert(RequestId(9), doc);
+        connection.pending_edits.insert(RequestId(10), doc);
+        connection
+            .pending_edits
+            .insert(RequestId(11), DocumentId(2));
+
+        connection.on_event(Some(RequestId(9)), refusal()).await?;
+        next_event(&mut queued)?;
+        connection
+            .on_event(Some(RequestId(10)), Event::Applied { doc, version: 2 })
+            .await?;
+        next_event(&mut queued)?;
+        connection.on_snapshot(doc, snapshot(2, "xbc\n")).await?;
+
+        assert_eq!(
+            connection.pending_edits.len(),
+            1,
+            "another document's edit stays"
+        );
+        let (_, render) = next_event(&mut queued)?;
+        let Event::Render { update, .. } = render else {
+            return Err("expected a render".into());
+        };
+        assert!(matches!(update.text, TextUpdate::Full(ref text) if text == "xbc\n"));
+        Ok(())
+    }
+
+    /// An edit forwarded to the session holds back the client's next frame until
+    /// it is answered, so a later edit cannot reach the session before the
+    /// connection knows whether the one beneath it was applied.
+    #[tokio::test]
+    async fn a_forwarded_edit_is_awaited_until_answered() -> TestResult {
+        let (mut connection, _queued) = connection();
+        let (session, _events, _snapshots) = Session::new(SessionConfig::default());
+        let backend = crate::backend::local_session(session, None);
+        let doc = DocumentId(1);
+
+        connection
+            .on_client_frame(&edit_frame(RequestId(4), doc, Some(0))?, &backend)
+            .await?;
+        assert_eq!(connection.awaiting, Some(RequestId(4)));
+        connection
+            .on_event(Some(RequestId(4)), Event::Applied { doc, version: 2 })
+            .await?;
+
+        assert_eq!(connection.awaiting, None);
+        Ok(())
+    }
+
+    /// After a refusal the client's optimistic version and the document's can
+    /// coincide, so the base version cannot reject an edit composed on the
+    /// refused text. What the client had received can: an edit sent before the
+    /// re-description arrived is dropped, and one sent after it goes through.
+    #[tokio::test]
+    async fn an_edit_composed_before_the_re_description_is_dropped() -> TestResult {
+        let (mut connection, mut queued) = connection();
+        let (session, _events, _snapshots) = Session::new(SessionConfig::default());
+        let backend = crate::backend::local_session(session, None);
+        let doc = DocumentId(1);
+        connection.on_snapshot(doc, snapshot(1, "abc\n")).await?;
+        next_event(&mut queued)?;
+        connection.pending_edits.insert(RequestId(9), doc);
+        connection.on_event(Some(RequestId(9)), refusal()).await?;
+        next_event(&mut queued)?;
+
+        // Before the re-description is even sent, nothing the client sends fits.
+        connection
+            .on_client_frame(&edit_frame(RequestId(10), doc, Some(2))?, &backend)
+            .await?;
+        assert_eq!(connection.awaiting, None);
+
+        connection.on_snapshot(doc, snapshot(2, "xbc\n")).await?;
+        let full_seq = connection.seq;
+        connection
+            .on_client_frame(
+                &edit_frame(RequestId(11), doc, Some(full_seq - 1))?,
+                &backend,
+            )
+            .await?;
+        assert_eq!(connection.awaiting, None);
+        assert!(connection.pending_edits.is_empty());
+
+        connection
+            .on_client_frame(&edit_frame(RequestId(12), doc, Some(full_seq))?, &backend)
+            .await?;
+        assert_eq!(connection.awaiting, Some(RequestId(12)));
+        Ok(())
+    }
+
+    /// A peer that does not report what it has seen keeps the unfenced
+    /// behaviour rather than having every edit dropped.
+    #[tokio::test]
+    async fn an_edit_without_a_seen_position_is_never_fenced() -> TestResult {
+        let (mut connection, _queued) = connection();
+        let (session, _events, _snapshots) = Session::new(SessionConfig::default());
+        let backend = crate::backend::local_session(session, None);
+        let doc = DocumentId(1);
+        connection.fences.insert(doc, u64::MAX);
+
+        connection
+            .on_client_frame(&edit_frame(RequestId(3), doc, None)?, &backend)
+            .await?;
+
+        assert_eq!(connection.awaiting, Some(RequestId(3)));
+        Ok(())
+    }
+
+    /// One encoded client edit of `doc`, reporting `seen`.
+    fn edit_frame(
+        id: RequestId,
+        doc: DocumentId,
+        seen: Option<u64>,
+    ) -> Result<Vec<u8>, RemoteError> {
+        super::super::wire::encode(&ClientFrame::Command {
+            id,
+            command: Box::new(
+                DocumentCommand::ApplyChange {
+                    doc,
+                    change: karet_core::Change::new(2, Vec::new()),
+                    cause: karet_core::EditCause::Type,
+                }
+                .into(),
+            ),
+            seen,
+        })
     }
 
     /// A frame this build cannot decode comes from a newer client; the backend

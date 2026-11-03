@@ -613,6 +613,13 @@ async fn a_client_is_told_the_workspaces_configuration() -> TestResult {
 /// against, and a replica rebuilt from a full copy of the text used to start
 /// counting from its own zero — so the two disagreed and every edit after that
 /// was refused, silently, for the rest of the session.
+///
+/// It is also the collision that numbering invites: the backend moves the
+/// document (an undo here) while the client types two keystrokes. The first is
+/// refused, and the second names the version the client's optimistic first edit
+/// produced — now the document's version too. Applied, it would land at
+/// positions computed on text the document never held, and the client, credited
+/// with it, would never be shown the result.
 #[tokio::test]
 async fn a_re_described_document_is_still_editable() -> TestResult {
     let mut pair = pair(&[("resync.txt", "alpha\n")]).await.ok_or("a pair")?;
@@ -631,13 +638,16 @@ async fn a_re_described_document_is_still_editable() -> TestResult {
         .ok_or("the edited snapshot")?;
     assert!(edited.version > 0, "the document must have moved");
 
-    // A change against a version the document is not at. The session refuses it,
-    // and the client applied it optimistically first — so both halves know the
-    // replica no longer represents the document and it is described afresh.
-    pair.edit(doc, replace_first_line(edited.version + 7, 4, "nope"));
+    // The backend moves the document back to "alpha" while two keystrokes are in
+    // flight. The first is built on the version the undo leaves behind, so the
+    // session refuses it; the second on the version the first produced locally.
+    pair.backend
+        .send(pair.backend.next_id(), DocumentCommand::Undo { doc }.into())?;
+    pair.edit(doc, replace_first_line(edited.version, 4, "nope"));
+    pair.edit(doc, replace_first_line(edited.version + 1, 0, "zeta"));
 
     let described = pair
-        .await_snapshot(doc, |text| text == "beta\n")
+        .await_snapshot(doc, |text| text == "alpha\n")
         .await
         .ok_or("the re-description")?;
     // The re-description carries the document's version, not the replica's own.
@@ -648,10 +658,21 @@ async fn a_re_described_document_is_still_editable() -> TestResult {
     );
 
     // The point of all of it: the editor still works afterwards.
-    pair.edit(doc, replace_first_line(described.version, 4, "gamma"));
+    pair.edit(doc, replace_first_line(described.version, 5, "gamma"));
 
     let text = pair.await_text(doc, |text| text == "gamma\n").await;
     assert_eq!(text.as_deref(), Some("gamma\n"));
+    // And the document holds what the client shows: the stacked keystroke never
+    // reached it, so the file is not "gammalpha".
+    let saved = pair
+        .ask(DocumentCommand::Save {
+            doc,
+            cause: crate::api::SaveCause::Manual,
+        })
+        .await;
+    assert!(saved.is_some(), "the save must be answered");
+    let on_disk = std::fs::read_to_string(pair.root().join("resync.txt"))?;
+    assert_eq!(on_disk, "gamma\n");
     Ok(())
 }
 

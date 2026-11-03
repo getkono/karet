@@ -88,6 +88,19 @@ pub(super) enum ClientFrame {
         /// The command itself, boxed so the frame stays small for the common
         /// keystroke rather than sizing every variant to the largest.
         command: Box<Command>,
+        /// The highest event sequence number this client had received when it
+        /// sent the command.
+        ///
+        /// An edit's base version alone cannot say what text the edit was
+        /// composed on: a client numbers its optimistic edits with the same
+        /// counter the backend uses, so after the backend moves a document an
+        /// edit stacked on a refused one can name the backend's new version
+        /// while describing positions in text the backend never held. The
+        /// server refuses an edit sent before the client saw the document's
+        /// latest re-description. `None` from a peer that does not report it,
+        /// which keeps the older, unfenced behaviour.
+        #[serde(default)]
+        seen: Option<u64>,
     },
 }
 
@@ -204,19 +217,51 @@ mod tests {
         let frame = ClientFrame::Command {
             id: RequestId(42),
             command: Box::new(WorkspaceCommand::ListFiles { limit: 100 }.into()),
+            seen: Some(7),
         };
 
         let restored: ClientFrame = decode(&encode(&frame)?)?;
 
-        let ClientFrame::Command { id, command } = restored else {
+        let ClientFrame::Command { id, command, seen } = restored else {
             return Err(RemoteError::Protocol(
                 "a command frame decoded as another frame".into(),
             ));
         };
         assert_eq!(id, RequestId(42));
+        assert_eq!(seen, Some(7));
         assert!(matches!(
             *command,
             Command::Workspace(WorkspaceCommand::ListFiles { limit: 100 })
+        ));
+        Ok(())
+    }
+
+    /// A peer built before commands reported what they had seen still decodes,
+    /// and is read as reporting nothing rather than as having seen nothing —
+    /// which the server would take as every edit being stale.
+    #[test]
+    fn a_command_frame_without_a_seen_position_decodes_as_unknown() -> Result<(), RemoteError> {
+        #[derive(serde::Serialize)]
+        enum Older {
+            Command {
+                id: RequestId,
+                command: Box<Command>,
+            },
+        }
+        let older = Older::Command {
+            id: RequestId(5),
+            command: Box::new(WorkspaceCommand::ListFiles { limit: 1 }.into()),
+        };
+
+        let restored: ClientFrame = decode(&encode(&older)?)?;
+
+        assert!(matches!(
+            restored,
+            ClientFrame::Command {
+                id: RequestId(5),
+                seen: None,
+                ..
+            }
         ));
         Ok(())
     }
@@ -263,6 +308,7 @@ mod tests {
                 }
                 .into(),
             ),
+            seen: None,
         };
 
         assert!(encode(&frame).is_err());

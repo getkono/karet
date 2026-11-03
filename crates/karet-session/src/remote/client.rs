@@ -169,11 +169,15 @@ where
 {
     let mut replicas: std::collections::HashMap<DocumentId, Replica> =
         std::collections::HashMap::new();
+    // The newest event this client has received, reported with every command so
+    // the backend can tell an edit composed before a re-description from one
+    // composed after it (see `ClientFrame::Command::seen`).
+    let mut seen = 0_u64;
     loop {
         tokio::select! {
             command = commands.recv() => match command {
                 Some((id, command)) => {
-                    on_command(id, command, &mut replicas, &outgoing, events, snapshots)?;
+                    on_command(id, command, seen, &mut replicas, &outgoing, events, snapshots)?;
                 },
                 None => return Ok(()), // the backend handle was dropped
             },
@@ -197,7 +201,8 @@ where
                                 Event::ViewStateRestored { blob: view_state },
                             ));
                         },
-                        ServerFrame::Event { id, event, .. } => {
+                        ServerFrame::Event { seq, id, event } => {
+                            seen = seen.max(seq);
                             // A diverged replica is discarded here; asking for it
                             // again is what makes that recoverable rather than a
                             // document stuck blank for the rest of the session.
@@ -225,6 +230,7 @@ where
 fn on_command(
     id: RequestId,
     command: Command,
+    seen: u64,
     replicas: &mut std::collections::HashMap<DocumentId, Replica>,
     outgoing: &mpsc::UnboundedSender<Vec<u8>>,
     events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
@@ -234,6 +240,7 @@ fn on_command(
     let frame = ClientFrame::Command {
         id,
         command: Box::new(command),
+        seen: Some(seen),
     };
     let body = super::wire::encode(&frame);
     let ClientFrame::Command { command, .. } = frame else {
