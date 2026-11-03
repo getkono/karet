@@ -151,11 +151,30 @@ fn inside(dir: &Path, path: &Path) -> bool {
     let Ok(dir) = dir.canonicalize() else {
         return false;
     };
-    // The destination does not exist yet; its nearest existing ancestor says
-    // where it will be.
-    path.ancestors()
-        .find_map(|ancestor| ancestor.canonicalize().ok())
-        .is_some_and(|resolved| resolved.starts_with(&dir))
+    resolve_absent(path).is_some_and(|resolved| resolved.starts_with(&dir))
+}
+
+/// Where the not-yet-existing `path` will be: its nearest existing ancestor
+/// with links resolved, then the rest of the path applied to it.
+///
+/// The rest names entries that do not exist, so none of them is a link and a
+/// `..` among them steps up exactly as it reads. Dropping the rest instead let
+/// `W/missing/../src/copy` judge as `W` while it lands in `W/src`.
+fn resolve_absent(path: &Path) -> Option<std::path::PathBuf> {
+    let (ancestor, mut resolved) = path
+        .ancestors()
+        .find_map(|ancestor| Some((ancestor, ancestor.canonicalize().ok()?)))?;
+    let rest = path.strip_prefix(ancestor).ok()?;
+    for component in rest.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            },
+            std::path::Component::Normal(name) => resolved.push(name),
+            _ => {},
+        }
+    }
+    Some(resolved)
 }
 
 /// Copy `from` to `to`, recursing through directories.

@@ -613,6 +613,25 @@ fn copying_a_directory_into_itself_through_dot_dot_refuses() -> TestResult {
     Ok(())
 }
 
+/// A `..` past a directory that does not exist yet steps up just the same:
+/// judging the destination by its nearest existing ancestor alone missed it,
+/// and the copy nested the source into itself until the path limit.
+#[test]
+fn copying_a_directory_into_itself_through_a_missing_dot_dot_refuses() -> TestResult {
+    let dir = tree(&[("src/a.rs", b"a")]).ok_or("a scratch tree")?;
+
+    let (_, result) = mutate(PathMutation::Copy {
+        from: dir.path().join("src"),
+        to: dir.path().join("missing/../src/copy"),
+    })
+    .ok_or("a mutation answer")?;
+
+    assert!(result.is_err());
+    assert!(!dir.path().join("src/copy").exists());
+    assert!(!dir.path().join("missing").exists(), "nothing is created");
+    Ok(())
+}
+
 /// A destination reached through a link into the source is inside it too.
 #[cfg(unix)]
 #[test]
