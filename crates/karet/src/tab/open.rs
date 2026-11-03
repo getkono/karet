@@ -1,15 +1,16 @@
 //! Opening a file into the right tab.
 //!
-//! Opening is routing, not reading. The path is classified against the shared
-//! `karet-filetype` registry — a lookup, no I/O — and the matching tab is
+//! Opening is routing, not reading. The tab a [`FileKind`] calls for is
 //! reserved immediately so the destination exists before anything is fetched.
 //! Content arrives afterwards, from the backend: editable text and CBOR through
 //! document snapshots, DOCX and notebooks through `DocumentCommand::Convert`,
 //! and media bytes through `WorkspaceCommand::ReadFileBytes`.
 //!
-//! Nothing here touches the filesystem. That is what lets the shell render a
-//! workspace on another machine — the client's own disk is simply not part of
-//! the story — and it costs a co-located session nothing but a channel hop.
+//! Routing reads no file content here: [`Tab::open`] classifies on the name
+//! alone, against the shared `karet-filetype` registry, which is what lets the
+//! shell render a workspace on another machine. A co-located workspace does
+//! better, since its disk is right there: `crate::app::App::open_tab` stats the
+//! file and samples its head before calling [`reserve`] with the verdict.
 //!
 //! A path-only guess can be wrong: an extension can lie, and a file can be too
 //! large to load inline. The backend answers `WorkspaceCommand::ClassifyPath`
@@ -46,7 +47,7 @@ impl Tab {
     #[must_use]
     pub fn open(path: &Path) -> Self {
         let kind = kind_from_path(path);
-        let mut tab = reserve(path, kind);
+        let mut tab = reserve(path, kind, 0);
         tab.size_unchecked = is_text_kind(kind) || is_converted_kind(kind);
         tab
     }
@@ -91,16 +92,20 @@ pub(crate) fn kind_from_path(path: &Path) -> FileKind {
 /// placeholder an unreadable file settles at. A placeholder nothing will fill
 /// (a too-large verdict, a kind this build cannot render) is already the
 /// answer, so it is not loading.
+///
+/// `len` is the file's length where the caller knows it (0 where it does
+/// not), shown by a placeholder; a [`FileKind::TooLarge`] verdict carries its
+/// own.
 #[must_use]
-pub(crate) fn reserve(path: &Path, kind: FileKind) -> Tab {
-    let mut tab = reserve_kind(path, kind);
+pub(crate) fn reserve(path: &Path, kind: FileKind, len: u64) -> Tab {
+    let mut tab = reserve_kind(path, kind, len);
     if needs_bytes(kind) {
         tab.fill_since = Some(Pending::start());
     }
     tab
 }
 
-fn reserve_kind(path: &Path, kind: FileKind) -> Tab {
+fn reserve_kind(path: &Path, kind: FileKind, len: u64) -> Tab {
     match kind {
         // The session loads and decodes the text once the document registers;
         // the tab is reserved empty and fills from the first snapshot. Invalid
@@ -132,7 +137,8 @@ fn reserve_kind(path: &Path, kind: FileKind) -> Tab {
         // Media is reserved as a placeholder and upgraded once its bytes arrive:
         // a placeholder is what an undecodable file settles at anyway, so the
         // failure path needs no separate state.
-        other => placeholder(path, other, &[], 0),
+        FileKind::TooLarge { len } => placeholder(path, kind, &[], len),
+        other => placeholder(path, other, &[], len),
     }
 }
 
@@ -401,7 +407,7 @@ mod tests {
                 ..
             }
         ));
-        let hex = reserve(Path::new("/elsewhere/blob"), FileKind::Binary);
+        let hex = reserve(Path::new("/elsewhere/blob"), FileKind::Binary, 0);
         assert!(matches!(hex.kind, TabKind::Hex { ref bytes, .. } if bytes.is_empty()));
         assert!(needs_bytes(FileKind::Binary));
         assert!(!needs_bytes(kind_from_path(Path::new("/elsewhere/a.rs"))));
@@ -437,7 +443,7 @@ mod tests {
     fn cbor_sniffed_from_content_is_reserved_as_an_editable_document() {
         let file = Path::new("/elsewhere/payload");
         assert!(matches!(Tab::open(file).kind, TabKind::Code { .. }));
-        let tab = reserve(file, FileKind::Cbor);
+        let tab = reserve(file, FileKind::Cbor, 0);
         assert!(matches!(tab.kind, TabKind::Code { .. }));
         assert_eq!(tab.status_label(), "CBOR");
     }

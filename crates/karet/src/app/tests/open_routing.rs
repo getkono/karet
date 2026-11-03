@@ -135,13 +135,77 @@ fn a_local_file_over_the_guard_opens_as_too_large() {
 
     let tab = app.open_tab(&big);
 
+    // The placeholder shows the file's real size, not "0 B".
+    let wanted = karet_filetype::SIZE_GUARD + 1;
     assert!(matches!(
         tab.kind,
         TabKind::Placeholder {
-            kind: FileKind::TooLarge { .. },
+            kind: FileKind::TooLarge { len },
+            len: shown,
             ..
-        }
+        } if len == wanted && shown == wanted
     ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A remote too-large verdict carries the file's length into the placeholder.
+#[test]
+fn a_remote_too_large_verdict_shows_the_files_length() {
+    let (backend, mut app) = remote_app();
+    let path = PathBuf::from("/not/on/this/machine/huge.log");
+    app.open_path(&path);
+    app.register_open_tabs();
+    let classify = requests(&backend, is_classify);
+    assert_eq!(classify.len(), 1);
+    let len = karet_filetype::SIZE_GUARD + 7;
+
+    app.on_backend_event(
+        Some(classify[0]),
+        SessionEvent::PathClassified {
+            path: path.clone(),
+            result: Ok(PathClass {
+                kind: FileKind::TooLarge { len },
+                len,
+                head: Vec::new(),
+            }),
+        },
+    );
+
+    assert!(app.tabs.iter().any(|tab| matches!(
+        tab.kind,
+        TabKind::Placeholder { len: shown, .. } if shown == len
+    )));
+}
+
+/// A co-located open never opens what is not a regular file: a FIFO blocks
+/// until a writer appears, which on the UI thread would freeze the editor. It
+/// is routed on its name instead, and the open returns at once.
+#[cfg(unix)]
+#[test]
+fn a_local_fifo_is_classified_without_being_opened() {
+    let dir = test_dir("open-routing-fifo");
+    std::fs::create_dir_all(&dir).ok();
+    let pipe = dir.join("pipe.txt");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !made {
+        return; // no `mkfifo` here: nothing to provoke
+    }
+    let (done, finished) = std::sync::mpsc::channel();
+    let probe = pipe.clone();
+    std::thread::spawn(move || {
+        let _ = done.send(crate::app::open::local_head(&probe));
+    });
+
+    let head = finished.recv_timeout(std::time::Duration::from_secs(5));
+
+    assert_eq!(
+        head.ok(),
+        Some((Vec::new(), 0)),
+        "reading a FIFO's head must not block"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -215,7 +279,11 @@ fn opening_anyway_classifies_with_the_guard_waived() {
     let (backend, mut app) = remote_app();
     let path = PathBuf::from("/not/on/this/machine/big.png");
     let len = karet_filetype::SIZE_GUARD + 1;
-    app.push_tab(crate::tab::open::reserve(&path, FileKind::TooLarge { len }));
+    app.push_tab(crate::tab::open::reserve(
+        &path,
+        FileKind::TooLarge { len },
+        len,
+    ));
 
     app.open_active_anyway();
 
@@ -241,7 +309,11 @@ fn a_guarded_verdict_landing_after_open_anyway_keeps_the_opened_tab() {
     let path = dir.join("big.txt");
     let (backend, mut app) = local_app(&dir);
     let len = karet_filetype::SIZE_GUARD + 1;
-    app.push_tab(crate::tab::open::reserve(&path, FileKind::TooLarge { len }));
+    app.push_tab(crate::tab::open::reserve(
+        &path,
+        FileKind::TooLarge { len },
+        len,
+    ));
     app.register_open_tabs();
     let classify = requests(&backend, is_classify);
     assert_eq!(classify.len(), 1, "the placeholder asks what it is");
@@ -334,7 +406,7 @@ fn a_media_reservation_is_loading_until_its_bytes_arrive() {
 fn a_byte_reservation_renders_loading_then_its_failure() {
     let (_backend, mut app) = remote_app();
     let path = PathBuf::from("/not/on/this/machine/blob.bin");
-    let mut tab = crate::tab::open::reserve(&path, FileKind::Binary);
+    let mut tab = crate::tab::open::reserve(&path, FileKind::Binary, 0);
     tab.fill_since = Some(crate::pending::Pending::revealed());
     app.push_tab(tab);
 
@@ -351,7 +423,7 @@ fn a_byte_reservation_renders_loading_then_its_failure() {
 /// Open `path` as a byte view in a remote app and return the id of the read
 /// its verdict starts.
 fn reading(backend: &RecordingBackend, app: &mut App, path: &Path) -> RequestId {
-    app.push_tab(crate::tab::open::reserve(path, FileKind::Binary));
+    app.push_tab(crate::tab::open::reserve(path, FileKind::Binary, 0));
     app.register_open_tabs();
     let classify = requests(backend, is_classify);
     app.on_backend_event(

@@ -1,11 +1,14 @@
 //! Opening things through the backend rather than off the local disk.
 //!
-//! The shell used to read a file, classify its bytes and build a tab, all before
-//! the backend heard about it. That works only while the editor and the files
-//! share a machine. Now the path is routed on its *name* — a registry lookup, no
-//! I/O — the tab is reserved immediately, and the content follows.
+//! The shell used to read a whole file, classify its bytes and build a tab, all
+//! before the backend heard about it. That works only while the editor and the
+//! files share a machine. Now the tab is reserved immediately and the content
+//! follows from the backend. Where the workspace is remote the path is routed on
+//! its *name* — a registry lookup, no I/O; a co-located workspace still routes on
+//! content, with a stat and an 8 KiB head read in [`App::open_tab`], since the
+//! disk is right here.
 //!
-//! Two answers can correct the guess. `Event::PathClassified` carries the
+//! Two answers can correct a remote guess. `Event::PathClassified` carries the
 //! authoritative kind, decided from the real leading bytes and the real length, so
 //! a `.txt` full of PNG data and a file too large to load inline both land where
 //! they should. `Event::FileBytes` then delivers the content for the kinds the
@@ -81,7 +84,7 @@ fn is_reservation(tab: &crate::tab::Tab) -> bool {
 /// The leading bytes and length of a file on this machine's disk, as a
 /// co-located open classifies it; empty and zero for anything that is not a
 /// regular file (a file not created yet opens empty, and a FIFO is never opened).
-fn local_head(path: &Path) -> (Vec<u8>, u64) {
+pub(super) fn local_head(path: &Path) -> (Vec<u8>, u64) {
     use std::io::Read;
 
     let Ok(metadata) = std::fs::metadata(path) else {
@@ -121,7 +124,7 @@ impl App {
             return crate::tab::Tab::open(path);
         }
         let (head, len) = local_head(path);
-        let mut tab = open::reserve(path, karet_filetype::classify(path, &head, len));
+        let mut tab = open::reserve(path, karet_filetype::classify(path, &head, len), len);
         tab.size_unchecked = false; // settled by the stat above
         tab
     }
@@ -132,8 +135,12 @@ impl App {
         if self.workspace_remote {
             return crate::tab::Tab::open_ignoring_size(path);
         }
-        let (head, _) = local_head(path);
-        let mut tab = open::reserve(path, karet_filetype::classify_ignoring_size(path, &head));
+        let (head, len) = local_head(path);
+        let mut tab = open::reserve(
+            path,
+            karet_filetype::classify_ignoring_size(path, &head),
+            len,
+        );
         tab.size_unchecked = false;
         tab
     }
@@ -233,7 +240,7 @@ impl App {
                 self.register_unregistered(path);
                 return;
             }
-            self.replace_tab_for(path, || open::reserve(path, class.kind));
+            self.replace_tab_for(path, || open::reserve(path, class.kind, class.len));
             if open::needs_bytes(class.kind) {
                 self.request_bytes(path, class.kind, 0);
             } else if converted {
@@ -250,9 +257,21 @@ impl App {
         // file the name hid (CBOR sniffed from its content, say): its new code
         // tab registers as a document like any other.
         if open::kind_from_path(path) == class.kind {
+            // The guess held, but a placeholder reserved on the name alone (a
+            // kind this build cannot render) did not know the length it shows.
+            self.for_each_tab(|tab| {
+                if let TabKind::Placeholder {
+                    path: p, kind, len, ..
+                } = &mut tab.kind
+                    && p == path
+                    && *kind == class.kind
+                {
+                    *len = class.len;
+                }
+            });
             return;
         }
-        self.replace_tab_for(path, || open::reserve(path, class.kind));
+        self.replace_tab_for(path, || open::reserve(path, class.kind, class.len));
         if open::is_text_kind(class.kind) {
             self.register_unregistered(path);
         }
@@ -285,7 +304,7 @@ impl App {
         if len <= karet_filetype::SIZE_GUARD {
             return true;
         }
-        let mut placeholder = open::reserve(path, FileKind::TooLarge { len });
+        let mut placeholder = open::reserve(path, FileKind::TooLarge { len }, len);
         placeholder.view = tab.view;
         placeholder.is_preview = tab.is_preview;
         *tab = placeholder;
