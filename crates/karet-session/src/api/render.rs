@@ -95,7 +95,10 @@ pub struct RenderUpdate {
     /// genuinely differ: `None` means the language did not change, while
     /// `Some(None)` means it changed *to* no language — which is what a rename to
     /// an unrecognized extension does. Collapsing the two would leave a renamed
-    /// file labelled with the language it used to be.
+    /// file labelled with the language it used to be. The wire keeps the two
+    /// apart too: a self-describing format writes `Some(None)` and `None` both
+    /// as null, so a change is written wrapped in a one-element sequence.
+    #[serde(with = "language_change")]
     pub language: Option<Option<String>>,
     /// Whether the buffer has unsaved changes.
     pub dirty: bool,
@@ -129,6 +132,27 @@ impl RenderUpdate {
             && self.table_lines.is_none()
             && self.language.is_none()
             && self.cursor.is_none()
+    }
+}
+
+/// [`RenderUpdate::language`] on the wire: "unchanged" as null, and a change as
+/// `[language]`, so a change to no language (`[null]`) survives a format that
+/// writes an outer and an inner `None` alike.
+mod language_change {
+    type Change = Option<Option<String>>;
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        change: &Change,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&change.as_ref().map(|language| (language,)), serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Change, D::Error> {
+        let wrapped: Option<(Option<String>,)> = serde::Deserialize::deserialize(deserializer)?;
+        Ok(wrapped.map(|(language,)| language))
     }
 }
 

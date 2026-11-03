@@ -202,6 +202,24 @@ mod tests {
         Ok(())
     }
 
+    /// A change to no language is not "unchanged" once it has crossed the wire:
+    /// read as unchanged, the client would keep a renamed file's old language
+    /// label.
+    #[test]
+    fn a_language_cleared_survives_the_wire() -> Result<(), RemoteError> {
+        for language in [None, Some(None), Some(Some("Rust".to_owned()))] {
+            let update = crate::api::RenderUpdate {
+                language: language.clone(),
+                ..crate::api::RenderUpdate::at(3)
+            };
+
+            let restored: crate::api::RenderUpdate = decode(&encode(&update)?)?;
+
+            assert_eq!(restored.language, language);
+        }
+        Ok(())
+    }
+
     /// Version skew must not gate: a client one patch release ahead of its server
     /// is the normal state of affairs, not an error.
     #[test]
