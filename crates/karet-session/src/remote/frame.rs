@@ -85,6 +85,30 @@ where
     Ok(())
 }
 
+/// Write every body queued on `queue`, in order, until the queue closes.
+///
+/// Each end of a connection writes through one of these, run beside its read
+/// loop rather than awaited inside it. A loop that awaited its own writes could
+/// not read while one was blocked, so two large frames written at once — a big
+/// paste one way and a file chunk the other — would each wait for the other end
+/// to read, and neither would. Queued, a loop keeps reading while its writer
+/// waits, so the peer's writer always drains.
+///
+/// # Errors
+/// The first write that fails; the connection can carry nothing after it.
+pub(super) async fn drain<W>(
+    mut writer: W,
+    mut queue: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+) -> Result<(), RemoteError>
+where
+    W: AsyncWrite + Unpin,
+{
+    while let Some(body) = queue.recv().await {
+        write(&mut writer, &body).await?;
+    }
+    Ok(())
+}
+
 /// Compress `body` when it is large enough to be worth it.
 fn encode_body(body: &[u8]) -> (u8, std::borrow::Cow<'_, [u8]>) {
     use std::io::Write;
@@ -259,17 +283,22 @@ mod tests {
     /// bigger, so the encoder must decline.
     #[test]
     fn an_incompressible_body_is_sent_raw() {
-        let body: Vec<u8> = (0..8192_u32)
-            .map(|i| i.wrapping_mul(2_654_435_761).to_le_bytes()[0])
+        // A xorshift stream: unlike a multiplicative sequence's low byte, which
+        // repeats every 256 bytes and compresses well, it has no short period.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let body: Vec<u8> = (0..8192)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[7]
+            })
             .collect();
 
         let (codec, payload) = encode_body(&body);
 
-        if codec == CODEC_DEFLATE {
-            assert!(payload.len() < body.len());
-        } else {
-            assert_eq!(payload.len(), body.len());
-        }
+        assert_eq!(codec, CODEC_RAW);
+        assert_eq!(payload.as_ref(), body.as_slice());
     }
 
     #[tokio::test]

@@ -45,6 +45,11 @@ struct Pair {
 
 /// Stand up a workspace containing `files`, serve it, and connect a client.
 async fn pair(files: &[(&str, &str)]) -> Option<Pair> {
+    pair_buffered(files, 1 << 20).await
+}
+
+/// [`pair`], over streams that hold at most `buffer` bytes in flight.
+async fn pair_buffered(files: &[(&str, &str)], buffer: usize) -> Option<Pair> {
     let dir = tempfile::tempdir().ok()?;
     for (name, body) in files {
         std::fs::write(dir.path().join(name), body).ok()?;
@@ -56,8 +61,8 @@ async fn pair(files: &[(&str, &str)]) -> Option<Pair> {
 
     // Two duplex pairs: one stream per direction, so neither side reads its own
     // writes — exactly how a socket behaves.
-    let (client_reader, server_writer) = tokio::io::duplex(1 << 20);
-    let (server_reader, client_writer) = tokio::io::duplex(1 << 20);
+    let (client_reader, server_writer) = tokio::io::duplex(buffer);
+    let (server_reader, client_writer) = tokio::io::duplex(buffer);
     tokio::spawn(async move {
         let _ = super::serve(
             config,
@@ -340,6 +345,70 @@ async fn bytes_of_a_workspace_file_cross_the_connection() -> TestResult {
     };
     let chunk = result.map_err(|error| format!("{error:?}"))?;
     assert_eq!(chunk.bytes, b"2345".to_vec());
+    Ok(())
+}
+
+/// A large paste going one way while a large file chunk comes the other must
+/// not stall the connection. Each end writes beside its read loop: one that
+/// awaited its own write stopped reading, and with both ends writing more than
+/// the stream holds, neither write could finish.
+#[tokio::test]
+async fn large_frames_crossing_both_ways_at_once_both_arrive() -> TestResult {
+    let big = connection::noise(512 * 1024);
+    let mut pair = pair_buffered(&[("big.txt", &big), ("edit.txt", "x\n")], 1 << 16)
+        .await
+        .ok_or("a pair")?;
+    let (doc, version) = pair
+        .open(pair.root().join("edit.txt"))
+        .await
+        .ok_or("the open")?;
+    let read = pair.backend.next_id();
+
+    pair.backend.send(
+        read,
+        WorkspaceCommand::ReadFileBytes {
+            path: pair.root().join("big.txt"),
+            offset: 0,
+            len: big.len() as u64,
+        }
+        .into(),
+    )?;
+    pair.edit(
+        doc,
+        Change::new(
+            version,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol { line: 0, col: 0 },
+                    end: LineCol { line: 0, col: 0 },
+                },
+                new_text: big.clone(),
+            }],
+        ),
+    );
+
+    let read_len = tokio::time::timeout(PATIENCE, async {
+        while let Some((id, event)) = pair.events.recv().await {
+            if id == Some(read) {
+                let Event::FileBytes {
+                    result: Ok(chunk), ..
+                } = event
+                else {
+                    return None;
+                };
+                return Some(chunk.bytes.len());
+            }
+        }
+        None
+    })
+    .await?;
+    assert_eq!(read_len, Some(big.len()));
+    // Answered only once the backend has read past the paste.
+    let listed = pair.ask(WorkspaceCommand::ListFiles { limit: 8 }).await;
+    assert!(
+        matches!(listed, Some(Event::FilesListed { .. })),
+        "{listed:?}"
+    );
     Ok(())
 }
 

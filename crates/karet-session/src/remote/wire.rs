@@ -209,7 +209,9 @@ mod tests {
         let restored: ClientFrame = decode(&encode(&frame)?)?;
 
         let ClientFrame::Command { id, command } = restored else {
-            return Ok(());
+            return Err(RemoteError::Protocol(
+                "a command frame decoded as another frame".into(),
+            ));
         };
         assert_eq!(id, RequestId(42));
         assert!(matches!(
@@ -231,11 +233,19 @@ mod tests {
 
         let restored: ServerFrame = decode(&encode(&frame)?)?;
 
-        let ServerFrame::Event { seq, id, .. } = restored else {
-            return Ok(());
+        let ServerFrame::Event { seq, id, event } = restored else {
+            return Err(RemoteError::Protocol(
+                "an event frame decoded as another frame".into(),
+            ));
         };
         assert_eq!(seq, 9);
         assert_eq!(id, Some(RequestId(3)));
+        assert!(matches!(
+            *event,
+            Event::Closed {
+                doc: crate::api::DocumentId(1)
+            }
+        ));
         Ok(())
     }
 

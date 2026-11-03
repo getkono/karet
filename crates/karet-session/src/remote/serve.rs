@@ -42,17 +42,30 @@ where
     let loaded = Box::new(config.loaded_config.clone());
     let (session, events, snapshots) = Session::new(config);
     let backend = crate::backend::local_session(session, Some(events));
-    Connection::new(reader, writer)
-        .run(&backend, snapshots, roots, loaded)
-        .await
+    // Frames go out through `frame::drain`, beside the connection loop rather
+    // than inside it, so a large event being written never stops this end
+    // reading a large command the client is writing at the same moment.
+    let (outgoing, queue) = tokio::sync::mpsc::unbounded_channel();
+    let serving = Connection::new(reader, outgoing).run(&backend, snapshots, roots, loaded);
+    let writing = frame::drain(writer, queue);
+    tokio::pin!(serving);
+    tokio::pin!(writing);
+    tokio::select! {
+        // The connection owns the queue's sender, so its ending closes the queue
+        // and the writer finishes once it has written what was already queued.
+        served = &mut serving => served.and(writing.await),
+        // A writer only ends early on a failed write: nothing more can be sent.
+        written = &mut writing => written,
+    }
 }
 
 /// One served connection's state.
-struct Connection<R, W> {
+struct Connection<R> {
     /// Framed, and cancel-safe: this reader is polled from a `select!` arm that
     /// loses the race whenever an event or a snapshot is ready first.
     reader: FrameReader<R>,
-    writer: W,
+    /// Frame bodies for the connection's writer, which runs beside this loop.
+    outgoing: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     /// Monotonic sequence for outgoing events. The wire carries it so a future
     /// resume can name where a client got to; no frame is retained for one.
     seq: u64,
@@ -69,15 +82,14 @@ struct Connection<R, W> {
     >,
 }
 
-impl<R, W> Connection<R, W>
+impl<R> Connection<R>
 where
     R: AsyncBufRead + Unpin + Send,
-    W: AsyncWrite + Unpin + Send,
 {
-    fn new(reader: R, writer: W) -> Self {
+    fn new(reader: R, outgoing: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Self {
         Self {
             reader: FrameReader::new(reader),
-            writer,
+            outgoing,
             seq: 0,
             projection: Projection::default(),
             pending_edits: std::collections::HashMap::new(),
@@ -132,6 +144,17 @@ where
                 },
                 snapshot = snapshots.recv() => {
                     if let Some((doc, snapshot)) = snapshot {
+                        // `biased` orders branches only within one poll. The
+                        // session actor runs on another task, so it can send an
+                        // edit's `Applied` and then its snapshot after this poll
+                        // found the event stream empty, and the snapshot would
+                        // still be projected first — sending the client its own
+                        // keystroke back. Every event already sent is forwarded
+                        // before the snapshot, which restores the order the
+                        // session emitted them in.
+                        while let Some((id, event)) = events.try_recv() {
+                            self.on_event(id, event).await?;
+                        }
                         self.on_snapshot(doc, snapshot).await?;
                     }
                 },
@@ -190,7 +213,7 @@ where
         };
         hello.accept()?;
         let greeting = super::wire::encode(&ServerFrame::Hello(Hello::current()))?;
-        frame::write(&mut self.writer, &greeting).await?;
+        self.queue(greeting)?;
         Ok(true)
     }
 
@@ -244,7 +267,7 @@ where
             resumed: false,
             view_state: None,
         })?;
-        frame::write(&mut self.writer, &attached).await
+        self.queue(attached)
     }
 
     /// Forward one session event, attributing edit versions on the way past.
@@ -297,7 +320,7 @@ where
             },
         };
         if frame::fits(body.len()) {
-            return frame::write(&mut self.writer, &body).await;
+            return self.queue(body);
         }
         tracing::warn!(
             bytes = body.len(),
@@ -315,7 +338,7 @@ where
             ),
         };
         match self.encode_event(id, refusal) {
-            Ok(body) => frame::write(&mut self.writer, &body).await,
+            Ok(body) => self.queue(body),
             Err(error) => {
                 tracing::warn!(%error, "dropping the refusal of an oversized event");
                 Ok(())
@@ -335,5 +358,171 @@ where
             id,
             event: Box::new(event),
         })
+    }
+
+    /// Queue one frame body for the connection's writer.
+    fn queue(&self, body: Vec<u8>) -> Result<(), RemoteError> {
+        self.outgoing
+            .send(body)
+            .map_err(|_| RemoteError::Protocol("the connection's writer has stopped".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::io::BufReader;
+    use tokio::io::Empty;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::api::DocumentId;
+    use crate::api::TextUpdate;
+    use crate::local::DocSnapshot;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A connection with no client behind it, and the frames it queues.
+    fn connection() -> (
+        Connection<BufReader<Empty>>,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
+        let (outgoing, queued) = mpsc::unbounded_channel();
+        (
+            Connection::new(BufReader::new(tokio::io::empty()), outgoing),
+            queued,
+        )
+    }
+
+    /// The next event the connection queued, with the request id it answers.
+    fn next_event(
+        queued: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> Result<(Option<RequestId>, Event), Box<dyn std::error::Error>> {
+        let body = queued.try_recv()?;
+        let ServerFrame::Event { id, event, .. } = super::super::wire::decode(&body)? else {
+            return Err("expected an event frame".into());
+        };
+        Ok((id, *event))
+    }
+
+    fn snapshot(version: u64, text: &str) -> Arc<DocSnapshot> {
+        Arc::new(DocSnapshot {
+            version,
+            buffer: karet_text::TextBuffer::from_text(text),
+            highlights: Arc::default(),
+            folds: Arc::default(),
+            semantic_blocks: Arc::default(),
+            syntax_error_lines: Arc::default(),
+            table_lines: Arc::default(),
+            language: None,
+            dirty: false,
+            cursor: None,
+        })
+    }
+
+    /// An answer too large for one frame is skipped, and an error takes its
+    /// place on the same request id: the caller waiting on it is told, and the
+    /// connection stays up for the next event.
+    #[tokio::test]
+    async fn an_oversized_answer_is_replaced_by_an_error_on_its_request_id() -> TestResult {
+        let (mut connection, mut queued) = connection();
+        let id = RequestId(11);
+        let oversized = Event::Notification {
+            severity: karet_core::Severity::Information,
+            kind: karet_core::NotificationKind::System,
+            message: "x".repeat(super::frame::MAX_FRAME),
+        };
+
+        connection.send_event(Some(id), oversized).await?;
+        connection
+            .send_event(None, Event::Closed { doc: DocumentId(2) })
+            .await?;
+
+        let (answered, answer) = next_event(&mut queued)?;
+        assert_eq!(answered, Some(id));
+        assert!(
+            matches!(
+                &answer,
+                Event::Notification { severity: karet_core::Severity::Error, message, .. }
+                    if message.contains("too large")
+            ),
+            "{answer:?}"
+        );
+        let (_, after) = next_event(&mut queued)?;
+        assert!(matches!(after, Event::Closed { doc: DocumentId(2) }));
+        Ok(())
+    }
+
+    /// An oversized event that answered nothing is dropped without a stand-in:
+    /// nobody waits on it.
+    #[tokio::test]
+    async fn an_oversized_unsolicited_event_is_dropped() -> TestResult {
+        let (mut connection, mut queued) = connection();
+
+        connection
+            .send_event(
+                None,
+                Event::Notification {
+                    severity: karet_core::Severity::Information,
+                    kind: karet_core::NotificationKind::System,
+                    message: "x".repeat(super::frame::MAX_FRAME),
+                },
+            )
+            .await?;
+
+        assert!(queued.try_recv().is_err());
+        Ok(())
+    }
+
+    /// A client edit the session refuses leaves the client's replica a version
+    /// ahead of the document. The connection forgets what it sent, so the next
+    /// snapshot describes the document whole rather than as a delta the client
+    /// can no longer place.
+    #[tokio::test]
+    async fn a_refused_client_edit_makes_the_next_render_complete() -> TestResult {
+        let (mut connection, mut queued) = connection();
+        let doc = DocumentId(1);
+        connection.on_snapshot(doc, snapshot(1, "abc\n")).await?;
+        next_event(&mut queued)?;
+        connection.pending_edits.insert(RequestId(9), doc);
+
+        connection
+            .on_event(
+                Some(RequestId(9)),
+                Event::Notification {
+                    severity: karet_core::Severity::Error,
+                    kind: karet_core::NotificationKind::System,
+                    message: "stale edit".to_owned(),
+                },
+            )
+            .await?;
+        next_event(&mut queued)?;
+        connection.on_snapshot(doc, snapshot(2, "abd\n")).await?;
+
+        assert!(connection.pending_edits.is_empty());
+        let (_, render) = next_event(&mut queued)?;
+        let Event::Render { update, .. } = render else {
+            return Err("expected a render".into());
+        };
+        assert!(matches!(update.text, TextUpdate::Full(ref text) if text == "abd\n"));
+        Ok(())
+    }
+
+    /// A frame this build cannot decode comes from a newer client; the backend
+    /// skips it and keeps the connection.
+    #[tokio::test]
+    async fn an_unreadable_client_frame_is_skipped() -> TestResult {
+        let (mut connection, mut queued) = connection();
+        let (session, _events, _snapshots) = Session::new(SessionConfig::default());
+        let backend = crate::backend::local_session(session, None);
+
+        let continues = connection
+            .on_client_frame(&[0xff, 0xff, 0xff, 0xff], &backend)
+            .await?;
+
+        assert!(continues);
+        assert!(queued.try_recv().is_err());
+        Ok(())
     }
 }

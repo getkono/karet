@@ -62,8 +62,12 @@ impl Replica {
             matches!(update.text, TextUpdate::Unchanged) && update.version < self.buffer.version();
         match update.text {
             TextUpdate::Unchanged => {},
+            // The text exactly as sent: it is the backend's in-memory text, which
+            // the backend's deltas are computed against. Decoding it as file bytes
+            // would strip a leading U+FEFF and normalize line endings, moving
+            // every later edit and highlight on the lines that changed.
             TextUpdate::Full(text) => {
-                self.buffer = TextBuffer::from_bytes(text.as_bytes()).ok()?;
+                self.buffer = TextBuffer::from_text(&text);
             },
             TextUpdate::Change(change) => {
                 self.buffer
@@ -192,6 +196,21 @@ mod tests {
 
         assert_eq!(snapshot.buffer.text(), "hello\n");
         assert_eq!(snapshot.version, 1);
+        Ok(())
+    }
+
+    /// The backend's deltas are computed against its in-memory text, byte for
+    /// byte. A replica that dropped a leading byte-order mark or normalized line
+    /// endings would place every later edit on line 0 one column off, or on the
+    /// wrong side of a `\r`.
+    #[test]
+    fn a_full_update_keeps_a_byte_order_mark_and_crlf_as_sent() -> TestResult {
+        let text = "\u{feff}one\r\ntwo\r\n";
+        let mut replica = Replica::default();
+
+        let snapshot = replica.apply(full(1, text)).ok_or("a snapshot")?;
+
+        assert_eq!(snapshot.buffer.text(), text);
         Ok(())
     }
 
