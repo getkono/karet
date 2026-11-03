@@ -83,25 +83,29 @@ fn brackets_on(
     Some(classify(highlights, span, &text))
 }
 
-/// The brackets of the first `cap` chars of line `idx`, as [`brackets_on`]
-/// gives them for the whole line: only that prefix is copied out of the
-/// buffer, so a minified line costs the chars asked for, not its length.
-/// Empty past the last line.
-fn brackets_in_prefix(
+/// The brackets of the chars of line `idx` from column `from` up to `to`, as
+/// [`brackets_on`] gives them for the whole line: only that slice is copied
+/// out of the buffer, so a minified line costs the chars asked for, not its
+/// length. Empty past the last line.
+fn brackets_between(
     buffer: &TextBuffer,
     highlights: Option<&Highlights>,
     idx: usize,
-    cap: u32,
+    from: u32,
+    to: u32,
 ) -> Vec<Option<Bracket>> {
     let Some(line) = buffer.line_to_byte_range(idx) else {
         return Vec::new();
     };
-    let end = u32::try_from(idx)
-        .ok()
-        .and_then(|l| buffer.line_col_to_byte(LineCol::new(l, cap)).ok())
-        .unwrap_or(line.end);
+    let at = |col: u32| {
+        u32::try_from(idx)
+            .ok()
+            .and_then(|l| buffer.line_col_to_byte(LineCol::new(l, col)).ok())
+            .unwrap_or(line.end)
+    };
+    let end = at(to);
     let span = karet_core::Span {
-        start: line.start,
+        start: at(from).min(end),
         end,
     };
     let text = buffer.slice(span).unwrap_or_default();
@@ -320,6 +324,9 @@ pub(crate) struct BracketDepths<'a> {
     next: Option<usize>,
     /// The kinds of the brackets still open at the start of line `next`.
     stack: Vec<usize>,
+    /// How far into line `next` the last ask read, and the brackets still
+    /// open there.
+    within: Option<(usize, u32, Vec<usize>)>,
 }
 
 impl<'a> BracketDepths<'a> {
@@ -330,15 +337,18 @@ impl<'a> BracketDepths<'a> {
             highlights,
             next: None,
             stack: Vec::new(),
+            within: None,
         }
     }
 
-    /// The depth of each of the first `cap` chars of `line` (`None` for
-    /// anything that is not a code bracket with a place in the nesting).
-    /// Asking for a line above the one asked for last restarts the scan;
-    /// asking for the same line again (the next row of a wrapped line) reads
-    /// it again from its start.
-    pub(crate) fn line(&mut self, line: u32, cap: u32) -> Vec<Option<usize>> {
+    /// The depth of each char of `line` from column `from` up to `to` (`None`
+    /// for anything that is not a code bracket with a place in the nesting).
+    /// Asking for a line above the one asked for last restarts the scan.
+    /// Asking for the same line again (the next row of a wrapped line) resumes
+    /// where the last ask stopped when that is not past `from`, so the rows
+    /// of a long wrapped line read it once between them; otherwise it reads
+    /// the line again from its start.
+    pub(crate) fn row(&mut self, line: u32, from: u32, to: u32) -> Vec<Option<usize>> {
         let idx = line as usize;
         if self
             .next
@@ -349,13 +359,26 @@ impl<'a> BracketDepths<'a> {
         }
         let mut next = self.next.unwrap_or(idx);
         while next < idx {
-            let slots = brackets_in_prefix(self.buffer, self.highlights, next, u32::MAX);
+            let slots = brackets_between(self.buffer, self.highlights, next, 0, u32::MAX);
             nest(&mut self.stack, slots);
             next += 1;
         }
         self.next = Some(idx);
-        let slots = brackets_in_prefix(self.buffer, self.highlights, idx, cap);
-        nest(&mut self.stack.clone(), slots)
+        let (at, mut stack) = match self.within.take() {
+            Some((on, at, stack)) if on == idx && at <= from => (at, stack),
+            _ => (0, self.stack.clone()),
+        };
+        let to = to.max(from);
+        let slots = brackets_between(self.buffer, self.highlights, idx, at, to);
+        // The slice can end short of `to` at the line end: resume from where
+        // it really stopped.
+        let stop = at.saturating_add(u32::try_from(slots.len()).unwrap_or(u32::MAX));
+        let depths = nest(&mut stack, slots);
+        self.within = Some((idx, stop, stack));
+        depths
+            .into_iter()
+            .skip(from.saturating_sub(at) as usize)
+            .collect()
     }
 }
 

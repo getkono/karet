@@ -341,20 +341,35 @@ pub(super) fn line_extent(
 /// columns up to the right edge of the viewport pays for those and not for
 /// the rest of a megabyte-long line.
 pub(super) fn line_chars_prefix(buffer: &TextBuffer, line: u32, cap: u32) -> Vec<char> {
+    line_chars_between(buffer, line, 0, cap)
+}
+
+/// The `char`s of line `line` in `buffer` from column `from` up to (not
+/// including) column `to`, both clamped to the line: only that slice is
+/// copied out of the rope, so a row deep inside a megabyte-long line costs
+/// its own columns, not the line before it.
+pub(super) fn line_chars_between(buffer: &TextBuffer, line: u32, from: u32, to: u32) -> Vec<char> {
     let Some(span) = buffer.line_to_byte_range(line as usize) else {
         return Vec::new();
     };
-    let end = buffer
-        .line_col_to_byte(LineCol::new(line, cap))
-        .unwrap_or(span.end);
-    buffer
-        .slice(karet_core::Span {
-            start: span.start,
-            end,
-        })
+    let at = |col: u32| buffer.line_col_to_byte(LineCol::new(line, col));
+    let end = at(to).unwrap_or(span.end);
+    let start = at(from).unwrap_or(span.end).min(end);
+    let chars: Vec<char> = buffer
+        .slice(karet_core::Span { start, end })
         .unwrap_or_default()
         .chars()
-        .collect()
+        .collect();
+    #[cfg(test)]
+    COPIED.with(|copied| copied.set(copied.get().saturating_add(chars.len())));
+    chars
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many chars [`line_chars_between`] has copied out on this thread,
+    /// for tests that bound the work a long line costs.
+    pub(super) static COPIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Chars read past a row's right edge, so the grapheme cluster that straddles

@@ -262,6 +262,147 @@ fn a_wrapped_long_line_is_wrapped_once_however_often_its_rows_are_walked() {
 }
 
 #[test]
+fn a_deep_row_of_a_wrapped_multi_megabyte_line_copies_only_its_own_chars() {
+    // Two million chars, seventeen to a row: a viewport fifty rows deep at
+    // the line's middle. Painting each row by copying and segmenting the
+    // line from char 0 up to the row's end cost about a million chars per
+    // row, fifty million a frame.
+    let text = alphabet(2_000_000);
+    let buffer = TextBuffer::from_text(&text);
+    let mut state = EditorState::new();
+    state.scroll_subrow = 60_000;
+    let area = Rect::new(0, 0, 20, 50);
+    // The first frame wraps the line once; the bound is on every frame after.
+    render_wrapped(&buffer, &mut state, area, &[]);
+    COPIED.with(|copied| copied.set(0));
+    let target = render_wrapped(&buffer, &mut state, area, &[]);
+    let painted = COPIED.with(std::cell::Cell::get);
+    // Row 60000 starts at char 1,020,000.
+    assert_eq!(
+        row(&target, 0),
+        format!("   {}", &text[1_020_000..1_020_017])
+    );
+    assert_eq!(
+        row(&target, 49),
+        format!("   {}", &text[1_020_833..1_020_850])
+    );
+    // Each row copies its seventeen chars and the grapheme lookahead.
+    assert!(painted <= 50 * (17 + 32), "a frame copied {painted} chars");
+
+    // Placing a caret or listing a row's cells deep in the line is bounded
+    // by the row too.
+    COPIED.with(|copied| copied.set(0));
+    let at = LineCol::new(0, 1_020_040);
+    assert_eq!(state.screen_cell(area, &buffer, &[], at), Some((9, 2)));
+    let cells = state.line_cells(area, &buffer, &[], 0);
+    assert_eq!(cells.len(), 50 * 17);
+    assert_eq!(cells.get(18), Some(&(1_020_018, 4, 1)));
+    let measured = COPIED.with(std::cell::Cell::get);
+    assert!(
+        measured <= 51 * (17 + 32),
+        "measuring copied {measured} chars"
+    );
+}
+
+/// The screen column of each column of `chars` (plain ASCII and tabs, so
+/// one cell a char), with `hints` as `(column, cells)` anchored before it.
+fn model_cols(chars: &[char], tab: u32, hints: &[(u32, u32)]) -> Vec<u32> {
+    let mut cols = vec![0_u32];
+    let mut at = 0_u32;
+    for (index, &ch) in (0_u32..).zip(chars) {
+        at += hints
+            .iter()
+            .filter(|hint| hint.0 == index)
+            .map(|hint| hint.1)
+            .sum::<u32>();
+        at += if ch == '\t' { tab - at % tab } else { 1 };
+        cols.push(at);
+    }
+    cols
+}
+
+#[test]
+fn deep_wrapped_rows_keep_their_tab_stops_and_hints() {
+    // Tabs whose stops depend on everything before the row, and a hint
+    // that shifts every row after it: each row is measured from its cached
+    // origin, so a wrong one moves the tabs and every cell after them.
+    let text = "ab\tcde\tf ghij\tk".repeat(400);
+    let chars: Vec<char> = text.chars().collect();
+    let buffer = TextBuffer::from_text(&text);
+    let hints = [VirtualText::inline(0, 7, "<>", ThemeRole::InlayHint)];
+    let cols = model_cols(&chars, 4, &[(7, 2)]);
+    let mut state = EditorState::new();
+    state.scroll_subrow = 150;
+    let area = Rect::new(0, 0, 20, 12);
+    let target = render_wrapped(&buffer, &mut state, area, &hints);
+
+    let cells = state.line_cells(area, &buffer, &[], 0);
+    assert!(cells.len() > 100, "twelve rows of cells");
+    let starts: Vec<(u16, u32)> = cells
+        .iter()
+        .filter(|&&(_, x, _)| x == 3)
+        .map(|&(col, _, y)| (y, col))
+        .collect();
+    assert_eq!(starts.len(), 12, "every row starts at the text area's edge");
+    for &(col, x, y) in &cells {
+        let start = starts
+            .iter()
+            .find(|&&(row, _)| row == y)
+            .map_or(0, |&(_, start)| start);
+        let model = |c: u32| cols.get(c as usize).copied().unwrap_or(0);
+        let expected = 3 + model(col) - model(start);
+        assert_eq!(u32::from(x), expected, "column {col} on row {y}");
+        let ch = chars.get(col as usize).copied().unwrap_or(' ');
+        let shown = if ch == '\t' { ' ' } else { ch };
+        let painted = target[(x, y)].symbol().chars().next().unwrap_or(' ');
+        assert_eq!(painted, shown, "column {col} painted at ({x}, {y})");
+        let at = LineCol::new(0, col);
+        assert_eq!(state.screen_cell(area, &buffer, &[], at), Some((x, y)));
+    }
+}
+
+#[test]
+fn a_deep_wrapped_row_draws_boundary_whitespace_and_bracket_depths_as_the_line_does() {
+    // Seventeen letters fill the first row, so the second starts with the
+    // lone space between two words: only the char before the row tells it
+    // apart from the leading space of a run.
+    let buffer = TextBuffer::from_text(&format!("{} b", "a".repeat(17)));
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 20, 2);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .render_whitespace(RenderWhitespace::Boundary)
+        .render(area, &mut target, &mut state);
+    assert_eq!(row(&target, 1), "    b               ");
+
+    // Openers only: each one's depth is its column, so every row's colours
+    // follow on from the row above, whether its scan resumed there or
+    // started at the row on top.
+    let buffer = TextBuffer::from_text(&"(".repeat(200));
+    let theme = Theme::dark();
+    let colors = theme.bracket_pair_colors().map(Rgba::to_ratatui);
+    for top in [0, 5] {
+        let mut state = EditorState::new();
+        state.scroll_subrow = top;
+        let area = Rect::new(0, 0, 20, 3);
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .rainbow_brackets(true)
+            .theme(&theme)
+            .render(area, &mut target, &mut state);
+        for y in 0..3_u16 {
+            for x in 3..20_u16 {
+                let depth = (top + u32::from(y)) * 17 + u32::from(x - 3);
+                let expected = colors.get(depth as usize % 3).copied();
+                assert_eq!(Some(target[(x, y)].fg), expected, "depth {depth}");
+            }
+        }
+    }
+}
+
+#[test]
 fn the_wrap_cache_measures_again_after_an_edit_or_a_new_hint() {
     let mut buffer = TextBuffer::from_text(&alphabet(1_000));
     let mut state = EditorState::new();
