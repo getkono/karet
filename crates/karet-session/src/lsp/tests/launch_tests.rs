@@ -184,7 +184,7 @@ async fn copilot_initialization_options(user: Option<Value>) -> Result<Option<Va
     let launches = observed_launches(&mut launched, 2).await;
     let copilot = launches.into_iter().find(|spec| spec.command == command);
     let copilot = copilot.ok_or("the opted-in Copilot was never launched")?;
-    Ok(copilot.initialization_options)
+    Ok(copilot.options.initialization_options)
 }
 
 /// Copilot refuses to start without being told which editor it serves, so
