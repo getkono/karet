@@ -237,6 +237,7 @@ fn wrapping_counts_the_cells_a_hint_consumes() {
             wrap: true,
             wrap_column: None,
             wrapping_indent: WrappingIndent::None,
+            wraps: &WrapCache::default(),
         },
     );
     let hinted = visual_ranges(
@@ -251,6 +252,7 @@ fn wrapping_counts_the_cells_a_hint_consumes() {
             wrap: true,
             wrap_column: None,
             wrapping_indent: WrappingIndent::None,
+            wraps: &WrapCache::default(),
         },
     );
     // Five of the ten cells go to the hint, so only five characters fit on the
@@ -276,6 +278,7 @@ fn a_hint_on_a_wrap_boundary_belongs_to_the_row_it_starts() {
         wrap: true,
         wrap_column: None,
         wrapping_indent: WrappingIndent::None,
+        wraps: &WrapCache::default(),
     };
     let ranges = visual_ranges(&buffer, 0, layout);
     // The hint is at column 5, which is where the second row begins.

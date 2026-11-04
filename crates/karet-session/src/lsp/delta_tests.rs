@@ -329,7 +329,7 @@ fn the_replay_set_drops_a_delta_across_a_line_break_lsp_does_not_count() {
 /// while the connection stays alive. The returned sender releases the server.
 async fn stalled_client()
 -> Result<(LspClient, tokio::sync::oneshot::Sender<()>), Box<dyn std::error::Error>> {
-    use karet_lsp::codec;
+    use karet_jsonrpc::framing::content_length as codec;
     let (client_end, server_end) = tokio::io::duplex(256);
     let (client_read, client_write) = tokio::io::split(client_end);
     let (release, released) = tokio::sync::oneshot::channel::<()>();

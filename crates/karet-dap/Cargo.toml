@@ -27,6 +27,18 @@ tokio = { workspace = true, features = ["rt", "io-util", "net", "process", "macr
 thiserror.workspace = true
 tracing.workspace = true
 
+# Who listens on a spawn-then-TCP adapter's port (`port_owner`); Linux reads
+# `/proc` and needs neither.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

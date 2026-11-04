@@ -3639,11 +3639,13 @@ version = "0.7.1"
 dependencies = [
  "karet-core",
  "karet-jsonrpc",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3852,6 +3854,7 @@ dependencies = [
  "karet-docx",
  "karet-filetype",
  "karet-github",
+ "karet-jsonrpc",
  "karet-lsp",
  "karet-markdown",
  "karet-notebook",

@@ -159,11 +159,13 @@ pub(super) struct GlyphFrame<'a> {
 }
 
 impl GlyphFrame<'_> {
-    /// The glyphs a row of line `l` draws, `chars` being the prefix of the
-    /// line the row walks (up to its right edge): bracket depths are read only
-    /// that far, so a row of a minified line costs its window, not the line.
-    /// Asked for in ascending line order, as the bracket scan requires.
-    pub(super) fn row(&mut self, l: u32, chars: &[char]) -> RowGlyphs {
+    /// The glyphs a row of line `l` draws, `chars` being the slice of the
+    /// line the row walks: from column `base` (0, or the row's own start)
+    /// past its right edge. Bracket depths are read only up to the row's
+    /// `end`, resuming where the line's previous row stopped, so a row of a
+    /// minified line costs its window, not the line. Asked for in ascending
+    /// order, as the bracket scan requires.
+    pub(super) fn row(&mut self, l: u32, (base, end): (u32, u32), chars: &[char]) -> RowGlyphs {
         let unit = u32::from(self.tab_width.max(1));
         let (leading_end, own) = leading(self.buffer, l, self.tab_width);
         let indent = if self.guides {
@@ -176,12 +178,25 @@ impl GlyphFrame<'_> {
         } else {
             0
         };
+        let len = u32::try_from(chars.len()).unwrap_or(u32::MAX);
         let depths = self
             .brackets
             .as_mut()
-            .map(|scan| scan.line(l, u32::try_from(chars.len()).unwrap_or(u32::MAX)))
+            .map(|scan| scan.row(l, base, end.min(base.saturating_add(len))))
             .unwrap_or_default();
+        // A lone space at the row's start is told apart by the char before
+        // it, which the slice leaves out.
+        let before = base
+            .checked_sub(1)
+            .filter(|_| self.whitespace == RenderWhitespace::Boundary)
+            .and_then(|at| {
+                line_chars_between(self.buffer, l, at, base)
+                    .first()
+                    .copied()
+            });
         RowGlyphs {
+            base,
+            before,
             unit,
             indent,
             own,
@@ -200,6 +215,11 @@ impl GlyphFrame<'_> {
 
 /// The glyphs of one line.
 pub(super) struct RowGlyphs {
+    /// The line column the row's chars (and `depths`) start at.
+    base: u32,
+    /// The char at column `base - 1`, when whitespace is drawn at word
+    /// boundaries and the row starts past the line start.
+    before: Option<char>,
     /// Display columns between guides.
     unit: u32,
     /// The display width the line's guides run up to (0 draws none).
@@ -213,7 +233,8 @@ pub(super) struct RowGlyphs {
     /// The char column past the line's last non-whitespace character.
     trailing_start: u32,
     whitespace: RenderWhitespace,
-    /// Each char's bracket depth (empty when brackets are not coloured).
+    /// Each char's bracket depth from `base` (empty when brackets are not
+    /// coloured).
     depths: Vec<Option<usize>>,
     colors: GlyphColors,
 }
@@ -230,6 +251,14 @@ impl RowGlyphs {
         })
     }
 
+    /// The char at line column `col` of `chars`, the row's slice.
+    fn char_at(&self, chars: &[char], col: u32) -> Option<char> {
+        match col.checked_sub(self.base) {
+            Some(index) => chars.get(index as usize).copied(),
+            None => self.before.filter(|_| col.saturating_add(1) == self.base),
+        }
+    }
+
     /// Whether the whitespace char at `col` of `chars` is drawn visibly.
     fn shows(&self, chars: &[char], col: u32, selected: bool) -> bool {
         match self.whitespace {
@@ -239,10 +268,10 @@ impl RowGlyphs {
             RenderWhitespace::Trailing => col >= self.trailing_start,
             RenderWhitespace::Boundary => {
                 let word = |at: Option<u32>| {
-                    at.and_then(|at| chars.get(at as usize))
+                    at.and_then(|at| self.char_at(chars, at))
                         .is_some_and(|c| !c.is_whitespace())
                 };
-                let lone_space = chars.get(col as usize) == Some(&' ')
+                let lone_space = self.char_at(chars, col) == Some(' ')
                     && word(col.checked_sub(1))
                     && word(col.checked_add(1));
                 !lone_space
@@ -260,7 +289,7 @@ impl RowGlyphs {
         (col, display_col, width): (u32, u32, u32),
         selected: bool,
     ) -> Option<(String, Rgba)> {
-        let ch = *chars.get(col as usize)?;
+        let ch = self.char_at(chars, col)?;
         if ch != ' ' && ch != '\t' {
             return None;
         }
@@ -291,7 +320,8 @@ impl RowGlyphs {
 
     /// The colour of the bracket at `col`, by its depth.
     pub(super) fn bracket(&self, col: u32) -> Option<Rgba> {
-        let depth = self.depths.get(col as usize).copied().flatten()?;
+        let index = col.checked_sub(self.base)?;
+        let depth = self.depths.get(index as usize).copied().flatten()?;
         self.colors.brackets.get(depth % 3).copied()
     }
 

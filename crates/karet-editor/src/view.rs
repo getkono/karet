@@ -309,31 +309,42 @@ impl Editor<'_> {
         let line_start = line_span.start.0;
         let line_len = line_len(self.buffer, l);
         // Only the chars up to the row's right edge are copied out and walked,
-        // so a minified line costs its visible window (plus the scrolled-off
-        // prefix, whose widths decide the tab stops), not its whole length. An
-        // unwrapped row has no end column, so its window grows until the
-        // cells it covers fill the room left on screen.
-        let (chars, widths) = if range.end == u32::MAX {
-            row_window(self.buffer, l, range.start, room)
-        } else {
-            let chars =
-                line_chars_prefix(self.buffer, l, range.end.saturating_add(GRAPHEME_LOOKAHEAD));
-            let widths = cluster_widths(&chars);
-            (chars, widths)
+        // so a minified line costs its visible window, not its whole length.
+        // A row whose screen origin is known (a soft-wrapped one) starts the
+        // window at its own first column, `base`; an unwrapped row also walks
+        // the scrolled-off prefix, whose widths decide the tab stops, and has
+        // no end column, so its window grows until the cells it covers fill
+        // the room left on screen.
+        let ((base, origin), (chars, widths)) = match range.origin {
+            Some(origin) if range.end != u32::MAX => {
+                let end = range.end.saturating_add(GRAPHEME_LOOKAHEAD);
+                let chars = line_chars_between(self.buffer, l, range.start, end);
+                let widths = cluster_widths(&chars);
+                ((range.start, origin), (chars, widths))
+            },
+            _ => ((0, 0), row_window(self.buffer, l, range.start, room)),
         };
-        let glyphs = glyphs.map(|frame| frame.row(l, &chars));
+        let glyphs = glyphs.map(|frame| frame.row(l, (base, range.end), &chars));
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
         let line_decos = self.line_decorations(l);
 
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
-        let mut col: u32 = 0;
-        let mut display_col = 0_u32;
+        let mut col = base;
+        let mut display_col = origin;
         // Where on screen this row's first painted column sits, so the walk
         // stops once the row is full rather than at the end of the line.
         let mut row_origin = None;
-        let mut boff = 0_usize;
-        let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
+        let mut boff = self
+            .buffer
+            .line_col_to_byte(LineCol::new(l, base))
+            .map_or(0, |at| at.0.saturating_sub(line_start));
+        let cells = |col: u32| {
+            widths
+                .get(col.saturating_sub(base) as usize)
+                .copied()
+                .unwrap_or(0)
+        };
         // The shared horizontal scroll can start this row inside a cluster.
         // Its earlier chars took the cluster's cells off screen, so the chars
         // up to the next boundary are a fragment the width model counts as
@@ -341,6 +352,7 @@ impl Editor<'_> {
         // the caret and hit-test columns.
         let paint_from = cluster_bounds(&chars)
             .into_iter()
+            .map(|bound| bound.saturating_add(base))
             .find(|&bound| bound >= range.start)
             .unwrap_or(range.start);
         for &ch in &chars {
@@ -654,6 +666,9 @@ impl StatefulWidget for Editor<'_> {
         // borrows them while the loop is still assigning scroll positions.
         let hint_index = HintIndex::new(self.virtual_text);
         let block_index = BlockIndex::new(self.virtual_lines);
+        // Taken out of `state` for the frame, which mutates `state` while
+        // `layout` is borrowed, and handed back once the rows are painted.
+        let wraps = std::mem::take(&mut state.wraps);
         let layout = Layout {
             width,
             tab_width: self.tab_width,
@@ -663,6 +678,7 @@ impl StatefulWidget for Editor<'_> {
             wrap: self.word_wrap,
             wrap_column,
             wrapping_indent: self.wrapping_indent,
+            wraps: &wraps,
         };
         state.clamp_scroll_to_frame(self.buffer, layout);
         let mut anchor =
@@ -901,6 +917,7 @@ impl StatefulWidget for Editor<'_> {
             }
             anchor = next;
         }
+        state.wraps = wraps;
         state.record_frame(FrameGeometry {
             height,
             content_width,

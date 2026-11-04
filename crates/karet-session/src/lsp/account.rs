@@ -172,7 +172,7 @@ fn code_lifetime(reply: &Value) -> Duration {
 mod tests {
     use std::path::Path;
 
-    use karet_lsp::codec;
+    use karet_jsonrpc::framing::content_length as codec;
 
     use super::*;
 
