@@ -13,12 +13,31 @@
 //! displacing a dialog declines it, and a server must not be able to cancel
 //! something the user was in the middle of deciding.
 
+use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerLogEntry;
+use karet_session::LanguageServerMessageId;
+use karet_session::LanguageServerStatus;
 use karet_session::LanguageServerWork;
 use karet_session::WorkPhase;
 use karet_session::WorkToken;
 
-use super::*;
-use crate::app::util::path_contains_or_equals;
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::paths::path_under;
+use crate::pending::Pending;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::code_language;
 
 /// The longest the status bar's work text runs before it is cut.
 const WORK_LABEL_CHARS: usize = 48;
@@ -149,9 +168,10 @@ impl WindowModel {
         path: &Path,
         language: &str,
     ) -> Option<&WorkEntry> {
-        self.work.iter().rev().find(|entry| {
-            covers(servers, &entry.server, language) && path_contains_or_equals(&entry.root, path)
-        })
+        self.work
+            .iter()
+            .rev()
+            .find(|entry| covers(servers, &entry.server, language) && path_under(&entry.root, path))
     }
 
     /// Hold `question` until the dialog is free.
@@ -184,12 +204,15 @@ impl App {
 
     /// The work the status bar shows: the newest of the active file's servers.
     pub(crate) fn active_language_server_work(&self) -> Option<&WorkEntry> {
-        let TabKind::Code { path, language, .. } = &self.tabs.get(self.active)?.kind else {
+        let TabKind::Code {
+            path, file_type, ..
+        } = &self.tabs.get(self.active)?.kind
+        else {
             return None;
         };
         self.lsp_runtime
             .window
-            .for_file(&self.lsp_runtime.servers, path, language)
+            .for_file(&self.lsp_runtime.servers, path, code_language(*file_type))
     }
 
     /// Ask the active file's server to cancel the work the status bar shows.
@@ -213,7 +236,7 @@ impl App {
             );
             return;
         }
-        self.send_command(SessionCommand::CancelLanguageServerWork {
+        self.send_command(LanguageServerCommand::CancelWork {
             server: work.server,
             root: work.root,
             token: work.token,
@@ -283,7 +306,7 @@ impl App {
             .active_language_server_work()
             .map(|work| work.server.clone())
             .or_else(|| {
-                let TabKind::Code { language, .. } = &self.tabs.get(self.active)?.kind else {
+                let TabKind::Code { file_type, .. } = &self.tabs.get(self.active)?.kind else {
                     return None;
                 };
                 self.lsp_runtime
@@ -291,10 +314,9 @@ impl App {
                     .iter()
                     .find(|status| {
                         status.enabled
-                            && status
-                                .languages
-                                .iter()
-                                .any(|candidate| candidate.eq_ignore_ascii_case(language))
+                            && status.languages.iter().any(|candidate| {
+                                candidate.eq_ignore_ascii_case(code_language(*file_type))
+                            })
                     })
                     .map(|status| status.server.clone())
             });
@@ -318,7 +340,7 @@ impl App {
             },
             None => self.push_tab(Tab::server_log(server.clone())),
         }
-        self.send_command(SessionCommand::LanguageServerLog { server });
+        self.send_command(LanguageServerCommand::Log { server });
     }
 
     /// Fill every open log of `server` with the session's answer.
@@ -345,6 +367,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn report(phase: WorkPhase, token: &str) -> LanguageServerWork {

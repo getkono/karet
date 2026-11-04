@@ -13,12 +13,28 @@
 //! typing), or closes the prompt with its reason when nothing there can be
 //! renamed.
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_session::AppliedWorkspaceEdit;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RenameTarget;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_text::TextBuffer;
 use karet_widgets::textfield::TextFieldState;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::rebase_path;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The open rename prompt.
 #[derive(Clone, Debug)]
@@ -56,25 +72,10 @@ pub(crate) struct PendingRename {
 /// The identifier the editor sees at `pos`, if the caret is on (or just past)
 /// one: its span and text.
 fn local_identifier(buffer: &TextBuffer, pos: LineCol) -> Option<(Range, String)> {
-    let line: Vec<char> = buffer.line(pos.line as usize)?.chars().collect();
-    let on_word = |col: u32| {
-        line.get(col as usize)
-            .copied()
-            .is_some_and(karet_core::is_word_char)
-    };
-    let at = if on_word(pos.col) {
-        pos
-    } else if pos.col > 0 && on_word(pos.col - 1) {
-        LineCol::new(pos.line, pos.col - 1)
-    } else {
-        return None;
-    };
-    let (start, end) = word_at(buffer, at);
-    let name: String = line
-        .get(start.col as usize..end.col as usize)?
-        .iter()
-        .collect();
-    (start.line == end.line && !name.is_empty()).then_some((Range { start, end }, name))
+    let (start, end) = karet_text::words::word_at(buffer, pos)?;
+    let range = Range { start, end };
+    let name = buffer.slice_range(range)?;
+    Some((range, name))
 }
 
 impl App {
@@ -99,7 +100,7 @@ impl App {
         let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) else {
             return;
         };
-        let preparing = self.send(SessionCommand::PrepareRename {
+        let preparing = self.send(LspCommand::PrepareRename {
             doc,
             position: caret,
         });
@@ -184,7 +185,7 @@ impl App {
         if name == prompt.original {
             return; // nothing to rename
         }
-        let id = self.send(SessionCommand::Rename {
+        let id = self.send(LspCommand::Rename {
             doc: prompt.doc,
             position: prompt.range.start,
             new_name: name.clone(),
@@ -332,7 +333,7 @@ impl App {
             for tab in self.all_tabs_mut() {
                 let moved = tab.path().and_then(|path| rebase_path(path, from, to));
                 if let Some(path) = moved {
-                    retarget_tab_path(tab, &path);
+                    tab.retarget(&path);
                 }
             }
         }
@@ -343,21 +344,22 @@ impl App {
                     && tab.path().is_some_and(|p| canonical(p) == target)
             });
             if !shown {
-                let mut tab = workspace::open_file(path);
+                let mut tab = Tab::open(path);
                 if !matches!(tab.kind, TabKind::Code { .. }) {
-                    tab = workspace::open_as_text(path);
+                    tab = Tab::open_as_text(path);
                 }
                 tab.view = self.alloc_view();
                 self.tabs.push(tab);
                 self.register_doc(self.tabs.len() - 1);
             }
-            self.send_command(SessionCommand::CloseDocument { doc: *doc });
+            self.send_command(DocumentCommand::Close { doc: *doc });
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

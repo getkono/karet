@@ -169,3 +169,19 @@ fn mdx_keeps_headings_and_exports_but_excludes_fenced_examples() -> TestResult {
     assert!(mdx.iter().any(|symbol| symbol.name == "Brew"));
     Ok(())
 }
+
+#[test]
+fn rust_doc_comment_examples_stay_out_of_the_outline() -> TestResult {
+    // A fenced, a bare indented, and an attribute-only fence each inject a Rust
+    // layer under the doc comment's markdown layer; none of them declares anything.
+    let source = "/// Brews.\n///\n/// # Examples\n///\n/// ```\n/// struct Fenced;\n/// fn main() {}\n/// ```\n///\n///     fn indented() {}\n///\n/// ```no_run\n/// struct Attributed;\n/// ```\npub fn brew() {}\n\n/// A cup.\npub struct Cup;\n\nimpl Cup {\n    /// ```\n    /// fn method_example() {}\n    /// ```\n    pub fn pour(&self) {}\n}\n";
+    let rust = layered_symbols("lib.rs", source)?;
+    let found = names(&rust);
+    for expected in ["brew", "Cup", "pour"] {
+        assert!(found.contains(&expected), "{expected}: {rust:#?}");
+    }
+    for example in ["Fenced", "main", "indented", "Attributed", "method_example"] {
+        assert!(!found.contains(&example), "{example}: {rust:#?}");
+    }
+    Ok(())
+}

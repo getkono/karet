@@ -40,7 +40,7 @@ pub enum BackendError {
 /// # Answer latency
 ///
 /// Do not assume a command is answered promptly. In particular, a
-/// [`Command::Save`] with format-on-save enabled waits for the language
+/// [`DocumentCommand::Save`](crate::api::DocumentCommand::Save) with format-on-save enabled waits for the language
 /// server's formatting answer before it writes, so its
 /// [`Event::Saved`](crate::api::Event::Saved) can arrive seconds after the
 /// command, bounded by the format-on-save deadline. A consumer that needs to
@@ -49,6 +49,43 @@ pub enum BackendError {
 /// `save cancelled` notification), not assume the write is done once `send`
 /// returns. While it waits on the formatter, such a save
 /// can be withdrawn with [`Command::Cancel`](crate::api::Command::Cancel).
+///
+/// # Which commands answer
+///
+/// A command that asks for something — a result, a read, or a change whose
+/// outcome the client waits on — is answered by at least one event tagged with
+/// its [`RequestId`]: the result, an empty result, or an error. That holds when
+/// the session has no workspace root or no repository too. For example, with no
+/// root [`SeamCommand::Index`](crate::api::SeamCommand::Index) answers
+/// [`Event::SeamIndexFailed`](crate::api::Event::SeamIndexFailed) and
+/// [`WorkspaceCommand::DependencyGraph`](crate::api::WorkspaceCommand::DependencyGraph)
+/// answers an error notification. With no repository the index writes
+/// ([`VcsCommand::Stage`](crate::api::VcsCommand::Stage) and its siblings) answer an
+/// error notification, and [`VcsCommand::Refresh`](crate::api::VcsCommand::Refresh)
+/// answers an empty [`Event::VcsStatus`](crate::api::Event::VcsStatus).
+///
+/// The exceptions are deliberate:
+///
+/// - **Fire-and-forget**, never answered: `Cancel`, `SetCursor`,
+///   `DiscardSwaps`, `RefreshManifestHints`, `RestartLanguageServer`,
+///   `CancelLanguageServerWork`, `AnswerLanguageServerMessage`, `DebugStart`,
+///   `DebugStop`, the debugger's run controls and `DebugSetBreakpoints`, and
+///   the notebook execution commands. These report through untagged state
+///   events, if at all.
+/// - **Answered only on failure**: `SetBlameEnabled`, `DeclineLanguageServer`
+///   and `UndeclineLanguageServer`.
+/// - **Answered only when there is something to say**: `RecoverSwaps` answers
+///   through the documents it reopens, and `FetchCommitVerification` only with
+///   a fetched verdict. `Undo` and `Redo` answer nothing when the history has
+///   nothing to undo or redo or the document is unknown, and `CloseDocument`
+///   answers [`Event::Closed`](crate::api::Event::Closed) only when it drops
+///   the last reference: closing a document still open elsewhere, or one that
+///   is unknown, answers nothing.
+/// - **Withdrawn**: a request cancelled with `Cancel`, one superseded by a
+///   newer request of the same kind (a seam index, query or node; an AI commit
+///   message), and a `Blame` for a buffer version that has since moved on
+///   answer nothing. A cancelled save is the one cancellation that still
+///   answers, with the `save cancelled` notification described above.
 pub trait Backend: Send + Sync {
     /// Submit `command`, tagged with `id` so its answering event can be correlated.
     ///
@@ -70,7 +107,7 @@ pub trait Backend: Send + Sync {
     fn take_events(&self) -> Option<EventRx>;
 }
 
-/// An in-process backend that drives a [`Session`] on a background task.
+/// An in-process backend that drives a session on a background task.
 ///
 /// `send` pushes onto an unbounded command channel (an unbounded send is the only
 /// non-`async` send, which the synchronous [`Backend::send`] requires); the actor
@@ -101,7 +138,7 @@ impl Backend for LocalBackend {
     }
 }
 
-/// Build a [`Session`] from `config` and drive it in-process on a spawned task,
+/// Build a session from `config` and drive it in-process on a spawned task,
 /// returning the [`LocalBackend`] to submit commands to plus the local-only
 /// [`SnapshotRx`] render stream.
 ///

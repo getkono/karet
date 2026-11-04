@@ -26,12 +26,30 @@ pub(super) fn compute_status(repo: &Repository) -> Status {
 
 pub(super) fn run_status(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     last_status: &mut Option<Status>,
     id: Option<RequestId>,
 ) {
-    let Ok(repo) = repository(root) else {
-        return;
+    let repo = match repository(root) {
+        Ok(repo) => repo,
+        // A requested refresh answers even when the repository has gone away
+        // since the session opened it, with an empty status -- the same answer a
+        // session with no repository gives (`Session::emit_vcs_status`), and not
+        // a notification, which would toast on every explorer refresh. A
+        // spontaneous refresh has nobody to tell.
+        Err(_) => {
+            if id.is_some() {
+                *last_status = Some((Vec::new(), Vec::new()));
+                events.emit(
+                    id,
+                    Event::VcsStatus {
+                        staged: Vec::new(),
+                        working: Vec::new(),
+                    },
+                );
+            }
+            return;
+        },
     };
     let status = compute_status(&repo);
     if id.is_none() && last_status.as_ref() == Some(&status) {
@@ -39,7 +57,7 @@ pub(super) fn run_status(
     }
     let (staged, working) = status.clone();
     *last_status = Some(status);
-    let _ = events.send((id, Event::VcsStatus { staged, working }));
+    events.emit(id, Event::VcsStatus { staged, working });
 }
 
 /// Diff `path` at `rev` against its current content — `live` when the client

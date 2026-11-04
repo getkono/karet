@@ -9,9 +9,6 @@ side-by-side rows, computes intra-line change segments, and reconstructs or stag
 unified-diff patches. How a diff is displayed — colors, layout, syntax highlighting —
 is entirely up to the consumer.
 
-Tree-sitter structural ("difftastic-style") diffing is reserved behind
-`DiffStrategy::Structural`; today both strategies use the line/word path.
-
 Part of the [karet](https://github.com/getkono/karet) workspace.
 
 ## License

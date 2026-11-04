@@ -2,7 +2,7 @@
 //!
 //! A [`View`] sits *above* panes and tabs. The editor view is the pane/tab shell
 //! the app has always had; the others own the content area outright, so a surface
-//! that is not a document — GitHub, agent sessions — need not be wedged into a tab
+//! that is not a document, such as GitHub, need not be wedged into a tab
 //! it does not behave like.
 //!
 //! This is the same shape as the sidebar's activity bar one level up: persistent
@@ -20,32 +20,24 @@ pub enum View {
     Editor,
     /// The GitHub surface — issues, pull requests, and workflow runs.
     GitHub,
-    // #211: the Agents view ships commented out until its surface exists. It had no
-    // module, no state, and no backend behind it, so the switcher was offering a
-    // button that could only ever say "not available yet".
-    // /// Agent sessions across worktrees.
-    // Agents,
 }
 
 impl View {
     /// Every view, in switcher order.
     pub const ALL: [Self; 2] = [Self::Editor, Self::GitHub];
-    // #211: pub const ALL: [Self; 3] = [Self::Editor, Self::GitHub, Self::Agents];
 
     /// Whether the sidebar is drawn beside this view.
     ///
-    /// Every view shows it today. #211's Agents view will not: it lists sessions
-    /// across *every* worktree, so the sidebar's workspace-scoped panels — this
-    /// checkout's files, this checkout's changes — have nothing to say about what it
-    /// shows.
-    //
-    // The `self` argument is what makes this a property of the view rather than of the
-    // app, which is the whole point of asking a view; #211 restores the body below.
-    #[allow(clippy::unused_self, reason = "#211 restores the discriminant test")]
+    /// Every view shows it today. A view whose content is not scoped to this
+    /// checkout would not, since the sidebar's panels — this checkout's files, this
+    /// checkout's changes — would have nothing to say about what it shows.
+    #[allow(
+        clippy::unused_self,
+        reason = "a property of the view, asked of the view, even while every view answers the same"
+    )]
     #[must_use]
     pub const fn shows_sidebar(self) -> bool {
         true
-        // #211: !matches!(self, Self::Agents)
     }
 
     /// The view's name, as shown on the chrome row.
@@ -54,7 +46,6 @@ impl View {
         match self {
             Self::Editor => "Editor",
             Self::GitHub => "GitHub",
-            // #211: Self::Agents => "Agents",
         }
     }
 
@@ -65,7 +56,6 @@ impl View {
         match self {
             Self::Editor => "EDITOR",
             Self::GitHub => "GITHUB",
-            // #211: Self::Agents => "AGENTS",
         }
     }
 
@@ -75,7 +65,6 @@ impl View {
         match self {
             Self::Editor => UiIcon::ViewEditor,
             Self::GitHub => UiIcon::ViewGithub,
-            // #211: Self::Agents => UiIcon::ViewAgents,
         }
     }
 }
@@ -96,14 +85,6 @@ mod tests {
         assert!(View::Editor.shows_sidebar());
         assert!(View::GitHub.shows_sidebar());
     }
-
-    // #211: the Agents view is the one that will not.
-    // #[test]
-    // fn only_the_agents_view_takes_the_full_width() {
-    //     assert!(View::Editor.shows_sidebar());
-    //     assert!(View::GitHub.shows_sidebar());
-    //     assert!(!View::Agents.shows_sidebar());
-    // }
 
     #[test]
     fn every_focus_label_is_the_upper_cased_title() {

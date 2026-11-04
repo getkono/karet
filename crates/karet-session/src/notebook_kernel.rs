@@ -18,10 +18,7 @@ use karet_notebook::kernel::ZmqTransport;
 use tokio::sync::mpsc;
 
 use crate::api::Event;
-use crate::api::RequestId;
-
-/// The sender the manager answers on.
-type Events = mpsc::UnboundedSender<(Option<RequestId>, Event)>;
+use crate::event_tx::EventTx;
 
 /// How long a booting kernel may take before starting is called a failure.
 const KERNEL_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -41,14 +38,14 @@ enum Job {
 struct Active {
     path: PathBuf,
     jobs: mpsc::UnboundedSender<Job>,
-    connection: kernel::ConnectionInfo,
+    connection: kernel::Connection,
 }
 
 /// Notebook-kernel orchestration owned by the session actor.
 pub(crate) struct NotebookKernels {
     supervisor: Option<PathBuf>,
     active: Option<Active>,
-    events: Events,
+    events: EventTx,
     /// Kernelspec directories override for tests (`None` = the standard set).
     #[cfg(test)]
     spec_dirs: Option<Vec<PathBuf>>,
@@ -56,7 +53,7 @@ pub(crate) struct NotebookKernels {
 
 impl NotebookKernels {
     /// Create a manager answering on `events`.
-    pub(crate) fn new(supervisor: Option<PathBuf>, events: Events) -> Self {
+    pub(crate) fn new(supervisor: Option<PathBuf>, events: EventTx) -> Self {
         Self {
             supervisor,
             active: None,
@@ -90,9 +87,12 @@ impl NotebookKernels {
             .is_some_and(|active| active.path == path && !active.jobs.is_closed());
         if !alive {
             self.active = None;
-            let Ok(connection) = kernel::local_connection() else {
-                self.notify("no loopback port for a kernel connection");
-                return None;
+            let connection = match kernel::local_connection() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    self.notify(&format!("could not set up a kernel connection: {error}"));
+                    return None;
+                },
             };
             let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
             let task = KernelTask {
@@ -131,14 +131,14 @@ impl NotebookKernels {
                 Ok(()) => (Severity::Information, "interrupted".to_owned()),
                 Err(error) => (Severity::Error, format!("interrupt failed: {error}")),
             };
-            let _ = events.send((
+            events.emit(
                 None,
                 Event::NotebookKernelStatus {
                     path,
                     severity,
                     text,
                 },
-            ));
+            );
         });
     }
 
@@ -152,14 +152,12 @@ impl NotebookKernels {
     }
 
     fn notify(&self, message: &str) {
-        let _ = self.events.send((
+        self.events.notify(
             None,
-            Event::Notification {
-                severity: Severity::Information,
-                kind: NotificationKind::System,
-                message: message.to_owned(),
-            },
-        ));
+            Severity::Information,
+            NotificationKind::System,
+            message.to_owned(),
+        );
     }
 
     fn spec_dirs_or_default(&self) -> Vec<PathBuf> {
@@ -175,32 +173,26 @@ impl NotebookKernels {
 struct KernelTask {
     path: PathBuf,
     supervisor: Option<PathBuf>,
-    connection: kernel::ConnectionInfo,
+    connection: kernel::Connection,
     spec_dirs: Vec<PathBuf>,
-    events: Events,
+    events: EventTx,
 }
 
 /// The per-kernel task: boot, then drain the job queue sequentially.
 async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
     let status = |severity: Severity, text: &str| {
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
                 severity,
                 text: text.to_owned(),
             },
-        ));
+        );
     };
     let notify = |message: String| {
-        let _ = ctx.events.send((
-            None,
-            Event::Notification {
-                severity: Severity::Warning,
-                kind: NotificationKind::System,
-                message,
-            },
-        ));
+        ctx.events
+            .notify(None, Severity::Warning, NotificationKind::System, message);
     };
 
     let mut notebook = match std::fs::read_to_string(&ctx.path)
@@ -232,7 +224,9 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
     };
 
     status(Severity::Information, &format!("starting {}", spec.name));
-    let Some((mut client, _child, connection_file)) =
+    // `_child` and `_connection_file` are held, not discarded: dropping the
+    // child kills the kernel, and dropping the guard deletes its key file.
+    let Some((mut client, mut _child, mut _connection_file)) =
         boot(&ctx, spec, &ctx.connection, &notify).await
     else {
         status(Severity::Error, "kernel failed to start");
@@ -259,13 +253,25 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
                     return;
                 };
                 client = fresh;
-                let _ = (child, file);
+                // Replacing them drops the old kernel's child and deletes its
+                // connection file; the new ones live until the next restart.
+                _child = child;
+                _connection_file = file;
                 status(Severity::Information, "ready");
             },
         }
     }
     let _ = client.shutdown().await;
-    let _ = std::fs::remove_file(connection_file);
+}
+
+/// A written connection file, deleted when dropped: it holds the kernel's
+/// signing key, so every path out of a boot or restart removes it.
+struct ConnectionFile(PathBuf);
+
+impl Drop for ConnectionFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Spawn the kernel process (through the supervisor when available) and wait
@@ -273,11 +279,16 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
 async fn boot(
     ctx: &KernelTask,
     spec: &kernel::KernelSpec,
-    connection: &kernel::ConnectionInfo,
+    connection: &kernel::Connection,
     notify: &impl Fn(String),
-) -> Option<(KernelClient<ZmqTransport>, tokio::process::Child, PathBuf)> {
+) -> Option<(
+    KernelClient<ZmqTransport>,
+    tokio::process::Child,
+    ConnectionFile,
+)> {
+    // Guarded from here on, so a failed boot below deletes the file too.
     let connection_file = match kernel::write_connection_file(connection) {
-        Ok(path) => path,
+        Ok(path) => ConnectionFile(path),
         Err(error) => {
             notify(format!(
                 "notebook: could not write the connection file: {error}"
@@ -285,7 +296,7 @@ async fn boot(
             return None;
         },
     };
-    let argv = kernel::substitute_argv(&spec.argv, &connection_file.to_string_lossy());
+    let argv = kernel::substitute_argv(&spec.argv, &connection_file.0.to_string_lossy());
     let (program, args) = argv.split_first()?;
     let mut command = match &ctx.supervisor {
         Some(supervisor) => {
@@ -390,26 +401,18 @@ async fn run_cells(
     only: Option<usize>,
     ctx: &KernelTask,
 ) {
-    let indices: Vec<usize> = notebook
-        .cells
-        .iter()
-        .enumerate()
-        .filter(|(index, cell)| {
-            cell.kind == CellKind::Code && only.is_none_or(|wanted| wanted == *index)
-        })
-        .map(|(index, _)| index)
-        .collect();
+    let indices = runnable(notebook, only);
     let total = indices.len();
     let step = |step: &RunStep| {
         let (severity, text) = step.report();
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
                 severity,
                 text,
             },
-        ));
+        );
     };
     for (nth, index) in indices.into_iter().enumerate() {
         step(&RunStep::Running { nth, total });
@@ -426,20 +429,35 @@ async fn run_cells(
         cell.outputs = Some(outcome.outputs.clone());
         rerender(ctx, notebook);
         let errored = outcome.errored;
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookCellDone {
                 path: ctx.path.clone(),
                 cell: index,
                 errored,
             },
-        ));
+        );
         if errored {
             step(&RunStep::Raised { nth });
             return;
         }
     }
     step(&RunStep::Finished);
+}
+
+/// The cells a run executes, in order: every code cell, or only `only` when
+/// it names a code cell. A markdown or raw cell, or an index past the end,
+/// runs nothing.
+fn runnable(notebook: &Notebook, only: Option<usize>) -> Vec<usize> {
+    notebook
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(index, cell)| {
+            cell.kind == CellKind::Code && only.is_none_or(|wanted| wanted == *index)
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Clear every code cell's outputs and counter (a restarted kernel makes
@@ -455,13 +473,13 @@ fn mark_stale(notebook: &mut Notebook) {
 
 /// Push a refreshed preview for the in-memory notebook.
 fn rerender(ctx: &KernelTask, notebook: &Notebook) {
-    let _ = ctx.events.send((
+    ctx.events.emit(
         None,
         Event::DocumentConverted {
             path: ctx.path.clone(),
             markdown: Ok(karet_notebook::to_markdown(notebook)),
         },
-    ));
+    );
 }
 
 #[cfg(test)]
@@ -500,18 +518,84 @@ mod tests {
         );
     }
 
+    /// A notebook of markdown, code, raw, code cells -- the second code cell
+    /// already run once.
+    fn mixed_notebook() -> Result<Notebook, karet_notebook::NotebookError> {
+        karet_notebook::parse(
+            r##"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                {"cell_type": "markdown", "metadata": {}, "source": "# title"},
+                {"cell_type": "code", "metadata": {}, "execution_count": null,
+                 "source": "1", "outputs": []},
+                {"cell_type": "raw", "metadata": {}, "source": "raw"},
+                {"cell_type": "code", "metadata": {}, "execution_count": 4, "source": "2",
+                 "outputs": [{"output_type": "stream", "name": "stdout", "text": "2\n"}]}
+            ]}"##,
+        )
+    }
+
+    /// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn a_run_selects_code_cells_only() -> TestResult {
+        let notebook = mixed_notebook()?;
+        assert_eq!(
+            runnable(&notebook, None),
+            vec![1, 3],
+            "every code cell, in order"
+        );
+        assert_eq!(runnable(&notebook, Some(3)), vec![3], "one named code cell");
+        assert!(
+            runnable(&notebook, Some(0)).is_empty(),
+            "a markdown cell runs nothing"
+        );
+        assert!(
+            runnable(&notebook, Some(2)).is_empty(),
+            "a raw cell runs nothing"
+        );
+        assert!(
+            runnable(&notebook, Some(9)).is_empty(),
+            "past the end runs nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() -> TestResult {
+        let mut notebook = mixed_notebook()?;
+        let before: Vec<_> = notebook
+            .cells
+            .iter()
+            .map(|cell| (cell.execution_count, cell.outputs.clone()))
+            .collect();
+        mark_stale(&mut notebook);
+        for (index, cell) in notebook.cells.iter().enumerate() {
+            if cell.kind == CellKind::Code {
+                assert_eq!(cell.execution_count, Some(None), "cell {index}");
+                assert_eq!(cell.outputs, Some(Vec::new()), "cell {index}");
+            } else {
+                assert_eq!(
+                    (cell.execution_count, cell.outputs.clone()),
+                    before[index],
+                    "a non-code cell {index} has no results to go stale"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn run_without_an_installed_kernel_diagnoses() {
-        let dir = std::env::temp_dir().join(format!("karet-nbk-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+    async fn run_without_an_installed_kernel_diagnoses() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let dir = dir.path();
         let path = dir.join("empty.ipynb");
-        let _ = std::fs::write(
+        std::fs::write(
             &path,
             r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": null,
                           "source": "1", "outputs": []}]}"#,
-        );
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        )?;
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(vec![dir.join("no-kernels-here")]);
         kernels.run(&path, None);
@@ -526,16 +610,15 @@ mod tests {
             }
         };
         assert!(message.contains("no installed kernel"), "{message}");
-        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_broken_notebook_diagnoses_the_parse() {
-        let dir = std::env::temp_dir().join(format!("karet-nbk-bad-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("bad.ipynb");
-        let _ = std::fs::write(&path, "not json");
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    async fn a_broken_notebook_diagnoses_the_parse() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bad.ipynb");
+        std::fs::write(&path, "not json")?;
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(Vec::new());
         kernels.run(&path, None);
@@ -550,12 +633,29 @@ mod tests {
             }
         };
         assert!(message.contains("notebook:"), "{message}");
-        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn a_dropped_connection_file_guard_deletes_the_key_file() -> std::io::Result<()> {
+        // A restart swaps the guard and a failed boot drops it, so this drop
+        // is what keeps key-bearing files from piling up in the temp dir.
+        let info = kernel::local_connection()?;
+        let path = kernel::write_connection_file(&info)?;
+        let mut held = ConnectionFile(path.clone());
+        assert!(held.0.exists());
+        let next = kernel::write_connection_file(&info)?;
+        held = ConnectionFile(next.clone());
+        assert!(!path.exists(), "the replaced file outlived its restart");
+        assert!(next.exists(), "the live kernel's file was deleted");
+        drop(held);
+        assert!(!next.exists(), "the last file outlived the task");
+        Ok(())
     }
 
     #[tokio::test]
     async fn interrupt_without_a_kernel_notifies() {
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let kernels = NotebookKernels::new(None, events_tx);
         kernels.interrupt();
         let got = events_rx.recv().await.map(|(_, event)| event);

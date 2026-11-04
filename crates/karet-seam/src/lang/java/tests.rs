@@ -221,3 +221,45 @@ fn a_base_whose_name_merely_contains_the_contract_implements_nothing() -> TestRe
     );
     Ok(())
 }
+
+#[test]
+fn a_directory_holding_kotlin_beside_java_reads_what_kotlin_reads() -> TestResult {
+    if karet_treesitter::language_id_from_injection_name("kotlin").is_none()
+        || super::language_id().is_none()
+    {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let set = dir.path().join("app/src/main/kotlin");
+    std::fs::create_dir_all(set.join("com/x"))?;
+    std::fs::create_dir_all(set.join("com/y"))?;
+    std::fs::write(dir.path().join("app/build.gradle.kts"), "")?;
+    // The Java file sorts first, so it is the directory's anchor.
+    std::fs::write(set.join("com/x/A.java"), "package com.x;\nclass A {}\n")?;
+    std::fs::write(
+        set.join("com/x/B.kt"),
+        "package com.x\ninterface Shape { fun area(): Double }\nopen class Base\n",
+    )?;
+    std::fs::write(set.join("com/y/C.java"), "package com.y;\nclass C {}\n")?;
+    let index = crate::package::index_workspace(dir.path(), IndexOptions::default())?;
+
+    let mixed = node(&index, "::com::x")?;
+    let anchor = index.file_path(mixed.location.file);
+    assert!(
+        anchor.is_some_and(|path| path.ends_with("A.java")),
+        "{anchor:?}"
+    );
+    assert!(mixed.rollups.get(Lens::Substitution) > 0);
+    // Its Kotlin child carries substitution facets, so the rollup is a count, not unread.
+    assert!(index.unread_lenses(mixed.id).is_empty());
+    // A directory of Java alone, and a Java file, still read only `api`.
+    let java_only = [
+        Lens::Substitution,
+        Lens::Variation,
+        Lens::Boundary,
+        Lens::Hazard,
+    ];
+    assert_eq!(index.unread_lenses(node(&index, "::com::y")?.id), java_only);
+    assert_eq!(index.unread_lenses(node(&index, "::x::A")?.id), java_only);
+    Ok(())
+}

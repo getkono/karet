@@ -37,6 +37,8 @@ pub enum SidebarPanel {
     Debug,
     /// The diagnostics published for open documents, grouped by file.
     Problems,
+    /// A call or type hierarchy, walked one level at a time.
+    Hierarchy,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -89,8 +91,6 @@ pub enum FocusTarget {
     Seam,
     /// The GitHub view's dashboard, detail, and form pages.
     Github,
-    // #211: /// The Agents view — agent sessions across worktrees.
-    // #211: Agents,
     /// The language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
@@ -111,6 +111,8 @@ pub enum FocusTarget {
     Debug,
     /// The Problems (diagnostics) panel.
     Problems,
+    /// The call/type Hierarchy panel.
+    Hierarchy,
     /// The right-side outline panel.
     Outline,
 }
@@ -129,7 +131,6 @@ impl FocusTarget {
             // A non-editor view owns the content area outright: the active tab is
             // still there, but it is not what the keys are aimed at.
             Focus::Editor if view == View::GitHub => FocusTarget::Github,
-            // #211: Focus::Editor if view == View::Agents => FocusTarget::Agents,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
@@ -148,6 +149,7 @@ impl FocusTarget {
                 SidebarPanel::Todos => FocusTarget::Todos,
                 SidebarPanel::Debug => FocusTarget::Debug,
                 SidebarPanel::Problems => FocusTarget::Problems,
+                SidebarPanel::Hierarchy => FocusTarget::Hierarchy,
             },
         }
     }
@@ -171,8 +173,21 @@ pub enum Layer {
     Problems,
     /// Active while editing the Problems panel's text filter.
     ProblemsFilter,
+    /// Active when the Hierarchy panel has focus (Right expands a node, where
+    /// the shared sidebar verbs would open it).
+    Hierarchy,
     /// Active when a code or diff editor tab has focus.
     Editor,
+    /// Active over [`Editor`](Layer::Editor) in vim's Normal and Visual modes
+    /// (`editor.keymap: "vim"`). Its plain keys are the modal grammar's
+    /// commands; see [`super::vi`].
+    VimNormal,
+    /// Active over [`Editor`](Layer::Editor) in helix's Normal and Select
+    /// modes (`editor.keymap: "helix"`).
+    HelixNormal,
+    /// Active over [`Editor`](Layer::Editor) in a modal preset's Insert mode;
+    /// its `Esc` returns to Normal mode.
+    Insert,
     /// Active when a diff editor tab has focus.
     DiffEditor,
     /// Active when a read-only scrollable view (commit / compare / blame / graph /
@@ -184,8 +199,6 @@ pub enum Layer {
     Seam,
     /// Active on the GitHub view's dashboard, detail, and form pages.
     Github,
-    // #211: /// Active when the Agents view has focus.
-    // #211: Agents,
     /// Active on the language-server manager tab.
     LanguageServers,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
@@ -231,7 +244,11 @@ impl Layer {
         Layer::Outline,
         Layer::Problems,
         Layer::ProblemsFilter,
+        Layer::Hierarchy,
         Layer::Editor,
+        Layer::VimNormal,
+        Layer::HelixNormal,
+        Layer::Insert,
         Layer::DiffEditor,
         Layer::Pager,
         Layer::CommitGraph,
@@ -266,7 +283,11 @@ impl Layer {
             Layer::Outline => "outline",
             Layer::Problems => "problems",
             Layer::ProblemsFilter => "problemsFilter",
+            Layer::Hierarchy => "hierarchy",
             Layer::Editor => "editor",
+            Layer::VimNormal => "vimNormal",
+            Layer::HelixNormal => "helixNormal",
+            Layer::Insert => "insert",
             Layer::DiffEditor => "diffEditor",
             Layer::Pager => "pager",
             Layer::CommitGraph => "commitGraph",
@@ -297,7 +318,7 @@ impl Layer {
 }
 
 /// Every focus target, for walking the contexts a binding can be live in.
-const TARGETS: [FocusTarget; 17] = [
+const TARGETS: [FocusTarget; 18] = [
     FocusTarget::Editor,
     FocusTarget::DiffEditor,
     FocusTarget::Pager,
@@ -314,6 +335,7 @@ const TARGETS: [FocusTarget; 17] = [
     FocusTarget::Todos,
     FocusTarget::Debug,
     FocusTarget::Problems,
+    FocusTarget::Hierarchy,
     FocusTarget::Outline,
 ];
 
@@ -325,10 +347,25 @@ const TARGETS: [FocusTarget; 17] = [
 /// would never wait for its second.
 #[must_use]
 pub(super) fn takes_sequences(layer: Layer) -> bool {
-    layer != Layer::Terminal
-        && TARGETS
+    layer != Layer::Terminal && focus_contexts().any(|ctx| active_layers(ctx).contains(&layer))
+}
+
+/// Every modal editing state a focused code editor can be in.
+const EDITING: [Editing; 4] = [
+    Editing::Modeless,
+    Editing::Insert,
+    Editing::VimNormal,
+    Editing::HelixNormal,
+];
+
+/// Every context without a modal: each focus target, and the code editor in
+/// each editing state.
+fn focus_contexts() -> impl Iterator<Item = Context> {
+    TARGETS.into_iter().map(Context::focus).chain(
+        EDITING
             .into_iter()
-            .any(|target| active_layers(Context::focus(target)).contains(&layer))
+            .map(|editing| Context::focus(FocusTarget::Editor).with_editing(editing)),
+    )
 }
 
 /// Every distinct layer stack [`active_layers`] can return — the contexts in which
@@ -355,8 +392,9 @@ pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
         .map(|modal| Context {
             modal: Some(modal),
             target: FocusTarget::Editor,
+            editing: Editing::Modeless,
         })
-        .chain(TARGETS.into_iter().map(Context::focus));
+        .chain(focus_contexts());
     for ctx in contexts {
         let stack = active_layers(ctx);
         if !stacks.contains(&stack) {
@@ -397,6 +435,21 @@ pub enum Modal {
     ExplorerEdit,
 }
 
+/// The modal editing state of a focused code editor (`editor.keymap`), which
+/// decides the layer stacked over [`Layer::Editor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Editing {
+    /// The default keymap: no modal layer.
+    #[default]
+    Modeless,
+    /// A modal preset's Insert mode.
+    Insert,
+    /// Vim's Normal or Visual mode.
+    VimNormal,
+    /// Helix's Normal or Select mode.
+    HelixNormal,
+}
+
 /// The full input context: an optional exclusive [`Modal`] over the focused pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Context {
@@ -404,6 +457,8 @@ pub struct Context {
     pub modal: Option<Modal>,
     /// The focused pane (still tracked so a modal can layer over it if wanted).
     pub target: FocusTarget,
+    /// The modal editing state, which matters only for a focused code editor.
+    pub editing: Editing,
 }
 
 impl Context {
@@ -413,7 +468,14 @@ impl Context {
         Self {
             modal: None,
             target,
+            editing: Editing::Modeless,
         }
+    }
+
+    /// This context with the code editor in `editing` state.
+    #[must_use]
+    pub fn with_editing(self, editing: Editing) -> Self {
+        Self { editing, ..self }
     }
 
     /// A modal context over `target` (test construction helper; production code
@@ -424,6 +486,7 @@ impl Context {
         Self {
             modal: Some(modal),
             target,
+            editing: Editing::Modeless,
         }
     }
 }
@@ -452,7 +515,16 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::ProblemsFilter) => &[L::ProblemsFilter, L::Global],
         None => match ctx.target {
             FocusTarget::Outline => &[L::Outline, L::Global],
-            FocusTarget::Editor => &[L::Editor, L::Global],
+            // A modal preset stacks its mode's layer over the editor's: in
+            // Normal mode the resolver lets only that layer's plain keys
+            // through, so the editor's Enter or Backspace never edits there
+            // (see `super::resolve_normal`).
+            FocusTarget::Editor => match ctx.editing {
+                Editing::Modeless => &[L::Editor, L::Global],
+                Editing::Insert => &[L::Insert, L::Editor, L::Global],
+                Editing::VimNormal => &[L::VimNormal, L::Editor, L::Global],
+                Editing::HelixNormal => &[L::HelixNormal, L::Editor, L::Global],
+            },
             // A diff is read-only: its own keys (layout toggle, next/prev change) stack
             // over the shared Pager scroll keys, never the editor's editing/motion keys.
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Pager, L::Global],
@@ -466,9 +538,6 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // never the editor's motion keys.
             FocusTarget::Seam => &[L::Seam, L::Global],
             FocusTarget::Github => &[L::Github, L::Global],
-            // Self-contained like the graph and seam browsers: a list/detail surface
-            // with navigation keys of its own, never the editor's motion keys.
-            // #211: FocusTarget::Agents => &[L::Agents, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             // The shell owns the keyboard: Global is deliberately not stacked, so
@@ -487,6 +556,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // A results list with two panel keys of its own (filter, severity)
             // over the shared sidebar verbs.
             FocusTarget::Problems => &[L::Problems, L::Sidebar, L::Global],
+            // A tree over the shared sidebar verbs: its own layer takes Right
+            // to expand, so Enter alone opens the selected item.
+            FocusTarget::Hierarchy => &[L::Hierarchy, L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }
@@ -507,6 +579,24 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_shadows_sidebar_shadows_global() {
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Sidebar,
+                SidebarPanel::Hierarchy,
+                EditorTab::Plain,
+                View::Editor
+            ),
+            FocusTarget::Hierarchy
+        );
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Hierarchy)),
+            &[Layer::Hierarchy, Layer::Sidebar, Layer::Global]
+        );
+        assert!(takes_sequences(Layer::Hierarchy));
+    }
+
+    #[test]
     fn diff_editor_falls_through_to_pager() {
         // A diff stacks its own keys over the shared Pager scroll keys, not the
         // editor's editing/motion keys (it is read-only).
@@ -518,6 +608,39 @@ mod tests {
             active_layers(Context::focus(FocusTarget::Editor)),
             &[Layer::Editor, Layer::Global]
         );
+    }
+
+    #[test]
+    fn a_modal_preset_stacks_its_mode_layer_over_the_editor() {
+        let editor = Context::focus(FocusTarget::Editor);
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::VimNormal)),
+            &[Layer::VimNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::HelixNormal)),
+            &[Layer::HelixNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::Insert)),
+            &[Layer::Insert, Layer::Editor, Layer::Global]
+        );
+        // The editing state means nothing away from a code editor, and a
+        // modal (the palette over a Normal-mode editor) still shadows it.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Pager).with_editing(Editing::VimNormal)),
+            &[Layer::Pager, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(
+                Context::modal(Modal::Overlay, FocusTarget::Editor)
+                    .with_editing(Editing::VimNormal)
+            ),
+            &[Layer::Overlay]
+        );
+        // The Normal layers resolve sequences (`g d`).
+        assert!(takes_sequences(Layer::VimNormal));
+        assert!(takes_sequences(Layer::HelixNormal));
     }
 
     #[test]

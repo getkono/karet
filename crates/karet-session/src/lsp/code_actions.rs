@@ -210,6 +210,32 @@ pub(super) struct StepContext<'a> {
     pub(super) generation: u64,
 }
 
+/// A server task's connection health, as a step on its serial path reports
+/// into it: whether the connection is dead, its failure tally, where updates
+/// go, and the slot and incarnation it is.
+pub(super) type Health<'a> = (
+    &'a mut bool,
+    &'a mut FailureTally,
+    &'a mpsc::UnboundedSender<LspUpdate>,
+    &'a SlotKey,
+    SlotToken,
+);
+
+impl<'a> StepContext<'a> {
+    /// The context of a step taken under `generation` on a task whose
+    /// health is `health`.
+    pub(super) fn of((dead, tally, updates, key, token): Health<'a>, generation: u64) -> Self {
+        Self {
+            tally,
+            dead,
+            updates,
+            key,
+            token,
+            generation,
+        }
+    }
+}
+
 impl StepContext<'_> {
     /// A request's error as the user's answer. A refusal or a server's error
     /// reply belongs to the request; anything else (a timeout, a closed

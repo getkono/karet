@@ -1,6 +1,7 @@
 //! The vocabulary spoken between the session actor and its server tasks.
 //!
-//! [`ServerCmd`] travels down to one per-language task; [`LspUpdate`] travels
+//! [`ServerCmd`] travels down to the task serving one slot (a provider at a
+//! repository root, see [`SlotKey`]); [`LspUpdate`] travels
 //! back. Both are plain data on purpose: the task owns the `LspClient` and the
 //! protocol, while position conversion (LSP UTF-16 ↔ buffer UTF-32) and event
 //! emission happen on the actor, where the buffer lives.
@@ -13,8 +14,11 @@ use karet_core::CompletionList;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 use karet_core::Diagnostic;
+use karet_core::HierarchyDirection;
+use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
@@ -32,6 +36,9 @@ use super::code_actions::CodeActionCmd;
 use super::code_lens::CodeLensAnswer;
 use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
+use super::inline_completion::InlineCompletionCmd;
+use super::link_color::LinkColorAnswer;
+use super::link_color::LinkColorCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -42,7 +49,7 @@ use crate::api::LanguageServerRuntimeState;
 use crate::api::LocationKind;
 use crate::api::RequestId;
 
-/// A command for one per-language server task.
+/// A command for the server task serving one slot.
 pub(crate) enum ServerCmd {
     /// Forward `textDocument/didOpen`.
     DidOpen {
@@ -153,7 +160,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request signature help; `manual` as on
-    /// [`crate::api::Command::SignatureHelp`].
+    /// [`crate::api::LspCommand::SignatureHelp`].
     SignatureHelp {
         request: RequestId,
         doc: DocumentId,
@@ -162,7 +169,7 @@ pub(crate) enum ServerCmd {
         manual: bool,
     },
     /// Request the selection ranges around each of `positions`, for a
-    /// [`crate::api::Command::SelectionRanges`].
+    /// [`crate::api::LspCommand::SelectionRanges`].
     SelectionRanges {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -174,7 +181,7 @@ pub(crate) enum ServerCmd {
         positions: Vec<LineCol>,
     },
     /// Request the occurrences of the symbol at `position`, for a
-    /// [`crate::api::Command::DocumentHighlights`].
+    /// [`crate::api::LspCommand::DocumentHighlights`].
     DocumentHighlights {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -186,7 +193,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request definition locations, or with a `kind` the locations a
-    /// [`crate::api::Command::FindLocations`] asks for.
+    /// [`crate::api::LspCommand::FindLocations`] asks for.
     Definition {
         request: RequestId,
         doc: DocumentId,
@@ -229,12 +236,39 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         ask: FormattingAsk,
     },
+    /// A request an edit makes at `ask`'s position: the linked ranges there,
+    /// or the edits a typed character triggers; always answered with an
+    /// [`LspUpdate::Editing`].
+    Editing {
+        /// The originating request, the document asked about and its version
+        /// at request time, all echoed on the answer.
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        ask: EditingAsk,
+    },
+    /// A call- or type-hierarchy request; always answered with an
+    /// [`LspUpdate::Hierarchy`].
+    Hierarchy {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        direction: HierarchyDirection,
+        ask: HierarchyAsk,
+    },
     /// One step of listing or running code actions; always answered with an
     /// [`LspUpdate::CodeAction`].
     CodeAction(CodeActionCmd),
     /// One code-lens step: a listing or a run; always answered with an
     /// [`LspUpdate::CodeLens`].
     CodeLens(CodeLensCmd),
+    /// One document-link or colour step: a listing or a link resolve; always
+    /// answered with an [`LspUpdate::LinkColor`].
+    LinkColor(LinkColorCmd),
+    /// One inline-completion step: asking for items, or telling the server
+    /// one was accepted. Answered with an [`LspUpdate::InlineCompletions`]
+    /// only when there are items to show (see `inline_completion`).
+    InlineCompletion(InlineCompletionCmd),
 }
 
 /// How a server's diagnostic set reached the client.
@@ -269,6 +303,10 @@ pub(crate) struct FormattingAsk {
     /// selector. A server that honours it reindents the whole file, so a
     /// default here is not a neutral choice.
     pub(crate) indentation: Indentation,
+    /// Why the document is being saved, when the server is to be asked for
+    /// its will-save edits (`textDocument/willSaveWaitUntil`) first. Only a
+    /// save's scopes ask; `None` for one whose will-save edits are applied.
+    pub(crate) will_save: Option<karet_lsp::SaveReason>,
     /// `editor.formatOnSaveTimeout`: how long the save waits for this answer.
     /// The task derives its own, slightly longer, bound from it. A format the
     /// user asked for by hand is bounded the same way.
@@ -282,11 +320,78 @@ pub(crate) enum FormattingScope {
     /// notice on every save would be noise.
     #[default]
     Save,
+    /// Nothing formatted, before a save that does not format: only the
+    /// server's will-save edits are asked for, and the answer is always an
+    /// [`EditingReply::WillSave`].
+    SaveUnformatted,
     /// The whole document, asked for by hand (Format Document).
     Document,
     /// These ranges, in UTF-16 columns, asked for by hand (Format Selection).
     /// One `textDocument/rangeFormatting` each, against the same text.
     Ranges(Vec<Range>),
+}
+
+/// What a [`ServerCmd::Editing`] asks, in UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EditingAsk {
+    /// The ranges linked to the one at `position` (Start Linked Editing).
+    Linked {
+        /// The caret.
+        position: LineCol,
+    },
+    /// The edits the server makes after `ch` was typed, `position` being
+    /// just after it.
+    OnType {
+        /// The caret after the typed character.
+        position: LineCol,
+        /// The character typed; `\n` for a newline.
+        ch: char,
+        /// The buffer's resolved indentation, as a formatting request sends.
+        indentation: Indentation,
+    },
+}
+
+/// A server's answer to a [`ServerCmd::Editing`], or the will-save half of a
+/// save's [`ServerCmd::Formatting`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EditingAnswer {
+    /// The originating request.
+    pub(crate) request: RequestId,
+    /// The document asked about.
+    pub(crate) doc: DocumentId,
+    /// The document's version at request time.
+    pub(crate) version: u64,
+    /// What the server said.
+    pub(crate) reply: EditingReply,
+}
+
+/// What an [`EditingAnswer`] carries, ranges in UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EditingReply {
+    /// The linked ranges; `None` when the server has none there, does not
+    /// offer them, failed, or could not be asked.
+    Linked(Option<Vec<Range>>),
+    /// The edits a typed character triggered, and every character the server
+    /// formats on.
+    OnType {
+        /// The server's edits; empty for a character it does not format on.
+        edits: Vec<TextEdit>,
+        /// The server's trigger characters, first one first: empty when it
+        /// formats on none, and `None` when no server could be asked, so
+        /// nothing is known about them yet.
+        triggers: Option<Vec<char>>,
+    },
+    /// A save's will-save edits, sent in place of its
+    /// [`LspUpdate::Formatting`] when there are any or the save does not
+    /// format. With `then_format`, the save still formats once they are
+    /// applied: formatting edits made against the text before them would not
+    /// apply after them, so none were asked for yet.
+    WillSave {
+        /// The server's edits, empty when it had none.
+        edits: Vec<TextEdit>,
+        /// Whether the save formats after applying them.
+        then_format: bool,
+    },
 }
 
 /// What a server said about renaming at a position.
@@ -322,6 +427,15 @@ pub(crate) struct SelectionRangesAnswer {
     pub(crate) chains: Vec<Vec<Range>>,
 }
 
+/// What a [`ServerCmd::Hierarchy`] asks the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HierarchyAsk {
+    /// The items at `position` in `path`, already in UTF-16 columns.
+    Prepare { path: PathBuf, position: LineCol },
+    /// The items one level from this one, which the server produced.
+    Children(HierarchyItem),
+}
+
 /// A server's document highlights, as a [`ServerCmd::DocumentHighlights`]
 /// asked for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -334,7 +448,7 @@ pub(crate) struct DocumentHighlightsAnswer {
     pub(crate) version: u64,
     /// The occurrences, in UTF-16 columns; `None` when no server answered
     /// (none could be asked, it does not offer highlights, or it failed).
-    pub(crate) highlights: Option<Vec<karet_lsp::DocumentHighlight>>,
+    pub(crate) highlights: Option<Vec<karet_core::DocumentHighlight>>,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -412,6 +526,34 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped hints.
         hints: Vec<InlayHint>,
+    },
+    /// Inline completions answering an [`InlineCompletionCmd::Ask`], from the
+    /// server `server` names. Ranges remain in UTF-16 until the session adopts
+    /// the update. Never empty: a server with nothing to propose stays quiet.
+    InlineCompletions {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The slot whose server answered, which an accept is routed back to.
+        server: SlotKey,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The items.
+        items: Vec<InlineCompletionItem>,
+    },
+    /// The answer to an [`InlineCompletionCmd::Account`] step.
+    Account {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The provider the step named.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: crate::api::AccountOutcome,
     },
     /// A [`ServerCmd::InlayHints`] request a server existed for but did not
     /// answer: it failed, timed out, was superseded, or its slot retired.
@@ -565,6 +707,19 @@ pub(crate) enum LspUpdate {
         /// the user asked for by hand.
         scope: FormattingScope,
     },
+    /// The answer to a [`ServerCmd::Editing`], or a save's will-save edits.
+    Editing {
+        generation: u64,
+        answer: EditingAnswer,
+    },
+    /// The answer to a [`ServerCmd::Hierarchy`], in UTF-16 columns: empty
+    /// when no server could answer it.
+    Hierarchy {
+        generation: u64,
+        request: RequestId,
+        direction: HierarchyDirection,
+        items: Vec<HierarchyItem>,
+    },
     /// The answer to a [`ServerCmd::CodeAction`]; ranges in UTF-16 columns.
     CodeAction {
         generation: u64,
@@ -574,6 +729,12 @@ pub(crate) enum LspUpdate {
     CodeLens {
         generation: u64,
         answer: CodeLensAnswer,
+    },
+    /// The answer to a [`ServerCmd::LinkColor`]; a listing's ranges in
+    /// UTF-16 columns.
+    LinkColor {
+        generation: u64,
+        answer: LinkColorAnswer,
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
@@ -591,7 +752,37 @@ pub(crate) enum LspUpdate {
         /// Diagnostics in UTF-16 coordinates.
         diagnostics: Vec<Diagnostic>,
     },
-    /// The server binary could not be started (reported once per language).
+    /// A document's complete semantic tokens from the language's semantic
+    /// token owner, replacing whatever overlay it had.
+    SemanticTokens {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they classify.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The tokens, in UTF-16 columns.
+        tokens: Vec<karet_core::SemanticToken>,
+    },
+    /// A document's folding ranges from its primary server, replacing the
+    /// grammar's fold regions on its snapshots (see `super::folding`).
+    FoldingRanges {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they fold.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The regions, normalized.
+        folds: karet_core::FoldRegions,
+    },
+    /// The server binary could not be started (reported once per outage of the
+    /// slot: the first failed launch reports it, and only a later successful
+    /// connection re-arms the report).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.
         token: SlotToken,
@@ -617,7 +808,8 @@ pub(crate) enum LspUpdate {
         /// The human-readable diagnosis (what is missing and how to fix it).
         message: String,
     },
-    /// A running server's connection closed (reported once per language).
+    /// A running server's connection closed (reported once per connection of
+    /// the slot: the task drops the dead client after reporting it).
     ServerDied {
         /// The incarnation of the slot that died.
         token: SlotToken,
@@ -656,6 +848,18 @@ pub(crate) enum LspUpdate {
         /// Being the slot's own key, this already scopes the clear to the one
         /// instance that died: a provider running at two repository roots keeps
         /// the markers published by the root that is still healthy.
+        server: SlotKey,
+    },
+    /// The server withdrew pull diagnostics for a document it was pulled
+    /// for: drop the slot's [`DiagnosticFeed::Pulled`] layer from every
+    /// document, related documents' reports included.
+    ///
+    /// Only that feed goes: the server is still up, so what it publishes
+    /// stays, and the documents it still answers pulls for are pulled again.
+    PulledDiagnosticsWithdrawn {
+        /// The incarnation of the slot whose pulls were withdrawn.
+        token: SlotToken,
+        /// The slot whose pulled layer is dropped.
         server: SlotKey,
     },
     /// A built-in provider karet can install is locally absent. No network

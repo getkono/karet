@@ -3,8 +3,17 @@
 //! CBOR (Concise Binary Object Representation, RFC 8949) is a compact binary
 //! serialization format. This crate decodes CBOR bytes into a [`CborValue`] tree
 //! (via the `ciborium` wire codec, kept as an internal detail) and renders that
-//! tree as CBOR **diagnostic notation** — the standard, lossless textual form —
-//! so an editor can show and edit CBOR as text and re-encode it on save.
+//! tree as CBOR **diagnostic notation** — the standard textual form — so an
+//! editor can show and edit CBOR as text and re-encode it on save.
+//!
+//! The round trip is lossless at the **value** level: every value that decodes
+//! survives bytes → text → bytes, with one exception — the simple value
+//! `undefined` (`0xF7`) decodes as `null` and is re-encoded as `null` (`0xF6`).
+//! Other simple values (anything but `false`, `true`, `null` and `undefined`)
+//! do not decode at all. It is not byte-for-byte: the encoding is chosen afresh
+//! on save, so indefinite-length items come back definite-length and integers
+//! and floats are written at the width the encoder picks, not the width the
+//! original file used.
 //!
 //! # Layers
 //! - [`decode`] / [`encode`] — CBOR bytes ↔ [`CborValue`].
@@ -23,6 +32,15 @@ pub use diag::from_diagnostic;
 pub use diag::to_diagnostic;
 pub use error::CborError;
 pub use value::CborValue;
+
+/// The deepest nesting of arrays, maps, and tags this crate reads, from bytes
+/// or from diagnostic text.
+///
+/// [`decode`] and [`from_diagnostic`] enforce the same limit, so any text that
+/// parses also encodes to bytes that decode again: a save never writes a file
+/// that cannot be reopened. Each array, map, or tag counts one level; the
+/// scalars inside the innermost container do not.
+pub const MAX_DEPTH: usize = 256;
 
 /// Decode CBOR `bytes` and render them as pretty diagnostic-notation text.
 ///

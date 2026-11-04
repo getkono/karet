@@ -30,7 +30,7 @@ use std::time::Duration;
 use karet_core::CursorState;
 use karet_core::Selection;
 
-use super::support::*;
+pub(crate) use super::support::*;
 use crate::app::*;
 
 /// The terminal a rig renders into unless a case asks for another size.
@@ -204,7 +204,7 @@ impl Rig {
         app.clipboard = crate::clipboard::Clipboard::in_memory();
         app.sidebar_visible = false;
         app.push_tab(text_tab("t.rs", &body));
-        app.focus = Focus::Editor;
+        app.keyboard.focus_editor();
         let mut rig = Self {
             app,
             backend,
@@ -293,7 +293,7 @@ impl Rig {
         }
         let last = self.backend.sent.lock().ok().and_then(|sent| {
             sent.iter().rev().find_map(|(id, command)| match command {
-                SessionCommand::SelectionRanges { doc, positions } => {
+                SessionCommand::Lsp(LspCommand::SelectionRanges { doc, positions }) => {
                     Some((*id, *doc, positions.len()))
                 },
                 _ => None,
@@ -361,12 +361,13 @@ impl Rig {
 
     /// Every pane's id and editor rect, in layout order.
     fn frames(&self) -> Vec<(PaneId, Rect)> {
-        let order = self.app.layout.layout(self.app.main_rect);
+        let order = self.app.layout.layout(self.app.last_frame.main_rect);
         order
             .into_iter()
             .filter_map(|(pane, _)| {
                 self.app
-                    .pane_frames
+                    .last_frame
+                    .panes
                     .iter()
                     .find(|frame| frame.pane == pane)
                     .map(|frame| (pane, frame.editor_rect))
@@ -436,7 +437,7 @@ impl Rig {
 
     /// The focused pane's first visible line.
     pub(crate) fn scroll_line(&self) -> u32 {
-        self.tab().editor.scroll_line
+        self.tab().editor.scroll_line()
     }
 
     /// The `n`th pane's first visible line, in layout order.
@@ -445,7 +446,7 @@ impl Rig {
         let Some((pane, _)) = frames.get(n) else {
             panic!("no pane {n}");
         };
-        self.pane_tab(*pane).editor.scroll_line
+        self.pane_tab(*pane).editor.scroll_line()
     }
 
     /// The index, in layout order, of the focused pane.
@@ -625,7 +626,7 @@ fn parsing_reads_anchor_head_and_primary() {
 fn a_rig_starts_in_the_state_it_was_given() {
     let rig = Rig::new("fn [main|]() {}\n");
     assert_eq!(rig.marked(), "fn [main|]() {}\n");
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
     assert_eq!(rig.focused_index(), Some(0));
 }
 

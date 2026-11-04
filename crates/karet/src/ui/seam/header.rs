@@ -20,8 +20,8 @@ use ratatui::widgets::Paragraph;
 
 use super::LENS_NAMES;
 use super::lens_glyph;
-use crate::app::seam::SeamViewState;
-use crate::app::seam::geometry::span_rect;
+use crate::tab::seam::SeamViewState;
+use crate::tab::seam::geometry::span_rect;
 
 /// Draw the header row.
 pub(super) fn draw(

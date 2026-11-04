@@ -2,11 +2,23 @@
 //! characters -- and resolving what the server deferred for the selected
 //! item.
 
+use karet_core::Change;
 use karet_core::CompletionItem;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_text::TextBuffer;
 
-use super::*;
+use crate::app::App;
 use crate::completion::AcceptFollowUp;
 use crate::completion::CompletionMode;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The characters of `line` in columns `[from, to)`, or `None` past its end.
 fn columns(line: &str, from: u32, to: u32) -> Option<String> {
@@ -72,8 +84,8 @@ impl App {
     /// made at. `None` when the popup is closed or nothing matches.
     fn selected_completion(&mut self) -> Option<(CompletionItem, LineCol, LineCol)> {
         let ranked = self.completion_ranked()?;
-        let ui = self.completion.as_ref()?;
-        let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
+        let ui = self.completion.popup.as_ref()?;
+        let selected = ui.list.selected().min(ranked.len().saturating_sub(1));
         let item = ranked.get(selected).and_then(|&i| ui.items.get(i))?;
         Some((item.clone(), ui.anchor, ui.requested_at))
     }
@@ -123,6 +135,8 @@ impl App {
             .as_ref()
             .map_or_else(|| item.insert_text.clone(), |edit| edit.new_text.clone());
         let inserted = text.clone();
+        let count = |s: &str| u32::try_from(s.chars().count()).unwrap_or(u32::MAX);
+        let (back, ahead) = (count(&before), count(&after));
         let Some(multi) = self.compose_edit(move |caret, sel, buf, base| {
             let range = caret_range((&before, &after), caret, sel, buf);
             Some(editing::Edit {
@@ -142,6 +156,9 @@ impl App {
         let multi = crate::completion::with_additional_edits(multi, &item.additional_edits);
         let snippet = self.snippet_for(item, &inserted, &applied, &multi);
         self.submit_with_snippet(multi, snippet);
+        // Modal editing's `.` and macros replay the text, not the key that
+        // accepted it.
+        self.vi_note_text(back, ahead, &inserted);
         // Eager additional edits are final (a resolve keeps them, as
         // `CompletionItem::adopt_resolved` does): only an item that listed
         // none may still have some deferred.
@@ -163,12 +180,12 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::ResolveCompletion {
+        let command = LspCommand::ResolveCompletion {
             doc,
             item: item.clone(),
         };
-        if backend.send(id, command).is_ok() {
-            self.completion_follow_up = Some(AcceptFollowUp {
+        if backend.send(id, command.into()).is_ok() {
+            self.completion.follow_up = Some(AcceptFollowUp {
                 id,
                 doc,
                 version,
@@ -198,10 +215,10 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return;
         };
-        let Some(ui) = self.completion.as_mut() else {
+        let Some(ui) = self.completion.popup.as_mut() else {
             return;
         };
-        let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
+        let selected = ui.list.selected().min(ranked.len().saturating_sub(1));
         let Some(&index) = ranked.get(selected) else {
             return;
         };
@@ -212,11 +229,11 @@ impl App {
             return;
         }
         let id = backend.next_id();
-        let command = SessionCommand::ResolveCompletion {
+        let command = LspCommand::ResolveCompletion {
             doc: ui.doc,
             item: item.clone(),
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             ui.resolving.push((id, index));
         }
     }
@@ -231,7 +248,8 @@ impl App {
         resolved: Option<CompletionItem>,
     ) {
         if let Some(follow) = self
-            .completion_follow_up
+            .completion
+            .follow_up
             .take_if(|follow| Some(follow.id) == id)
         {
             if let Some(resolved) = resolved {
@@ -239,7 +257,7 @@ impl App {
             }
             return;
         }
-        let Some(ui) = self.completion.as_mut() else {
+        let Some(ui) = self.completion.popup.as_mut() else {
             return;
         };
         let Some(at) = ui.resolving.iter().position(|&(r, _)| Some(r) == id) else {
@@ -287,6 +305,7 @@ impl App {
         if !self.editor_owns_keyboard()
             || self
                 .completion
+                .popup
                 .as_ref()
                 .is_none_or(|ui| ui.mode != CompletionMode::Filtered)
         {
@@ -297,19 +316,23 @@ impl App {
         };
         let defaults = self
             .completion
+            .popup
             .as_ref()
             .map(|ui| self.completion_characters(ui.doc).commit_characters)
             .unwrap_or_default();
         if !crate::completion::commits(&item, c, &defaults) {
             return false;
         }
+        self.vi.committing = true;
         self.accept_completion();
+        self.vi.committing = false;
         true
     }
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn buffer(text: &str) -> TextBuffer {

@@ -29,8 +29,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn inlay_hints(&self, doc: &Path, range: Range) -> Result<Vec<InlayHint>, LspError> {
         self.require_for(ServerFeature::InlayHint, "textDocument/inlayHint", doc)?;
         let params = lsp_types::InlayHintParams {
@@ -54,8 +56,10 @@ impl LspClient {
     /// other location.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`], [`LspError::Protocol`] (an answer that is
-    /// not a hint), or [`LspError::Timeout`].
+    /// Returns [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for a request that does not encode or an answer
+    /// that is not a hint, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn resolve_inlay_hint(&self, hint: &InlayHint) -> Result<InlayHint, LspError> {
         if !self.supports(ServerFeature::InlayHintResolve) {
             return Ok(hint.clone());

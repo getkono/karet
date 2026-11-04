@@ -1,3 +1,10 @@
+//! A slot's lifecycle on the manager: spawn, retire, restart, and reconfigure.
+//!
+//! This module hands out each incarnation's [`SlotToken`], spawns a slot's
+//! server task (the task loop itself lives in `runtime`), retires slots, which
+//! is the only way one leaves the manager, records runtime-state reports, and
+//! pushes changed settings to running servers.
+
 use super::*;
 
 impl LspManager {
@@ -95,13 +102,16 @@ impl LspManager {
     /// driven synchronously (unit tests, bare library use) runs without LSP.
     ///
     /// `settings_key` is the `lsp.servers` entry the spec's settings came from
-    /// (see [`Self::configure`]).
+    /// (see [`Self::configure`]); `semantic_owner` says whether the slot owns
+    /// semantic tokens for the language starting it (see
+    /// [`Self::owns_semantic_tokens`]).
     pub(super) fn spawn_slot(
         &mut self,
         key: &SlotKey,
         spec: &LspSpec,
         primary: bool,
         settings_key: String,
+        semantic_owner: bool,
     ) -> Option<()> {
         if self.servers.contains_key(key) {
             return Some(());
@@ -109,7 +119,8 @@ impl LspManager {
         let handle = tokio::runtime::Handle::try_current().ok()?;
         let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
         let token = self.take_token();
-        let settings: SettingsCell = Arc::new(std::sync::RwLock::new(spec.settings.clone()));
+        let settings: SettingsCell =
+            Arc::new(std::sync::RwLock::new(spec.options.settings.clone()));
         let connector = with_settings(&self.connector, Arc::clone(&settings));
         // Inserted before the task is spawned, not after. The task's first act
         // is to report `Starting`, and a report is accepted only against a live
@@ -117,6 +128,10 @@ impl LspManager {
         // opening move is thrown away.
         let mut slot = ServerSlot::new(token, tx, primary, settings);
         slot.settings_key = settings_key;
+        slot.semantic_owner = semantic_owner;
+        slot.semantic
+            .send_replace(semantic_owner && self.semantic_highlighting);
+        let semantic = slot.semantic.subscribe();
         self.servers.insert(key.clone(), slot);
         handle.spawn(runtime::server_task(runtime::ServerTask {
             spec: spec.clone(),
@@ -126,8 +141,44 @@ impl LspManager {
             updates: self.updates.clone(),
             connector,
             generation: self.generation,
+            semantic,
+            primary,
         }));
         Some(())
+    }
+
+    /// Whether `provider` owns semantic tokens for `language`: the one
+    /// `lsp.languages.<language>.semanticTokens` names, else the language's
+    /// primary server. Naming a provider that does not serve the language
+    /// leaves it without semantic tokens.
+    pub(super) fn owns_semantic_tokens(
+        &self,
+        language: &str,
+        provider: &LanguageServerId,
+        primary: bool,
+    ) -> bool {
+        match self
+            .settings
+            .languages
+            .get(language)
+            .and_then(|selection| selection.semantic_tokens.as_deref())
+        {
+            Some(owner) => owner == provider.key(),
+            None => primary,
+        }
+    }
+
+    /// Turn semantic-token fetching on or off for every slot that owns them
+    /// (`editor.semanticHighlighting.enabled`), without restarting anything:
+    /// a running task stops fetching, or starts, as the value reaches it.
+    pub(crate) fn set_semantic_highlighting(&mut self, enabled: bool) {
+        self.semantic_highlighting = enabled;
+        for slot in self.servers.values() {
+            slot.semantic.send_if_modified(|on| {
+                let next = slot.semantic_owner && enabled;
+                std::mem::replace(on, next) != next
+            });
+        }
     }
 
     /// Attach what `lsp.servers` says about `provider` beyond the launch: its
@@ -150,9 +201,10 @@ impl LspManager {
             .find(|key| servers.contains_key(*key))
             .unwrap_or(provider.key());
         if let Some(entry) = servers.get(key) {
-            spec.settings.clone_from(&entry.settings);
+            spec.options.settings.clone_from(&entry.settings);
             if entry.initialization_options.is_some() {
-                spec.initialization_options
+                spec.options
+                    .initialization_options
                     .clone_from(&entry.initialization_options);
             }
         }
@@ -191,7 +243,7 @@ fn with_settings(inner: &Connector, cell: SettingsCell) -> Connector {
     let inner = Arc::clone(inner);
     Arc::new(move |mut spec: LspSpec, root| {
         if let Ok(current) = cell.read() {
-            spec.settings.clone_from(&current);
+            spec.options.settings.clone_from(&current);
         }
         inner(spec, root)
     })

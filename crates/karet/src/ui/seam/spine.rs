@@ -25,7 +25,7 @@ use super::column_style;
 use super::columns_for;
 use super::row_for;
 use super::wide_enough;
-use crate::app::seam::SeamViewState;
+use crate::tab::seam::SeamViewState;
 
 /// Draw the spine into `area`.
 pub(super) fn draw(

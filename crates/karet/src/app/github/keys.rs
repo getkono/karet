@@ -1,11 +1,18 @@
 //! Keyboard handling for GitHub dashboard tabs.
 
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+
+use crate::app::App;
+use crate::app::github::state::GithubSection;
+use crate::keymap::Focus;
+use crate::view::View;
 
 impl App {
     /// Handle dashboard and form keys before the ordinary editor keymap.
     pub(in crate::app) fn github_key(&mut self, key: KeyEvent) -> bool {
-        if self.focus != Focus::Editor {
+        if self.keyboard.focus() != Focus::Editor {
             return false;
         }
         if self.view != View::GitHub || !self.github.is_active() {

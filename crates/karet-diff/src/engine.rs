@@ -10,6 +10,7 @@ use std::path::Path;
 use imara_diff::Algorithm;
 use imara_diff::Diff as ImaraDiff;
 use imara_diff::InternedInput;
+use karet_filetype::looks_binary;
 
 use crate::DiffError;
 use crate::model::DiffLine;
@@ -51,13 +52,11 @@ pub fn diff_text(old: &str, new: &str, opts: &DiffOptions) -> FileDiff {
     build_file_diff(old, new, path, None, opts.context_lines)
 }
 
-/// How many leading bytes are inspected when deciding whether a file is binary.
-const BINARY_SNIFF_BYTES: usize = 8000;
-
 /// Read two files and diff their contents. The result's `path` reflects the new
 /// file; `old_path` is populated when the paths differ and `detect_rename` is set.
 ///
-/// When either side is binary, the result carries
+/// When either side is binary — not UTF-8, or holding a NUL byte that
+/// [`karet_filetype::looks_binary`] finds — the result carries
 /// [`is_binary`](FileDiff::is_binary) and no hunks — the same shape
 /// [`crate::parse`] produces for `Binary files … differ`.
 ///
@@ -92,12 +91,6 @@ pub fn diff_files(old: &Path, new: &Path, opts: &DiffOptions) -> Result<FileDiff
         old_path,
         opts.context_lines,
     ))
-}
-
-/// Whether `bytes` look like binary content: a NUL byte near the start is the
-/// same signal git itself uses.
-fn looks_binary(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0)
 }
 
 /// A hunk-less [`FileDiff`] for binary content, with the status still derived from
@@ -301,14 +294,12 @@ fn build_group_hunk(
     // 0-based position (e.g. `-0,0`); otherwise the 1-based first line.
     let old_start = if old_count == 0 { o0 } else { o0 + 1 };
     let new_start = if new_count == 0 { n0 } else { n0 + 1 };
-    let header = format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@");
 
     Hunk {
         old_start,
         old_count,
         new_start,
         new_count,
-        header,
         scope: None,
         new_scope: None,
         lines,
@@ -345,6 +336,23 @@ mod tests {
         assert!(f.is_binary);
         assert!(f.hunks.is_empty());
         assert_eq!(f.status, FileStatus::Modified);
+        Ok(())
+    }
+
+    /// Diff sniffs with the shared window, so it agrees with search and the
+    /// explorer: a NUL past `BINARY_SNIFF_LEN` leaves the file diffable text.
+    #[test]
+    fn diff_files_ignores_a_nul_past_the_shared_sniff_window() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let mut bytes = vec![b'a'; karet_filetype::BINARY_SNIFF_LEN];
+        bytes.extend_from_slice(b"\n\x00\n");
+        let old = write(&dir, "old.txt", &bytes)?;
+        bytes.extend_from_slice(b"tail\n");
+        let new = write(&dir, "new.txt", &bytes)?;
+
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert!(!f.is_binary);
+        assert!(!f.hunks.is_empty());
         Ok(())
     }
 
@@ -407,7 +415,7 @@ mod tests {
             (h.old_start, h.old_count, h.new_start, h.new_count),
             (0, 0, 1, 3)
         );
-        assert_eq!(h.header, "@@ -0,0 +1,3 @@");
+        assert_eq!(h.header(), "@@ -0,0 +1,3 @@");
         assert!(h.lines.iter().all(|l| l.kind == LineKind::Add));
     }
 
@@ -432,7 +440,7 @@ mod tests {
         assert_eq!(f.status, FileStatus::Modified);
         assert_eq!(f.hunks.len(), 1);
         let h = &f.hunks[0];
-        assert_eq!(h.header, "@@ -1,5 +1,5 @@");
+        assert_eq!(h.header(), "@@ -1,5 +1,5 @@");
         let remove = h.lines.iter().find(|l| l.kind == LineKind::Remove);
         let add = h.lines.iter().find(|l| l.kind == LineKind::Add);
         assert_eq!(remove.and_then(|l| l.old_lineno), Some(2));
@@ -447,6 +455,175 @@ mod tests {
         let h = &f.hunks[0];
         let add = h.lines.iter().find(|l| l.kind == LineKind::Add);
         assert_eq!(add.map(|l| l.content.as_str()), Some("B"));
+        // The stripped `\r` is recorded, not lost.
+        assert!(h.lines.iter().all(|l| l.crlf && !l.no_newline));
+    }
+
+    #[test]
+    fn line_parts_reads_each_terminator() {
+        assert_eq!(line_parts("a\n"), ("a", false, false));
+        assert_eq!(line_parts("a\r\n"), ("a", true, false));
+        assert_eq!(line_parts("a"), ("a", false, true));
+        // The `""` an out-of-range lookup yields is no line at all, so it must
+        // not be flagged as an unterminated last line.
+        assert_eq!(line_parts(at(&["a\n"], 5)), ("", false, false));
+    }
+
+    /// Each line of `hunk` as `(kind, content, crlf, no_newline)`.
+    fn line_facts(hunk: &Hunk) -> Vec<(LineKind, &str, bool, bool)> {
+        hunk.lines
+            .iter()
+            .map(|l| (l.kind, l.content.as_str(), l.crlf, l.no_newline))
+            .collect()
+    }
+
+    #[test]
+    fn terminator_flags_record_each_lines_original_ending() {
+        // Old: CRLF throughout, last line unterminated. New: the last line gains
+        // a bare `\n`, and a CRLF line is edited.
+        let f = diff_text("a\r\nb\r\nc", "a\r\nB\r\nc\n", &DiffOptions::default());
+        assert_eq!(f.hunks.len(), 1);
+        assert_eq!(
+            line_facts(&f.hunks[0]),
+            vec![
+                (LineKind::Context, "a", true, false),
+                (LineKind::Remove, "b", true, false),
+                (LineKind::Remove, "c", false, true),
+                (LineKind::Add, "B", true, false),
+                (LineKind::Add, "c", false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_final_newline_on_both_sides_is_flagged_on_both_lines() {
+        let f = diff_text("x\ny", "x\nz", &DiffOptions::default());
+        assert_eq!(
+            line_facts(&f.hunks[0]),
+            vec![
+                (LineKind::Context, "x", false, false),
+                (LineKind::Remove, "y", false, true),
+                (LineKind::Add, "z", false, true),
+            ]
+        );
+    }
+
+    /// The `@@` headers `diff_text` produces for `old` → `new` at `context`.
+    fn headers(old: &str, new: &str, context: usize) -> Vec<String> {
+        let opts = DiffOptions {
+            context_lines: context,
+            ..Default::default()
+        };
+        diff_text(old, new, &opts)
+            .hunks
+            .into_iter()
+            .map(|h| h.header())
+            .collect()
+    }
+
+    #[test]
+    fn changes_exactly_two_contexts_apart_share_one_hunk() {
+        // Changes at lines 1 and 4 leave a gap of 2 unchanged lines, which is
+        // 2 * ctx at ctx 1: the context windows touch, so `git diff -U1` merges.
+        assert_eq!(
+            headers("a\nb\nc\nd\ne\n", "A\nb\nc\nD\ne\n", 1),
+            vec!["@@ -1,5 +1,5 @@"]
+        );
+    }
+
+    #[test]
+    fn changes_one_past_two_contexts_apart_split() {
+        // A gap of 3 at ctx 1 is one line too many: two hunks, each with its own
+        // clamped context window.
+        assert_eq!(
+            headers("a\nb\nc\nd\ne\nf\n", "A\nb\nc\nd\nE\nf\n", 1),
+            vec!["@@ -1,2 +1,2 @@", "@@ -4,3 +4,3 @@"]
+        );
+    }
+
+    #[test]
+    fn zero_context_emits_bare_changes() {
+        // Any unchanged line between changes splits them at ctx 0.
+        assert_eq!(
+            headers("a\nb\nc\n", "A\nb\nC\n", 0),
+            vec!["@@ -1,1 +1,1 @@", "@@ -3,1 +3,1 @@"]
+        );
+        let f = diff_text(
+            "a\nb\nc\n",
+            "A\nb\nC\n",
+            &DiffOptions {
+                context_lines: 0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            f.hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .all(|l| l.kind != LineKind::Context)
+        );
+        // A pure insertion names the old line it follows, a pure deletion the new
+        // line it collapsed after — git's `-k,0` / `+k,0` convention.
+        assert_eq!(headers("a\nb\n", "a\nX\nb\n", 0), vec!["@@ -1,0 +2,1 @@"]);
+        assert_eq!(headers("a\nb\nc\n", "a\nc\n", 0), vec!["@@ -2,1 +1,0 @@"]);
+    }
+
+    #[test]
+    fn diff_files_detects_a_rename_only_when_asked_and_paths_differ() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let old = write(&dir, "old.txt", b"a\nb\n")?;
+        let new = write(&dir, "new.txt", b"a\nB\n")?;
+        let detect = DiffOptions {
+            detect_rename: true,
+            ..Default::default()
+        };
+
+        let f = diff_files(&old, &new, &detect)?;
+        assert_eq!(f.status, FileStatus::Renamed { similarity: 100 });
+        assert_eq!(f.old_path.as_deref(), Some(old.to_string_lossy().as_ref()));
+        assert_eq!(f.path, new.to_string_lossy());
+        assert_eq!(f.hunks.len(), 1);
+
+        // Off by default: the same pair is a plain modification.
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert_eq!(f.status, FileStatus::Modified);
+        assert!(f.old_path.is_none());
+
+        // The same path on both sides is never a rename.
+        let f = diff_files(&new, &new, &detect)?;
+        assert_eq!(f.status, FileStatus::Modified);
+        assert!(f.old_path.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn binary_status_follows_rename_then_emptiness() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let empty = write(&dir, "empty", b"")?;
+        let blob = write(&dir, "blob.bin", b"\x00payload")?;
+        let other = write(&dir, "other.bin", b"\x00other")?;
+        let detect = DiffOptions {
+            detect_rename: true,
+            ..Default::default()
+        };
+
+        let added = diff_files(&empty, &blob, &DiffOptions::default())?;
+        assert!(added.is_binary);
+        assert_eq!(added.status, FileStatus::Added);
+
+        let removed = diff_files(&blob, &empty, &DiffOptions::default())?;
+        assert!(removed.is_binary);
+        assert_eq!(removed.status, FileStatus::Removed);
+
+        // A rename outranks emptiness, as it does for text.
+        let renamed = diff_files(&blob, &other, &detect)?;
+        assert!(renamed.is_binary && renamed.hunks.is_empty());
+        assert_eq!(renamed.status, FileStatus::Renamed { similarity: 100 });
+        assert_eq!(
+            renamed.old_path.as_deref(),
+            Some(blob.to_string_lossy().as_ref())
+        );
+        Ok(())
     }
 
     #[test]
@@ -479,6 +656,8 @@ mod tests {
             },
         );
         assert_eq!(f.hunks.len(), 2);
+        let headers: Vec<String> = f.hunks.iter().map(Hunk::header).collect();
+        assert_eq!(headers, ["@@ -1,2 +1,2 @@", "@@ -7,2 +7,2 @@"]);
     }
 
     #[test]

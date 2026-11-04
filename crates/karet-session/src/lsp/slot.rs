@@ -2,11 +2,9 @@
 //!
 //! A [`SlotKey`] is the identity of three things at once -- the manager's slot,
 //! the task serving it, and the diagnostic layer that task publishes under. They
-//! are one value here so they cannot drift apart. Before this the same identity
-//! was spelled two ways: a `"{provider}@{root}"` string on the slot and the
-//! layer, and a `(LanguageServerId, PathBuf)` tuple on the runtime-state cache.
-//! Two spellings meant two lookups, and the fences that tried to reconcile them
-//! are what issue #278 was filed to remove.
+//! are one value here so they cannot drift apart: there is one spelling of the
+//! identity and one lookup, with no fence needed to reconcile two. The
+//! provider's runtime state lives on the slot itself (see [`ServerSlot`]).
 
 use std::collections::HashSet;
 use std::fmt;
@@ -166,6 +164,12 @@ pub(super) struct ServerSlot {
     /// The `lsp.servers` entry those settings are read from: the provider's
     /// own, or the one keyed by the language that started it.
     pub(super) settings_key: String,
+    /// Whether this slot owns semantic tokens for the language that started
+    /// it (see [`super::semantic_tokens`]).
+    pub(super) semantic_owner: bool,
+    /// Whether the task fetches semantic tokens: it owns them and the setting
+    /// is on. The task holds the receiving half.
+    pub(super) semantic: tokio::sync::watch::Sender<bool>,
 }
 
 /// A slot's current server settings, read by each connection it makes.
@@ -188,6 +192,8 @@ impl ServerSlot {
             error: None,
             settings,
             settings_key: String::new(),
+            semantic_owner: false,
+            semantic: tokio::sync::watch::Sender::new(false),
         }
     }
 }

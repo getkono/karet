@@ -74,7 +74,7 @@ pub(crate) fn prepare(
     flag: &str,
     configuration: Option<&str>,
     include_tests: bool,
-) -> Result<(SeamIndex, karet_seam::Configuration), QueryFailure> {
+) -> Result<(SeamIndex, karet_seam::config::Configuration), QueryFailure> {
     let mut index =
         karet_seam::index_workspace(root, IndexOptions::default()).map_err(|error| {
             QueryFailure {
@@ -84,9 +84,10 @@ pub(crate) fn prepare(
         })?;
     // A named configuration changes what the tree even contains, so it is applied
     // before any query rather than filtered afterwards.
-    let mut active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
-        karet_seam::Configuration::named(name, Vec::new())
-    });
+    let mut active = configuration
+        .map_or_else(karet_seam::config::Configuration::unconfigured, |name| {
+            karet_seam::config::Configuration::named(name, Vec::new())
+        });
     if include_tests {
         active = active.for_target("test");
     }
@@ -98,7 +99,10 @@ pub(crate) fn prepare(
 ///
 /// # Errors
 /// The query does not parse.
-pub(crate) fn parse_query(flag: &str, query: &str) -> Result<karet_seam::Query, QueryFailure> {
+pub(crate) fn parse_query(
+    flag: &str,
+    query: &str,
+) -> Result<karet_seam::query::Query, QueryFailure> {
     karet_seam::query::parse(query).map_err(|error| QueryFailure {
         message: format!(
             "{flag}: {} (at byte {}..{})",
@@ -179,7 +183,7 @@ fn node_json(
             let count = if unread.contains(lens) {
                 "null".to_owned()
             } else {
-                node.rollups.get(*lens).to_string()
+                node.rollups().get(*lens).to_string()
             };
             format!("{}: {count}", quote(lens.name()))
         })
@@ -346,7 +350,7 @@ mod tests {
     #[test]
     fn a_result_carries_identities_locations_facets_and_rollups()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -377,7 +381,7 @@ mod tests {
 
     #[test]
     fn a_function_carries_its_sizes_and_its_calls() -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -422,7 +426,7 @@ mod tests {
     #[test]
     fn a_lens_a_language_does_not_read_reports_null_rather_than_zero()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::java::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -448,7 +452,7 @@ mod tests {
     #[test]
     fn a_query_matching_nothing_is_a_success_with_no_nodes()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -468,7 +472,7 @@ mod tests {
     #[test]
     fn test_code_is_queried_and_named_only_with_include_tests()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;

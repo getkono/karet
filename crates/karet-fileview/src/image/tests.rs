@@ -119,6 +119,19 @@ fn from_rgba_pads_short_buffers_to_declared_size() {
 
 #[cfg(feature = "raster")]
 #[test]
+fn a_halfblock_paints_the_top_pixel_as_fg_and_the_bottom_as_bg() {
+    let red_over_blue = Image::from_rgba(vec![255, 0, 0, 255, 0, 0, 255, 255], 1, 2);
+    let area = Rect::new(0, 0, 1, 1);
+    let mut buf = Buffer::empty(area);
+    red_over_blue.render_halfblocks(area, &mut buf);
+    let cell = &buf[(0, 0)];
+    assert_eq!(cell.symbol(), "▀");
+    assert_eq!(cell.fg, Color::Rgb(255, 0, 0));
+    assert_eq!(cell.bg, Color::Rgb(0, 0, 255));
+}
+
+#[cfg(feature = "raster")]
+#[test]
 fn built_in_resampler_bilinearly_blends_pixel_centers() {
     let pixel = |value: u8| [value, value, value, 255];
     let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
@@ -274,6 +287,158 @@ fn an_id_scoped_kitty_escape_is_deletable_by_that_id_alone() {
         image
             .kitty_escape(3, 1)
             .starts_with("\x1b_Ga=T,f=32,s=2,v=2,c=3,r=1,m=0;")
+    );
+}
+
+#[test]
+fn a_pre_encoded_payload_chunks_at_the_kitty_limit_without_raster() {
+    let payload: String = (0..2 * KITTY_CHUNK + 5)
+        .map(|i| char::from(b'A' + (i % 26) as u8))
+        .collect();
+    let escapes = kitty_chunked(&payload, "a=T,z=1,C=1", ",q=2");
+    let parts: Vec<(&str, &str)> = escapes
+        .split_terminator("\x1b\\")
+        .map(|escape| {
+            let body = escape.strip_prefix("\x1b_G").unwrap_or_default();
+            body.split_once(';').unwrap_or_default()
+        })
+        .collect();
+    let keys: Vec<&str> = parts.iter().map(|(keys, _)| *keys).collect();
+    assert_eq!(keys, ["a=T,z=1,C=1,m=1", "m=1,q=2", "m=0,q=2"]);
+    assert!(parts.iter().all(|(_, data)| data.len() <= KITTY_CHUNK));
+    assert_eq!(
+        parts.iter().map(|(_, data)| *data).collect::<String>(),
+        payload
+    );
+}
+
+#[test]
+fn a_payload_that_fits_one_chunk_is_a_single_final_escape() {
+    assert_eq!(
+        kitty_chunked("QUJD", "a=T", ",q=2"),
+        "\x1b_Ga=T,m=0;QUJD\x1b\\"
+    );
+    let full = "A".repeat(KITTY_CHUNK);
+    assert_eq!(
+        kitty_chunked(&full, "a=T", ""),
+        format!("\x1b_Ga=T,m=0;{full}\x1b\\")
+    );
+    assert_eq!(kitty_chunked("", "a=T", ""), "");
+}
+
+/// The keys of each escape in `escapes`, and the base64 payload they carry, joined.
+#[cfg(feature = "raster")]
+fn kitty_split(escapes: &str) -> (Vec<String>, Vec<u8>) {
+    let mut keys = Vec::new();
+    let mut payload = String::new();
+    for escape in escapes.split("\x1b\\").filter(|escape| !escape.is_empty()) {
+        let body = escape.trim_start_matches("\x1b_G");
+        let (head, data) = body.split_once(';').unwrap_or((body, ""));
+        keys.push(head.to_owned());
+        payload.push_str(data);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .unwrap_or_default();
+    (keys, bytes)
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_multi_chunk_kitty_escape_continues_with_bare_m_keys() {
+    let image = noisy(64, 48);
+    for (escapes, first) in [
+        (image.kitty_escape(8, 4), "a=T,f=32,s=64,v=48,c=8,r=4,m=1"),
+        (
+            image.kitty_escape_with_id(5, 8, 4),
+            "a=T,i=5,f=32,s=64,v=48,c=8,r=4,q=2,m=1",
+        ),
+    ] {
+        let (keys, rgba) = kitty_split(&escapes);
+        assert!(
+            keys.len() > 2,
+            "a payload past two chunks has middle chunks"
+        );
+        assert_eq!(keys.first().map(String::as_str), Some(first));
+        // Continuation chunks carry `m` alone, exactly as before `kitty_chunks`.
+        assert!(keys[1..keys.len() - 1].iter().all(|k| k == "m=1"));
+        assert_eq!(keys.last().map(String::as_str), Some("m=0"));
+        assert_eq!(rgba, image.rgba());
+    }
+}
+
+/// A `width`×`height` image of xorshift noise, which zlib cannot shrink much, so
+/// its compressed transmission still spans several chunks.
+#[cfg(feature = "raster")]
+fn noisy(width: u32, height: u32) -> Image {
+    let mut state = 0x9e37_79b9_u32;
+    let rgba = (0..width * height * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_be_bytes()[0]
+        })
+        .collect();
+    Image::from_rgba(rgba, width, height)
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_compressed_transmission_carries_every_pixel_losslessly_under_its_id() {
+    use std::io::Read as _;
+
+    let image = noisy(128, 96);
+    let (keys, compressed) = kitty_split(&image.kitty_transmit(7, true));
+    assert!(
+        keys.len() > 2,
+        "a payload past two chunks has middle chunks"
+    );
+    assert_eq!(
+        keys.first().map(String::as_str),
+        Some("a=t,i=7,f=32,s=128,v=96,o=z,q=2,m=1")
+    );
+    assert!(keys[1..keys.len() - 1].iter().all(|k| k == "m=1,q=2"));
+    assert_eq!(keys.last().map(String::as_str), Some("m=0,q=2"));
+    let mut rgba = Vec::new();
+    let _ = flate2::read::ZlibDecoder::new(compressed.as_slice()).read_to_end(&mut rgba);
+    assert_eq!(rgba, image.rgba());
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn an_uncompressed_transmission_sends_the_raw_pixels_without_o_z() {
+    let image = noisy(64, 48);
+    let (keys, rgba) = kitty_split(&image.kitty_transmit(3, false));
+    assert_eq!(
+        keys.first().map(String::as_str),
+        Some("a=t,i=3,f=32,s=64,v=48,q=2,m=1")
+    );
+    assert_eq!(rgba, image.rgba());
+    // No escape's base64 runs past the protocol's 4096-byte chunk limit.
+    let escapes = image.kitty_transmit(3, false);
+    assert!(
+        escapes
+            .split("\x1b\\")
+            .filter_map(|escape| escape.split_once(';'))
+            .all(|(_, data)| data.len() <= 4096)
+    );
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_small_transmission_is_one_escape_and_displays_nothing() {
+    let (keys, _) = kitty_split(&noisy(2, 2).kitty_transmit(1, true));
+    // `a=t` transmits only: no `a=T`, so nothing appears until a placement.
+    assert_eq!(keys, vec!["a=t,i=1,f=32,s=2,v=2,o=z,q=2,m=0"]);
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_placement_is_virtual_and_sized_in_cells() {
+    assert_eq!(
+        kitty_place(9, 2, 40, 12),
+        "\x1b_Ga=p,U=1,i=9,p=2,c=40,r=12,q=2\x1b\\"
     );
 }
 
@@ -509,10 +674,28 @@ fn fit_rect_preserves_aspect_and_centers() {
 }
 
 #[test]
-fn detect_protocol_returns_a_variant() {
-    assert!(matches!(
-        detect_protocol(),
-        GraphicsProtocol::Kitty | GraphicsProtocol::Halfblocks
-    ));
+fn protocol_detection_reads_each_variable_for_its_own_terminals() {
+    use GraphicsProtocol::Halfblocks;
+    use GraphicsProtocol::Kitty;
+    let cases: [(&[(&str, &str)], GraphicsProtocol); 9] = [
+        (&[], Halfblocks),
+        (&[("KITTY_WINDOW_ID", "")], Kitty),
+        (&[("TERM", "xterm-kitty")], Kitty),
+        (&[("TERM", "xterm-GHOSTTY")], Kitty),
+        (&[("TERM_PROGRAM", "WezTerm")], Kitty),
+        (&[("TERM_PROGRAM", "ghostty")], Kitty),
+        (&[("TERM", "xterm-256color")], Halfblocks),
+        // Each variable has its own needles: neither name matches the other's.
+        (&[("TERM", "wezterm")], Halfblocks),
+        (&[("TERM_PROGRAM", "kitty")], Halfblocks),
+    ];
+    for (env, expected) in cases {
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        };
+        assert_eq!(protocol_from_env(lookup), expected, "{env:?}");
+    }
     assert_eq!(kitty_delete_all(), "\x1b_Ga=d\x1b\\");
 }

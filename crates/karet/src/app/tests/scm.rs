@@ -96,7 +96,7 @@ fn source_control_commit_click_opens_pending_commit_tab_immediately() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
@@ -293,13 +293,13 @@ fn commit_metadata_response_progressively_fills_pending_tab() {
 fn command_palette_keys_route_through_the_overlay_layer() {
     let mut app = app();
     app.dispatch(Command::OpenCommandPalette);
-    assert!(app.overlay.is_some());
+    assert!(app.keyboard.overlay().is_some());
     // A printable is a fall-through into the query; Esc resolves to
     // OverlayCancel via the Overlay layer and dismisses the overlay.
     send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
-    assert!(app.overlay.is_some());
+    assert!(app.keyboard.overlay().is_some());
     send_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
 }
 
 #[test]
@@ -341,7 +341,7 @@ fn discard_prompt_confirms_and_cancels_through_the_keymap() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     // Enter takes the selected row, which on an unread dialog is the safe one.
     app.dispatch(Command::ScmDiscard);
@@ -353,7 +353,7 @@ fn discard_prompt_confirms_and_cancels_through_the_keymap() {
             .lock()
             .map(|sent| {
                 sent.iter()
-                    .any(|(_, c)| matches!(c, SessionCommand::Discard { .. }))
+                    .any(|(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::Discard { .. })))
             })
             .unwrap_or(false)
     };
@@ -462,13 +462,13 @@ fn scm_cursor_display_row_reserves_line_for_empty_staged_section() {
 fn permanent_commit_input_focuses_even_before_changes_are_staged() {
     let mut app = app();
     app.dispatch(Command::ScmCommit);
-    assert!(app.commit_input.focused);
+    assert!(app.keyboard.commit_box_focused());
 
     // Drafting is always available; only submission requires staged changes.
     app.apply_vcs_status(Vec::new(), vec![change("b.rs", StatusKind::Modified)]);
     app.commit_cancel();
     app.dispatch(Command::ScmCommit);
-    assert!(app.commit_input.focused);
+    assert!(app.keyboard.commit_box_focused());
     app.commit_input.text = "draft".to_string();
     app.commit_input
         .edit
@@ -513,7 +513,7 @@ fn commit_editor_supports_multiline_navigation_paste_and_submit() {
         .unwrap_or_default();
     assert!(sent.iter().any(|(_, command)| matches!(
         command,
-        SessionCommand::Commit { message } if message == "subject\n>body\nmore"
+        SessionCommand::Vcs(VcsCommand::Commit { message }) if message == "subject\n>body\nmore"
     )));
 
     let pending = app.commit_input.pending;
@@ -543,7 +543,7 @@ fn commit_editor_supports_multiline_navigation_paste_and_submit() {
 #[test]
 fn commit_editor_selection_replaces_and_deletes_words() {
     let mut app = app();
-    app.commit_input.focused = true;
+    app.keyboard.focus_commit_box();
     app.commit_input.text = "subject line\nbody text".to_string();
     app.commit_input
         .edit
@@ -583,7 +583,7 @@ fn opening_a_diff_keeps_source_control_focused() {
     assert!(app.active_is_diff(), "the diff preview is shown");
     assert!(app.tabs[app.active].is_preview);
     assert_eq!(app.tabs[app.active].title, "b.rs");
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.focus_target(), FocusTarget::SourceControl);
     assert_eq!(app.tabs.len(), 1, "welcome tab is replaced, not appended");
     // Arrowing back retargets the SAME preview slot — never one tab per
@@ -596,7 +596,7 @@ fn opening_a_diff_keeps_source_control_focused() {
     );
     assert!(app.tabs[app.active].is_preview);
     assert_eq!(app.tabs[app.active].title, "a.rs");
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 }
 
 #[test]
@@ -613,13 +613,13 @@ fn enter_on_a_change_materializes_and_focuses_the_diff() {
     assert_eq!(app.tabs.len(), 1, "Enter must reuse the previewed diff");
     assert!(!app.tabs[app.active].is_preview, "Enter materializes");
     assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
     // Enter again (back from the sidebar): re-focuses, never duplicates.
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
     app.sidebar_visible = true;
     // Seed the layout state a render would have produced: the changes region
     // starts at row 2, whose first display row is change index 0.
-    app.sidebar_rect = Rect::new(0, 0, 20, 20);
+    app.last_frame.sidebar_rect = Rect::new(0, 0, 20, 20);
     app.scm_ui.changes_rect = Rect::new(0, 2, 20, 10);
     app.scm_ui.row_map = vec![Some(0), Some(1)];
 
@@ -638,7 +638,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
     app.handle_sidebar_click(3, 2, KeyModifiers::NONE);
     assert!(app.active_is_diff());
     assert!(app.tabs[app.active].is_preview);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     let view = app.tabs[app.active].view;
 
     // Second click: the SAME view is materialized and focused — the bug was
@@ -654,7 +654,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
         "double-click materializes"
     );
     assert_eq!(app.tabs[app.active].view, view, "the same view, not a copy");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.focus_target(), FocusTarget::DiffEditor);
 }
 
@@ -664,7 +664,7 @@ fn enter_on_an_explorer_file_materializes_it() {
     write_file(&dir, "a.rs", b"fn a() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     select_explorer_path(&mut app, &dir.join("a.rs"));
 
     // Enter opens the file materialized (not a preview) and focuses it.
@@ -674,13 +674,13 @@ fn enter_on_an_explorer_file_materializes_it() {
         !app.tabs[0].is_preview,
         "Enter materializes, never previews"
     );
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     // Enter again re-focuses the same tab — no duplicate.
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1, "repeat Enter must not duplicate");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     // And Enter on a file currently in the preview slot materializes that
     // same tab in place.
@@ -688,7 +688,7 @@ fn enter_on_an_explorer_file_materializes_it() {
     app.open_path_preview(&dir.join("a.rs"), false);
     assert!(app.tabs[0].is_preview);
     let view = app.tabs[0].view;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.dispatch(Command::SidebarActivate);
     assert_eq!(app.tabs.len(), 1);
     assert!(!app.tabs[0].is_preview);
@@ -808,7 +808,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     assert!(app.tabs[app.active].merge_conflict.is_some());
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::MergeConflict { path } if path == Path::new("a.rs"))
+            matches!(command, SessionCommand::Vcs(VcsCommand::MergeConflict { path }) if path == Path::new("a.rs"))
                 .then_some(*request)
         })
     });
@@ -825,6 +825,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
             incoming: "fn incoming() {}\n".to_string(),
         },
     );
+    fill_reserved_tabs(&mut app);
 
     let painted = screen(&mut app, 120, 12).join("\n");
     assert!(painted.contains("CURRENT · read-only"));
@@ -833,13 +834,13 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     assert!(painted.contains("fn current() {}"));
     assert!(painted.contains("<<<<<<< HEAD"));
     assert!(painted.contains("fn incoming() {}"));
-    assert!(app.editor_rect.x > app.pane_frames[0].content_rect.x);
-    assert!(app.editor_rect.right() < app.pane_frames[0].content_rect.right());
+    assert!(app.last_frame.editor_rect().x > app.last_frame.panes[0].content_rect.x);
+    assert!(app.last_frame.editor_rect().right() < app.last_frame.panes[0].content_rect.right());
     let caret = app.tabs[app.active].editor.cursor();
     app.handle_editor_click(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: app.pane_frames[0].content_rect.x.saturating_add(2),
-        row: app.editor_rect.y.saturating_add(2),
+        column: app.last_frame.panes[0].content_rect.x.saturating_add(2),
+        row: app.last_frame.editor_rect().y.saturating_add(2),
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
@@ -857,7 +858,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
 fn clicking_the_commits_title_opens_the_graph_view() {
     let mut app = app();
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,

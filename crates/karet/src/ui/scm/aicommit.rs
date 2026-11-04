@@ -242,7 +242,7 @@ mod tests {
         let app = app_with(
             AiCommitState::Generating {
                 request: karet_session::RequestId(1),
-                since: crate::app::Pending::at(now),
+                since: crate::pending::Pending::at(now),
                 draft: String::new(),
             },
             Some(ready()),
@@ -256,11 +256,12 @@ mod tests {
     #[test]
     fn a_slow_generation_shows_progress_and_the_way_out() {
         let now = Instant::now();
-        let since = now - crate::app::LOADING_REVEAL_DELAY - std::time::Duration::from_millis(1);
+        let since =
+            now - crate::pending::LOADING_REVEAL_DELAY - std::time::Duration::from_millis(1);
         let app = app_with(
             AiCommitState::Generating {
                 request: karet_session::RequestId(1),
-                since: crate::app::Pending::at(since),
+                since: crate::pending::Pending::at(since),
                 draft: String::new(),
             },
             Some(ready()),
@@ -312,13 +313,14 @@ mod tests {
         };
         let title = karet_widgets::text::width(TITLE) as u16;
         let now = Instant::now();
-        let revealed = now - crate::app::LOADING_REVEAL_DELAY - std::time::Duration::from_millis(1);
+        let revealed =
+            now - crate::pending::LOADING_REVEAL_DELAY - std::time::Duration::from_millis(1);
 
         let states = [
             AiCommitState::Idle,
             AiCommitState::Generating {
                 request: karet_session::RequestId(1),
-                since: crate::app::Pending::at(revealed),
+                since: crate::pending::Pending::at(revealed),
                 draft: String::new(),
             },
             AiCommitState::Applied,

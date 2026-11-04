@@ -12,11 +12,10 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 
-use super::Reroot;
-use super::geometry::SeamTarget;
 use crate::app::App;
-use crate::app::Focus;
-use crate::app::seam::SeamFocus;
+use crate::tab::seam::Reroot;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::geometry::SeamTarget;
 
 impl App {
     /// Route a mouse event that landed on the Seam view, reporting whether it did.
@@ -42,7 +41,7 @@ impl App {
             MouseEventKind::ScrollLeft => self.seam_wheel_across(&target, -1),
             MouseEventKind::ScrollRight => self.seam_wheel_across(&target, 1),
             MouseEventKind::Down(MouseButton::Left) => {
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
                 let repeat = self.click_streak(mouse.column, mouse.row);
                 self.seam_click(&target, repeat >= 2);
             },

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use karet_core::Severity;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::json;
 use tokio::io::DuplexStream;
 use tokio::io::ReadHalf;
@@ -571,72 +572,6 @@ async fn implementations_end_to_end() -> TestResult {
 }
 
 #[tokio::test]
-async fn supertypes_takes_two_round_trips_and_keeps_selection_ranges() -> TestResult {
-    let ((read, write), mut server) = wire();
-    let server_task = tokio::spawn(async move {
-        server.handshake().await;
-        let prepare = server.recv().await;
-        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
-        server
-            .respond(
-                &prepare["id"],
-                json!([{
-                    "name": "Widget", "kind": 23, "uri": "file:///tmp/ws/lib.rs",
-                    "range": {"start": {"line": 0, "character": 0},
-                              "end": {"line": 5, "character": 1}},
-                    "selectionRange": {"start": {"line": 0, "character": 7},
-                                       "end": {"line": 0, "character": 13}}
-                }]),
-            )
-            .await;
-        let supertypes = server.recv().await;
-        assert_eq!(supertypes["method"], "typeHierarchy/supertypes");
-        server
-            .respond(
-                &supertypes["id"],
-                json!([{
-                    "name": "Render", "kind": 11, "uri": "file:///tmp/ws/render.rs",
-                    "range": {"start": {"line": 1, "character": 0},
-                              "end": {"line": 4, "character": 1}},
-                    "selectionRange": {"start": {"line": 1, "character": 6},
-                                       "end": {"line": 1, "character": 12}}
-                }]),
-            )
-            .await;
-    });
-    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
-    let found = client
-        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
-        .await?;
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].path, Path::new("/tmp/ws/render.rs"));
-    // The selection range is the navigable one, not the whole body.
-    assert_eq!(found[0].range.start, LineCol::new(1, 6));
-    server_task.await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_server_that_declines_type_hierarchy_yields_no_supertypes() -> TestResult {
-    // Not supporting the request is not a failure — the caller degrades to its
-    // structural answer rather than surfacing an error.
-    let ((read, write), mut server) = wire();
-    let server_task = tokio::spawn(async move {
-        server.handshake().await;
-        let prepare = server.recv().await;
-        assert_eq!(prepare["method"], "textDocument/prepareTypeHierarchy");
-        server.respond(&prepare["id"], json!(null)).await;
-    });
-    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
-    let found = client
-        .supertypes(Path::new("/tmp/ws/lib.rs"), LineCol::new(0, 7))
-        .await?;
-    assert!(found.is_empty());
-    server_task.await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn shutdown_performs_the_handshake() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move {
@@ -673,6 +608,54 @@ async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResul
     );
     assert!(failure.cause.is_permanent(), "retrying cannot find it");
     Ok(())
+}
+
+/// The deprecated `karet_lsp::codec` alias still reaches the one framing
+/// implementation, so callers migrate on a warning rather than a break.
+#[tokio::test]
+#[allow(deprecated)] // exercising the deprecated bridge is the point
+async fn the_deprecated_codec_path_is_the_jsonrpc_framing() -> TestResult {
+    assert_eq!(
+        crate::codec::MAX_MESSAGE_BYTES,
+        karet_jsonrpc::framing::MAX_MESSAGE_BYTES
+    );
+    let framing: crate::codec::ContentLength = crate::codec::ContentLength;
+    assert_eq!(framing, codec::ContentLength);
+
+    // A frame written through the old path reads back through the new one, and
+    // the reverse, so the forwarders are the one implementation.
+    let mut wire = Vec::new();
+    crate::codec::write_frame(&mut wire, b"{}").await?;
+    assert_eq!(wire, b"Content-Length: 2\r\n\r\n{}");
+    assert_eq!(
+        codec::read_frame(&mut wire.as_slice()).await?,
+        Some(b"{}".to_vec())
+    );
+    let oversized = format!("Content-Length: {}\r\n\r\n", codec::MAX_MESSAGE_BYTES + 1);
+    let err = crate::codec::read_frame(&mut oversized.as_bytes()).await;
+    assert!(matches!(err, Err(crate::codec::CodecError::TooLarge(_))));
+    Ok(())
+}
+
+/// A spec's builders write the one [`ConnectOptions`] it launches with, so what
+/// [`LspClient::spawn`] sends is exactly what the spec was given.
+#[test]
+fn a_spec_carries_its_connect_options() {
+    let spec = LspSpec::new("astro-ls", vec!["--stdio".into()], vec!["astro".into()]);
+    assert_eq!(
+        spec.options,
+        ConnectOptions::default(),
+        "none until attached"
+    );
+    let spec = spec
+        .with_initialization_options(Some(json!({"typescript": {"tsdk": "/sdk"}})))
+        .with_settings(Some(json!({"astro": {"format": true}})));
+    assert_eq!(
+        spec.options,
+        ConnectOptions::default()
+            .with_initialization_options(Some(json!({"typescript": {"tsdk": "/sdk"}})))
+            .with_settings(Some(json!({"astro": {"format": true}})))
+    );
 }
 
 /// A server that prints usage and exits -- bare `taplo` is exactly this -- used
@@ -726,6 +709,33 @@ async fn custom_request_round_trips_an_untyped_method() -> TestResult {
         .await?;
     assert_eq!(contents, "class Object {}");
     server_task.await?;
+    Ok(())
+}
+
+/// The caller's bound replaces the standard one in both directions: a reply
+/// inside it arrives, and silence past it is a timeout.
+#[tokio::test]
+async fn custom_request_with_is_bounded_by_its_own_timeout() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let first = server.recv().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        server.respond(&first["id"], json!("late")).await;
+        // The second request is never answered.
+        let _second = server.recv().await;
+        server
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let reply: String = client
+        .custom_request_with("test/slow", Value::Null, Duration::from_secs(30))
+        .await?;
+    assert_eq!(reply, "late");
+    let silent = client
+        .custom_request_with::<_, Value>("test/silent", Value::Null, Duration::from_millis(50))
+        .await;
+    assert!(matches!(silent, Err(LspError::Timeout)), "got {silent:?}");
+    drop(server_task.await?);
     Ok(())
 }
 
@@ -829,7 +839,7 @@ async fn a_dying_servers_last_words_are_never_raced_away() -> TestResult {
 // probabilistic test has no place in the merge gate.
 
 /// How a launch failure is classified when a child running `script` ends its
-/// handshake with `error` — the seam [`LspClient::spawn_command_with`] reaches
+/// handshake with `error` — the seam [`LspClient::spawn_command_configured`] reaches
 /// once the handshake has failed.
 async fn classify(script: &str, error: LspError) -> Result<LspError, std::io::Error> {
     let mut child = tokio::process::Command::new("sh")
@@ -905,6 +915,9 @@ async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
 
 #[path = "gating_tests.rs"]
 mod gating;
+
+#[path = "hierarchy_tests.rs"]
+mod hierarchy;
 
 #[path = "formatting_tests.rs"]
 mod formatting;

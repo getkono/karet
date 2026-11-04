@@ -4,12 +4,23 @@
 //! the editor inserted, so only those are typed over.
 
 use karet_core::CursorState;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
 use karet_editor::editing::autopair;
 use karet_editor::editing::autopair::AutoClose;
 use karet_editor::editing::autopair::AutoPairs;
+use karet_filetype::file_type_for_path;
+use karet_session::ViewId;
 use karet_session::config::schema::AutoClosing;
+use karet_text::TextBuffer;
 
-use super::*;
+use super::indent::SyntaxIndent;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The closers the last keystrokes auto-inserted in one view.
 ///
@@ -50,7 +61,7 @@ impl App {
         else {
             return None;
         };
-        let settings = self.settings.editor.for_language(tab_language(tab));
+        let settings = self.settings.editor.for_language(tab.config_file_type());
         let rules = AutoPairs {
             pairs: file_type_for_path(path).auto_pairs(),
             brackets: auto_close(settings.auto_closing_brackets()),
@@ -142,68 +153,6 @@ impl App {
         };
         self.submit_multi_edit(EditCause::Newline, edit);
         true
-    }
-
-    /// The syntax-aware indentation for line breaks in the active code tab, or
-    /// `None` when its language has no indent query to consult (nor injects
-    /// one that might), so Enter copies the current line's indentation.
-    pub(super) fn syntax_indent(&self) -> Option<SyntaxIndent> {
-        let unit = self.active_indentation();
-        let Some(Tab {
-            kind:
-                TabKind::Code {
-                    path,
-                    doc: Some(_),
-                    buffer,
-                    ..
-                },
-            ..
-        }) = self.tabs.get(self.active)
-        else {
-            return None;
-        };
-        SyntaxIndent::new(path, buffer, unit)
-    }
-}
-
-/// One parse of a buffer, with the indent queries of its languages, answering
-/// what indentation a line break over a range of it opens with.
-pub(super) struct SyntaxIndent {
-    tree: karet_treesitter::LayeredTree,
-    indenter: karet_syntax::Indenter,
-    text: String,
-    unit: String,
-}
-
-impl SyntaxIndent {
-    /// Parse `buffer` as the language `path` names, with `unit` as one level.
-    fn new(path: &Path, buffer: &TextBuffer, unit: String) -> Option<Self> {
-        let lang = karet_treesitter::language_id_from_path(path)?;
-        if karet_treesitter::indents_query(lang).is_none()
-            && karet_treesitter::injections_query(lang).is_none()
-        {
-            return None;
-        }
-        let text = buffer.text();
-        let tree = karet_treesitter::LayeredParser::new()
-            .parse(lang, &text)
-            .ok()?;
-        let indenter = karet_syntax::Indenter::for_tree(&tree);
-        Some(Self {
-            tree,
-            indenter,
-            text,
-            unit,
-        })
-    }
-
-    /// The new line's indentation for a break replacing `range` of `buffer`
-    /// (the buffer this was parsed from), or `None` to copy the current line.
-    pub(super) fn for_range(&self, buffer: &TextBuffer, range: Range) -> Option<String> {
-        let before = buffer.line_col_to_byte(range.start).ok()?;
-        let after = buffer.line_col_to_byte(range.end).ok()?;
-        self.indenter
-            .newline_indent(&self.tree, &self.text, (before, after), &self.unit)
     }
 }
 

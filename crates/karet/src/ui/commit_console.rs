@@ -5,10 +5,13 @@
 //! its own tail, scrolls in both directions because a linter's line is wider than
 //! any modal, and outlives the keystroke that opened it.
 
+use karet_vcs::OutputStream;
 use karet_widgets::scroll::draw_scrollable_lines;
 
 use super::*;
+use crate::app::commit_console::CommitConsole;
 use crate::app::commit_console::ConsoleOutcome;
+use crate::app::commit_console::MAX_LINES;
 
 /// Draw the console over `area`, when it is open.
 pub(super) fn draw_commit_console(
@@ -59,7 +62,7 @@ pub(super) fn draw_commit_console(
     }
 
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    let lines = app.commit_console.styled(theme);
+    let lines = console_lines(&app.commit_console, theme);
     // Stick to the tail while a commit is still producing output, unless the
     // reader has scrolled away from it. Asking for the last row and letting
     // `draw_scrollable_lines` clamp is what keeps this exact: the visible height
@@ -97,6 +100,42 @@ pub(super) fn draw_commit_console(
             .alignment(ratatui::layout::Alignment::Right),
         rows[1],
     );
+}
+
+/// The console's log styled for `theme`, a truncation marker first when lines
+/// were dropped from the head.
+///
+/// The stream is not a severity — git routes a hook's own stdout to its
+/// stderr, so colouring by stream would paint every successful hook red. Only
+/// git's own summary, which arrives on stdout, is distinguished.
+pub(crate) fn console_lines(console: &CommitConsole, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if console.truncated {
+        lines.push(Line::styled(
+            format!("… earlier output dropped (over {MAX_LINES} lines)"),
+            theme.style(ThemeRole::Muted),
+        ));
+    }
+    lines.extend(console.lines.iter().map(|line| {
+        let style = match line.stream {
+            OutputStream::Stdout => theme.style(ThemeRole::Muted),
+            OutputStream::Stderr => theme.style(ThemeRole::Foreground),
+        };
+        // Hooks colour their output; honour it, and fall back to the stream's
+        // own style for the plain runs.
+        let spans: Vec<Span<'static>> = karet_widgets::ansi::ansi_spans(&line.text)
+            .into_iter()
+            .map(|span| {
+                if span.style == Style::default() {
+                    span.style(style)
+                } else {
+                    span
+                }
+            })
+            .collect();
+        Line::from(spans)
+    }));
+    lines
 }
 
 #[cfg(test)]

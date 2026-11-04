@@ -4,37 +4,15 @@
 
 use std::path::Path;
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
 use karet_core::LineCol;
-use karet_core::Range;
 use karet_core::ServerFeature;
 
 use crate::LspClient;
 use crate::LspError;
 use crate::convert;
 use crate::text_document_position;
-
-/// How a [`DocumentHighlight`] uses the symbol (LSP `DocumentHighlightKind`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum HighlightKind {
-    /// A textual occurrence the server does not class as a read or a write;
-    /// also what a highlight that names no kind is, as the protocol defines.
-    #[default]
-    Text,
-    /// A read of the symbol, such as a variable's use.
-    Read,
-    /// A write to the symbol, such as an assignment or the declaration.
-    Write,
-}
-
-/// One occurrence of the symbol a [`LspClient::document_highlights`] asked
-/// about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DocumentHighlight {
-    /// The occurrence, in the negotiated column encoding.
-    pub range: Range,
-    /// How the occurrence uses the symbol.
-    pub kind: HighlightKind,
-}
 
 impl LspClient {
     /// The occurrences of the symbol at `position` in `doc`, in the order the
@@ -43,8 +21,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn document_highlights(
         &self,
         doc: &Path,

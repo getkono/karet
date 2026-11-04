@@ -27,11 +27,17 @@ fn split_rig(n: usize) -> Rig {
 
 /// The `n`th pane's frame, in layout order.
 fn pane_frame(rig: &Rig, n: usize) -> PaneFrame {
-    let order = rig.app.layout.layout(rig.app.main_rect);
+    let order = rig.app.layout.layout(rig.app.last_frame.main_rect);
     let Some((pane, _)) = order.get(n).copied() else {
         panic!("no pane {n}");
     };
-    let Some(frame) = rig.app.pane_frames.iter().find(|frame| frame.pane == pane) else {
+    let Some(frame) = rig
+        .app
+        .last_frame
+        .panes
+        .iter()
+        .find(|frame| frame.pane == pane)
+    else {
         panic!("pane {n} was not drawn");
     };
     frame.clone()
@@ -45,7 +51,8 @@ fn track_cells(rig: &Rig, n: usize) -> Vec<(u16, u16)> {
         for x in content.left()..content.right() {
             if rig
                 .app
-                .scroll_hits
+                .last_frame
+                .scroll
                 .at(x, y)
                 .is_some_and(|hit| hit.surface == ScrollSurface::TabRows)
             {
@@ -142,12 +149,21 @@ fn a_background_splits_scrollbar_takes_the_wheel_and_a_press_focuses_it() {
 #[test]
 fn a_link_in_a_background_split_resolves_in_that_split() {
     let mut rig = split_rig(4);
-    let area = pane_frame(&rig, 0).editor_rect;
+    let background = pane_frame(&rig, 0);
+    let area = background.editor_rect;
     let rect = Rect::new(area.x + 2, area.y, 4, 1);
-    rig.app.markdown_link_hits = vec![MarkdownLinkHit {
-        rect,
-        target: "missing.md".to_string(),
-    }];
+    if let Some(frame) = rig
+        .app
+        .last_frame
+        .panes
+        .iter_mut()
+        .find(|frame| frame.pane == background.pane)
+    {
+        frame.markdown_link_hits = vec![MarkdownLinkHit {
+            rect,
+            target: "missing.md".to_string(),
+        }];
+    }
     rig.app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: rect.x + 1,
@@ -164,7 +180,7 @@ fn item(label: &str) -> karet_core::CompletionItem {
 /// Open the completion popup anchored at the caret, and draw it.
 fn open_completion(rig: &mut Rig, labels: &[String]) {
     let anchor = rig.tab().editor.cursor();
-    rig.app.completion = Some(crate::completion::CompletionUi::new(
+    rig.app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         anchor,
         anchor,
@@ -175,7 +191,7 @@ fn open_completion(rig: &mut Rig, labels: &[String]) {
 }
 
 fn completion_area(rig: &Rig) -> Rect {
-    let Some(ui) = rig.app.completion.as_ref() else {
+    let Some(ui) = rig.app.completion.popup.as_ref() else {
         panic!("the popup is open");
     };
     ui.list.area()
@@ -194,7 +210,7 @@ fn clicking_a_completion_row_accepts_it() {
         "beta|\n\n\n\n",
         "the clicked row was inserted"
     );
-    assert!(rig.app.completion.is_none(), "and the popup closed");
+    assert!(rig.app.completion.popup.is_none(), "and the popup closed");
 }
 
 #[test]
@@ -212,7 +228,7 @@ fn the_wheel_over_the_completion_popup_scrolls_the_list_not_the_text() {
         0,
         "the text under the popup did not scroll"
     );
-    let Some(ui) = rig.app.completion.as_ref() else {
+    let Some(ui) = rig.app.completion.popup.as_ref() else {
         panic!("the wheel keeps the popup open");
     };
     assert_eq!(ui.list.row_at(area.x, area.y), Some(3), "the list did");
@@ -362,7 +378,7 @@ fn a_right_click_opens_the_menu_with_cut_copy_and_paste_first() {
         panic!("a right click on text opens the menu");
     };
     let commands: Vec<Command> = menu
-        .entries
+        .entries()
         .iter()
         .take(3)
         .filter_map(ContextMenuEntry::command)

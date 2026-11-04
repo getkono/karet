@@ -1,10 +1,13 @@
 //! Hover request/response handling on the [`App`] (model in [`crate::hover`]).
 
 use karet_core::Hover;
-use karet_session::Command as SessionCommand;
+use karet_core::NotificationKind;
+use karet_session::LspCommand;
 use karet_session::RequestId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
 use crate::hover::HoverUi;
 use crate::hover::PendingHover;
 
@@ -28,7 +31,7 @@ impl App {
         };
         let id = backend.next_id();
         if backend
-            .send(id, SessionCommand::Hover { doc, position: at })
+            .send(id, LspCommand::Hover { doc, position: at }.into())
             .is_ok()
         {
             self.pending_hover = Some(PendingHover {

@@ -756,11 +756,8 @@ fn draw_pull_request_commits(
     let total = items.len();
     let (area, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
     let height = usize::from(area.height);
-    let offset = crate::ui::commit::list::keep_visible(
-        view.commit_cursor,
-        usize::from(view.commit_offset),
-        height,
-    );
+    let offset =
+        crate::app::keep_visible(view.commit_cursor, usize::from(view.commit_offset), height);
     let mut state = ListState::default();
     *state.offset_mut() = offset;
     f.render_stateful_widget(List::new(items), area, &mut state);

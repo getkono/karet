@@ -14,17 +14,17 @@ fn markdown_app(text: &str, caret: LineCol) -> App {
     let mut tab = text_tab("notes.md", text);
     if let TabKind::Code {
         path,
-        language,
+        file_type,
         doc,
         ..
     } = &mut tab.kind
     {
         *path = std::path::PathBuf::from("notes.md");
-        *language = "Markdown";
+        *file_type = language_type("Markdown");
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     app.tabs[idx].editor.set_carets(&[caret]);
     app
@@ -39,7 +39,7 @@ fn rust_app(text: &str) -> App {
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app
 }
 
@@ -51,12 +51,9 @@ fn caret_of(app: &App) -> LineCol {
 #[test]
 fn the_markdown_gate_recognizes_a_markdown_path() {
     let app = markdown_app("# title\n", LineCol::new(0, 0));
-    // The gate keys off the filetype registry, not the tab's language label.
-    assert_eq!(
-        karet_filetype::file_type_for_path(std::path::Path::new("notes.md")).name(),
-        "Markdown"
-    );
+    // The gate keys off the file type the tab stores, not its status label.
     assert!(matches!(&app.tabs[app.active].kind, TabKind::Code { .. }));
+    assert!(app.tabs[app.active].is_markdown());
 }
 
 #[test]
@@ -405,4 +402,68 @@ fn a_heading_inside_a_fence_never_reaches_the_toc() {
     assert!(toc.contains("- [Real](#real)"), "{toc}");
     assert!(toc.contains("- [Also real](#also-real)"), "{toc}");
     assert!(!toc.contains("Not a heading"), "{toc}");
+}
+
+/// Fix All Lint Issues asks the session for the active document -- the lint
+/// and the configuration are the session's -- and edits nothing locally.
+#[test]
+fn fix_all_lint_issues_asks_the_session_for_the_active_document() {
+    let mut app = markdown_app("# Title\n\ntext \n", LineCol::new(2, 2));
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.clone()).unwrap_or_default();
+    assert!(
+        sent.iter().any(|(_, command)| matches!(
+            command,
+            SessionCommand::Document(DocumentCommand::FixMarkdownLint { doc: DocumentId(9) })
+        )),
+        "{sent:?}"
+    );
+    assert_eq!(code_tab_text(&app), "# Title\n\ntext \n");
+}
+
+#[test]
+fn fix_all_lint_issues_outside_markdown_refuses_without_asking() {
+    let mut app = rust_app("fn main() {}\n");
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::MarkdownLintFixAll);
+
+    let sent = backend.sent.lock().map(|s| s.len()).unwrap_or_default();
+    assert_eq!(sent, 0);
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("lint fixes apply to Markdown files")
+    );
+}
+
+/// The session's count becomes the toast: a success names how many, and
+/// nothing to fix is a refusal, not a success.
+#[test]
+fn the_session_answer_reports_the_fixed_count() {
+    let mut app = markdown_app("# Title\n", LineCol::new(0, 0));
+    let answer = |fixed| SessionEvent::MarkdownLintFixed {
+        doc: DocumentId(9),
+        fixed,
+    };
+
+    app.on_backend_event(Some(RequestId(1)), answer(0));
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Report::Refusal.severity(),
+            "no fixable lint issues".to_owned()
+        ))
+    );
+
+    app.on_backend_event(Some(RequestId(2)), answer(1));
+    assert_eq!(
+        last_report(&app),
+        Some((Report::Outcome.severity(), "fixed 1 lint issue".to_owned()))
+    );
+
+    app.on_backend_event(Some(RequestId(3)), answer(3));
+    assert_eq!(last_message(&app).as_deref(), Some("fixed 3 lint issues"));
 }

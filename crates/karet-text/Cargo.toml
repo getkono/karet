@@ -1,6 +1,6 @@
 [package]
 name        = "karet-text"
-description = "Headless rope text-editing model (buffer, undo/redo, cursors & selections) for karet TUI editors."
+description = "Headless rope text-editing model (buffer, undo/redo, dirty/save tracking) for karet TUI editors."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -25,6 +25,7 @@ ropey.workspace = true
 memchr.workspace = true                # fast line-ending scanning (load/save, EOL detection)
 tempfile.workspace = true              # atomic crash-safe save (temp + fsync + rename)
 thiserror.workspace = true
+unicode-segmentation.workspace = true  # grapheme clusters for the `words` model
 
 [lints]
 workspace = true

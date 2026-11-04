@@ -160,7 +160,7 @@ fn language_of(index: &SeamIndex, id: SeamId) -> String {
     index
         .node(id)
         .and_then(|node| index.file_path(node.location.file))
-        .and_then(karet_treesitter::language_name_from_path)
+        .and_then(super::language_label)
         .unwrap_or("unknown")
         .to_owned()
 }

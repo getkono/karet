@@ -40,12 +40,17 @@ impl TokenId {
 
 /// The text emphasis requested for a run of text, independent of any renderer.
 ///
-/// The one neutral attribute vocabulary shared by themes (per-token emphasis),
-/// document models (DOCX runs), and markup rendering — markup tokens carry
-/// weight/slant as much as color: a markdown heading reads as a heading because
-/// it is **bold**, not merely blue.
+/// The one neutral text-attribute vocabulary: themes (per-token emphasis), a
+/// [`Decoration`](crate::Decoration)'s [`modifiers`](crate::Decoration::modifiers),
+/// and markup rendering all speak it, and `karet-theme`'s `view` feature holds
+/// its one ratatui mapping.
+///
+/// Markup tokens carry weight/slant as much as color: a markdown heading reads as
+/// a heading because it is **bold**, not merely blue. Attributes combine with
+/// `|`, so overlapping decorations blend into the union of their flags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Emphasis {
     /// Render bold.
     pub bold: bool,
@@ -55,6 +60,8 @@ pub struct Emphasis {
     pub underline: bool,
     /// Render struck through.
     pub strikethrough: bool,
+    /// Render dimmed (faint).
+    pub dim: bool,
 }
 
 impl Emphasis {
@@ -64,6 +71,7 @@ impl Emphasis {
         italic: false,
         underline: false,
         strikethrough: false,
+        dim: false,
     };
     /// Bold, and nothing else.
     pub const BOLD: Self = Self {
@@ -85,6 +93,53 @@ impl Emphasis {
         strikethrough: true,
         ..Self::NONE
     };
+    /// Dimmed, and nothing else.
+    pub const DIM: Self = Self {
+        dim: true,
+        ..Self::NONE
+    };
+
+    /// Whether no attribute is set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !(self.bold || self.italic || self.underline || self.strikethrough || self.dim)
+    }
+
+    /// Whether every attribute set in `other` is also set in `self`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.bold || !other.bold)
+            && (self.italic || !other.italic)
+            && (self.underline || !other.underline)
+            && (self.strikethrough || !other.strikethrough)
+            && (self.dim || !other.dim)
+    }
+
+    /// The attributes set in either `self` or `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            bold: self.bold || other.bold,
+            italic: self.italic || other.italic,
+            underline: self.underline || other.underline,
+            strikethrough: self.strikethrough || other.strikethrough,
+            dim: self.dim || other.dim,
+        }
+    }
+}
+
+impl std::ops::BitOr for Emphasis {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.union(other)
+    }
+}
+
+impl std::ops::BitOrAssign for Emphasis {
+    fn bitor_assign(&mut self, other: Self) {
+        *self = self.union(other);
+    }
 }
 
 /// The canonical set of tree-sitter highlight capture classes karet recognizes.
@@ -168,6 +223,12 @@ pub enum StandardToken {
 }
 
 impl StandardToken {
+    /// How many standard classes there are: every [`id`](Self::id) is below
+    /// this, so a table indexed by id can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a class moves it.
+    pub const COUNT: usize = Self::CommentMark as usize + 1;
+
     /// The stable [`TokenId`] for this class (its discriminant).
     #[must_use]
     pub const fn id(self) -> TokenId {
@@ -362,6 +423,23 @@ pub enum ThemeRole {
     /// Code-lens titles on their rows above the code they describe, VS Code's
     /// `editorCodeLens.foreground`.
     CodeLens,
+    /// Background of an occurrence of the symbol under the caret that reads
+    /// it, or mentions it as text, VS Code's `editor.wordHighlightBackground`.
+    WordHighlight,
+    /// Background of an occurrence of the symbol under the caret that writes
+    /// it, VS Code's `editor.wordHighlightStrongBackground`.
+    ///
+    /// Split from [`WordHighlight`](Self::WordHighlight) so the places a value
+    /// changes stand out from the places it is only read.
+    WordHighlightStrong,
+}
+
+impl ThemeRole {
+    /// How many roles there are: every `role as usize` is below this, so a
+    /// table indexed by role can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a role moves it.
+    pub const COUNT: usize = Self::WordHighlightStrong as usize + 1;
 }
 
 #[cfg(test)]
@@ -375,30 +453,132 @@ mod tests {
         assert_eq!(TokenId::new(7).0, 7);
     }
 
+    /// Every standard class, in discriminant order.
+    const ALL: [StandardToken; 32] = [
+        StandardToken::Keyword,
+        StandardToken::KeywordControl,
+        StandardToken::Function,
+        StandardToken::FunctionBuiltin,
+        StandardToken::Method,
+        StandardToken::Type,
+        StandardToken::TypeBuiltin,
+        StandardToken::Variable,
+        StandardToken::Parameter,
+        StandardToken::Property,
+        StandardToken::Constant,
+        StandardToken::String,
+        StandardToken::StringEscape,
+        StandardToken::Comment,
+        StandardToken::Number,
+        StandardToken::Boolean,
+        StandardToken::Operator,
+        StandardToken::Punctuation,
+        StandardToken::Tag,
+        StandardToken::Attribute,
+        StandardToken::Namespace,
+        StandardToken::Label,
+        StandardToken::CommentDoc,
+        StandardToken::MarkupHeading,
+        StandardToken::MarkupBold,
+        StandardToken::MarkupItalic,
+        StandardToken::MarkupLink,
+        StandardToken::MarkupRaw,
+        StandardToken::MarkupQuote,
+        StandardToken::MarkupListMarker,
+        StandardToken::MarkupStrikethrough,
+        StandardToken::CommentMark,
+    ];
+
     #[test]
-    fn capture_name_round_trips() {
-        for tok in [
-            StandardToken::Keyword,
-            StandardToken::FunctionBuiltin,
-            StandardToken::Comment,
-            StandardToken::Label,
-            StandardToken::CommentDoc,
-            StandardToken::MarkupHeading,
-            StandardToken::MarkupBold,
-            StandardToken::MarkupItalic,
-            StandardToken::MarkupLink,
-            StandardToken::MarkupRaw,
-            StandardToken::MarkupQuote,
-            StandardToken::MarkupListMarker,
-            StandardToken::MarkupStrikethrough,
-            StandardToken::CommentMark,
-        ] {
+    fn every_class_has_a_dense_id_and_a_unique_round_tripping_capture_name() {
+        // The ids are exactly 0..=31 in declaration order: karet-theme indexes its
+        // palette by them, so a gap or a renumbering shifts every later colour.
+        for (i, tok) in ALL.iter().enumerate() {
+            assert_eq!(usize::from(tok.id().0), i, "{tok:?}");
             assert_eq!(
                 StandardToken::from_capture_name(tok.capture_name()),
-                Some(tok)
+                Some(*tok)
+            );
+            // No two classes share a capture name, or one would be unreachable.
+            assert!(
+                ALL[i + 1..]
+                    .iter()
+                    .all(|other| other.capture_name() != tok.capture_name()),
+                "{tok:?} shares its capture name"
             );
         }
         assert_eq!(StandardToken::from_capture_name("not.a.capture"), None);
+        // Names match exactly: no `@` prefix, no prefix match, no case folding.
+        assert_eq!(StandardToken::from_capture_name("@keyword"), None);
+        assert_eq!(
+            StandardToken::from_capture_name("keyword.control.flow"),
+            None
+        );
+        assert_eq!(StandardToken::from_capture_name("Keyword"), None);
+        // `COUNT` is exactly one past the last id, so a table sized by it
+        // holds every class and nothing more.
+        assert_eq!(StandardToken::COUNT, ALL.len());
+    }
+
+    #[test]
+    fn theme_role_count_is_one_past_the_last_declared_role() {
+        // A table sized by `COUNT` and indexed by `role as usize` must hold the
+        // last role, and no slot past it.
+        assert_eq!(
+            ThemeRole::WordHighlightStrong as usize,
+            ThemeRole::COUNT - 1
+        );
+        assert_eq!(ThemeRole::Background as usize, 0);
+        assert_eq!(ThemeRole::COUNT, 41);
+    }
+
+    #[test]
+    fn emphasis_combines_as_flags() {
+        let mut both = Emphasis::BOLD;
+        both |= Emphasis::STRIKETHROUGH;
+        assert!(both.contains(Emphasis::BOLD));
+        assert!(both.contains(Emphasis::STRIKETHROUGH));
+        assert!(both.contains(Emphasis::BOLD | Emphasis::STRIKETHROUGH));
+        assert!(!both.contains(Emphasis::ITALIC));
+        assert!(!both.contains(Emphasis::BOLD | Emphasis::DIM));
+        // The empty set is contained in every set, and is the default.
+        assert!(both.contains(Emphasis::NONE));
+        assert_eq!(Emphasis::default(), Emphasis::NONE);
+        assert!(Emphasis::NONE.is_empty());
+        assert!(!both.is_empty());
+        // Each single-flag constant sets exactly one flag: none contains
+        // another, and none is empty.
+        let flags = [
+            Emphasis::BOLD,
+            Emphasis::ITALIC,
+            Emphasis::UNDERLINE,
+            Emphasis::STRIKETHROUGH,
+            Emphasis::DIM,
+        ];
+        for (i, a) in flags.iter().enumerate() {
+            assert!(!a.is_empty(), "{a:?} is empty");
+            for b in &flags[i + 1..] {
+                assert!(!a.contains(*b), "{a:?} overlaps {b:?}");
+                assert!(!b.contains(*a), "{b:?} overlaps {a:?}");
+            }
+        }
+        let all = flags.iter().fold(Emphasis::NONE, |all, flag| all | *flag);
+        assert!(flags.iter().all(|flag| all.contains(*flag)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn emphasis_missing_a_flag_on_the_wire_decodes_it_as_unset() -> Result<(), serde_json::Error> {
+        // A peer that predates a flag omits it; the flag reads as off rather
+        // than failing the whole payload.
+        let old = serde_json::from_str::<Emphasis>(r#"{"bold":true}"#)?;
+        assert_eq!(old, Emphasis::BOLD);
+        let all = Emphasis::BOLD | Emphasis::DIM;
+        assert_eq!(
+            serde_json::from_str::<Emphasis>(&serde_json::to_string(&all)?)?,
+            all
+        );
+        Ok(())
     }
 
     #[test]

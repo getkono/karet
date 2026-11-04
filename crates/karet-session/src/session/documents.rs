@@ -1,3 +1,11 @@
+//! The open-document lifecycle on the actor: open, edit, undo/redo, save,
+//! retarget, close, and conversion of read-only formats to text.
+//!
+//! This module owns the document store and the save pipeline, including
+//! format-on-save and its deadline. Reading and writing the file itself is
+//! delegated to `docfile`, server sync to the LSP manager, and swap removal to
+//! the backup store.
+
 use super::*;
 
 /// Answer to a save abandoned because its document was closed first.
@@ -5,6 +13,29 @@ const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 
 /// Answer to a save abandoned by a [`Command::Cancel`] naming it.
 const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
+
+impl Document {
+    /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
+    /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
+    /// pending backup) once the buffer is clean again (e.g. undone to the save point).
+    pub(super) fn sync_dirty_since(&mut self, tick: u64) {
+        if self.buffer.is_dirty() {
+            if self.dirty_since.is_none() {
+                self.dirty_since = Some(tick);
+            }
+        } else {
+            self.mark_saved();
+        }
+    }
+
+    /// Disarm the backup bookkeeping because the buffer matches what is on
+    /// disk: either a save just wrote it or an edit returned it to the save
+    /// point. The next edit that dirties it starts the backup clock afresh.
+    pub(super) fn mark_saved(&mut self) {
+        self.dirty_since = None;
+        self.backed_up_version = None;
+    }
+}
 
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
@@ -89,18 +120,23 @@ impl Session {
                 return;
             },
         };
-        let lang_id = language_id_from_path(&path);
-        let language = language
-            .and_then(name_for_language)
-            .or_else(|| language_name_for_path(&path));
-        let language_selector = language_selector_for_path(&path);
-        let lsp_language_id = lsp_language_id_for_path(&path);
+        // A decoded CBOR document is CBOR; otherwise an explicit id the registry
+        // knows overrides detection, and anything else, including an id it does
+        // not know, falls back to the path.
+        let detected = DocumentLanguage::for_format(&path, format, language);
+        let DocumentLanguage {
+            lang_id,
+            name: language,
+            file_type,
+            lsp_id: lsp_language_id,
+        } = detected;
+        let language_selector = detected.selector();
         let (document_settings, editorconfig_error) =
-            resolve_document_settings(&path, language_selector, &self.config.settings);
+            resolve_document_settings(&path, Some(file_type), self.config.settings());
         apply_serialization_settings(&mut buffer, document_settings);
         if must_create {
             // No file, so no history of it to restore.
-            buffer.set_undo_limit(self.config.settings.files.undo_cap());
+            buffer.set_undo_limit(self.config.settings().files.undo_cap());
         } else {
             self.prepare_undo(&path, &mut buffer);
         }
@@ -119,6 +155,7 @@ impl Session {
         let mut doc = Document {
             path: path.clone(),
             language,
+            file_type,
             language_selector,
             lsp_language_id,
             lang_id,
@@ -126,16 +163,12 @@ impl Session {
             format,
             must_create,
             settings: document_settings,
-            highlights: Arc::new(Highlights::default()),
-            folds: Arc::new(FoldRegions::default()),
-            semantic_blocks: Arc::new(SemanticBlocks::default()),
-            syntax_symbols: Arc::default(),
-            error_lines: Arc::default(),
-            table_lines: Arc::default(),
+            syntax: SyntaxState::default(),
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
-            decorations: Vec::new(),
+            semantic_tokens: None,
+            server_folds: None,
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
@@ -143,7 +176,7 @@ impl Session {
             formatted_version: None,
         };
         let spell_without_syntax = update_syntax(
-            &self.config.settings,
+            self.config.settings(),
             &self.highlight_tx,
             doc_id,
             &mut doc,
@@ -199,10 +232,10 @@ impl Session {
         let mut retired = crate::lsp::Retired::default();
         let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                self.events.send((Some(id), unknown_document(doc_id))).ok();
+                self.events.emit(Some(id), unknown_document(doc_id));
                 return;
             };
             let ctx = edit_context(tick, cause, doc, change);
@@ -257,7 +290,7 @@ impl Session {
         let mut retired = crate::lsp::Retired::default();
         let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let retired = &mut retired;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
@@ -317,56 +350,10 @@ impl Session {
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
-        if cause.may_format() && self.begin_format_on_save(id, doc_id) {
+        if cause.may_format() && self.begin_format_on_save(id, doc_id, cause) {
             return;
         }
         self.commit_save(id, doc_id);
-    }
-
-    /// Request LSP formatting (or apply the built-in TOML formatter) before the
-    /// disk write. `true` means the save is waiting on an async formatting reply.
-    fn begin_format_on_save(&mut self, id: RequestId, doc_id: DocumentId) -> bool {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            return false;
-        };
-        let editor = self
-            .config
-            .settings
-            .editor
-            .for_language(doc.language_selector);
-        if !editor.format_on_save() {
-            return false;
-        }
-        let version = doc.buffer.version();
-        let selector = doc.language_selector;
-        let path = doc.path.clone();
-        let ask = self.formatting_ask(doc, crate::lsp::FormattingScope::Save);
-        if self
-            .lsp
-            .formatting(selector, id, doc_id, version, &path, ask)
-        {
-            let issued_ms = self.elapsed_ms();
-            self.pending_format_saves.insert(
-                id,
-                PendingFormatSave {
-                    doc: doc_id,
-                    issued_ms,
-                },
-            );
-            // The user asked for this buffer to be on disk and it is not going
-            // to be for a while: the write waits on a formatter that has up to
-            // `editor.formatOnSaveTimeout` to answer. Until then the swap is the
-            // only other copy there is, and the backup interval alone would not
-            // have written one — a buffer edited in the last thirty seconds, or
-            // edited since its last swap, has none. Write it now, so what the
-            // force-quit path promises the user is recoverable actually is.
-            self.back_up_document(doc_id);
-            return true;
-        }
-        if let Some(edits) = self.builtin_format_edits(doc_id) {
-            let _ = self.apply_format_edits(doc_id, edits, true);
-        }
-        false
     }
 
     /// What a formatting request for `doc` asks of its server beyond `scope`.
@@ -396,8 +383,9 @@ impl Session {
         FormattingAsk {
             scope,
             indentation,
+            will_save: None,
             save_timeout: std::time::Duration::from_millis(
-                self.config.settings.editor.format_on_save_timeout,
+                self.config.settings().editor.format_on_save_timeout,
             ),
         }
     }
@@ -407,7 +395,7 @@ impl Session {
     pub(super) fn has_builtin_formatter(&self, doc: &Document) -> bool {
         cfg!(feature = "toml-format")
             && doc.language_selector == Some("toml")
-            && self.config.settings.toml.format
+            && self.config.settings().toml.format
     }
 
     /// Built-in formatter edits when no language server offered formatting.
@@ -419,7 +407,7 @@ impl Session {
                 && let Some(formatted) =
                     crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
             {
-                return whole_document_change(doc, formatted).map(|change| change.edits);
+                return Some(whole_document_change(doc, formatted).edits);
             }
         }
         #[cfg(not(feature = "toml-format"))]
@@ -441,7 +429,7 @@ impl Session {
         let tick = self.elapsed_ms();
         let (spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
-            let settings = &self.config.settings;
+            let settings = self.config.settings();
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return false;
@@ -573,7 +561,7 @@ impl Session {
     /// Takes `now` rather than reading the clock, so the deadline is reachable
     /// from a unit test without waiting out its wall-clock duration.
     pub(super) fn expire_format_on_save(&mut self, now: u64) {
-        let deadline = self.config.settings.editor.format_on_save_timeout;
+        let deadline = self.config.settings().editor.format_on_save_timeout;
         let expired: Vec<(RequestId, DocumentId)> = self
             .pending_format_saves
             .iter()
@@ -602,8 +590,7 @@ impl Session {
             Some(Ok(_)) => {
                 // The file is safely on disk: drop the backup and disarm the clock.
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     let path = doc.path.clone();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&path);
@@ -615,7 +602,7 @@ impl Session {
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
                 self.wakatime_beat(doc_id, true);
-                if self.config.settings.latex.build_on_save
+                if self.config.settings().latex.build_on_save
                     && self.store.docs.get(&doc_id).is_some_and(|doc| {
                         doc.path
                             .extension()
@@ -634,7 +621,7 @@ impl Session {
                     );
                 }
             },
-            Some(Err(TextError::Conflict)) => {
+            Some(Err(SaveError::Text(TextError::Conflict))) => {
                 // The file changed on disk since it was last read — writing now would
                 // silently clobber someone else's change. Back up the in-memory edits
                 // (same as any other failed save) and let the client prompt the user,
@@ -686,8 +673,7 @@ impl Session {
         match result {
             Some(Ok(())) => {
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&doc.path);
                     }
@@ -696,7 +682,7 @@ impl Session {
                 self.publish(doc_id, None);
                 Ok(path)
             },
-            Some(Err(TextError::Conflict)) => Err(
+            Some(Err(SaveError::Text(TextError::Conflict))) => Err(
                 "LaTeX build cancelled: the source changed on disk; resolve the save conflict first"
                     .to_owned(),
             ),
@@ -708,7 +694,7 @@ impl Session {
     fn apply_save_cleanup(&mut self, doc_id: DocumentId) -> bool {
         let tick = self.elapsed_ms();
         let highlight_tx = &self.highlight_tx;
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let lsp = &mut self.lsp;
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             return false;
@@ -723,9 +709,7 @@ impl Session {
         if normalized == current {
             return false;
         }
-        let Some(change) = whole_document_change(doc, normalized) else {
-            return false;
-        };
+        let change = whole_document_change(doc, normalized);
         let ctx = save_edit_context(tick, doc, &change);
         let applied = if join {
             doc.buffer.apply_joined(&change, ctx)
@@ -760,13 +744,29 @@ impl Session {
         let old_language = doc.language_selector;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
-        doc.lang_id = language_id_from_path(&path);
-        doc.language = language_name_for_path(&path);
-        doc.language_selector = language_selector_for_path(&path);
-        doc.lsp_language_id = lsp_language_id_for_path(&path);
+        let old_lsp_language = doc.lsp_language_id;
+        // The new path decides the language, within the document's format.
+        let detected = DocumentLanguage::for_rename(doc, &path);
+        doc.lang_id = detected.lang_id;
+        doc.language = detected.name;
+        doc.file_type = detected.file_type;
+        doc.language_selector = detected.selector();
+        doc.lsp_language_id = detected.lsp_id;
+        // A new language is served by another server, or none: the old one's
+        // overlay does not describe it, and the version did not move, so
+        // `update_syntax` would keep it.
+        if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
+            doc.semantic_tokens = None;
+            doc.server_folds = None;
+        }
         // The language may have changed with the extension; re-highlight from scratch.
-        let spell_without_syntax =
-            update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
+        let spell_without_syntax = update_syntax(
+            self.config.settings(),
+            &self.highlight_tx,
+            doc_id,
+            doc,
+            None,
+        );
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
         let mut retired = self.lsp.document_closed(old_language, &old);
@@ -834,7 +834,7 @@ impl Session {
         let events = self.events.clone();
         std::thread::spawn(move || {
             let markdown = convert_document_file(&path);
-            let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
+            events.emit(Some(id), Event::DocumentConverted { path, markdown });
         });
     }
 
@@ -900,7 +900,7 @@ impl Session {
     /// Send one WakaTime heartbeat for `doc_id`, spawning the worker on first
     /// use. Inert unless `wakatime.enabled` is set.
     pub(super) fn wakatime_beat(&mut self, doc_id: DocumentId, is_write: bool) {
-        if !self.config.settings.wakatime.enabled {
+        if !self.config.settings().wakatime.enabled {
             return;
         }
         let Some(doc) = self.store.docs.get(&doc_id) else {

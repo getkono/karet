@@ -30,22 +30,6 @@ fn search_query_rejects_scope_escape_but_not_quoted_text() -> Result<(), GitHubE
 }
 
 #[test]
-fn parses_next_link_and_rate_limit_headers() -> Result<(), GitHubError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "link",
-        HeaderValue::from_static(
-            "<https://api.github.com/search/issues?page=2>; rel=\"next\", <https://api.github.com/search/issues?page=8>; rel=\"last\"",
-        ),
-    );
-    headers.insert("x-ratelimit-limit", HeaderValue::from_static("30"));
-    headers.insert("x-ratelimit-remaining", HeaderValue::from_static("29"));
-    assert_eq!(parse_next_page(&headers), Some(2));
-    assert_eq!(rate_limit(&headers).remaining, Some(29));
-    Ok(())
-}
-
-#[test]
 fn issue_blocked_state_uses_total_or_page_count() -> Result<(), GitHubError> {
     let mut issue: IssueSummary = serde_json::from_str(
         r#"{

@@ -35,8 +35,14 @@ impl TextBuffer {
     ///
     /// Returns the on-disk [`SavedState`] fingerprint (also stored on the buffer).
     ///
+    /// The write goes to a same-directory temp file that is then renamed over
+    /// `path`. If that rename fails (e.g. across filesystems), it falls back to a
+    /// direct, **non-atomic** overwrite of `path`.
+    ///
     /// # Errors
-    /// Returns [`TextError::Io`] if the file cannot be written.
+    /// Returns [`TextError::Conflict`] if the file changed on disk since it was
+    /// last read or saved (nothing is written in that case), or
+    /// [`TextError::Io`] if the file cannot be written.
     pub fn save(&mut self, path: &Path) -> Result<SavedState, TextError> {
         let bytes = self.serialize();
         self.save_bytes(path, &bytes)
@@ -61,7 +67,8 @@ impl TextBuffer {
     /// Unlike [`save`](Self::save), this does **not** serialize the rope — the
     /// caller has produced the on-disk bytes itself. Use it for documents whose
     /// on-disk form differs from the edit buffer (e.g. a binary format decoded to
-    /// editable text and re-encoded on save).
+    /// editable text and re-encoded on save). Like [`save`](Self::save), it falls
+    /// back to a direct, non-atomic overwrite if the temp-file rename fails.
     ///
     /// # Errors
     /// Returns [`TextError::Io`] if the file cannot be written, or
@@ -96,7 +103,7 @@ impl TextBuffer {
     }
 
     fn record_saved_bytes(&mut self, target: &Path, bytes: &[u8]) -> Result<SavedState, TextError> {
-        let meta = std::fs::metadata(target).map_err(|e| TextError::Io(e.to_string()))?;
+        let meta = std::fs::metadata(target).map_err(TextError::from)?;
         let state = SavedState {
             mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             size: meta.len(),
@@ -104,7 +111,6 @@ impl TextBuffer {
         };
         self.saved_state = Some(state.clone());
         self.saved_text_hash = text_hash(&self.rope);
-        self.history.mark_saved();
         Ok(state)
     }
 
@@ -114,7 +120,7 @@ impl TextBuffer {
     fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.rope.len_bytes() + 3);
         if self.encoding == Encoding::Utf8Bom {
-            out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            out.extend_from_slice(&crate::load::BOM);
         }
         match self.eol {
             Eol::Lf => {
@@ -156,25 +162,22 @@ pub fn conflicts_with_disk(path: &Path, saved: &SavedState) -> Result<bool, Text
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(TextError::Io(e.to_string())),
+        Err(e) => return Err(e.into()),
     };
     if meta.len() == saved.size && meta.modified().is_ok_and(|m| m == saved.mtime) {
         return Ok(false);
     }
-    let bytes = std::fs::read(path).map_err(|e| TextError::Io(e.to_string()))?;
+    let bytes = std::fs::read(path).map_err(TextError::from)?;
     Ok(hash_bytes(&bytes) != saved.hash)
 }
 
 /// Write `bytes` to `target` crash-safely via a same-directory temp file + atomic
 /// rename, falling back to a direct write if the rename crosses a filesystem.
 fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError> {
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.write_all(bytes)
-        .map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.flush().map_err(|e| TextError::Io(e.to_string()))?;
-    tmp.as_file()
-        .sync_all()
-        .map_err(|e| TextError::Io(e.to_string()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(TextError::from)?;
+    tmp.write_all(bytes).map_err(TextError::from)?;
+    tmp.flush().map_err(TextError::from)?;
+    tmp.as_file().sync_all().map_err(TextError::from)?;
     if let Ok(meta) = std::fs::metadata(target) {
         // Best-effort permission preservation (ignored on platforms without it).
         let _ = std::fs::set_permissions(tmp.path(), meta.permissions());
@@ -183,7 +186,7 @@ fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError
         Ok(_) => Ok(()),
         // EXDEV (cross-filesystem rename) or similar: direct write fallback. The
         // dropped `PersistError` cleans up the temp file.
-        Err(_) => std::fs::write(target, bytes).map_err(|e| TextError::Io(e.to_string())),
+        Err(_) => std::fs::write(target, bytes).map_err(TextError::from),
     }
 }
 
@@ -191,9 +194,10 @@ fn save_parent(path: &Path) -> Result<&Path, TextError> {
     match path.parent() {
         Some(parent) if parent.as_os_str().is_empty() => Ok(Path::new(".")),
         Some(parent) => Ok(parent),
-        None => Err(TextError::Io(
-            "save path has no parent directory".to_string(),
-        )),
+        None => Err(TextError::Io {
+            kind: std::io::ErrorKind::InvalidInput,
+            message: "save path has no parent directory".to_string(),
+        }),
     }
 }
 
@@ -201,16 +205,16 @@ fn save_parent(path: &Path) -> Result<&Path, TextError> {
 /// uses the platform's atomic no-replace primitive, so another creator always wins
 /// cleanly and its bytes remain untouched.
 fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), TextError> {
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| TextError::Io(e.to_string()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(TextError::from)?;
     tmp.write_all(bytes)
         .and_then(|()| tmp.flush())
         .and_then(|()| tmp.as_file().sync_all())
-        .map_err(|e| TextError::Io(e.to_string()))?;
+        .map_err(TextError::from)?;
     tmp.persist_noclobber(target).map(|_| ()).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
             TextError::Conflict
         } else {
-            TextError::Io(error.error.to_string())
+            TextError::from(error.error)
         }
     })
 }
@@ -220,10 +224,13 @@ fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(),
 /// [`crate::content_fingerprint`] so callers can recompute a file's fingerprint and
 /// compare it against a recorded one (e.g. backup/swap conflict detection).
 pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
-    fnv1a(bytes)
+    fnv1a_extend(FNV1A_OFFSET, bytes)
 }
 
-/// FNV-1a over `bytes` — a fixed, specified algorithm.
+/// The FNV-1a offset basis: the state [`fnv1a_extend`] starts from.
+pub(crate) const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Fold `bytes` into the FNV-1a state `hash` — a fixed, specified algorithm.
 ///
 /// Deliberately not `DefaultHasher`: these fingerprints are written to disk in
 /// crash-recovery swap files and recompared on a later run, and the standard
@@ -231,10 +238,9 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
 /// releases. A toolchain upgrade would therefore make an untouched file look
 /// modified, warning the user that recovering their swap discards newer
 /// content — exactly when they can least judge it.
-pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub(crate) fn fnv1a_extend(hash: u64, bytes: &[u8]) -> u64 {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    bytes.iter().fold(OFFSET, |hash, byte| {
+    bytes.iter().fold(hash, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
     })
 }
@@ -271,170 +277,276 @@ mod tests {
 
     use super::*;
 
-    /// Save `bytes` (parsed via `from_bytes`) to a fresh temp file and return the
-    /// raw bytes read back, or `None` if the environment lacks a temp dir.
-    fn round_trip(input: &[u8]) -> Option<(Vec<u8>, bool)> {
-        let dir = tempfile::tempdir().ok()?;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// Save `input` (parsed via `from_bytes`) to a fresh temp file and return the
+    /// raw bytes read back and whether the buffer is still dirty. Every failure
+    /// is an error, so a caller using `?` cannot pass without asserting.
+    fn round_trip(input: &[u8]) -> TestResult<(Vec<u8>, bool)> {
+        let mut buf = TextBuffer::from_bytes(input)?;
+        save_and_read(&mut buf)
+    }
+
+    /// Save `buf` to a fresh temp file and return the raw bytes read back and
+    /// whether the buffer is still dirty.
+    fn save_and_read(buf: &mut TextBuffer) -> TestResult<(Vec<u8>, bool)> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("file.txt");
-        let mut buf = TextBuffer::from_bytes(input).ok()?;
-        let saved = buf.save(&path);
-        assert!(saved.is_ok(), "save should succeed");
-        let raw = std::fs::read(&path).ok()?;
-        Some((raw, buf.is_dirty()))
+        buf.save(&path)?;
+        Ok((std::fs::read(&path)?, buf.is_dirty()))
+    }
+
+    /// Move `path`'s mtime to one second after `saved.mtime`, so the stat fast
+    /// path in [`conflicts_with_disk`] cannot match whatever the filesystem's
+    /// timestamp granularity is.
+    fn force_newer_mtime(path: &Path, saved: &SavedState) -> TestResult {
+        let later = saved.mtime + std::time::Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(later)?;
+        let now = std::fs::metadata(path)?.modified()?;
+        assert_ne!(now, saved.mtime, "the mtime must have moved");
+        Ok(())
     }
 
     #[test]
-    fn lf_round_trips_and_clears_dirty() {
-        if let Some((raw, dirty)) = round_trip(b"a\nb\n") {
-            assert_eq!(raw, b"a\nb\n");
-            assert!(!dirty, "save clears dirty");
-        }
+    fn lf_round_trips_and_clears_dirty() -> TestResult {
+        let (raw, dirty) = round_trip(b"a\nb\n")?;
+        assert_eq!(raw, b"a\nb\n");
+        assert!(!dirty, "save clears dirty");
+        Ok(())
     }
 
     #[test]
-    fn crlf_round_trips() {
+    fn crlf_round_trips() -> TestResult {
         // Loaded as CRLF, normalized to LF in memory, must save back as CRLF.
-        if let Some((raw, _)) = round_trip(b"a\r\nb\r\n") {
-            assert_eq!(raw, b"a\r\nb\r\n");
-        }
+        let (raw, _) = round_trip(b"a\r\nb\r\n")?;
+        assert_eq!(raw, b"a\r\nb\r\n");
+        Ok(())
     }
 
     #[test]
-    fn bom_round_trips() {
+    fn bom_round_trips() -> TestResult {
         let mut input = vec![0xEF, 0xBB, 0xBF];
         input.extend_from_slice(b"hi\n");
-        if let Some((raw, _)) = round_trip(&input) {
-            assert_eq!(raw, input.as_slice());
-        }
+        let (raw, _) = round_trip(&input)?;
+        assert_eq!(raw, input.as_slice());
+        Ok(())
     }
 
     #[test]
-    fn no_trailing_newline_preserved() {
-        if let Some((raw, _)) = round_trip(b"abc") {
-            assert_eq!(raw, b"abc");
-        }
+    fn bom_and_crlf_round_trip_together() -> TestResult {
+        let input = b"\xEF\xBB\xBFa\r\nb\r\n";
+        let (raw, _) = round_trip(input)?;
+        assert_eq!(raw, input);
+        Ok(())
     }
 
     #[test]
-    fn save_bytes_writes_raw_and_records_state() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn no_trailing_newline_preserved() -> TestResult {
+        let (raw, _) = round_trip(b"abc")?;
+        assert_eq!(raw, b"abc");
+        Ok(())
+    }
+
+    #[test]
+    fn lone_cr_survives_a_crlf_round_trip() -> TestResult {
+        // An old-Mac `\r` is content, not a line ending to convert: it is kept
+        // as-is next to the CRLF the file is saved with.
+        let (raw, _) = round_trip(b"a\rb\r\nc")?;
+        assert_eq!(raw, b"a\rb\r\nc");
+        let (raw, _) = round_trip(b"a\rb\nc")?;
+        assert_eq!(raw, b"a\rb\nc");
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_endings_save_as_the_majority() -> TestResult {
+        // Two CRLF against one LF: every line is saved CRLF.
+        let (raw, _) = round_trip(b"a\r\nb\nc\r\n")?;
+        assert_eq!(raw, b"a\r\nb\r\nc\r\n");
+        // Two LF against one CRLF: every line is saved LF.
+        let (raw, _) = round_trip(b"a\nb\r\nc\n")?;
+        assert_eq!(raw, b"a\nb\nc\n");
+        // A tie goes to LF.
+        let (raw, _) = round_trip(b"a\r\nb\n")?;
+        assert_eq!(raw, b"a\nb\n");
+        Ok(())
+    }
+
+    #[test]
+    fn set_eol_chooses_the_saved_line_ending() -> TestResult {
+        let mut buf = TextBuffer::from_text("a\nb\n");
+        buf.set_eol(Eol::Crlf);
+        assert_eq!(buf.eol(), Eol::Crlf);
+        assert!(!buf.is_dirty(), "the line ending is not content");
+        assert_eq!(save_and_read(&mut buf)?.0, b"a\r\nb\r\n");
+
+        let mut buf = TextBuffer::from_bytes(b"a\r\nb\r\n")?;
+        buf.set_eol(Eol::Lf);
+        assert_eq!(buf.eol(), Eol::Lf);
+        assert_eq!(save_and_read(&mut buf)?.0, b"a\nb\n");
+        Ok(())
+    }
+
+    #[test]
+    fn save_bytes_writes_raw_and_records_state() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("blob.cbor");
         let mut buf = TextBuffer::from_text("null");
         // 0xf6 is CBOR `null`; the on-disk form differs from the edit text.
-        assert!(buf.save_bytes(&path, &[0xf6]).is_ok());
-        assert_eq!(std::fs::read(&path).unwrap_or_default(), vec![0xf6]);
-        assert!(buf.saved_state().is_some());
+        let state = buf.save_bytes(&path, &[0xf6])?;
+        assert_eq!(std::fs::read(&path)?, vec![0xf6]);
+        assert_eq!(state.size, 1);
+        assert_eq!(state.hash, hash_bytes(&[0xf6]));
+        assert_eq!(buf.saved_state(), Some(&state));
         assert!(!buf.is_dirty());
+        Ok(())
     }
 
     #[test]
-    fn save_new_creates_once_without_overwriting() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn save_new_creates_once_without_overwriting() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("new.txt");
         let mut buffer = TextBuffer::from_text("mine\n");
 
-        assert!(buffer.save_new(&path).is_ok());
-        assert_eq!(
-            std::fs::read_to_string(&path).ok().as_deref(),
-            Some("mine\n")
-        );
+        buffer.save_new(&path)?;
+        assert_eq!(std::fs::read_to_string(&path)?, "mine\n");
         assert_eq!(buffer.save_new(&path), Err(TextError::Conflict));
+        Ok(())
+    }
+
+    /// A save into a directory that does not exist fails with the I/O error's
+    /// kind intact rather than a bare message.
+    #[test]
+    fn saving_into_a_missing_directory_keeps_the_error_kind() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("no-such-dir").join("file.txt");
+        let mut buffer = TextBuffer::from_text("mine\n");
+
+        let result = buffer.save_new(&path);
+        assert!(
+            matches!(
+                &result,
+                Err(TextError::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    ..
+                })
+            ),
+            "{result:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn save_new_bytes_refuses_an_existing_destination() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn save_new_bytes_refuses_an_existing_destination() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("new.bin");
-        assert!(std::fs::write(&path, b"external").is_ok());
+        std::fs::write(&path, b"external")?;
         let mut buffer = TextBuffer::from_text("mine");
 
         assert_eq!(
             buffer.save_new_bytes(&path, b"mine"),
             Err(TextError::Conflict)
         );
-        assert_eq!(
-            std::fs::read(&path).ok().as_deref(),
-            Some(b"external".as_slice())
-        );
+        assert_eq!(std::fs::read(&path)?, b"external");
+        Ok(())
     }
 
     #[test]
-    fn encoding_override_controls_the_saved_bom() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = dir.path().join("bom.txt");
+    fn encoding_override_controls_the_saved_bom() -> TestResult {
         let mut buf = TextBuffer::from_text("hello\n");
         buf.set_encoding(Encoding::Utf8Bom);
+        assert_eq!(save_and_read(&mut buf)?.0, b"\xEF\xBB\xBFhello\n");
 
-        assert!(buf.save(&path).is_ok());
-        assert!(std::fs::read(&path).is_ok_and(|bytes| bytes.starts_with(&[0xEF, 0xBB, 0xBF])));
+        let mut buf = TextBuffer::from_bytes(b"\xEF\xBB\xBFhello\n")?;
+        buf.set_encoding(Encoding::Utf8);
+        assert_eq!(save_and_read(&mut buf)?.0, b"hello\n");
+        Ok(())
     }
 
     #[test]
-    fn save_is_refused_when_the_file_changed_on_disk_since_it_was_read() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn save_is_refused_when_the_file_changed_on_disk_since_it_was_read() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("conflict.txt");
-        if std::fs::write(&path, "original\n").is_err() {
-            return;
-        }
-        let mut buf = TextBuffer::from_bytes(b"original\n").unwrap_or_default();
-        buf.record_disk_state(&path, b"original\n");
+        std::fs::write(&path, "original\n")?;
+        let mut buf = TextBuffer::load(&path)?;
 
         // Someone else changes the file after we read it but before we save.
-        if std::fs::write(&path, "someone else's edit\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "someone else's edit\n")?;
 
         assert_eq!(buf.save(&path), Err(TextError::Conflict));
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap_or_default(),
+            std::fs::read_to_string(&path)?,
             "someone else's edit\n",
             "a refused save must not touch the file"
         );
+        Ok(())
     }
 
     #[test]
-    fn save_succeeds_when_disk_is_unchanged_even_after_a_bare_touch() {
+    fn same_size_edit_with_a_new_mtime_is_a_conflict() -> TestResult {
+        // The stat fast path cannot decide this (the size matches), so the hash
+        // fallback must see that the bytes differ.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("same-size.txt");
+        std::fs::write(&path, "aaaa\n")?;
+        let mut buf = TextBuffer::load(&path)?;
+        let saved = buf.saved_state().cloned().ok_or("load records a state")?;
+
+        std::fs::write(&path, "bbbb\n")?;
+        force_newer_mtime(&path, &saved)?;
+
+        assert_eq!(conflicts_with_disk(&path, &saved), Ok(true));
+        assert_eq!(buf.save(&path), Err(TextError::Conflict));
+        assert_eq!(std::fs::read_to_string(&path)?, "bbbb\n");
+        Ok(())
+    }
+
+    #[test]
+    fn save_succeeds_when_disk_is_unchanged_even_after_a_bare_touch() -> TestResult {
         // A bare mtime bump (no content change) must not be treated as a conflict —
         // ruling that out is exactly what the read+hash fallback is for.
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("touched.txt");
-        if std::fs::write(&path, "same\n").is_err() {
-            return;
-        }
-        let mut buf = TextBuffer::from_bytes(b"same\n").unwrap_or_default();
-        buf.record_disk_state(&path, b"same\n");
+        std::fs::write(&path, "same\n")?;
+        let mut buf = TextBuffer::load(&path)?;
+        let saved = buf.saved_state().cloned().ok_or("load records a state")?;
 
-        // Rewrite identical content — bumps mtime (and often nothing else) without
-        // changing what conflicts_with_disk's hash fallback compares against.
-        if std::fs::write(&path, "same\n").is_err() {
-            return;
-        }
+        // Move the mtime explicitly: rewriting the file within the filesystem's
+        // timestamp granularity would leave it equal, and the fast path would
+        // answer without ever reaching the hash fallback this test is about.
+        force_newer_mtime(&path, &saved)?;
 
+        assert_eq!(conflicts_with_disk(&path, &saved), Ok(false));
         assert!(
             buf.save(&path).is_ok(),
             "identical content is not a conflict"
         );
+        Ok(())
     }
 
     #[test]
-    fn edit_then_save_is_clean_with_fingerprint() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_missing_file_never_conflicts() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("gone.txt");
+        std::fs::write(&path, "x\n")?;
+        let mut buf = TextBuffer::load(&path)?;
+        let saved = buf.saved_state().cloned().ok_or("load records a state")?;
+        std::fs::remove_file(&path)?;
+
+        assert_eq!(conflicts_with_disk(&path, &saved), Ok(false));
+        buf.save(&path)?;
+        assert_eq!(std::fs::read(&path)?, b"x\n");
+        Ok(())
+    }
+
+    #[test]
+    fn edit_then_save_is_clean_with_fingerprint() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("edit.txt");
-        let mut buf = TextBuffer::from_bytes(b"hello\n").unwrap_or_default();
+        let mut buf = TextBuffer::from_bytes(b"hello\n")?;
         let change = Change::new(
             0,
             vec![TextEdit {
@@ -445,11 +557,13 @@ mod tests {
                 new_text: "!".to_string(),
             }],
         );
-        assert!(buf.apply_simple(&change).is_ok());
+        buf.apply_simple(&change)?;
         assert!(buf.is_dirty());
-        assert!(buf.save(&path).is_ok());
+        let state = buf.save(&path)?;
         assert!(!buf.is_dirty());
-        assert!(buf.saved_state().is_some());
-        assert_eq!(std::fs::read(&path).unwrap_or_default(), b"hello!\n");
+        assert_eq!(state.hash, hash_bytes(b"hello!\n"));
+        assert_eq!(state.size, 7);
+        assert_eq!(std::fs::read(&path)?, b"hello!\n");
+        Ok(())
     }
 }

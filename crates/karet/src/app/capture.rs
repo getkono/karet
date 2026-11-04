@@ -7,15 +7,27 @@
 //! that a live session would show. The loop draws until the backend falls quiet (or
 //! a deadline passes), writes the final grid to stdout, and returns.
 
+use std::io;
+use std::io::Write;
+use std::time::Instant;
+
+use color_eyre::eyre::eyre;
+use karet_core::ThemeRole;
+use karet_fileview::image::GraphicsProtocol;
+use karet_session::EventRx;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_theme::Theme;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 
-use super::*;
+use crate::app::App;
 use crate::cli::CaptureSpec;
 use crate::color_depth::xterm_rgb;
+use crate::ui;
 
 /// Render `app` off-screen and write the settled frame to stdout as ANSI.
 ///
@@ -88,7 +100,7 @@ async fn settle(
     // Preview images decode off-thread; a decode landing is progress like any event.
     let mut decoded_images = super::runtime::preview_image_results(app);
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        draw_frame(terminal, app)?;
         // A capture never calls `App::flush_graphics`: it writes Kitty escapes
         // straight to stdout, which is where the captured grid is going.
         //
@@ -99,6 +111,7 @@ async fn settle(
         // not a capture of the same UI.
         app.request_inlay_hints();
         app.request_code_lenses();
+        app.request_links_and_colors();
 
         let now = Instant::now();
         let Some(remaining) = deadline.checked_duration_since(now) else {
@@ -138,6 +151,14 @@ async fn settle(
         }
         app.notifications.expire(Instant::now());
     }
+    draw_frame(terminal, app)?;
+    Ok(())
+}
+
+/// Prepare and paint one frame, as the interactive loop does: the requests and
+/// clamps a frame depends on run in [`App::prepare_frame`], never in the paint.
+fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) -> color_eyre::Result<()> {
+    app.prepare_frame(terminal.size()?.into());
     terminal.draw(|f| ui::draw(f, app))?;
     Ok(())
 }

@@ -308,6 +308,336 @@ fn every_query_round_trips_through_its_text_form() -> TestResult {
 }
 
 #[test]
+fn a_value_with_whitespace_or_a_quote_is_quoted_and_reads_back() -> TestResult {
+    let impl_block: SeamPath = "pkg::{impl Render for Widget}".parse()?;
+    for (kind, text) in [
+        (
+            TermKind::In(impl_block.clone()),
+            r#"in:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Reach(impl_block.clone()),
+            r#"reach:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Callers(impl_block.clone()),
+            r#"callers:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Pivot {
+                edge: EdgeKind::Calls,
+                target: impl_block,
+            },
+            r#"pivot:calls:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Cfg("all(unix, windows)".to_owned()),
+            r#"cfg:"all(unix, windows)""#,
+        ),
+        (TermKind::Phrase(r#"a"b c"#.to_owned()), r#""a\"b c""#),
+        (TermKind::Phrase(r"a\b".to_owned()), r#""a\\b""#),
+        (TermKind::Cfg(r#"x"y"#.to_owned()), r#"cfg:"x\"y""#),
+    ] {
+        assert_eq!(kind.to_string(), text);
+        let parsed = parse(text)?;
+        let [term] = parsed.terms.as_slice() else {
+            return Err(format!("{text} is not one term").into());
+        };
+        assert_eq!(term.kind, kind, "{text}");
+    }
+
+    let query = parse(r#"config:"my config" lens:api"#)?;
+    assert_eq!(query.configuration.as_deref(), Some("my config"));
+    assert_eq!(query.to_string(), r#"config:"my config" lens:api"#);
+    Ok(())
+}
+
+#[test]
+fn a_value_that_needs_no_quoting_keeps_its_bare_form() -> TestResult {
+    // A balanced quote inside a value already tokenizes as one term, so quoting it would
+    // only rewrite text the reader typed.
+    for text in [
+        r#"cfg:feature="view""#,
+        r"cfg:a\b",
+        "in:pkg::{impl}",
+        "\"Symbol\"",
+    ] {
+        assert_eq!(parse(text)?.to_string(), text);
+    }
+    // A phrase written before escapes existed reads as it always did: a backslash before
+    // anything but a quote or a backslash, and a quote short of the end, are literal.
+    assert_eq!(
+        parse(r#""a\nb""#)?.terms[0].kind,
+        TermKind::Phrase(r"a\nb".to_owned())
+    );
+    assert_eq!(
+        parse(r#""a"b"#)?.terms[0].kind,
+        TermKind::Phrase(r#"a"b"#.to_owned())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_facet_subtype_is_quoted_and_unquoted_like_any_other_value() -> TestResult {
+    // The generator draws only subtypes a language emits, none of which need quoting, so
+    // the facet arm of both directions is pinned here.
+    for (subtype, text) in [
+        ("a b", r#"hazard:"a b""#),
+        (r#"x"y"#, r#"hazard:"x\"y""#),
+        ("unsafe", "hazard:unsafe"),
+    ] {
+        let kind = TermKind::Facet {
+            lens: Lens::Hazard,
+            subtype: subtype.to_owned(),
+        };
+        assert_eq!(kind.to_string(), text);
+    }
+
+    // A quoted known subtype reads as the bare one.
+    assert_eq!(
+        parse(r#"hazard:"unsafe""#)?.terms[0].kind,
+        TermKind::Facet {
+            lens: Lens::Hazard,
+            subtype: "unsafe".to_owned(),
+        }
+    );
+
+    // A subtype holding whitespace is unquoted before it is checked: with languages
+    // compiled in it is refused by its unquoted name, and with none it reads back whole.
+    let text = r#"hazard:"a b""#;
+    if super::parse::known_subtypes(Lens::Hazard).is_empty() {
+        assert_eq!(
+            parse(text)?.terms[0].kind,
+            TermKind::Facet {
+                lens: Lens::Hazard,
+                subtype: "a b".to_owned(),
+            }
+        );
+    } else {
+        let Err(error) = parse(text) else {
+            return Err("expected an unknown hazard facet".into());
+        };
+        assert!(error.message.contains("`a b`"), "{}", error.message);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_empty_quoted_value_is_refused_like_an_empty_one() {
+    assert!(parse(r#"in:"""#).is_err());
+    assert!(parse(r#"cfg:"""#).is_err());
+    assert!(parse(r#"config:"""#).is_err());
+    assert!(parse(r#"pivot:calls:"""#).is_err());
+}
+
+/// A deterministic pseudo-random stream (an LCG), so a failure replays from its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(self.0 >> 33).unwrap_or_default() % bound.max(1)
+    }
+
+    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[self.below(items.len())]
+    }
+
+    fn chance(&mut self, one_in: usize) -> bool {
+        self.below(one_in) == 0
+    }
+
+    /// A word from `alphabet`, `min..=max` characters long.
+    fn word(&mut self, alphabet: &[&str], min: usize, max: usize) -> String {
+        let len = min + self.below(max - min + 1);
+        (0..len).map(|_| *self.pick(alphabet)).collect()
+    }
+}
+
+/// Characters a bare word (a name, a plain path segment) can hold and still survive its
+/// text form, since a bare word has no quoting form: no whitespace, no quote, none of the
+/// path syntax (`:`, `#`, braces), and no leading `!` — but multibyte text,
+/// so a span that lands inside a character would show up.
+const WORD: &[&str] = &[
+    "a", "z", "Q", "_", "-", ".", "0", "7", "<", ">", "(", ")", ",", "=", "é", "日", "🦀",
+];
+
+/// Characters a quotable value can hold: [`WORD`] plus whitespace, quotes, and the
+/// backslash that escapes them, so only the quoting form can carry the value.
+const VALUE: &[&str] = &[
+    "a", "z", "Q", "_", "-", ".", "0", "7", "<", ">", "(", ")", ",", "=", "é", "日", "🦀", " ",
+    "\t", "\"", "\\",
+];
+
+/// A path segment: plain, numbered, or an anonymous `{…}` construct, which may hold
+/// whitespace and quotes as `{impl Render for Widget}` does.
+fn segment(rng: &mut Rng) -> crate::id::SeamSegment {
+    let name = if rng.chance(4) {
+        format!("{{{}}}", rng.word(VALUE, 1, 6))
+    } else {
+        rng.word(WORD, 1, 6)
+    };
+    let ordinal = if rng.chance(3) {
+        u32::try_from(1 + rng.below(40)).unwrap_or(1)
+    } else {
+        0
+    };
+    crate::id::SeamSegment::numbered(name, ordinal)
+}
+
+fn path(rng: &mut Rng) -> SeamPath {
+    let len = 1 + rng.below(4);
+    SeamPath::new((0..len).map(|_| segment(rng)).collect())
+}
+
+/// One term of any kind, with a value its text form can carry.
+fn term_kind(rng: &mut Rng) -> TermKind {
+    let lens = *rng.pick(&crate::model::LENSES);
+    match rng.below(11) {
+        0 => TermKind::Lens(lens),
+        1 => {
+            let known = super::parse::known_subtypes(lens);
+            let subtype = if known.is_empty() {
+                rng.word(WORD, 1, 8)
+            } else {
+                rng.pick(&known).clone()
+            };
+            TermKind::Facet { lens, subtype }
+        },
+        2 => TermKind::Visibility(*rng.pick(Visibility::all())),
+        3 => TermKind::Kind(*rng.pick(NodeKind::all())),
+        4 => TermKind::In(path(rng)),
+        // A predicate value may itself hold `:` and a balanced quote, as
+        // `cfg:feature="view"` does, or whitespace, as `all(unix, windows)` does.
+        5 => TermKind::Cfg(match rng.below(4) {
+            0 => format!("{}=\"{}\"", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
+            1 => format!("{}:{}", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
+            2 => rng.word(VALUE, 1, 8),
+            _ => rng.word(WORD, 1, 8),
+        }),
+        6 => TermKind::Pivot {
+            edge: *rng.pick(EdgeKind::all()),
+            target: path(rng),
+        },
+        7 => TermKind::Reach(path(rng)),
+        8 => TermKind::Callers(path(rng)),
+        9 => TermKind::Name(rng.word(WORD, 1, 10)),
+        // Quoted, so whitespace is part of a phrase rather than the end of it, and an
+        // escaped quote is part of it too.
+        _ => TermKind::Phrase(rng.word(VALUE, 0, 10)),
+    }
+}
+
+/// A query of up to six terms, sometimes under a configuration.
+fn query(rng: &mut Rng) -> Query {
+    let configuration = rng.chance(3).then(|| rng.word(VALUE, 1, 8));
+    let terms = (0..rng.below(7))
+        .map(|_| super::Term {
+            negated: rng.chance(3),
+            kind: term_kind(rng),
+            span: 0..0,
+        })
+        .collect();
+    Query {
+        terms,
+        configuration,
+    }
+}
+
+#[test]
+fn every_generated_query_round_trips_through_its_text_form() -> TestResult {
+    // The table above checks the forms someone thought to write down; this checks every
+    // term kind, negated or not, in any order and combination, with multibyte values.
+    let mut rng = Rng(0x5EA4_0529);
+    for case in 0..4000 {
+        let query = query(&mut rng);
+        let rendered = query.to_string();
+        let reparsed = parse(&rendered).map_err(|error| {
+            format!(
+                "case {case}: {rendered:?} did not parse back: {}",
+                error.describe()
+            )
+        })?;
+
+        assert_eq!(
+            reparsed.configuration, query.configuration,
+            "case {case}: {rendered:?}"
+        );
+        let written: Vec<_> = query.terms.iter().map(|t| (t.negated, &t.kind)).collect();
+        let read: Vec<_> = reparsed
+            .terms
+            .iter()
+            .map(|t| (t.negated, &t.kind))
+            .collect();
+        assert_eq!(read, written, "case {case}: {rendered:?}");
+
+        // Each span covers exactly the text that term renders to, so the filter box's
+        // caret lands under the term a reader would point at.
+        for term in &reparsed.terms {
+            assert_eq!(
+                rendered.get(term.span.clone()),
+                Some(term.to_string().as_str()),
+                "case {case}: {rendered:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn every_span_parse_reports_lands_on_the_text_that_produced_it() -> TestResult {
+    // Arbitrary text, valid or not: fragments of real syntax, stray quotes,
+    // escapes and negations, ASCII and non-ASCII whitespace, and multibyte characters. Whatever
+    // `parse` returns, a span must slice the input on character boundaries — the filter
+    // box draws its caret from it, and a span inside a character panics that slice.
+    const FRAGMENTS: &[&str] = &[
+        "lens:", "api", "kind:", "type", "vis:", "public", "in:", "pkg", "::", "#2", "{", "}",
+        "cfg:", "config:", "pivot:", "calls:", "reach:", "callers:", "hazard:", "x", ":", "!",
+        "\"", "\\", " ", "  ", "\t", "\n", "\u{a0}", "\u{3000}", "é", "日本", "🦀",
+    ];
+    let mut rng = Rng(0x0529_5EA4);
+    for case in 0..6000 {
+        let text = rng.word(FRAGMENTS, 0, 14);
+        match parse(&text) {
+            Ok(query) => {
+                let mut end = 0;
+                for term in &query.terms {
+                    assert!(
+                        term.span.start >= end && term.span.start < term.span.end,
+                        "case {case}: {text:?} has a span out of order: {:?}",
+                        term.span
+                    );
+                    end = term.span.end;
+                    let Some(source) = text.get(term.span.clone()) else {
+                        return Err(format!("case {case}: {text:?} split a character").into());
+                    };
+                    // A term's own text means the same thing alone as it did in place.
+                    let alone = parse(source)?;
+                    let [only] = alone.terms.as_slice() else {
+                        return Err(format!("case {case}: {source:?} is not one term").into());
+                    };
+                    assert_eq!(
+                        (only.negated, &only.kind, only.span.clone()),
+                        (term.negated, &term.kind, 0..source.len()),
+                        "case {case}: {text:?}"
+                    );
+                }
+            },
+            Err(error) => assert!(
+                text.get(error.span.clone())
+                    .is_some_and(|source| !source.is_empty()),
+                "case {case}: {text:?} reported an error at {:?}",
+                error.span
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn ui_narrowing_state_is_readable_back_out_of_a_query() -> TestResult {
     // Rerooting and lens toggles are what the breadcrumb is made of, so a query has to
     // surrender them again for the state to be restorable.
@@ -317,6 +647,25 @@ fn ui_narrowing_state_is_readable_back_out_of_a_query() -> TestResult {
         Some("pkg::model".to_owned())
     );
     assert_eq!(query.lenses(), vec![Lens::Api, Lens::Hazard]);
+    Ok(())
+}
+
+#[test]
+fn a_negated_containment_is_not_the_root_and_a_facet_names_its_lens() -> TestResult {
+    let query = parse("!in:pkg::model in:pkg::provider substitution:dyn")?;
+    assert_eq!(
+        query.root().map(ToString::to_string),
+        Some("pkg::provider".to_owned()),
+        "excluding a subtree does not reroot at it"
+    );
+    assert_eq!(query.lenses(), vec![Lens::Substitution]);
+    Ok(())
+}
+
+#[test]
+fn a_query_with_only_a_term_or_only_a_configuration_is_not_empty() -> TestResult {
+    assert!(!parse("lens:api")?.is_empty());
+    assert!(!parse("config:all-features")?.is_empty());
     Ok(())
 }
 
@@ -444,6 +793,29 @@ fn a_cfg_term_finds_gated_nodes() -> TestResult {
 }
 
 #[test]
+fn a_cfg_term_finds_configured_out_gated_nodes_whatever_their_predicate() -> TestResult {
+    let mut index = SeamIndex::new();
+    add(&mut index, "pkg", NodeKind::Package, None, vec![]);
+    let gate = || vec![facet(Lens::Variation, "cfg").with_detail("unix")];
+    // Gated with a predicate that does not mention the term, but configured out.
+    let inactive = add(&mut index, "pkg::inactive", NodeKind::Module, None, gate());
+    // Configured out without any gate of its own (an ancestor's gate excluded it).
+    let ungated = add(&mut index, "pkg::ungated", NodeKind::Module, None, vec![]);
+    // Gated, active, and the predicate does not mention the term.
+    add(&mut index, "pkg::active", NodeKind::Module, None, gate());
+    for id in [inactive, ungated] {
+        if let Some(node) = index.node(id).cloned() {
+            index.insert(Node {
+                membership: ConfigMembership::Inactive,
+                ..node
+            });
+        }
+    }
+    assert_eq!(run(&index, "cfg:feature")?, ["pkg::inactive"]);
+    Ok(())
+}
+
+#[test]
 fn evaluation_leaves_the_index_untouched() -> TestResult {
     let index = fixture();
     let before = index.len();
@@ -473,6 +845,34 @@ fn results_are_stable_across_repeated_evaluation() -> TestResult {
         evaluate(&query, &index).nodes,
         evaluate(&query, &index).nodes
     );
+    Ok(())
+}
+
+#[test]
+fn a_result_counts_what_matched() -> TestResult {
+    let index = fixture();
+    let result = evaluate(&parse("lens:substitution")?, &index);
+    assert_eq!(result.len(), 2);
+    assert!(!result.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_node_whose_parent_is_missing_is_still_selected_exactly_once() -> TestResult {
+    let mut index = fixture();
+    // Interned but never inserted: the child resolves a parent the index does not hold.
+    let ghost = index.intern("pkg::ghost".parse()?);
+    let orphan = add(
+        &mut index,
+        "pkg::ghost::Orphan",
+        NodeKind::Type,
+        None,
+        vec![],
+    );
+    assert_eq!(index.node(orphan).and_then(|node| node.parent), Some(ghost));
+    let nodes = evaluate(&Query::default(), &index).nodes;
+    assert_eq!(nodes.len(), index.len(), "every node, each once");
+    assert_eq!(nodes.last(), Some(&orphan), "orphans follow the trees");
     Ok(())
 }
 

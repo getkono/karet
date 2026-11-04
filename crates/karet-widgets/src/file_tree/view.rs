@@ -1,6 +1,6 @@
 use unicode_width::UnicodeWidthStr;
 
-use super::model::*;
+use super::state::EditState;
 use super::*;
 
 /// A gitignore-aware file tree with per-file-type icons and a git-status overlay.
@@ -335,5 +335,77 @@ impl StatefulWidget for FileTree<'_> {
             }
         }
         state.edit_rect = edit_rect;
+    }
+}
+
+/// The byte index of the character boundary after `idx` in `s`, or `s.len()`
+/// when `idx` is already at (or past) the end.
+fn next_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    if i >= s.len() {
+        return s.len();
+    }
+    i += 1;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// The edit field's selected byte range, when it has one inside the buffer.
+fn edit_selection(edit: &EditState) -> Option<(usize, usize)> {
+    edit.field
+        .selection()
+        .filter(|range| range.end <= edit.buffer.len())
+        .map(|range| (range.start, range.end))
+}
+
+/// Append the inline rename/create field to `spans`: the buffer with its
+/// selection highlighted, or a reversed cell marking the cursor.
+fn push_editing_spans(
+    spans: &mut Vec<Span<'static>>,
+    edit: Option<&EditState>,
+    fg: Color,
+    selection_bg: Color,
+) {
+    let Some(edit) = edit else {
+        spans.push(Span::styled(
+            " ",
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+        return;
+    };
+    let normal = Style::default().fg(fg);
+    if let Some((start, end)) = edit_selection(edit) {
+        if start > 0 {
+            spans.push(Span::styled(edit.buffer[..start].to_string(), normal));
+        }
+        spans.push(Span::styled(
+            edit.buffer[start..end].to_string(),
+            Style::default().fg(fg).bg(selection_bg),
+        ));
+        if end < edit.buffer.len() {
+            spans.push(Span::styled(edit.buffer[end..].to_string(), normal));
+        }
+        return;
+    }
+    let cursor = edit.field.cursor().min(edit.buffer.len());
+    if cursor > 0 {
+        spans.push(Span::styled(edit.buffer[..cursor].to_string(), normal));
+    }
+    if cursor < edit.buffer.len() {
+        let next = next_boundary(&edit.buffer, cursor);
+        spans.push(Span::styled(
+            edit.buffer[cursor..next].to_string(),
+            Style::default().fg(fg).add_modifier(Modifier::REVERSED),
+        ));
+        if next < edit.buffer.len() {
+            spans.push(Span::styled(edit.buffer[next..].to_string(), normal));
+        }
+    } else {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(fg).add_modifier(Modifier::REVERSED),
+        ));
     }
 }

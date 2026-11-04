@@ -21,8 +21,8 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TextEdit;
 use karet_session::LSP_CHANGE_DEBOUNCE;
-use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
+use karet_session::api::LspCommand;
 use karet_session::api::RequestId;
 pub(crate) use pointer::InlayHintHit;
 pub(crate) use pointer::InlayUi;
@@ -123,7 +123,7 @@ impl App {
             if self.docs.inlay_quiet_until.contains_key(&doc) {
                 continue;
             }
-            let Some(id) = self.send(SessionCommand::InlayHints {
+            let Some(id) = self.send(LspCommand::InlayHints {
                 doc,
                 range: Range {
                     start: LineCol::new(wanted.first, 0),
@@ -205,7 +205,7 @@ impl App {
                 else {
                     return None;
                 };
-                let top = tab.editor.scroll_line;
+                let top = tab.editor.scroll_line();
                 // A tab that has never been painted reports no visible lines;
                 // one screenful is a better guess than none.
                 let visible = tab.editor.visible_lines().max(1);

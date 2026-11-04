@@ -5,23 +5,24 @@
 //! per-file code line ceiling. Everything here has one shape: resolve the
 //! document, hand the request to the LSP manager, emit the answer.
 
+use karet_core::DocumentHighlight;
+use karet_core::HierarchyDirection;
+use karet_core::HierarchyItem;
 use karet_core::InlayHint;
 use karet_core::Location;
-use karet_core::WorkspaceSymbol;
 use karet_text::TextBuffer;
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::utf16_caret;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
-use crate::api::DocumentHighlight;
 use crate::api::FormatRequest;
 use crate::api::FormatScope;
-use crate::api::HighlightKind;
 use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::DocumentHighlightsAnswer;
 use crate::lsp::FormattingScope;
+use crate::lsp::HierarchyAsk;
 use crate::lsp::LspUpdate;
 use crate::lsp::RenameAnswer;
 use crate::lsp::SelectionRangesAnswer;
@@ -53,152 +54,18 @@ impl Session {
     /// returned borrow leaves `self.lsp` free for the forwarding call.
     pub(super) fn doc_or_report<'a>(
         store: &'a DocumentStore,
-        events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        events: &EventTx,
         id: RequestId,
         doc_id: DocumentId,
     ) -> Option<&'a Document> {
         let doc = store.docs.get(&doc_id);
         if doc.is_none() {
-            events.send((Some(id), unknown_document(doc_id))).ok();
+            events.emit(Some(id), unknown_document(doc_id));
         }
         doc
     }
 
-    /// The text of `path` for column conversion: the live buffer when the file is
-    /// open, else its contents from disk.
-    ///
-    /// A server answers in UTF-16 columns for whatever file it names, which is often
-    /// not one the client has open — so converting those columns needs the target's
-    /// text, not the requesting document's. `None` when the file cannot be read; the
-    /// caller then leaves the range as the server sent it, since an approximate
-    /// column beats a dropped result.
-    pub(super) fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
-        self.store
-            .by_path
-            .get(path)
-            .and_then(|doc| self.store.docs.get(doc))
-            .map(|document| document.buffer.clone())
-            .or_else(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| TextBuffer::from_text(&text))
-            })
-    }
-
-    /// Convert every location from the server's UTF-16 columns to buffer columns,
-    /// each against its own file.
-    ///
-    /// An open file's live buffer is borrowed, not cloned, and a file that is not
-    /// open is read from disk at most once per answer, so a references list with
-    /// many hits in one file costs one read rather than one per hit. A file that
-    /// cannot be read keeps the server's columns, as [`Self::buffer_for_path`]
-    /// explains.
-    pub(super) fn locations_to_buffer_columns<'a>(
-        &self,
-        locations: impl IntoIterator<Item = &'a mut Location>,
-    ) {
-        let mut read: HashMap<PathBuf, Option<TextBuffer>> = HashMap::new();
-        for location in locations {
-            let open = self
-                .store
-                .by_path
-                .get(&location.path)
-                .and_then(|doc| self.store.docs.get(doc))
-                .map(|document| &document.buffer);
-            let buffer = match open {
-                Some(buffer) => Some(buffer),
-                None => read
-                    .entry(location.path.clone())
-                    .or_insert_with(|| {
-                        std::fs::read_to_string(&location.path)
-                            .ok()
-                            .map(|text| TextBuffer::from_text(&text))
-                    })
-                    .as_ref(),
-            };
-            if let Some(buffer) = buffer {
-                location.range = utf16_range_to_buffer(buffer, location.range);
-            }
-        }
-    }
-
-    /// Move workspace symbols from the server's UTF-16 columns to buffer
-    /// columns, each against its own file when that file is open here.
-    ///
-    /// A symbol in a file that is not open keeps the server's columns. A
-    /// workspace search answers every typing pause with hits across any number
-    /// of files, so reading each from disk here would put that much blocking
-    /// I/O on the session for rows nobody may pick -- the trade inlay-hint
-    /// part locations make (see [`Self::hints_to_buffer_columns`]). The line is
-    /// right either way; the column differs only where an astral-plane
-    /// character precedes the symbol on its line.
-    pub(super) fn workspace_symbols_to_buffer_columns(&self, symbols: &mut [WorkspaceSymbol]) {
-        for symbol in symbols {
-            let Some(range) = symbol.range.as_mut() else {
-                continue;
-            };
-            let open = self
-                .store
-                .by_path
-                .get(&symbol.path)
-                .and_then(|doc| self.store.docs.get(doc));
-            if let Some(document) = open {
-                *range = utf16_range_to_buffer(&document.buffer, *range);
-            }
-        }
-    }
-
-    /// Move `hints` from the server's UTF-16 columns to buffer columns: each
-    /// position against `doc`'s buffer, and each label part's location
-    /// against the file it names when that file is open. Hints for a document
-    /// closed since they were asked for are left as they are; nobody will
-    /// adopt them.
-    ///
-    /// A part location into a file that is not open keeps the server's
-    /// columns. Hint lists arrive on every edit pause and scroll, so reading
-    /// each named file from disk here would put blocking I/O on that path for
-    /// locations nobody may follow; UTF-16 and buffer columns differ only
-    /// where an astral-plane character precedes the target on its line. A
-    /// resolve, which is asked for one hint on demand, converts against the
-    /// file on disk (see [`Self::part_locations_to_buffer_columns`]).
-    pub(super) fn hints_to_buffer_columns(&self, doc: DocumentId, hints: &mut [InlayHint]) {
-        let Some(document) = self.store.docs.get(&doc) else {
-            return;
-        };
-        for hint in hints.iter_mut() {
-            hint.position = document
-                .buffer
-                .utf16_to_line_col(hint.position.line, hint.position.col);
-        }
-        let locations = hints.iter_mut().flat_map(|hint| {
-            hint.parts
-                .iter_mut()
-                .filter_map(|part| part.location.as_mut())
-        });
-        for location in locations {
-            let open = self
-                .store
-                .by_path
-                .get(&location.path)
-                .and_then(|doc| self.store.docs.get(doc));
-            if let Some(open) = open {
-                location.range = utf16_range_to_buffer(&open.buffer, location.range);
-            }
-        }
-    }
-
-    /// Convert every label part's location in `hints` to buffer columns, each
-    /// against the file it names, as a definition's is. A resolved hint needs
-    /// only this: it keeps the position the client asked about.
-    pub(super) fn part_locations_to_buffer_columns(&self, hints: &mut [InlayHint]) {
-        self.locations_to_buffer_columns(hints.iter_mut().flat_map(|hint| {
-            hint.parts
-                .iter_mut()
-                .filter_map(|part| part.location.as_mut())
-        }));
-    }
-
-    /// Serve [`Command::InlayHints`]: convert the range to the server's UTF-16
+    /// Serve [`LspCommand::InlayHints`](crate::api::LspCommand::InlayHints): convert the range to the server's UTF-16
     /// encoding and forward it. A language with no server, or a server that
     /// does not offer hints, answers immediately with an empty set so the
     /// editor never holds a stale annotation waiting for a reply that is not
@@ -231,7 +98,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ResolveInlayHint`] from the server that answered the
+    /// Serve [`LspCommand::ResolveInlayHint`](crate::api::LspCommand::ResolveInlayHint) from the server that answered the
     /// hint: the document's primary, which is the only one asked for hints.
     /// With no server to ask the hint comes straight back, so the client
     /// stops waiting on it and does not ask again.
@@ -252,7 +119,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::DocumentSymbols`] from the document's language server.
+    /// Serve [`LspCommand::DocumentSymbols`](crate::api::LspCommand::DocumentSymbols) from the document's language server.
     pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
@@ -266,27 +133,13 @@ impl Session {
                 Some(id),
                 Event::Symbols {
                     doc: doc_id,
-                    symbols: doc.syntax_symbols.as_ref().clone(),
+                    symbols: doc.syntax.symbols().as_ref().clone(),
                 },
             );
         }
     }
 
-    /// Serve a [`Command::Hover`] or a [`Command::SignatureHelp`]: the
-    /// requests about the caret whose answers the client shows in a popup.
-    pub(super) fn at_caret(&mut self, id: RequestId, cmd: Command) {
-        match cmd {
-            Command::Hover { doc, position } => self.hover(id, doc, position),
-            Command::SignatureHelp {
-                doc,
-                position,
-                manual,
-            } => self.signature_help(id, doc, position, manual),
-            _ => {},
-        }
-    }
-
-    /// Forward a [`Command::SelectionRanges`], or answer it with an empty
+    /// Forward a [`LspCommand::SelectionRanges`](crate::api::LspCommand::SelectionRanges), or answer it with an empty
     /// chain per position when no server serves the document.
     pub(super) fn selection_ranges(
         &mut self,
@@ -314,7 +167,7 @@ impl Session {
         }
     }
 
-    /// Forward a [`Command::DocumentHighlights`], or answer it with no
+    /// Forward a [`LspCommand::DocumentHighlights`](crate::api::LspCommand::DocumentHighlights), or answer it with no
     /// highlights when no server serves the document.
     pub(super) fn document_highlights(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
@@ -352,11 +205,7 @@ impl Session {
                     .into_iter()
                     .map(|highlight| DocumentHighlight {
                         range: utf16_range_to_buffer(&document.buffer, highlight.range),
-                        kind: match highlight.kind {
-                            karet_lsp::HighlightKind::Text => HighlightKind::Text,
-                            karet_lsp::HighlightKind::Read => HighlightKind::Read,
-                            karet_lsp::HighlightKind::Write => HighlightKind::Write,
-                        },
+                        kind: highlight.kind,
                     })
                     .collect()
             }),
@@ -372,11 +221,13 @@ impl Session {
 
     /// Settle an answer the generation fence turned away: a save's formatting
     /// still completes the save, unformatted, and selection ranges still
-    /// answer the request with empty chains, because `Command::SelectionRanges`
+    /// answer the request with empty chains, because `LspCommand::SelectionRanges`
     /// is always answered and Expand Selection waits on it. Document
-    /// highlights are answered with none for the same reason. A code-lens
+    /// highlights, linked ranges and on-type edits are answered with none for
+    /// the same reason, and a save's will-save edits are dropped. A code-lens
     /// listing is answered as unanswered, so the client asks again, and a
-    /// lens run reports how it went, since its command did run. Every other
+    /// lens run reports how it went, since its command did run; a link and
+    /// colour listing and a link resolve likewise. Every other
     /// fenced answer is advisory and simply dropped.
     pub(super) fn settle_retired_answer(&mut self, update: LspUpdate) {
         match update {
@@ -397,6 +248,11 @@ impl Session {
                 self.adopt_document_highlights(answer);
             },
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer.fenced()),
+            LspUpdate::Editing { answer, .. } => self.settle_retired_editing(answer),
+            LspUpdate::Hierarchy {
+                request, direction, ..
+            } => self.adopt_hierarchy(request, direction, Vec::new()),
             _ => {},
         }
     }
@@ -427,9 +283,15 @@ impl Session {
         self.emit(Some(request), event);
     }
 
-    /// Forward a [`Command::SignatureHelp`], or answer it empty when no
-    /// server serves the document.
-    fn signature_help(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol, manual: bool) {
+    /// Forward a [`LspCommand::SignatureHelp`](crate::api::LspCommand::SignatureHelp),
+    /// or answer it empty when no server serves the document.
+    pub(super) fn signature_help(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        at: LineCol,
+        manual: bool,
+    ) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
@@ -451,7 +313,9 @@ impl Session {
         }
     }
 
-    fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+    /// Forward a [`LspCommand::Hover`](crate::api::LspCommand::Hover) to the
+    /// document's language server.
+    pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
@@ -465,8 +329,8 @@ impl Session {
         }
     }
 
-    /// Answer a [`Command::Definition`] (`kind` `None`) or a
-    /// [`Command::FindLocations`]: forward it, or answer it empty when no
+    /// Answer a [`LspCommand::Definition`](crate::api::LspCommand::Definition) (`kind` `None`) or a
+    /// [`LspCommand::FindLocations`](crate::api::LspCommand::FindLocations): forward it, or answer it empty when no
     /// server serves the document.
     pub(super) fn definition(
         &mut self,
@@ -487,6 +351,67 @@ impl Session {
         {
             self.emit(Some(id), locations_event(kind, Vec::new()));
         }
+    }
+
+    /// Answer a [`LspCommand::PrepareHierarchy`](crate::api::LspCommand::PrepareHierarchy): forward it, or answer it with
+    /// no items when no server serves the document.
+    pub(super) fn prepare_hierarchy(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        position: LineCol,
+        direction: HierarchyDirection,
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let ask = HierarchyAsk::Prepare {
+            path: doc.path.clone(),
+            position: utf16_caret(doc, position),
+        };
+        let path = doc.path.clone();
+        if !self
+            .lsp
+            .hierarchy(doc.language_selector, (id, direction), &path, ask)
+        {
+            self.adopt_hierarchy(id, direction, Vec::new());
+        }
+    }
+
+    /// Answer a [`LspCommand::ExpandHierarchy`](crate::api::LspCommand::ExpandHierarchy) by asking the server of the
+    /// document the hierarchy was opened from, or with no items when there is
+    /// none.
+    pub(super) fn expand_hierarchy(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        item: HierarchyItem,
+        direction: HierarchyDirection,
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let (language, path) = (doc.language_selector, doc.path.clone());
+        let ask = HierarchyAsk::Children(item);
+        if !self.lsp.hierarchy(language, (id, direction), &path, ask) {
+            self.adopt_hierarchy(id, direction, Vec::new());
+        }
+    }
+
+    /// Emit [`Event::Hierarchy`] for `items`, moved from the server's UTF-16
+    /// columns to buffer columns, each against its own file.
+    ///
+    /// Never dropped for an edit since the request, as a navigation answer
+    /// is: the client is waiting on this to fill in its tree, and every item
+    /// is anchored in the file it names, not in the document asked from.
+    pub(super) fn adopt_hierarchy(
+        &mut self,
+        id: RequestId,
+        direction: HierarchyDirection,
+        mut items: Vec<HierarchyItem>,
+    ) {
+        self.locations_to_buffer_columns(items.iter_mut().map(|item| &mut item.location));
+        self.emit(Some(id), Event::Hierarchy { direction, items });
     }
 
     pub(super) fn workspace_symbols(&mut self, id: RequestId, query: String) {
@@ -530,7 +455,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::PrepareRename`]: ask the document's server what can be
+    /// Serve [`LspCommand::PrepareRename`](crate::api::LspCommand::PrepareRename): ask the document's server what can be
     /// renamed at `position`, answering at once when no server runs for it.
     pub(super) fn prepare_rename(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
@@ -581,7 +506,8 @@ impl Session {
             ),
             RenameAnswer::Span(karet_core::PrepareRename::Range { range, placeholder }) => {
                 let range = utf16_range_to_buffer(buffer, range);
-                let placeholder = placeholder.unwrap_or_else(|| text_in(buffer, range));
+                let placeholder =
+                    placeholder.unwrap_or_else(|| buffer.slice_range(range).unwrap_or_default());
                 (Some(RenameTarget { range, placeholder }), None)
             },
             RenameAnswer::Span(_) | RenameAnswer::Identifier => {
@@ -646,53 +572,15 @@ pub(super) fn refused(reason: &str) -> AppliedWorkspaceEdit {
     }
 }
 
-/// The text `range` covers in `buffer`.
-fn text_in(buffer: &TextBuffer, range: Range) -> String {
-    let (Ok(start), Ok(end)) = (
-        buffer.line_col_to_byte(range.start),
-        buffer.line_col_to_byte(range.end),
-    ) else {
-        return String::new();
-    };
-    buffer
-        .text()
-        .get(start.0..end.0)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-/// The identifier touching `position`, by the editor's own word rules: the one
-/// the caret is in, or the one it sits just after.
+/// The identifier touching `position`, by the editor's own word rules
+/// ([`karet_text::words::word_at`]): the one the caret is in, or the one it
+/// sits just after.
 fn identifier_at(buffer: &TextBuffer, position: LineCol) -> Option<RenameTarget> {
-    let line: Vec<char> = buffer.line(position.line as usize)?.chars().collect();
-    let at = (position.col as usize).min(line.len());
-    let is_word = |index: usize| {
-        line.get(index)
-            .copied()
-            .is_some_and(karet_core::is_word_char)
-    };
-    let anchor = if is_word(at) {
-        at
-    } else if at > 0 && is_word(at - 1) {
-        at - 1
-    } else {
-        return None;
-    };
-    let start = (0..=anchor)
-        .rev()
-        .take_while(|&index| is_word(index))
-        .last()?;
-    let end = (anchor..line.len())
-        .take_while(|&index| is_word(index))
-        .last()?
-        + 1;
-    let column = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+    let (start, end) = karet_text::words::word_at(buffer, position)?;
+    let range = Range { start, end };
     Some(RenameTarget {
-        range: Range {
-            start: LineCol::new(position.line, column(start)),
-            end: LineCol::new(position.line, column(end)),
-        },
-        placeholder: line.get(start..end)?.iter().collect(),
+        range,
+        placeholder: buffer.slice_range(range)?,
     })
 }
 
@@ -713,7 +601,7 @@ pub(super) const FORMAT_OVERLAP: &str =
     "format: the formatter's edits overlap; nothing was applied";
 
 impl Session {
-    /// Serve [`Command::Format`]: hand the document, or its selected ranges, to
+    /// Serve [`LspCommand::Format`](crate::api::LspCommand::Format): hand the document, or its selected ranges, to
     /// the formatter its language names -- the same choice a save makes --
     /// and fall back on the built-in formatter for a whole document when no
     /// server runs for it.
@@ -748,7 +636,7 @@ impl Session {
         }
     }
 
-    /// Adopt a server's answer to a [`Command::Format`]: its edits, converted
+    /// Adopt a server's answer to a [`LspCommand::Format`](crate::api::LspCommand::Format): its edits, converted
     /// to buffer columns, as one undoable change -- or nothing, when the
     /// document moved on while the server worked, since the edits describe
     /// text that is no longer there.
@@ -801,13 +689,15 @@ impl Session {
         } else if report {
             let message = match scope {
                 FormattingScope::Ranges(_) => NO_RANGE_FORMATTER,
-                FormattingScope::Save | FormattingScope::Document => NO_FORMATTER,
+                FormattingScope::Save
+                | FormattingScope::SaveUnformatted
+                | FormattingScope::Document => NO_FORMATTER,
             };
             self.emit(Some(id), format_notice(message));
         }
     }
 
-    /// Apply the edits a [`Command::Format`] produced, reporting edits that
+    /// Apply the edits a [`LspCommand::Format`](crate::api::LspCommand::Format) produced, reporting edits that
     /// cannot be applied together. Nothing to change is not a failure.
     fn apply_requested_format(&mut self, id: RequestId, doc_id: DocumentId, edits: Vec<TextEdit>) {
         if !edits.is_empty() && !self.apply_format_edits(doc_id, edits, false) {
@@ -816,7 +706,7 @@ impl Session {
     }
 }
 
-/// A warning answering a [`Command::Format`] that changed nothing.
+/// A warning answering a [`LspCommand::Format`](crate::api::LspCommand::Format) that changed nothing.
 fn format_notice(message: &str) -> Event {
     Event::Notification {
         severity: Severity::Warning,

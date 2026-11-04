@@ -132,7 +132,6 @@ fn markdown_link_hits_follow_wrapping_scrolling_and_wide_text() {
 fn commit_input_display_preserves_lines_and_marks_the_caret() {
     let mut input = CommitInput {
         text: "subject\nbody".to_string(),
-        focused: true,
         ..CommitInput::default()
     };
     input.edit.set_cursor(&input.text, 8, false);
@@ -194,28 +193,6 @@ fn breadcrumb_spans_of_no_components_are_empty() {
 }
 
 #[test]
-fn relative_time_uses_compact_git_style_units() {
-    let now = 40_000_000;
-    assert_eq!(commit::list::relative_time_at(now + 1, now), "just now");
-    assert_eq!(commit::list::relative_time_at(now - 42, now), "42s ago");
-    assert_eq!(commit::list::relative_time_at(now - 120, now), "2m ago");
-    assert_eq!(commit::list::relative_time_at(now - 10_800, now), "3h ago");
-    assert_eq!(commit::list::relative_time_at(now - 172_800, now), "2d ago");
-    assert_eq!(
-        commit::list::relative_time_at(now - 1_209_600, now),
-        "2w ago"
-    );
-    assert_eq!(
-        commit::list::relative_time_at(now - 5_184_000, now),
-        "2mo ago"
-    );
-    assert_eq!(
-        commit::list::relative_time_at(now - 63_072_000, now),
-        "2y ago"
-    );
-}
-
-#[test]
 fn a_pane_too_small_to_pad_paints_nothing_rather_than_to_the_edge() {
     // The padding needs 4 columns and 2 rows; below that there is no content rect.
     assert_eq!(markdown_preview_rect(Rect::new(0, 0, 4, 1)).height, 0);
@@ -235,14 +212,14 @@ fn test_code_tab(path: &str) -> Tab {
             .unwrap_or(path),
         TabKind::Code {
             path: PathBuf::from(path),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new(path)),
             doc: None,
             next_version: 0,
-            buffer,
+            buffer: buffer.into(),
             text: Default::default(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
-            folds: karet_syntax::FoldRegions::default(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
+            folds: karet_core::FoldRegions::default(),
             folded: std::collections::BTreeSet::new(),
             decos: Vec::new(),
             search_decos: Vec::new(),
@@ -391,7 +368,7 @@ fn verified_badge_reflects_forge_and_signature() {
 
 #[test]
 fn file_cards_are_boxed_and_width_sized() {
-    let files = [crate::render::test_file_view(
+    let files = [crate::tab::test_changed_file(
         "src/main.rs",
         "fn a() {}\n",
         "fn b() {}\n",
@@ -454,9 +431,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
     use ratatui::widgets::Widget;
 
     let theme = Theme::dark();
-    let file = crate::render::test_file_view("notes.txt", "old\n", "new\n");
-    let mut lines = render::unified_lines(&file, &theme);
-    render::pad_diff_lines(&mut lines, 40);
+    let file = crate::tab::test_changed_file("notes.txt", "old\n", "new\n");
+    let mut lines = diff_paint::unified_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut lines, 40);
     let removed = lines
         .iter()
         .position(|line| line.style.bg == Some(theme.role(ThemeRole::DiffRemoved).to_ratatui()))
@@ -479,9 +456,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
         theme.role(ThemeRole::DiffAdded).to_ratatui()
     );
 
-    let (mut left, mut right) = render::side_by_side_lines(&file, &theme);
-    render::pad_diff_lines(&mut left, 20);
-    render::pad_diff_lines(&mut right, 20);
+    let (mut left, mut right) = diff_paint::side_by_side_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut left, 20);
+    karet_diff::view::pad_diff_lines(&mut right, 20);
     let changed: Vec<_> = [left, right]
         .into_iter()
         .filter_map(|lines| lines.into_iter().find(|line| line.style.bg.is_some()))
@@ -506,7 +483,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
     use unicode_width::UnicodeWidthStr;
 
     let file =
-        crate::render::test_file_view("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
+        crate::tab::test_changed_file("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
     for width in 1..24u16 {
         let top = file_card_header(&Theme::dark(), &file, width, false);
         let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
@@ -516,7 +493,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
         );
     }
     assert_eq!(
-        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        karet_widgets::text::fit_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
         "\u{2026}file.rs"
     );
 }
@@ -536,7 +513,6 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -592,14 +568,14 @@ fn cursor_status_label_reports_position_and_selection_extent() {
         "a.txt",
         TabKind::Code {
             path: std::path::PathBuf::from("/x/a.txt"),
-            language: "plaintext",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("/x/a.txt")),
             doc: None,
             next_version: 0,
-            buffer: buffer.clone(),
+            buffer: buffer.clone().into(),
             text: "hello\nworld\n".into(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
-            folds: karet_syntax::FoldRegions::default(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
+            folds: karet_core::FoldRegions::default(),
             folded: std::collections::BTreeSet::new(),
             decos: Vec::new(),
             search_decos: Vec::new(),
@@ -801,11 +777,14 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
     let theme = app.theme.clone();
     let mut header = |app: &mut App| {
+        let mut hits = crate::app::FrameHits::default();
         let _ = terminal.draw(|frame| {
             let area = frame.area();
-            super::sidebar::draw_sidebar_header(frame, app, &theme, area);
+            super::sidebar::draw_sidebar_header(frame, app, &theme, area, &mut hits);
         });
-        app.panel_hits
+        app.last_frame = hits;
+        app.last_frame
+            .panel_hits
             .iter()
             .map(|&(_, _, panel)| panel)
             .collect::<Vec<_>>()
@@ -841,12 +820,25 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     );
     app.settings.editor.semantic_comments.enabled = true;
     app.settings.spellcheck.enabled = true;
-    let _ = header(&mut app);
+    // The Hierarchy button appears, last, only while there is a tree to
+    // return to.
+    app.hierarchy.tree = Some(crate::app::hierarchy::HierarchyTree::new(
+        karet_core::HierarchyDirection::IncomingCalls,
+        DocumentId(1),
+        dir.clone(),
+        RequestId(1),
+    ));
+    assert_eq!(
+        header(&mut app).last(),
+        Some(&SidebarPanel::Hierarchy),
+        "{:?}",
+        app.last_frame.panel_hits
+    );
     // Two cells each, marching left to right and staying inside the header.
-    for window in app.panel_hits.windows(2) {
-        assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);
+    for window in app.last_frame.panel_hits.windows(2) {
+        assert_eq!(window[1].0, window[0].1, "{:?}", app.last_frame.panel_hits);
     }
-    for &(start, end, _) in &app.panel_hits {
+    for &(start, end, _) in &app.last_frame.panel_hits {
         assert_eq!(end - start, 2);
         assert!(
             end <= 40,

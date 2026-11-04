@@ -17,10 +17,14 @@ use karet_widgets::RowSelection;
 use ratatui::layout::Rect;
 
 use super::App;
-use super::util::rect_contains;
-use crate::render::FileView;
+use crate::app::hit::rect_contains;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
+use crate::tab::rows::DiffColumn;
+use crate::tab::rows::SurfaceRow;
+use crate::tab::rows::diff_row;
+use crate::tab::rows::hex_row;
+use crate::tab::rows::markdown_row;
 
 /// A read-only surface whose rows can be selected with the pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,56 +75,17 @@ pub(crate) struct SurfaceSelection {
     pub(crate) selection: RowSelection,
 }
 
-/// The copyable text of one row, and how wide the chrome before it is.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SurfaceRow {
-    /// The row's text, without the gutter or marker painted ahead of it.
-    pub(crate) text: String,
-    /// Columns of chrome between the region's left edge and that text.
-    pub(crate) content_x: u16,
-}
-
-/// The copyable content of `surface`'s row `row` of `file`.
-///
-/// A row's gutter width is not constant across a file — a line number past four
-/// digits widens it — so it travels with the text rather than being assumed.
-/// The copyable content of markdown preview row `row` of `wrapped`.
-///
-/// A preview row's text is what it renders — bullets, rules and table borders
-/// included — because that is what the reader sees and points at. The markdown
-/// source is not recoverable per row: `karet-markdown` anchors only top-level
-/// blocks, so mapping a row back to source would be an interpolation, not a fact.
-pub(crate) fn markdown_row(
-    wrapped: &karet_markdown::WrappedDocument,
-    row: usize,
-) -> Option<SurfaceRow> {
-    Some(SurfaceRow {
-        text: wrapped.lines.get(row)?.text(),
-        content_x: 0,
-    })
-}
-
-/// The copyable content of hex row `row` of `bytes`.
-pub(crate) fn hex_row(bytes: &[u8], row: usize) -> Option<SurfaceRow> {
-    Some(SurfaceRow {
-        text: karet_fileview::hex::row_text(bytes, row)?,
-        content_x: karet_fileview::hex::OFFSET_WIDTH,
-    })
-}
-
-pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
-    let content = match surface {
-        SelectSurface::Unified => karet_diff::unified_row(&file.change.diff, row),
-        SelectSurface::OldColumn => karet_diff::side_by_side_row(&file.change.diff, row).0,
-        SelectSurface::NewColumn => karet_diff::side_by_side_row(&file.change.diff, row).1,
-        SelectSurface::Hex | SelectSurface::MarkdownPreview | SelectSurface::CommitCards { .. } => {
-            None
-        },
-    }?;
-    Some(SurfaceRow {
-        text: content.text,
-        content_x: content.gutter_width,
-    })
+impl SelectSurface {
+    /// The diff column this surface paints, or `None` for a surface that is not
+    /// a diff column.
+    pub(crate) fn diff_column(self) -> Option<DiffColumn> {
+        match self {
+            Self::Unified => Some(DiffColumn::Unified),
+            Self::OldColumn => Some(DiffColumn::Old),
+            Self::NewColumn => Some(DiffColumn::New),
+            Self::Hex | Self::MarkdownPreview | Self::CommitCards { .. } => None,
+        }
+    }
 }
 
 impl App {
@@ -177,7 +142,8 @@ impl App {
                     SelectSurface::OldColumn | SelectSurface::NewColumn
                 )
         );
-        painted.then(|| diff_row(file, surface, row)).flatten()
+        let column = surface.diff_column().filter(|_| painted)?;
+        diff_row(file, column, row)
     }
 
     /// The selectable region under `(col, row)`, with the pane holding it.
@@ -186,7 +152,7 @@ impl App {
         col: u16,
         row: u16,
     ) -> Option<(karet_widgets::PaneId, SelectRegion)> {
-        self.pane_frames.iter().find_map(|frame| {
+        self.last_frame.panes.iter().find_map(|frame| {
             frame
                 .select_regions
                 .iter()
@@ -198,7 +164,8 @@ impl App {
     /// The focused pane's recorded region for `surface`.
     pub(crate) fn select_region(&self, surface: SelectSurface) -> Option<SelectRegion> {
         let focused = self.focus_pane();
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane == focused)?
             .select_regions
@@ -231,7 +198,7 @@ impl App {
     /// only ever answers for the stacked one.
     fn on_commit_index_row(&self, col: u16, row: u16) -> bool {
         let point = (col, row);
-        self.pane_frames.iter().any(|frame| {
+        self.last_frame.panes.iter().any(|frame| {
             frame
                 .commit_file_hits
                 .iter()
@@ -254,7 +221,7 @@ impl App {
             return false;
         }
         self.focus_pane_switch(pane);
-        self.focus = super::Focus::Editor;
+        self.keyboard.focus_editor();
         let at = self.surface_pos_at(&region, col, row);
         self.surface_selection = Some(SurfaceSelection {
             surface: region.surface,

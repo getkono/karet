@@ -4,20 +4,30 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod kind;
+mod language;
 mod language_servers;
+mod open;
+pub(crate) mod rows;
+pub(crate) mod seam;
 mod view_state;
 
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use karet_core::Decoration;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_editor::EditorState;
+use karet_filetype::FileKind;
+use karet_filetype::FileType;
 #[cfg(any(feature = "images", feature = "pdf"))]
 use karet_fileview::image::Image;
-use karet_fileview::viewer::FileKind;
 use karet_markdown::WrappedDocument;
 #[cfg(feature = "pdf")]
 use karet_pdf::Document as PdfDocument;
@@ -27,9 +37,6 @@ use karet_session::LanguageServerId;
 use karet_session::LanguageServerLogEntry;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
 pub(crate) use language_servers::LanguageServerAction;
@@ -42,18 +49,24 @@ pub(crate) use view_state::MarkdownPreviewState;
 pub(crate) use view_state::PreviewKey;
 pub use view_state::ViewMode;
 
-use crate::app::Pending;
-use crate::render::FileView;
-use crate::render::Section;
+use crate::pending::Pending;
 
+mod changed_file;
 mod commit;
+pub use changed_file::ChangedFile;
+pub use changed_file::Section;
+#[cfg(test)]
+pub(crate) use changed_file::test_changed_file;
 mod file_tree;
 mod merge_conflict;
 pub(crate) use commit::CommitLayoutMode;
 pub(crate) use commit::CommitViewState;
+pub(crate) use commit::commit_rails;
 pub(crate) use commit::commit_title;
 pub(crate) use file_tree::ChangedFileRow;
 pub(crate) use file_tree::changed_file_rows;
+pub(crate) use language::code_language;
+use language::is_cbor;
 pub(crate) use merge_conflict::MergeConflictState;
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field
@@ -137,7 +150,7 @@ pub struct PagerState {
 #[derive(Default)]
 pub struct CommitFiles {
     /// Each changed file, diffed and highlighted for display.
-    pub files: Vec<FileView>,
+    pub files: Vec<ChangedFile>,
     /// The in-flight changed-file extraction, if metadata is visible but the
     /// files are not yet.
     pub loading_since: Option<Pending>,
@@ -151,7 +164,7 @@ pub struct CommitFiles {
 impl CommitFiles {
     /// A fully loaded block.
     #[must_use]
-    pub fn ready(files: Vec<FileView>) -> Self {
+    pub fn ready(files: Vec<ChangedFile>) -> Self {
         Self {
             files,
             ..Self::default()
@@ -182,16 +195,24 @@ pub enum TabKind {
     Code {
         /// The file path.
         path: PathBuf,
-        /// The display language name.
-        language: &'static str,
+        /// The file type the tab was opened as: the registry entry for its
+        /// path, or CBOR when its content decoded as CBOR. The one record of
+        /// what the document is written in, so the status label, the language
+        /// configuration resolves against, the Markdown commands and the
+        /// default wrap all read it rather than re-deriving it from the path.
+        file_type: FileType,
         /// The session document backing this view, once registered. Editing routes
         /// through the session; the fields below are the latest snapshot for render.
         doc: Option<DocumentId>,
         /// The base version for the next edit (predicted ahead of snapshot echoes so
         /// rapid typing isn't rejected as stale).
         next_version: u64,
-        /// The latest snapshot's buffer (a cheap rope-sharing clone).
-        buffer: TextBuffer,
+        /// The latest snapshot's buffer, shared by every split view of this
+        /// document: a snapshot hands each view a clone of one `Arc`, and a new
+        /// split takes another, so a view costs no copy of the buffer. A view's
+        /// local edit copies it on write ([`Arc::make_mut`]) and the next
+        /// snapshot reunites the views.
+        buffer: Arc<TextBuffer>,
         /// The source text as one contiguous string, for the readers that need
         /// one (in-file search, Markdown table and merge-conflict scans). Kept in
         /// sync with `buffer` as a lazily materialized snapshot: refreshing it on
@@ -300,7 +321,7 @@ pub enum TabKind {
         /// The Source-Control group the diff belongs to.
         section: Section,
         /// The prepared file diff, once the backend has answered.
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         /// The in-flight preparation request, if any.
         loading_since: Option<Pending>,
         /// A load error, when the diff could not be prepared.
@@ -343,7 +364,7 @@ pub enum TabKind {
     ///
     /// Reserved with its identity the moment it is opened, so the pane switches
     /// immediately and the index fills in behind it.
-    Seam(Box<crate::app::seam::SeamViewState>),
+    Seam(Box<seam::SeamViewState>),
     /// A read-only view of the loaded settings and their provenance.
     LoadedConfig {
         /// The loaded configuration report.
@@ -476,6 +497,58 @@ pub struct Tab {
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
     /// Dedicated three-way conflict presentation for this editable code document.
     pub(crate) merge_conflict: Option<MergeConflictState>,
+    /// Where the caret goes once a reserved code tab first fills, or `None`
+    /// once it holds the document's text. A code tab opened before its content
+    /// arrives starts empty (see [`Tab::open`]); the first
+    /// document snapshot replaces that empty buffer with the whole file, which
+    /// is a load, not an edit, so the caret is placed here rather than carried
+    /// through the insertion. Edits are refused while this is set, since they
+    /// would be built against the empty placeholder rather than the document.
+    pub(crate) fill_caret: Option<karet_core::LineCol>,
+    /// When a reserved code tab began waiting for its text, so the editor pane
+    /// reveals a muted loading placeholder once the wait outlasts the shared
+    /// reveal delay. Set and cleared together with [`Self::fill_caret`].
+    pub(crate) fill_since: Option<Pending>,
+    /// The cursors and viewport a restored workspace layout puts back once a
+    /// reserved code tab first fills; when set, it replaces
+    /// [`Self::fill_caret`]'s single caret. Cleared with it, and by a jump that
+    /// moves the caret while the tab is still waiting.
+    pub(crate) fill_view: Option<FillView>,
+    /// Why the session could not load a reserved code tab's text, which then
+    /// never arrives: the editor pane shows this instead of waiting forever.
+    pub(crate) fill_error: Option<String>,
+}
+
+/// A code view's cursors and viewport, held for a reserved tab until its text
+/// arrives (an empty buffer would clamp them all to the top).
+#[derive(Debug, Clone)]
+pub(crate) struct FillView {
+    /// Every selection, as saved.
+    pub(crate) cursors: karet_core::CursorState,
+    /// The first visible line.
+    pub(crate) scroll_line: u32,
+    /// The first visible column.
+    pub(crate) scroll_col: u32,
+}
+
+/// Place a code view's carets in `buffer`, the text it has just been given:
+/// `view` when one was held for it, else a single caret at `caret`. The scroll
+/// is clamped to the buffer's last line.
+pub(crate) fn place_fill(
+    editor: &mut EditorState,
+    buffer: &TextBuffer,
+    caret: karet_core::LineCol,
+    view: Option<FillView>,
+) {
+    match view {
+        Some(view) => {
+            editor.set_cursor_state(buffer, view.cursors);
+            let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
+            editor.scroll_to_line(view.scroll_line.min(last_line));
+            editor.scroll_to_column(view.scroll_col);
+        },
+        None => editor.goto(buffer, caret),
+    }
 }
 
 impl Tab {
@@ -499,6 +572,10 @@ impl Tab {
             markdown_table_lines: std::sync::Arc::default(),
             markdown_preview: None,
             merge_conflict: None,
+            fill_caret: None,
+            fill_since: None,
+            fill_view: None,
+            fill_error: None,
         }
     }
 
@@ -611,7 +688,7 @@ impl Tab {
         title: String,
         path: PathBuf,
         section: Section,
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         view: ViewMode,
     ) -> Self {
         let loading_since = file.is_none().then(Pending::start);
@@ -632,7 +709,7 @@ impl Tab {
     /// A read-only commit view for `detail` and its changed `files`.
     #[must_use]
     pub fn commit(detail: Box<karet_vcs::CommitDetail>, files: CommitFiles) -> Self {
-        let title = commit_title(&detail.short_hash);
+        let title = commit_title(detail.short_hash());
         Self::new(
             title,
             TabKind::Commit {
@@ -722,8 +799,7 @@ impl Tab {
         merge_base: bool,
         files: CommitFiles,
     ) -> Self {
-        let sep = if merge_base { "\u{2026}" } else { ".." };
-        let title = format!("\u{21c4} {base_label}{sep}{head_label}");
+        let title = compare_title(&base_label, &head_label, merge_base);
         Self::new(
             title,
             TabKind::Compare {
@@ -771,36 +847,6 @@ impl Tab {
         matches!(self.kind, TabKind::Diff { .. })
     }
 
-    /// A short language/kind label for the status bar.
-    #[must_use]
-    pub fn language(&self) -> &str {
-        match &self.kind {
-            TabKind::Code { language, .. } => language,
-            TabKind::MarkdownPreview { .. } => "markdown",
-            #[cfg(feature = "images")]
-            TabKind::Image { .. } => "image",
-            #[cfg(feature = "pdf")]
-            TabKind::Document { .. } => "pdf",
-            TabKind::Hex { .. } => "binary",
-            TabKind::Placeholder { .. } => "preview",
-            TabKind::LatexPreview { .. } => "latex preview",
-            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
-            TabKind::StashPreview { .. } => "stash",
-            TabKind::ServerLog { .. } => "log",
-            TabKind::Seam(_) => "seams",
-            TabKind::Graph { .. } => "graph",
-            TabKind::LoadedConfig { .. } => "settings",
-            TabKind::CommitLoading { .. } => "commit",
-            TabKind::Commit { .. } => "commit",
-            TabKind::Compare { .. } => "compare",
-            TabKind::CommitGraph { .. } => "commits",
-            TabKind::Welcome => "",
-            TabKind::LanguageServers(_) => "language servers",
-            #[cfg(feature = "terminal")]
-            TabKind::Terminal(_) => "terminal",
-        }
-    }
-
     /// The text encoding and line-ending label for the status bar (e.g.
     /// `"UTF-8 · LF"`, with a `"mixed EOL"` suffix when the file mixes `\n` and
     /// `\r\n`), for code tabs; `None` for anything else (images, hex dumps, …
@@ -816,6 +862,51 @@ impl Tab {
         }
         Some(label)
     }
+
+    /// Point a file-backed tab at `path`, where its file now lives (a rename or
+    /// move), refreshing the title and symlink flag. Tabs with no file behind
+    /// them are left alone.
+    ///
+    /// A code tab's file type follows the new path only within the document's
+    /// format, which the session fixed when it loaded the file and a rename does
+    /// not change: a text document takes the new path's text type, while a CBOR
+    /// document stays CBOR (the session still saves it as CBOR), and a text
+    /// document renamed to `.cbor` is still text, so it keeps the type it had.
+    pub(crate) fn retarget(&mut self, path: &Path) {
+        let target = match &mut self.kind {
+            TabKind::Code {
+                path: p, file_type, ..
+            } => {
+                let renamed = karet_filetype::file_type_for_path(path);
+                if !is_cbor(*file_type) && !is_cbor(renamed) {
+                    *file_type = renamed;
+                }
+                Some(p)
+            },
+            TabKind::Hex { path: p, .. } | TabKind::Placeholder { path: p, .. } => Some(p),
+            #[cfg(feature = "images")]
+            TabKind::Image { path: p, .. } => Some(p),
+            #[cfg(feature = "pdf")]
+            TabKind::Document { path: p, .. } => Some(p),
+            _ => None,
+        };
+        if let Some(p) = target {
+            *p = path.to_path_buf();
+            self.is_symlink = std::fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                self.title = name.to_string();
+            }
+        }
+    }
+}
+
+/// A compare tab's title: `⇄ base…head` for a merge-base (three-dot) diff,
+/// `⇄ base..head` for a tip-to-tip (two-dot) one.
+#[must_use]
+pub(crate) fn compare_title(base_label: &str, head_label: &str, merge_base: bool) -> String {
+    let sep = if merge_base { "\u{2026}" } else { ".." };
+    format!("\u{21c4} {base_label}{sep}{head_label}")
 }
 
 /// A terminal tab's title: the program's own title when it set one, else
@@ -872,17 +963,17 @@ mod tests {
         assert!(!tab.is_diff());
     }
 
-    #[test]
-    fn code_tab_reports_path_and_language() {
-        let tab = Tab::new(
-            "a.rs",
+    /// A code tab over `path` holding `text`, typed by its path.
+    fn code(path: &str, text: &str) -> Tab {
+        Tab::new(
+            path,
             TabKind::Code {
-                path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                path: PathBuf::from(path),
+                file_type: karet_filetype::file_type_for_path(Path::new(path)),
                 doc: None,
                 next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}"),
-                text: "fn main() {}".into(),
+                buffer: TextBuffer::from_text(text).into(),
+                text: text.into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
@@ -891,9 +982,55 @@ mod tests {
                 search_decos: Vec::new(),
                 syntax_errors: Vec::new(),
             },
-        );
-        assert_eq!(tab.path(), Some(Path::new("/x/a.rs")));
-        assert_eq!(tab.language(), "Rust");
+        )
+    }
+
+    #[test]
+    fn retarget_moves_the_path_title_and_path_derived_type() {
+        let mut tab = code("/x/notes.txt", "");
+        tab.retarget(Path::new("/y/notes.md"));
+        assert_eq!(tab.path(), Some(Path::new("/y/notes.md")));
+        assert_eq!(tab.title, "notes.md");
+        assert!(tab.is_markdown());
+    }
+
+    /// A CBOR document stays CBOR through a rename, whether its type came from
+    /// sniffed bytes or from a `.cbor` name it is renamed away from: the session
+    /// keeps saving it as CBOR.
+    #[test]
+    fn retarget_keeps_a_cbor_document_cbor() {
+        let mut sniffed = code("/x/data.bin", "");
+        let cbor = karet_filetype::file_type_for_language("cbor");
+        if let (TabKind::Code { file_type, .. }, Some(cbor)) = (&mut sniffed.kind, cbor) {
+            *file_type = cbor;
+        }
+        sniffed.retarget(Path::new("/x/renamed.bin"));
+        assert_eq!(sniffed.status_label(), "CBOR");
+
+        let mut named = code("/x/data.cbor", "");
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.bin"));
+        assert_eq!(named.status_label(), "CBOR");
+        named.retarget(Path::new("/x/data.md"));
+        assert!(!named.is_markdown());
+    }
+
+    /// A text document renamed to `.cbor` is still text to the session, so it
+    /// keeps its text type rather than taking the CBOR label.
+    #[test]
+    fn retarget_does_not_make_a_text_document_cbor() {
+        let mut tab = code("/x/notes.md", "");
+        tab.retarget(Path::new("/x/notes.cbor"));
+        assert_eq!(tab.status_label(), "Markdown");
+        assert!(tab.is_markdown());
+    }
+
+    #[test]
+    fn retarget_leaves_a_tab_without_a_file_alone() {
+        let mut tab = Tab::stash_preview("stash@{0}", String::new());
+        tab.retarget(Path::new("/x/a.rs"));
+        assert_eq!(tab.title, "Stash stash@{0}");
+        assert!(tab.path().is_none());
     }
 
     #[test]
@@ -903,10 +1040,10 @@ mod tests {
             "a.rs",
             TabKind::Code {
                 path: PathBuf::from("/x/a.rs"),
-                language: "Rust",
+                file_type: karet_filetype::file_type_for_path(Path::new("/x/a.rs")),
                 doc: None,
                 next_version: 0,
-                buffer,
+                buffer: buffer.into(),
                 text: "a\nb\n".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
@@ -931,7 +1068,6 @@ mod tests {
         };
         let detail = karet_vcs::CommitDetail {
             hash: "a".repeat(40),
-            short_hash: "aaaaaaa".to_string(),
             summary: "subject".to_string(),
             body: String::new(),
             author: identity.clone(),

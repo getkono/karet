@@ -22,16 +22,14 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use karet_core::LineCol;
-use karet_editor::class_run_at;
-use karet_editor::line_span;
 use karet_session::ViewId;
 use karet_text::TextBuffer;
+use karet_text::words::class_run_at;
+use karet_text::words::line_span;
 use karet_widgets::PaneId;
 use ratatui::layout::Rect;
 
 use super::App;
-use super::effective_word_wrap;
-use super::tab_language;
 use crate::keymap::Focus;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -108,8 +106,8 @@ impl App {
     /// the keyboard in the editor view, and the pane and tab it began in still
     /// the focused ones.
     fn drag_is_live(&self, drag: &EditorDrag) -> bool {
-        self.overlay.is_none()
-            && self.focus == Focus::Editor
+        self.keyboard.overlay().is_none()
+            && self.keyboard.focus() == Focus::Editor
             && self.view == View::Editor
             && self.focus_pane() == drag.pane
             && self
@@ -121,7 +119,8 @@ impl App {
     /// The viewport `drag`'s pane was last painted at, or the one it began in
     /// when no frame has recorded that pane.
     fn drag_area(&self, drag: &EditorDrag) -> Rect {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane == drag.pane)
             .map(|frame| frame.editor_rect)
@@ -311,17 +310,16 @@ impl App {
             0
         };
         let tab = self.tabs.get(self.active)?;
-        let word_wrap = effective_word_wrap(
-            tab,
+        let word_wrap = tab.word_wrap(
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .word_wrap(),
         );
         let left = self.drag_text_left(area);
         let cols = if word_wrap {
             0
-        } else if col < left && tab.editor.scroll_col > 0 {
+        } else if col < left && tab.editor.scroll_col() > 0 {
             -i32::from(left - col)
         } else if col >= area.right() {
             i32::from(col - area.right()) + 1

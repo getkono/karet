@@ -11,7 +11,7 @@ fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -
         let Some(text) = buffer.line(line as usize) else {
             break;
         };
-        for (range, rgba) in karet_syntax::color::detect(&text) {
+        for (range, rgba) in super::color::detect(&text) {
             out.push(Decoration::new(
                 karet_core::Range {
                     start: karet_core::LineCol::new(line, u32::try_from(range.start).unwrap_or(0)),
@@ -182,18 +182,47 @@ pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<De
 }
 
 /// The per-frame decorations content assembles fresh each draw: color
-/// swatches over the visible slice.
+/// swatches over the visible slice -- the language server's colours for
+/// `doc`, then the literals the built-in detector finds that no server colour
+/// already covers, so a colour both know is swatched once.
 pub(super) fn frame_decorations(
     ctx: &PaneCtx,
+    doc: Option<DocumentId>,
     buffer: &TextBuffer,
     scroll_line: u32,
     area: Rect,
 ) -> Vec<Decoration> {
-    if ctx.color_highlight {
-        color_swatch_decorations(buffer, scroll_line, area.height)
-    } else {
-        Vec::new()
+    if !ctx.color_highlight {
+        return Vec::new();
     }
+    let served = doc.map_or(&[][..], |doc| {
+        crate::app::current_items(ctx.document_colors, doc, buffer.version())
+    });
+    let local = color_swatch_decorations(buffer, scroll_line, area.height);
+    merge_swatches(served, scroll_line, area.height, local)
+}
+
+/// The swatches of `served` on the lines a viewport of `height` rows from
+/// `first_line` can show (doubled for wrap slack, as the detector's), then
+/// each of `local` that overlaps none of them.
+fn merge_swatches(
+    served: &[karet_core::DocumentColor],
+    first_line: u32,
+    height: u16,
+    local: Vec<Decoration>,
+) -> Vec<Decoration> {
+    let last = first_line.saturating_add(u32::from(height) * 2);
+    let mut out: Vec<Decoration> = served
+        .iter()
+        .filter(|colour| colour.range.end.line >= first_line && colour.range.start.line <= last)
+        .map(karet_core::DocumentColor::swatch)
+        .collect();
+    out.extend(
+        local
+            .into_iter()
+            .filter(|swatch| !served.iter().any(|colour| colour.overlaps(swatch.range))),
+    );
+    out
 }
 
 /// The virtual text content assembles fresh each draw, in one slice: the
@@ -244,7 +273,13 @@ pub(super) fn frame_virtual_text(
     // `App::handle_code_lens_mouse` rebuilds them to find a click's lens.
     let lenses = doc.and_then(|doc| ctx.code_lenses.get(&doc));
     let rows = lenses.map(|lenses| crate::app::code_lens_rows(lenses, buffer, ctx.tab_width));
-    let lines = rows.into_iter().flatten().map(|row| row.line).collect();
+    let mut lines: Vec<_> = rows.into_iter().flatten().map(|row| row.line).collect();
+    // Ghost text last of both, so every index above stays what it was: its
+    // first line after the caret, its further lines as rows below it.
+    if let Some((text, rows)) = ctx.inline_ghost.clone() {
+        out.extend(text);
+        lines.extend(rows);
+    }
     (out, inlay_parts, blame, lines)
 }
 
@@ -280,6 +315,143 @@ pub(super) fn inlay_hits(
             })
         })
         .collect()
+}
+
+/// The source text an editor viewport shows: its buffer, the file it is
+/// (Markdown or not, and what relative link targets resolve against), and the
+/// workspace root that bounds them.
+pub(super) struct LinkSource<'a> {
+    /// The document's text.
+    pub(super) buffer: &'a TextBuffer,
+    /// The document's file.
+    pub(super) path: &'a std::path::Path,
+    /// Whether the document is Markdown ([`crate::tab::Tab::is_markdown`]),
+    /// which adds its inline links to the bare URLs every file links.
+    pub(super) markdown: bool,
+    /// The workspace root.
+    pub(super) root: &'a std::path::Path,
+}
+
+/// Paint the links written in the source that the editor just drew in `area`
+/// as OSC 8 hyperlinks, so the terminal's own link handling (Cmd+click in
+/// most macOS terminals) opens them too.
+///
+/// Only a target [`crate::links::LinkTarget::osc8_uri`] admits is painted: a
+/// link that resolves outside the workspace stays plain, so the confirmation
+/// karet's own Ctrl/Cmd+click asks for cannot be bypassed. The scan covers the
+/// lines the viewport can show, skipping collapsed folds; each link's cells
+/// come from the editor's own geometry, so a link scrolled half out of view,
+/// or wrapped across rows, links exactly the cells it occupies.
+///
+/// Each line's geometry is worked out once ([`EditorState::line_cells`]), and
+/// a link with no character on screen is passed over before it is resolved,
+/// so a minified line with thousands of links costs what its visible part
+/// does.
+pub(super) fn source_link_osc8(
+    buf: &mut ratatui::buffer::Buffer,
+    source: &LinkSource,
+    editor: &EditorState,
+    folds: &[karet_editor::Fold],
+    area: Rect,
+) {
+    let markdown = source.markdown;
+    let mut line = editor.scroll_line();
+    let mut shown = 0;
+    while shown < area.height {
+        if let Some(fold) = folds
+            .iter()
+            .find(|fold| fold.collapsed && fold.start < line && line <= fold.end)
+        {
+            line = fold.end.saturating_add(1);
+            continue;
+        }
+        let Some(text) = source.buffer.line(line as usize) else {
+            break;
+        };
+        let links = crate::autolink::source_links(&text, markdown);
+        let cells = if links.is_empty() {
+            Vec::new()
+        } else {
+            editor.line_cells(area, source.buffer, folds, line)
+        };
+        for (slice, first, target) in visible_links(&text, links, &cells) {
+            let Ok(target) = crate::links::resolve(&target, source.path, source.root) else {
+                continue;
+            };
+            let Some(uri) = target.osc8_uri().and_then(crate::links::safe_external) else {
+                continue;
+            };
+            for (y, start, end) in link_runs(&cells, slice, first, area.right()) {
+                super::super::osc8::link_row(buf, y, start, end, uri);
+            }
+        }
+        shown += 1;
+        line = line.saturating_add(1);
+    }
+}
+
+/// The links of `text` with a character among `cells` (the line's drawn
+/// characters, as [`EditorState::line_cells`] reports them), each as its
+/// source slice, the column of its first character, and its target.
+///
+/// Columns are counted in one pass over the line, so the cost is the line's
+/// length however many links it holds.
+fn visible_links<'t>(
+    text: &'t str,
+    mut links: Vec<crate::autolink::SourceLink>,
+    cells: &[(u32, u16, u16)],
+) -> Vec<(&'t str, u32, String)> {
+    let (Some(&(lo, ..)), Some(&(hi, ..))) = (cells.first(), cells.last()) else {
+        return Vec::new();
+    };
+    links.sort_by_key(|link| link.range.start);
+    let (mut byte, mut col) = (0_usize, 0_u32);
+    let mut visible = Vec::new();
+    for link in links {
+        let (Some(prefix), Some(slice)) = (text.get(byte..link.range.start), text.get(link.range))
+        else {
+            continue;
+        };
+        col = col.saturating_add(u32::try_from(prefix.chars().count()).unwrap_or(u32::MAX));
+        byte += prefix.len();
+        if col > hi {
+            break;
+        }
+        let end = col.saturating_add(u32::try_from(slice.chars().count()).unwrap_or(u32::MAX));
+        if end > lo {
+            visible.push((slice, col, link.target));
+        }
+    }
+    visible
+}
+
+/// The screen runs `(row, first column, end column)` the characters of
+/// `slice`, whose first character is column `first`, occupy among `cells`
+/// (the line's drawn characters, in column order): one run normally, one per
+/// row where the link wraps, and none for what is scrolled out of view. No
+/// run reaches past `right`, the editor area's right edge.
+fn link_runs(
+    cells: &[(u32, u16, u16)],
+    slice: &str,
+    first: u32,
+    right: u16,
+) -> Vec<(u16, u16, u16)> {
+    use unicode_width::UnicodeWidthChar;
+    let width = |ch: char| u16::try_from(ch.width().unwrap_or(1).max(1)).unwrap_or(1);
+    let from = cells.partition_point(|&(col, ..)| col < first);
+    let mut chars = slice.chars().zip(first..);
+    let mut runs: Vec<(u16, u16, u16)> = Vec::new();
+    for &(col, x, y) in cells.get(from..).unwrap_or_default() {
+        let Some((ch, _)) = chars.find(|&(_, at)| at == col) else {
+            break;
+        };
+        let end = x.saturating_add(width(ch)).min(right);
+        match runs.last_mut() {
+            Some((row, start, stop)) if *row == y && x >= *start => *stop = (*stop).max(end),
+            _ => runs.push((y, x, end)),
+        }
+    }
+    runs
 }
 
 #[cfg(test)]
@@ -427,6 +599,70 @@ mod diagnostic_text_tests {
 }
 
 #[cfg(test)]
+mod swatch_tests {
+    use karet_core::DocumentColor;
+    use karet_core::LineCol;
+
+    use super::*;
+
+    fn span(line: u32, start: u32, end: u32) -> karet_core::Range {
+        karet_core::Range {
+            start: LineCol::new(line, start),
+            end: LineCol::new(line, end),
+        }
+    }
+
+    fn colour(range: karet_core::Range, rgba: [u8; 4]) -> DocumentColor {
+        DocumentColor { range, rgba }
+    }
+
+    /// The swatches' spans and colours, in order.
+    fn swatches(decorations: &[Decoration]) -> Vec<(karet_core::Range, [u8; 4])> {
+        decorations
+            .iter()
+            .filter_map(|decoration| match decoration.kind {
+                karet_core::DecorationKind::ColorSwatch { rgba } => Some((decoration.range, rgba)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A literal both the server and the detector know is swatched once, in
+    /// the server's colour; the detector's other finds and the server's
+    /// colours the detector cannot see (a Tailwind class) are each kept.
+    #[test]
+    fn a_server_colour_replaces_the_detector_s_swatch_it_overlaps() {
+        let buffer = TextBuffer::from_text("a: #ff0000;\nb: #00ff00;\nbg-red-500\n");
+        let served = [
+            colour(span(0, 3, 10), [250, 0, 0, 255]),
+            colour(span(2, 0, 10), [239, 68, 68, 255]),
+        ];
+        let local = color_swatch_decorations(&buffer, 0, 10);
+        let merged = merge_swatches(&served, 0, 10, local);
+        assert_eq!(
+            swatches(&merged),
+            [
+                (span(0, 3, 10), [250, 0, 0, 255]),
+                (span(2, 0, 10), [239, 68, 68, 255]),
+                (span(1, 3, 10), [0, 255, 0, 255]),
+            ]
+        );
+    }
+
+    /// Only the server colours a viewport can show are drawn.
+    #[test]
+    fn server_colours_off_the_viewport_are_not_drawn() {
+        let served = [
+            colour(span(0, 0, 1), [1, 2, 3, 255]),
+            colour(span(5, 0, 1), [4, 5, 6, 255]),
+            colour(span(50, 0, 1), [7, 8, 9, 255]),
+        ];
+        let merged = merge_swatches(&served, 4, 3, Vec::new());
+        assert_eq!(swatches(&merged), [(span(5, 0, 1), [4, 5, 6, 255])]);
+    }
+}
+
+#[cfg(test)]
 mod manifest_hint_tests {
     use karet_core::EolAlign;
     use karet_core::VirtualTextPlacement;
@@ -511,5 +747,47 @@ mod manifest_hint_tests {
             manifest_hint_text(&[hint(ManifestHintState::Patch, Some("0.1.45"), &[])]);
         assert_eq!(decorations[0].line, 7);
         assert_eq!(decorations[0].role, ThemeRole::DiagnosticInfo);
+    }
+}
+
+#[cfg(test)]
+mod source_link_tests {
+    use super::*;
+
+    #[test]
+    fn only_links_with_a_drawn_character_are_kept() {
+        let text = "é https://a.io/1 x https://b.io/2 y https://c.io/3";
+        assert_eq!(crate::autolink::source_links(text, false).len(), 3);
+        // Columns 20..26 are on screen: inside the second URL (19..33) only.
+        let cells: Vec<(u32, u16, u16)> = (20..26_u16).map(|x| (u32::from(x), x, 0)).collect();
+        let visible = visible_links(text, crate::autolink::source_links(text, false), &cells);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|(slice, first, _)| (*slice, *first))
+                .collect::<Vec<_>>(),
+            [("https://b.io/2", 19)],
+            "columns count chars, not bytes"
+        );
+        assert!(visible_links(text, crate::autolink::source_links(text, false), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_link_runs_one_row_per_wrap_and_stops_at_the_right_edge() {
+        // `abcd` at columns 3..7: two on row 0 from x 10, two on row 1.
+        let cells = [
+            (2, 9, 0),
+            (3, 10, 0),
+            (4, 11, 0),
+            (5, 0, 1),
+            (6, 1, 1),
+            (7, 2, 1),
+        ];
+        assert_eq!(link_runs(&cells, "abcd", 3, 40), [(0, 10, 12), (1, 0, 2)]);
+        // A wide last character is clipped to the area.
+        assert_eq!(link_runs(&cells[..3], "a\u{4e2d}", 3, 12), [(0, 10, 12)]);
+        // Scrolled so only its tail shows.
+        assert_eq!(link_runs(&cells[3..], "abcd", 3, 40), [(1, 0, 2)]);
+        assert!(link_runs(&cells, "ab", 9, 40).is_empty(), "off screen");
     }
 }

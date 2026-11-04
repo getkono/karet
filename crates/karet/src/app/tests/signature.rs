@@ -24,9 +24,9 @@ fn requests(backend: &RecordingBackend) -> Vec<(RequestId, LineCol, bool)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::SignatureHelp {
+                    SessionCommand::Lsp(LspCommand::SignatureHelp {
                         position, manual, ..
-                    } => Some((*id, *position, *manual)),
+                    }) => Some((*id, *position, *manual)),
                     _ => None,
                 })
                 .collect()
@@ -208,7 +208,7 @@ fn esc_closes_the_popup_and_is_consumed() {
 fn the_completion_popup_takes_the_keys_first() {
     let (backend, mut app) = open_popup("add(v)\n", LineCol::new(0, 5));
     let id = RequestId(9_000);
-    app.pending_completion = Some(crate::completion::PendingCompletion {
+    app.completion.pending = Some(crate::completion::PendingCompletion {
         id,
         doc: DocumentId(9),
         anchor: LineCol::new(0, 4),
@@ -224,11 +224,11 @@ fn the_completion_popup_takes_the_keys_first() {
             options: CompletionOptions::default(),
         },
     );
-    assert!(app.completion.is_some(), "both popups are open");
+    assert!(app.completion.popup.is_some(), "both popups are open");
     let _ = backend;
 
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.completion.is_none());
+    assert!(app.completion.popup.is_none());
     assert!(
         app.signature.ui.is_some(),
         "the first Esc is the completion's"
@@ -321,7 +321,7 @@ fn switching_tab_closes_the_popup() {
 #[test]
 fn the_editor_losing_the_keyboard_closes_the_popup() {
     let (_backend, mut app) = open_popup("add(1)\n", LineCol::new(0, 4));
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.reconcile_completion();
     assert!(app.signature.ui.is_none());
 }

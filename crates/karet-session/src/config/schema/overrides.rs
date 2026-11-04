@@ -6,6 +6,7 @@
 //! (selector parsing, serde plumbing, resolution precedence), not settings
 //! vocabulary.
 
+use std::borrow::Borrow;
 #[cfg(feature = "schema")]
 use std::borrow::Cow;
 use std::fmt;
@@ -27,6 +28,8 @@ use super::InlineDiagnosticsMode;
 use super::LineNumbers;
 use super::RenderWhitespace;
 use super::SemanticComments;
+use super::WordWrap;
+use super::WrappingIndent;
 
 /// A normalized `[language]` key used by [`Editor::language_overrides`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,6 +47,16 @@ impl LanguageSelector {
     /// Return the normalized language name without surrounding brackets.
     #[must_use]
     pub fn language(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Looks a selector up by its normalized name, so a registry
+/// [`config_selector`](karet_filetype::FileType::config_selector) (already
+/// lowercase, trimmed and bracket-free) finds its override without allocating.
+/// Consistent with the derived `Ord`/`Eq`/`Hash`, which compare the inner string.
+impl Borrow<str> for LanguageSelector {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }
@@ -122,8 +135,12 @@ pub struct EditorOverride {
     pub rulers: Option<Vec<u16>>,
     /// Override wrapping; explicit `null` restores the file-type default.
     #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<bool>"))]
-    pub word_wrap: NullableOverride<bool>,
+    #[cfg_attr(feature = "schema", schemars(with = "Option<WordWrap>"))]
+    pub word_wrap: NullableOverride<WordWrap>,
+    /// Override the column `"wordWrapColumn"` and `"bounded"` wrap at.
+    pub word_wrap_column: Option<u16>,
+    /// Override how wrapped continuation rows are indented.
+    pub wrapping_indent: Option<WrappingIndent>,
     /// Override semantic sticky-scroll rendering.
     pub sticky_scroll: Option<bool>,
     /// Override when brackets auto-close.
@@ -136,10 +153,14 @@ pub struct EditorOverride {
     pub insert_final_newline: Option<bool>,
     /// Override format-on-save.
     pub format_on_save: Option<bool>,
+    /// Override format-on-type.
+    pub format_on_type: Option<bool>,
     /// Partially override semantic-comment behavior.
     pub semantic_comments: Option<SemanticCommentsOverride>,
     /// Partially override completion behavior.
     pub completion: Option<CompletionOverride>,
+    /// Partially override inline completion (ghost text).
+    pub inline_completion: Option<InlineCompletionOverride>,
     /// Partially override which diagnostics show their message inline.
     pub inline_diagnostics: Option<InlineDiagnosticsOverride>,
 }
@@ -164,6 +185,15 @@ pub struct CompletionOverride {
     pub enabled: Option<bool>,
     /// Override automatic completion triggering.
     pub auto_trigger: Option<bool>,
+}
+
+/// A partial per-language patch for `editor.inlineCompletion`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineCompletionOverride {
+    /// Override whether ghost text is asked for.
+    pub enabled: Option<bool>,
 }
 
 /// A partial per-language patch for [`SemanticComments`].
@@ -320,13 +350,41 @@ impl<'a> ResolvedEditor<'a> {
         self.base.bracket_pair_colorization.enabled
     }
 
-    /// Final wrapping override.
+    /// Final wrapping override as on or off; `None` defers to the file type.
     #[must_use]
     pub fn word_wrap(self) -> Option<bool> {
+        self.word_wrap_mode().map(WordWrap::wraps)
+    }
+
+    /// Final wrapping mode; `None` defers to the file type.
+    #[must_use]
+    pub fn word_wrap_mode(self) -> Option<WordWrap> {
         match self.override_.map(|o| &o.word_wrap) {
             Some(NullableOverride::Set(value)) => *value,
             _ => self.base.word_wrap,
         }
+    }
+
+    /// The column soft wrapping is capped at: the final `wordWrapColumn`
+    /// when the mode is `"wordWrapColumn"` or `"bounded"`, else `None` (the
+    /// viewport decides).
+    #[must_use]
+    pub fn wrap_column(self) -> Option<u16> {
+        self.word_wrap_mode()
+            .is_some_and(WordWrap::uses_column)
+            .then(|| {
+                self.override_
+                    .and_then(|o| o.word_wrap_column)
+                    .unwrap_or(self.base.word_wrap_column)
+            })
+    }
+
+    /// Final continuation-row indentation for soft-wrapped lines.
+    #[must_use]
+    pub fn wrapping_indent(self) -> WrappingIndent {
+        self.override_
+            .and_then(|o| o.wrapping_indent)
+            .unwrap_or(self.base.wrapping_indent)
     }
 
     /// Final semantic sticky-scroll setting.
@@ -361,6 +419,14 @@ impl<'a> ResolvedEditor<'a> {
             .unwrap_or(self.base.format_on_save)
     }
 
+    /// Final format-on-type setting.
+    #[must_use]
+    pub fn format_on_type(self) -> bool {
+        self.override_
+            .and_then(|o| o.format_on_type)
+            .unwrap_or(self.base.format_on_type)
+    }
+
     /// Final semantic-comment settings.
     #[must_use]
     pub fn semantic_comments(self) -> ResolvedSemanticComments<'a> {
@@ -377,6 +443,15 @@ impl<'a> ResolvedEditor<'a> {
             base: &self.base.completion,
             override_: self.override_.and_then(|o| o.completion.as_ref()),
         }
+    }
+
+    /// Whether ghost text is asked for (`inlineCompletion.enabled`).
+    #[must_use]
+    pub fn inline_completion(self) -> bool {
+        self.override_
+            .and_then(|o| o.inline_completion.as_ref())
+            .and_then(|o| o.enabled)
+            .unwrap_or(self.base.inline_completion.enabled)
     }
 
     /// Final inline-diagnostic settings.

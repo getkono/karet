@@ -79,6 +79,14 @@ pub(super) enum Behavior {
     /// line with `formatted\n`. The only behaviour that lets a save actually
     /// reach `begin_format_on_save` and park on a reply.
     Formats,
+    /// Format like [`Behavior::Formats`], and ask for will-save edits
+    /// (`textDocument/willSaveWaitUntil`), answering each with `// saved\n`
+    /// inserted at the start of line 1, where formatting does not reach.
+    WillSaves,
+    /// Ask for will-save edits like [`Behavior::WillSaves`], then never answer
+    /// `textDocument/willSaveWaitUntil`, while formatting and serving
+    /// everything else.
+    WillSavesNever,
     /// Advertise `textDocument/formatting` and then never answer it, while
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
@@ -107,8 +115,33 @@ pub(super) enum Behavior {
     PushesAndPulls,
     /// Advertise no pull diagnostics, but register them dynamically
     /// (`client/registerCapability`) once a document is opened, then answer
-    /// pulls like [`Behavior::Pulls`].
+    /// pulls like [`Behavior::Pulls`]. Withdraws that registration
+    /// (`client/unregisterCapability`) whenever a document is saved.
     RegistersPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], with a
+    /// `documentSelector` covering only documents opened as `rust`.
+    RegistersRustPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], but
+    /// hold every pull's answer until a document is closed: an answer that
+    /// arrives after the withdrawal it raced.
+    RegistersPullsLate,
+    /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
+    PullsAcrossFiles,
+    /// Pull like [`Behavior::PullsAcrossFiles`], and ask the client to pull
+    /// everything again (`workspace/diagnostic/refresh`) whenever a document
+    /// is saved.
+    RefreshesPulls,
+    /// Serve normally, and offer semantic tokens with deltas: a whole answer
+    /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
+    /// rewrites that token to a `variable.mutable`. Each result id names the
+    /// version the double last saw.
+    SemanticTokens,
+    /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
+    /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
+    CancelsSemanticTokensOnce,
+    /// Serve normally, and offer folding ranges (see
+    /// `folding_tests::double_reply`).
+    Folds,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -141,20 +174,36 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "renameProvider": true,
         "documentRangeFormattingProvider": true,
         "codeActionProvider": {"resolveProvider": true},
-        "executeCommandProvider": {"commands": ["double.fix", "double.run"]},
+        "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
+        "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
         },
         "inlayHintProvider": {"resolveProvider": true},
         "implementationProvider": true,
+        "callHierarchyProvider": true,
         "typeHierarchyProvider": true,
         "selectionRangeProvider": true,
         "documentHighlightProvider": true,
+        "linkedEditingRangeProvider": true,
+        "documentOnTypeFormattingProvider": {
+            "firstTriggerCharacter": ";",
+            "moreTriggerCharacter": ["}"]
+        },
     });
-    if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
+    if matches!(
+        behavior,
+        Behavior::Formats | Behavior::FormatsNever | Behavior::WillSaves | Behavior::WillSavesNever
+    ) {
         capabilities["documentFormattingProvider"] = json!(true);
+    }
+    if matches!(behavior, Behavior::WillSaves | Behavior::WillSavesNever) {
+        capabilities["textDocumentSync"] =
+            json!({"openClose": true, "change": 1, "willSaveWaitUntil": true});
     }
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
@@ -163,7 +212,35 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
     }
+    if matches!(
+        behavior,
+        Behavior::PullsAcrossFiles | Behavior::RefreshesPulls
+    ) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": true, "workspaceDiagnostics": false});
+    }
+    if matches!(
+        behavior,
+        Behavior::SemanticTokens | Behavior::CancelsSemanticTokensOnce
+    ) {
+        capabilities["semanticTokensProvider"] = json!({
+            "legend": {"tokenTypes": ["variable", "macro"], "tokenModifiers": ["mutable"]},
+            "full": {"delta": true}
+        });
+    }
+    if matches!(behavior, Behavior::Folds) {
+        capabilities["foldingRangeProvider"] = json!(true);
+    }
     capabilities
+}
+
+/// Whether `behavior` registers pulls on `didOpen` and withdraws them on
+/// `didSave`.
+fn registers_pulls(behavior: Behavior) -> bool {
+    matches!(
+        behavior,
+        Behavior::RegistersPulls | Behavior::RegistersRustPulls | Behavior::RegistersPullsLate
+    )
 }
 
 /// The double's answer to `textDocument/diagnostic`: one error on line 0
@@ -238,6 +315,37 @@ fn document_highlight_reply(position: &Value) -> Value {
         {"range": {"start": {"line": 1, "character": 0},
                    "end": {"line": 1, "character": 2}}}
     ])
+}
+
+/// The double's answer to the hierarchy methods.
+///
+/// Preparing answers one item `root` in the asked document, its selection
+/// range the one UTF-16 code unit after the position (echoing it proves the
+/// request crossed in UTF-16 columns), with `data` the server needs back.
+/// Every follow-up answers one item named after the method and the asked
+/// item's `data` -- `<method> of <data>` -- over UTF-16 characters 2..3 of
+/// line 1, so an item handed back without its `data` reads `... of null`.
+fn hierarchy_reply(msg: &Value) -> Value {
+    let method = msg["method"].as_str().unwrap_or_default();
+    let params = &msg["params"];
+    let item = |name: String, uri: &Value, at: &Value| {
+        let after = at["character"].as_u64().unwrap_or(0) + 1;
+        let selection = json!({"start": at, "end": {"line": at["line"], "character": after}});
+        json!({"name": name, "kind": 12, "uri": uri, "range": selection,
+               "selectionRange": selection, "data": {"from": method}})
+    };
+    if method.starts_with("textDocument/prepare") {
+        let uri = &params["textDocument"]["uri"];
+        return json!([item("root".to_owned(), uri, &params["position"])]);
+    }
+    let asked = &params["item"];
+    let name = format!("{method} of {}", asked["data"]["from"]);
+    let child = item(name, &asked["uri"], &json!({"line": 1, "character": 2}));
+    match method {
+        "callHierarchy/incomingCalls" => json!([{"from": child, "fromRanges": []}]),
+        "callHierarchy/outgoingCalls" => json!([{"to": child, "fromRanges": []}]),
+        _ => json!([child]),
+    }
 }
 
 /// The double's answer to the three code-action methods.
@@ -362,6 +470,9 @@ pub(super) fn test_connector(
                 let mut last_hint_uri = Value::Null;
                 // The version the last `didOpen` or `didChange` carried.
                 let mut last_version = Value::Null;
+                let mut cancel_tokens = matches!(behavior, Behavior::CancelsSemanticTokensOnce);
+                // `RegistersPullsLate`'s pulls, each with the version it asked at.
+                let mut held_pulls = Vec::new();
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
@@ -406,6 +517,23 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": item}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/inlineCompletion") => {
+                            // One item replacing UTF-16 characters 0..4 of
+                            // line 0 -- buffer columns 0..3 once the emoji
+                            // is accounted for -- with an acceptance command.
+                            let result = json!({"items": [{
+                                "insertText": "😀ab = 1;",
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 0, "character": 4}},
+                                "command": {"title": "", "command": "double.accept",
+                                            "arguments": [1]}
+                            }]});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },
@@ -511,11 +639,67 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some(
+                            "textDocument/prepareCallHierarchy"
+                            | "textDocument/prepareTypeHierarchy"
+                            | "callHierarchy/incomingCalls"
+                            | "callHierarchy/outgoingCalls"
+                            | "typeHierarchy/supertypes"
+                            | "typeHierarchy/subtypes",
+                        ) => {
+                            let result = hierarchy_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/documentHighlight") => {
                             let result = document_highlight_reply(&msg["params"]["position"]);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        // The UTF-16 code unit after the caret, and the
+                        // first of line 1; echoing the caret proves it
+                        // crossed in UTF-16 columns.
+                        Some("textDocument/linkedEditingRange") => {
+                            let at = &msg["params"]["position"];
+                            let after = at["character"].as_u64().unwrap_or(0) + 1;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"ranges": [
+                                    {"start": at, "end": {"line": at["line"], "character": after}},
+                                    {"start": {"line": 1, "character": 0},
+                                     "end": {"line": 1, "character": 1}}
+                                ]}}),
+                            )
+                            .await;
+                        },
+                        // `!` inserted at the caret, echoing it.
+                        Some("textDocument/onTypeFormatting") => {
+                            let at = &msg["params"]["position"];
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": at, "end": at}, "newText": "!"}
+                                ]}),
+                            )
+                            .await;
+                        },
+                        // Swallowed whole, as `FormatsNever` swallows formatting.
+                        Some("textDocument/willSaveWaitUntil")
+                            if matches!(behavior, Behavior::WillSavesNever) => {},
+                        Some("textDocument/willSaveWaitUntil") => {
+                            let line_1 = json!({"line": 1, "character": 0});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": line_1, "end": line_1},
+                                     "newText": "// saved\n"}
+                                ]}),
                             )
                             .await;
                         },
@@ -544,6 +728,52 @@ pub(super) fn test_connector(
                                 }]}),
                             )
                             .await;
+                        },
+                        Some("textDocument/semanticTokens/full") if cancel_tokens => {
+                            cancel_tokens = false;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "error": {
+                                    "code": -32802,
+                                    "message": "cancelled by the server"
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "data": [0, 2, 2, 1, 0]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full/delta") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "edits": [{"start": 3, "deleteCount": 2, "data": [0, 1]}]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/diagnostic")
+                            if matches!(behavior, Behavior::RegistersPullsLate) =>
+                        {
+                            held_pulls.push((msg, last_version.clone()));
+                        },
+                        Some("textDocument/didClose") => {
+                            for (msg, version) in held_pulls.drain(..) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": msg["id"],
+                                        "result": pull_reply(&msg, &version)}),
+                                )
+                                .await;
+                            }
                         },
                         Some("textDocument/diagnostic") => {
                             write_msg(
@@ -580,7 +810,14 @@ pub(super) fn test_connector(
                                 )
                                 .await;
                             }
-                            if matches!(behavior, Behavior::RegistersPulls) {
+                            if registers_pulls(behavior) {
+                                let mut options = json!({
+                                    "interFileDependencies": false,
+                                    "workspaceDiagnostics": false
+                                });
+                                if matches!(behavior, Behavior::RegistersRustPulls) {
+                                    options["documentSelector"] = json!([{"language": "rust"}]);
+                                }
                                 write_msg(
                                     &mut server_write,
                                     &json!({"jsonrpc": "2.0", "id": "register-pull",
@@ -588,10 +825,7 @@ pub(super) fn test_connector(
                                     "params": {"registrations": [{
                                         "id": "pull",
                                         "method": "textDocument/diagnostic",
-                                        "registerOptions": {
-                                            "interFileDependencies": false,
-                                            "workspaceDiagnostics": false
-                                        }
+                                        "registerOptions": options
                                     }]}}),
                                 )
                                 .await;
@@ -654,10 +888,57 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor"
+                            | "textDocument/foldingRange",
+                        ) => {
+                            let result = super::link_color_tests::double_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave") if registers_pulls(behavior) => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "unregister-pull",
+                                "method": "client/unregisterCapability",
+                                "params": {"unregisterations": [{
+                                    "id": "pull",
+                                    "method": "textDocument/diagnostic"
+                                }]}}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave")
+                            if matches!(behavior, Behavior::RefreshesPulls) =>
+                        {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "refresh-pulls",
+                                    "method": "workspace/diagnostic/refresh"}),
+                            )
+                            .await;
+                        },
                         Some("shutdown") => {
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
+                        // Copilot's sign-in: a device code, and the command
+                        // that completes it.
+                        Some("signIn") => {
+                            let result = json!({"userCode": "ABCD-EFGH",
+                                "command": {"title": "Sign in", "command": "double.run",
+                                            "arguments": [2]}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },

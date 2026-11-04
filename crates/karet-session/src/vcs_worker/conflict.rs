@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn run_merge_conflict(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     id: RequestId,
     path: PathBuf,
     cancel: &Cancellation,
@@ -22,9 +22,8 @@ pub(super) fn run_merge_conflict(
         Ok((current, incoming))
     });
     match result {
-        Ok((current, incoming)) => emit_cancellable(
-            events,
-            id,
+        Ok((current, incoming)) => events.emit_if_live(
+            Some(id),
             cancel,
             Event::MergeConflictReady {
                 path,
@@ -32,6 +31,6 @@ pub(super) fn run_merge_conflict(
                 incoming,
             },
         ),
-        Err(message) => notify_cancellable(events, id, cancel, message),
+        Err(message) => events.emit_if_live(Some(id), cancel, vcs_failure(message)),
     }
 }

@@ -19,7 +19,8 @@ publish = false
 default = []
 
 [dependencies]
-karet-lsp.workspace = true            # LspSpec + the shared Content-Length codec; used only by src/broker/lsp.rs, never by the broker skeleton
+karet-jsonrpc.workspace = true        # the shared `Framing` trait the broker skeleton is generic over, and its Content-Length/line framings
+karet-lsp.workspace = true            # LspSpec; used only by src/broker/lsp.rs, never by the broker skeleton
 command-group = { workspace = true, features = ["with-tokio"] }  # crash-safe process
                                       # groups / Windows Job Objects; `with-tokio` is
                                       # what makes `kill_on_drop` exist on unix.

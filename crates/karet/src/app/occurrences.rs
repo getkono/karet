@@ -14,11 +14,28 @@
 //! once, since it no longer describes what the caret is on. An answer for a
 //! caret or a text that has moved on is dropped.
 
-use karet_session::LSP_CHANGE_DEBOUNCE;
-use karet_session::api::DocumentHighlight;
-use karet_session::api::HighlightKind;
+use std::time::Duration;
+use std::time::Instant;
 
-use super::*;
+use karet_core::BytePos;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::ThemeRole;
+use karet_search::SearchQuery;
+use karet_search::search_chunks;
+use karet_session::DocumentId;
+use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_text::TextBuffer;
+
+use crate::app::App;
+use crate::tab::TabKind;
 
 /// Where the occurrence probe stands: a caret at one revision of one view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,8 +85,8 @@ pub(crate) struct Occurrences {
 /// from the reads and textual mentions around it.
 fn role_for(kind: HighlightKind) -> ThemeRole {
     match kind {
-        HighlightKind::Write => ThemeRole::MatchingBracket,
-        HighlightKind::Read | HighlightKind::Text => ThemeRole::HoverHighlight,
+        HighlightKind::Write => ThemeRole::WordHighlightStrong,
+        HighlightKind::Read | HighlightKind::Text => ThemeRole::WordHighlight,
     }
 }
 
@@ -77,33 +94,16 @@ fn decoration(range: Range, kind: HighlightKind) -> Decoration {
     Decoration::new(range, DecorationKind::TextBackground, Some(role_for(kind)))
 }
 
-/// The word (alphanumeric and `_`) the caret touches: the one it is on, else
-/// the one ending at it.
-fn word_at_caret(buffer: &TextBuffer, caret: LineCol) -> Option<Range> {
-    let before = caret
-        .col
-        .checked_sub(1)
-        .map(|col| LineCol::new(caret.line, col));
-    let (start, end) = karet_editor::identifier_at(buffer, caret)
-        .or_else(|| before.and_then(|at| karet_editor::identifier_at(buffer, at)))?;
-    Some(Range { start, end })
-}
-
 /// The fallback when no server answered: every whole-word, case-sensitive
 /// match of the word the caret touches, as textual occurrences. Empty off a
 /// word.
 pub(crate) fn text_occurrences(buffer: &TextBuffer, caret: LineCol) -> Vec<Decoration> {
-    let Some(word) = word_at_caret(buffer, caret) else {
+    let Some((start, end)) = karet_text::words::word_at(buffer, caret) else {
         return Vec::new();
     };
-    let Some(line) = buffer.line(word.start.line as usize) else {
+    let Some(pattern) = buffer.slice_range(Range { start, end }) else {
         return Vec::new();
     };
-    let pattern: String = line
-        .chars()
-        .skip(word.start.col as usize)
-        .take((word.end.col - word.start.col) as usize)
-        .collect();
     let query = SearchQuery {
         pattern,
         case_sensitive: true,
@@ -160,7 +160,7 @@ impl App {
             self.occurrences = Occurrences::default();
             return;
         };
-        let on_word = word_at_caret(buffer, key.caret).is_some();
+        let on_word = karet_text::words::word_at(buffer, key.caret).is_some();
         let state = &mut self.occurrences;
         if state.shown.as_ref().is_some_and(|shown| {
             shown.view != key.view
@@ -187,7 +187,7 @@ impl App {
                 return;
             },
         }
-        let sent = self.send(SessionCommand::DocumentHighlights {
+        let sent = self.send(LspCommand::DocumentHighlights {
             doc: key.doc,
             position: key.caret,
         });

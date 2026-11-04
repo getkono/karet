@@ -1,3 +1,12 @@
+//! The server task loop: one task per slot, owning its server's connection.
+//!
+//! [`server_task`] connects through the slot's `Connector`, serializes document
+//! sync ahead of requests, debounces edits, and restarts a closed process with
+//! backoff, replaying every open document. Per-request handling is delegated to
+//! the feature modules (`commands`, `code_actions`, `code_lens`, `link_color`,
+//! `inline_completion`, `semantic_tokens`, `hint_flight`), loss detection to
+//! `health`, and diagnostic forwarding to `forward`.
+
 use karet_core::ServerFeature;
 
 use super::code_actions;
@@ -20,7 +29,9 @@ use super::hint_flight::FlightTag;
 use super::hint_flight::Flights;
 use super::hint_flight::HintAsk;
 use super::hint_flight::{self};
-use super::pull::Pulls;
+use super::inline_completion as inline;
+use super::link_color;
+use super::semantic_tokens::DocumentFetches;
 use super::*;
 
 /// Slack over the session's own deadline before this task stops waiting.
@@ -61,9 +72,14 @@ pub(super) struct ServerTask {
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
     pub(super) generation: u64,
+    /// Whether this task fetches semantic tokens (see `semantic_tokens`).
+    pub(super) semantic: tokio::sync::watch::Receiver<bool>,
+    /// Whether this task is its language's primary server, which alone
+    /// fetches folding ranges (see `folding`).
+    pub(super) primary: bool,
 }
 
-/// The per-language server task: serialize document sync and requests, restart
+/// The server task for one slot: serialize document sync and requests, restart
 /// closed processes with backoff, and replay the authoritative open-document set.
 pub(super) async fn server_task(task: ServerTask) {
     let ServerTask {
@@ -74,6 +90,8 @@ pub(super) async fn server_task(task: ServerTask) {
         updates,
         connector,
         generation,
+        semantic,
+        primary,
     } = task;
     // The root is a local because the connector and `SpawnFailed` want it by
     // value while `key` is still borrowed elsewhere.
@@ -100,8 +118,9 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut client: Option<Arc<LspClient>> = None;
     // So does a lightbulb probe, kept off the serial path the same way.
     let mut flights = Flights::default();
-    // And so does a diagnostic pull (see `pull`).
-    let mut pulls = Pulls::default();
+    // And so do a diagnostic pull, a semantic-token fetch and a folding-range
+    // fetch (see `pull`, `semantic_tokens` and `folding`).
+    let mut fetches = DocumentFetches::new(semantic, primary);
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<PendingChange> = None;
@@ -306,7 +325,7 @@ pub(super) async fn server_task(task: ServerTask) {
         // open, a replay, a flushed edit -- is pulled before the next wait.
         if let Some(active) = client.as_ref() {
             let unsent = pending.as_ref().map(|change| change.path.as_path());
-            pulls.launch_ready(active, &documents, unsent, (&updates, &key, token));
+            fetches.launch_ready(active, &documents, unsent, (&updates, &key, token));
         }
 
         // Four things can wake the connected loop. The connection dying on its
@@ -320,15 +339,16 @@ pub(super) async fn server_task(task: ServerTask) {
             client.as_deref(),
             pending.is_some().then_some(flush_at),
             &mut flights,
-            &mut pulls,
+            &mut fetches,
         )
         .await;
         let mut dead = false;
+        let slot = (&key, token);
         let cmd = match wake {
             health::Wake::Lost => {
                 let _ = client.take();
                 flights.abandon(&updates, generation);
-                pulls.abandon();
+                fetches.abandon();
                 if let Some(task) = diagnostic_task.take() {
                     task.abort();
                 }
@@ -374,7 +394,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 if dead {
                     let _ = client.take();
                     flights.abandon(&updates, generation);
-                    pulls.abandon();
+                    fetches.abandon();
                     if let Some(task) = diagnostic_task.take() {
                         task.abort();
                     }
@@ -406,11 +426,20 @@ pub(super) async fn server_task(task: ServerTask) {
                 None
             },
             health::Wake::Lens(answer) => {
-                let slot = (&key, token);
                 code_lens::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
                 None
             },
-            // Back to the top, where the pulls a registration enabled launch.
+            health::Wake::Inline(answer) => {
+                inline::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            health::Wake::LinkColor(answer) => {
+                link_color::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            // Back to the top, where the fetches a registration, a semantic
+            // highlighting change or a semantic-token or diagnostic refresh
+            // enabled launch.
             health::Wake::Registered => continue,
             health::Wake::Command(None) => break, // the session dropped the manager
             health::Wake::Command(Some(cmd)) => Some(cmd),
@@ -815,14 +844,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         let answer = if dead {
                             cmd.unanswered(code_actions::UNAVAILABLE)
                         } else {
-                            let mut context = code_actions::StepContext {
-                                tally: &mut tally,
-                                dead: &mut dead,
-                                updates: &updates,
-                                key: &key,
-                                token,
-                                generation,
-                            };
+                            let health = (&mut dead, &mut tally, &updates, &key, token);
+                            let mut context = code_actions::StepContext::of(health, generation);
                             code_actions::serve(active, cmd, &mut context).await
                         };
                         let _ = updates.send(LspUpdate::CodeAction { generation, answer });
@@ -843,16 +866,30 @@ pub(super) async fn server_task(task: ServerTask) {
                             token,
                         )
                         .await;
-                        let mut context = code_actions::StepContext {
-                            tally: &mut tally,
-                            dead: &mut dead,
-                            updates: &updates,
-                            key: &key,
-                            token,
-                            generation,
-                        };
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        let mut context = code_actions::StepContext::of(health, generation);
                         let answer = code_lens::run(active, request, lens, &mut context).await;
                         let _ = updates.send(LspUpdate::CodeLens { generation, answer });
+                    },
+                },
+                ServerCmd::InlineCompletion(cmd) => match cmd.into_ask() {
+                    // An ask is background work: no flush, and no await -- it
+                    // launches below, as a hint request does. See `inline`.
+                    Ok(ask) => flights.inline.ask(ask, &updates, generation),
+                    // An accept only reports what the user took (the edit it
+                    // made reaches the server as any edit does); a sign-in
+                    // needs no text either, and its flights hold its follow-up.
+                    Err(step) => flights.run(&client, step, slot, &updates, generation).await,
+                },
+                ServerCmd::LinkColor(cmd) => match cmd.into_listing() {
+                    // A listing is background work: no flush, and no await --
+                    // it launches below, as a hint request does. See `link_color`.
+                    Ok(listing) => flights.links.ask(listing, &updates, generation),
+                    // A resolve hands the server its own data back and asks
+                    // nothing of the text, so it flushes nothing.
+                    Err(step) => {
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        link_color::resolve(active, step, health, generation).await;
                     },
                 },
                 ServerCmd::Formatting {
@@ -872,25 +909,10 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                     )
                     .await;
-                    let mut context = code_actions::StepContext {
-                        tally: &mut tally,
-                        dead: &mut dead,
-                        updates: &updates,
-                        key: &key,
-                        token,
-                        generation,
-                    };
-                    let (formatted, edits) =
-                        format::serve(active, &path, &ask, request, &mut context).await;
-                    let _ = updates.send(LspUpdate::Formatting {
-                        generation,
-                        request,
-                        doc,
-                        version,
-                        formatted,
-                        edits,
-                        scope: ask.scope,
-                    });
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let mut context = code_actions::StepContext::of(health, generation);
+                    let asked = (request, doc, version);
+                    format::answer(active, asked, &path, ask, &mut context).await;
                 },
                 // What is left are the requests about the carets: a hover,
                 // signature help, selection ranges, document highlights.
@@ -912,7 +934,7 @@ pub(super) async fn server_task(task: ServerTask) {
         if dead {
             let _ = client.take();
             flights.abandon(&updates, generation);
-            pulls.abandon();
+            fetches.abandon();
             if let Some(task) = diagnostic_task.take() {
                 task.abort();
             }
@@ -935,7 +957,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // requests are answered, not dropped: an answer to a request is not a report
     // about the slot, so it is still true after retirement (see `accepts`).
     flights.shutdown(&updates, generation).await;
-    pulls.shutdown().await;
+    fetches.shutdown().await;
     if let Some(client) = client.and_then(Arc::into_inner) {
         let _ = client.shutdown().await;
     }

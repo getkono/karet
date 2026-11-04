@@ -6,27 +6,9 @@
 
 use std::path::PathBuf;
 
+use crate::coord::BytePoint;
 use crate::coord::LineCol;
 use crate::coord::Range;
-
-/// A `(row, byte-column)` grid point, as tree-sitter counts them: the column is a
-/// **byte** offset from the line start, not a `char` column like [`LineCol`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BytePoint {
-    /// Zero-based row (line) index.
-    pub row: usize,
-    /// Byte offset from the start of the row.
-    pub col: usize,
-}
-
-impl BytePoint {
-    /// Create a point at `row` / byte-`col`.
-    #[must_use]
-    pub const fn new(row: usize, col: usize) -> Self {
-        Self { row, col }
-    }
-}
 
 /// One edit as applied to a text buffer, in tree-sitter `InputEdit` shape.
 ///
@@ -269,12 +251,6 @@ impl Selection {
         self.anchor == self.head
     }
 
-    /// The caret (moving) end of the selection.
-    #[must_use]
-    pub const fn caret_pos(self) -> LineCol {
-        self.head
-    }
-
     /// The selection as a normalized half-open [`Range`] (`min..max`).
     #[must_use]
     pub fn range(self) -> Range {
@@ -319,14 +295,6 @@ impl CursorState {
             .get(self.primary)
             .copied()
             .unwrap_or_else(|| Selection::caret(LineCol::new(0, 0)))
-    }
-
-    /// Add `sel` as the new primary selection, then merge any overlaps. Use this to
-    /// grow the cursor set (add-caret, add-next-occurrence).
-    pub fn push(&mut self, sel: Selection) {
-        self.selections.push(sel);
-        self.primary = self.selections.len().saturating_sub(1);
-        self.normalize();
     }
 
     /// Collapse the set to just the primary selection (e.g. before a Shift+click
@@ -428,7 +396,7 @@ mod tests {
     fn selection_caret_and_range() {
         let c = Selection::caret(LineCol::new(2, 3));
         assert!(c.is_empty());
-        assert_eq!(c.caret_pos(), LineCol::new(2, 3));
+        assert_eq!(c.head, LineCol::new(2, 3));
 
         let s = Selection {
             anchor: LineCol::new(4, 0),
@@ -582,6 +550,126 @@ mod tests {
         assert_eq!(cs.selections, vec![sel(0, 0), sel(2, 2)]);
         assert_eq!(cs.primary, 0);
         assert_eq!(CursorState::default().normalize_tracking(3), 0);
+
+        // An out-of-range followed index and primary both clamp to the last
+        // selection in the input, then move with it.
+        let mut cs = CursorState {
+            selections: vec![sel(5, 5), sel(1, 1)],
+            primary: 9,
+        };
+        assert_eq!(cs.normalize_tracking(9), 0);
+        assert_eq!(cs.selections, vec![sel(1, 1), sel(5, 5)]);
+        assert_eq!(cs.primary, 0);
+    }
+
+    /// Whether `inner`'s range lies within `outer`'s.
+    fn covers(outer: Selection, inner: Selection) -> bool {
+        let (o, i) = (outer.range(), inner.range());
+        o.start <= i.start && i.end <= o.end
+    }
+
+    /// Whether `a` and `b` would merge under normalize's collision rule, stated
+    /// independently of the implementation's sorted-pair `collides`.
+    fn overlap(a: Selection, b: Selection) -> bool {
+        let (ra, rb) = (a.range(), b.range());
+        if a.is_empty() || b.is_empty() {
+            ra.start <= rb.end && rb.start <= ra.end
+        } else {
+            ra.start < rb.end && rb.start < ra.end
+        }
+    }
+
+    /// Seeded generator over a small grid, so collisions of every shape are
+    /// common: coincident carets, carets on edges, touching and nested ranges,
+    /// both directions.
+    #[test]
+    fn normalize_holds_its_invariants_on_generated_cursor_sets() {
+        let mut seed: u64 = 0x5eed_c0de;
+        let mut next = |bound: u32| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            u32::try_from((seed >> 33) % u64::from(bound)).unwrap_or(0)
+        };
+        for _ in 0..2000 {
+            let count = next(6) as usize + 1;
+            let mut point = || LineCol::new(next(3), next(5));
+            let input: Vec<Selection> = (0..count)
+                .map(|_| Selection {
+                    anchor: point(),
+                    head: point(),
+                })
+                .collect();
+            let primary = next(u32::try_from(count).unwrap_or(1)) as usize;
+            let followed = next(u32::try_from(count).unwrap_or(1)) as usize;
+            let mut cs = CursorState {
+                selections: input.clone(),
+                primary,
+            };
+            let slot = cs.normalize_tracking(followed);
+            let out = &cs.selections;
+            let context = format!("input {input:?} primary {primary} -> {out:?}");
+
+            // Non-empty stays non-empty, and merging only ever shrinks the set.
+            assert!(!out.is_empty() && out.len() <= input.len(), "{context}");
+            // Document order, with no two survivors still colliding.
+            for pair in out.windows(2) {
+                assert!(pair[0].range().start <= pair[1].range().start, "{context}");
+                assert!(!overlap(pair[0], pair[1]), "{context}");
+            }
+            // The primary and the followed selection land where they went.
+            assert!(cs.primary < out.len(), "{context}");
+            assert!(covers(out[cs.primary], input[primary]), "{context}");
+            assert!(
+                slot < out.len() && covers(out[slot], input[followed]),
+                "{context}"
+            );
+            // Every input is inside a survivor, and every survivor is the union of
+            // inputs: its ends are input ends, never invented positions.
+            for s in &input {
+                assert!(out.iter().any(|o| covers(*o, *s)), "{context}");
+            }
+            for o in out {
+                let r = o.range();
+                assert!(
+                    input.iter().any(|s| s.range().start == r.start),
+                    "{context}"
+                );
+                assert!(input.iter().any(|s| s.range().end == r.end), "{context}");
+            }
+            // A merged selection points the way its leader does: the primary when
+            // it is a non-empty member, else the first non-empty member in document
+            // order (by `(start, end)`, ties kept in input order).
+            let backward = |s: &Selection| s.head < s.anchor;
+            for (k, o) in out.iter().enumerate() {
+                let first_directed = input
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !s.is_empty() && covers(*o, **s))
+                    .min_by_key(|(i, s)| (s.range().start, s.range().end, *i))
+                    .map(|(_, s)| s);
+                if k == cs.primary && !input[primary].is_empty() {
+                    assert_eq!(backward(o), backward(&input[primary]), "{context}");
+                } else if let Some(leader) = first_directed {
+                    assert_eq!(backward(o), backward(leader), "{context}");
+                }
+            }
+            // An input that collides with no other survives verbatim, direction
+            // included.
+            for (i, s) in input.iter().enumerate() {
+                let alone = input
+                    .iter()
+                    .enumerate()
+                    .all(|(j, t)| i == j || !overlap(*s, *t));
+                if alone {
+                    assert!(out.contains(s), "{context}");
+                }
+            }
+            // Normalizing again changes nothing.
+            let mut again = cs.clone();
+            again.normalize();
+            assert_eq!(again, cs, "{context}");
+        }
     }
 
     #[test]
@@ -620,11 +708,80 @@ mod tests {
         assert_eq!(failed.failed_change, Some(2));
     }
 
+    #[cfg(feature = "serde")]
     #[test]
-    fn push_sets_primary_then_collapse_keeps_it() {
-        let mut cs = CursorState::single(Selection::caret(LineCol::new(0, 0)));
-        cs.push(Selection::caret(LineCol::new(3, 1)));
-        assert_eq!(cs.selections.len(), 2);
+    fn edits_and_cursors_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<(), serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            assert_eq!(&serde_json::from_str::<T>(&json)?, value);
+            Ok(())
+        }
+        let edit = TextEdit {
+            range: Range {
+                start: LineCol::new(0, 1),
+                end: LineCol::new(2, 0),
+            },
+            new_text: "x\n".to_owned(),
+        };
+        let overwrite = FileOptions {
+            overwrite: true,
+            ignore_if_exists: false,
+        };
+        rt(&WorkspaceEdit {
+            changes: vec![(PathBuf::from("a.rs"), vec![edit.clone()])],
+            document_changes: vec![
+                DocumentChange::Edit(DocumentEdit {
+                    path: PathBuf::from("b.rs"),
+                    version: Some(3),
+                    edits: vec![edit.clone()],
+                }),
+                DocumentChange::Create {
+                    path: PathBuf::from("c.rs"),
+                    options: overwrite,
+                },
+                DocumentChange::Rename {
+                    from: PathBuf::from("c.rs"),
+                    to: PathBuf::from("d.rs"),
+                    options: FileOptions::default(),
+                },
+                DocumentChange::Delete {
+                    path: PathBuf::from("dir"),
+                    options: DeleteOptions {
+                        recursive: true,
+                        ignore_if_not_exists: true,
+                    },
+                },
+            ],
+        })?;
+        rt(&Change::new(9, vec![edit]))?;
+        rt(&ApplyWorkspaceEditResult::failed("stale", Some(1)))?;
+        rt(&CursorState {
+            selections: vec![sel(0, 0), sel(9, 4)],
+            primary: 1,
+        })?;
+
+        // A payload from before `document_changes` existed still decodes.
+        let old = serde_json::from_str::<WorkspaceEdit>(r#"{"changes":[]}"#)?;
+        assert_eq!(old, WorkspaceEdit::default());
+        // A newer peer's cause decodes to `Unknown` instead of failing.
+        assert_eq!(
+            serde_json::from_str::<EditCause>("\"Dictation\"")?,
+            EditCause::Unknown
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_keeps_only_the_primary() {
+        let mut cs = CursorState {
+            selections: vec![
+                Selection::caret(LineCol::new(0, 0)),
+                Selection::caret(LineCol::new(3, 1)),
+            ],
+            primary: 1,
+        };
         assert_eq!(cs.primary().head, LineCol::new(3, 1));
         cs.collapse_to_primary();
         assert_eq!(cs.selections, vec![Selection::caret(LineCol::new(3, 1))]);

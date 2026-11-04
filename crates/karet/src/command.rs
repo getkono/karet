@@ -19,13 +19,9 @@ mod resolve;
 #[cfg(test)]
 mod tests;
 
-// The app is a binary crate, so this compatibility re-export is not referenced
-// internally even though it preserves the command module's existing API path.
 // Only the keymap schema generator (a test) enumerates every id.
 #[cfg(test)]
 pub(crate) use ids::COMMAND_IDS;
-#[allow(unused_imports)]
-pub use resolve::ResolveNamedError;
 pub use resolve::palette;
 pub use resolve::resolve_named;
 
@@ -119,6 +115,9 @@ pub enum Command {
     TerminalScrollToTop,
     /// Scroll the active terminal back to the live screen.
     TerminalScrollToBottom,
+    /// Pick one of the configured `tasks` and run it in a new integrated
+    /// terminal, its problem matchers feeding the Problems panel.
+    RunTask,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -183,6 +182,12 @@ pub enum Command {
     SidebarToggleExpand,
     /// Show or hide the right-side outline panel (and focus it when shown).
     ToggleOutline,
+    /// Enter or leave Zen Mode: hide the sidebar, outline, view switcher, and
+    /// status bar, restoring what was shown on the way out.
+    ToggleZenMode,
+    /// Draw only the focused pane across the content area, or tile every pane
+    /// again.
+    ToggleMaximizePane,
     /// Move the outline selection up.
     OutlineUp,
     /// Move the outline selection down.
@@ -279,6 +284,8 @@ pub enum Command {
     ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
+    /// Leave Insert mode for Normal mode (`editor.keymap` `"vim"`/`"helix"`).
+    EnterNormalMode,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -323,6 +330,16 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show the next ghost-text proposal, or ask for some when none is on
+    /// show (Alt+]).
+    NextInlineCompletion,
+    /// Show the previous ghost-text proposal, or ask for some when none is
+    /// on show (Alt+[).
+    PrevInlineCompletion,
+    /// Sign in to GitHub through `copilot-language-server` (palette).
+    CopilotSignIn,
+    /// Sign out of GitHub through `copilot-language-server` (palette).
+    CopilotSignOut,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
     /// Show the parameter hints of the call around the caret
@@ -417,6 +434,9 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Open the link written in the source under the primary caret: the
+    /// keyboard path for Ctrl/Cmd+click on a link (Ctrl+K Enter).
+    OpenLinkAtCaret,
     /// Jump to the declaration of the symbol at the caret.
     GoToDeclaration,
     /// Jump to the definition of the type of the symbol at the caret.
@@ -425,6 +445,21 @@ pub enum Command {
     GoToImplementation,
     /// List every reference to the symbol at the caret (Shift+F12).
     FindReferences,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// its callers (Shift+Alt+H).
+    ShowIncomingCalls,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// the functions it calls.
+    ShowOutgoingCalls,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// it derives from or implements.
+    ShowSupertypes,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// derives from or implements it.
+    ShowSubtypes,
+    /// Expand the selected node of the Hierarchy panel, asking the language
+    /// server for its children the first time.
+    HierarchyExpand,
     /// Rename the symbol at the caret across the workspace (F2).
     RenameSymbol,
     /// Apply the name typed into the rename prompt.
@@ -435,6 +470,12 @@ pub enum Command {
     FormatDocument,
     /// Format every selection, or the caret's line (Ctrl+K Ctrl+F).
     FormatSelection,
+    /// Put a caret in every range the language server links to the caret's,
+    /// such as an HTML tag's name and its closing tag's (Ctrl+Shift+F2).
+    StartLinkedEditing,
+    /// Turn the language server's on-type formatting on or off for this
+    /// session, over `editor.formatOnType`.
+    ToggleFormatOnType,
     /// Open the code-action menu at the caret (Ctrl+., Alt+Enter).
     CodeActions,
     /// Open the code-action menu showing only source actions.
@@ -807,7 +848,6 @@ impl Command {
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
             Self::SelectView(View::Editor) => "View: Editor",
             Self::SelectView(View::GitHub) => "View: GitHub",
-            // #211: Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
@@ -815,6 +855,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
             Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "View: Show Hierarchy",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
@@ -851,6 +892,7 @@ impl Command {
             Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
             Self::TerminalScrollToTop => "Terminal: Scroll to Top",
             Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
+            Self::RunTask => "Tasks: Run Task",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
@@ -881,6 +923,8 @@ impl Command {
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
             Self::ToggleOutline => "View: Toggle Outline",
+            Self::ToggleZenMode => "View: Toggle Zen Mode",
+            Self::ToggleMaximizePane => "View: Toggle Maximized Pane",
             Self::OutlineUp => "Outline: Select Previous",
             Self::OutlineDown => "Outline: Select Next",
             Self::OutlineActivate => "Outline: Go to Selected",
@@ -926,6 +970,7 @@ impl Command {
             Self::ExpandSelection => "Expand Selection",
             Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
+            Self::EnterNormalMode => "Enter Normal Mode",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",
@@ -955,6 +1000,10 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::NextInlineCompletion => "Show Next Inline Suggestion",
+            Self::PrevInlineCompletion => "Show Previous Inline Suggestion",
+            Self::CopilotSignIn => "Copilot: Sign In",
+            Self::CopilotSignOut => "Copilot: Sign Out",
             Self::Hover => "Show Hover",
             Self::SignatureHelp => "Trigger Parameter Hints",
             Self::ToggleInlayHints => "Toggle Inlay Hints",
@@ -1000,15 +1049,23 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::OpenLinkAtCaret => "Open Link at Caret",
             Self::GoToDeclaration => "Go to Declaration",
             Self::GoToTypeDefinition => "Go to Type Definition",
             Self::GoToImplementation => "Go to Implementation",
             Self::FindReferences => "Find All References",
+            Self::ShowIncomingCalls => "Show Incoming Calls",
+            Self::ShowOutgoingCalls => "Show Outgoing Calls",
+            Self::ShowSupertypes => "Show Supertypes",
+            Self::ShowSubtypes => "Show Subtypes",
+            Self::HierarchyExpand => "Hierarchy: Expand Node",
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",
             Self::FormatDocument => "Format Document",
             Self::FormatSelection => "Format Selection",
+            Self::StartLinkedEditing => "Start Linked Editing",
+            Self::ToggleFormatOnType => "Toggle Format on Type",
             Self::CodeActions => "Quick Fix…",
             Self::SourceAction => "Source Action…",
             Self::OrganizeImports => "Organize Imports",

@@ -15,8 +15,18 @@ const ROW_WIDTH: usize = 16;
 /// Columns the file-offset prefix occupies before a row's byte columns begin.
 pub const OFFSET_WIDTH: u16 = 10;
 
+/// The number of rows the hex dump of `bytes` occupies: one per 16 bytes,
+/// rounding a short final row up.
+///
+/// Scroll is measured in these rows, so a consumer clamps a [`HexView`]'s
+/// scroll against this without building the widget.
+#[must_use]
+pub fn row_count(bytes: &[u8]) -> usize {
+    bytes.len().div_ceil(ROW_WIDTH)
+}
+
 /// A read-only hex view of a byte slice. Scroll is measured in rows; the
-/// application clamps it against [`row_count`](HexView::row_count).
+/// application clamps it against [`row_count`].
 pub struct HexView<'a> {
     bytes: &'a [u8],
     scroll: usize,
@@ -51,7 +61,7 @@ impl<'a> HexView<'a> {
     /// The total number of 16-byte rows.
     #[must_use]
     pub fn row_count(&self) -> usize {
-        self.bytes.len().div_ceil(ROW_WIDTH)
+        row_count(self.bytes)
     }
 }
 
@@ -98,7 +108,7 @@ impl Widget for HexView<'_> {
 /// the text this returns begins on screen. `None` past the last row.
 #[must_use]
 pub fn row_text(bytes: &[u8], row: usize) -> Option<String> {
-    if row >= bytes.len().div_ceil(ROW_WIDTH) {
+    if row >= row_count(bytes) {
         return None;
     }
     let (hex, ascii) = format_row(bytes, row * ROW_WIDTH);
@@ -145,6 +155,23 @@ mod tests {
     }
 
     #[test]
+    fn free_row_count_matches_the_widget_and_row_text() {
+        for len in [0usize, 1, 15, 16, 17, 32, 33] {
+            let bytes = vec![0u8; len];
+            let rows = row_count(&bytes);
+            assert_eq!(rows, HexView::new(&bytes).row_count());
+            // The last row has text and the one past it does not.
+            assert_eq!(
+                rows.checked_sub(1)
+                    .and_then(|r| row_text(&bytes, r))
+                    .is_some(),
+                rows > 0
+            );
+            assert!(row_text(&bytes, rows).is_none());
+        }
+    }
+
+    #[test]
     fn format_row_renders_hex_and_ascii() {
         let (hex, ascii) = format_row(b"AB", 0);
         assert!(hex.starts_with("41 42 "));
@@ -168,6 +195,48 @@ mod tests {
         assert!(rendered.contains("00000000"));
         assert!(rendered.contains("68 65 6c 6c 6f")); // "hello"
         assert!(rendered.contains("|hello"));
+    }
+
+    /// The row `y` of `buf` as painted.
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn each_column_paints_in_its_role_color() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        HexView::new(b"A").theme(&theme).render(area, &mut buf);
+        let fg = |role: ThemeRole| theme.role(role).to_ratatui();
+        let painted = row(&buf, 0);
+        let ascii = painted.find("|A").and_then(|x| u16::try_from(x + 1).ok());
+        assert_eq!(buf[(0, 0)].fg, fg(ThemeRole::LineNumber), "offset");
+        assert_eq!(buf[(OFFSET_WIDTH, 0)].fg, fg(ThemeRole::Foreground), "byte");
+        assert_eq!(
+            ascii.map(|x| buf[(x, 0)].fg),
+            Some(fg(ThemeRole::LineNumberActive)),
+            "ascii in {painted:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_starts_painting_at_that_row_and_stops_after_the_last() {
+        let bytes: Vec<u8> = (0u8..48).collect();
+        let area = Rect::new(0, 0, 80, 3);
+        let mut buf = Buffer::empty(area);
+        HexView::new(&bytes).scroll(1).render(area, &mut buf);
+        assert!(
+            row(&buf, 0).starts_with("00000010  10 11"),
+            "{:?}",
+            row(&buf, 0)
+        );
+        assert!(
+            row(&buf, 1).starts_with("00000020  20 21"),
+            "{:?}",
+            row(&buf, 1)
+        );
+        assert_eq!(row(&buf, 2).trim(), "", "nothing past the last row");
     }
 }
 

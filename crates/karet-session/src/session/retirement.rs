@@ -1,30 +1,21 @@
 //! Settling a retirement: what the user is owed when a provider stops serving.
 //!
-//! Split out of [`super::updates`] to keep that module under the workspace's
-//! per-file code-line ceiling. The pieces belong together in any case -- a
-//! retirement clears the provider's markers, reports that it stopped, and
-//! republishes the inventory the panel is drawn from, and doing only some of
-//! those is the defect this change exists to remove.
+//! A retirement clears the provider's markers, reports that it stopped, and
+//! republishes the inventory the panel is drawn from. The three belong together:
+//! a path that did only some of them would leave a retired provider's squiggles
+//! on screen or keep reporting it as running.
 
 use super::*;
 
 impl Session {
-    /// Drop one server instance's diagnostic layer, republishing the documents
-    /// that carried it.
-    ///
-    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
-    /// already scoped to the instance that died: a provider still running at
-    /// another repository root keeps its own markers. Other servers'
-    /// diagnostics, spell-check and lint results share the merged set and are
-    /// untouched.
     /// Settle what a retirement owes the user: markers off the screen, and the
     /// client told the provider is no longer serving.
     ///
     /// Both halves happen here, together, for every path that retires a slot --
-    /// a document closing, a settings change, an explicit restart. They used to
-    /// be spread across those paths in different combinations, and no path did
-    /// both, which is how a retired provider kept its squiggles *and* went on
-    /// being reported as running.
+    /// a document closing, a settings change, an explicit restart. Keeping them
+    /// in one place is what stops any path from doing only one half, which would
+    /// leave a retired provider's squiggles on screen or keep it reported as
+    /// running.
     ///
     /// The report is emitted directly rather than routed back through the task
     /// channel. It is the manager's own statement about a slot it has already
@@ -37,7 +28,9 @@ impl Session {
             return;
         }
         for key in keys {
-            self.clear_lsp_diagnostic_layer(&key);
+            self.clear_lsp_diagnostic_layer(&key, None);
+            self.clear_semantic_tokens_of(&key);
+            self.clear_server_folds_of(&key);
             self.emit(
                 None,
                 Event::LanguageServerRuntimeChanged {
@@ -80,17 +73,28 @@ impl Session {
         }
     }
 
-    pub(super) fn clear_lsp_diagnostic_layer(&mut self, server: &crate::lsp::SlotKey) {
+    /// Drop one server instance's diagnostic layers -- every feed's, or only
+    /// `feed`'s -- republishing the documents that carried them.
+    ///
+    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
+    /// already scoped to the one instance: a provider still running at
+    /// another repository root keeps its own markers. Other servers'
+    /// diagnostics, spell-check and lint results share the merged set and are
+    /// untouched.
+    pub(super) fn clear_lsp_diagnostic_layer(
+        &mut self,
+        server: &crate::lsp::SlotKey,
+        feed: Option<crate::lsp::DiagnosticFeed>,
+    ) {
         let affected = self
             .store
             .docs
             .iter_mut()
             .filter_map(|(doc_id, document)| {
-                // Every feed's layer for this slot goes with it.
                 let before = document.lsp_diagnostics.len();
-                document
-                    .lsp_diagnostics
-                    .retain(|(layer, _), _| layer != server);
+                document.lsp_diagnostics.retain(|(slot, layer_feed), _| {
+                    slot != server || feed.is_some_and(|feed| feed != *layer_feed)
+                });
                 (document.lsp_diagnostics.len() != before).then_some(*doc_id)
             })
             .collect::<Vec<_>>();

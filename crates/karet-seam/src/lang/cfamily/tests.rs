@@ -429,6 +429,51 @@ fn a_struct_template_keeps_struct_access_whatever_its_parameters_say() -> TestRe
 }
 
 #[test]
+fn c_sources_beside_another_ecosystems_manifest_are_indexed() -> TestResult {
+    let Some(index) = index(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"native\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn wrapper() {}\n"),
+        ("CMakeLists.txt", "add_library(native lib/a.c)\n"),
+        ("lib/a.c", "int add(int a, int b) { return a + b; }\n"),
+    ])?
+    else {
+        return Ok(());
+    };
+    let paths = paths(&index);
+    assert!(
+        paths.iter().any(|path| path.ends_with("a.c::add")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.iter().any(|path| path.ends_with("::wrapper")),
+        "{paths:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn braces_and_labels_in_comments_and_literals_do_not_change_member_access() -> TestResult {
+    let Some(index) = index(&[
+        CMAKE,
+        (
+            "lib/lexer.hpp",
+            "class Lexer {\n    // a closing } and a public: label in a comment\n    /* } public: */\n    bool closes(char c) { return c == '}'; }\n    const char *tag = \"} public:\";\n    int depth;\nprotected:\n    int line;\n};\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::closes")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::tag")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::depth")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::line")?, ["protected"]);
+    Ok(())
+}
+
+#[test]
 fn a_qualified_call_into_the_standard_library_is_external() -> TestResult {
     let Some(index) = index(&[
         CMAKE,

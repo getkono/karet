@@ -79,6 +79,14 @@ pub enum Event {
         /// The merged settings, diagnostics, and provenance now used by the session.
         report: Box<LoadedConfig>,
     },
+    /// One of the client's keymap files
+    /// ([`SessionConfig::keymap_paths`](crate::SessionConfig::keymap_paths))
+    /// was created, changed, or removed. The session does not parse keymaps; the
+    /// client reloads its bindings. Emitted once per debounced watcher event.
+    KeymapChanged {
+        /// The keymap paths the burst touched.
+        paths: Vec<PathBuf>,
+    },
     /// New diagnostics were published for a document.
     DiagnosticsPublished {
         /// The document.
@@ -106,7 +114,7 @@ pub enum Event {
         /// The symbols.
         symbols: Vec<Symbol>,
     },
-    /// Completion results answering a [`Command::Completion`]. Delivered with the
+    /// Completion results answering a [`LspCommand::Completion`]. Delivered with the
     /// originating command's [`RequestId`]; `doc` and `version` echo the request's
     /// target so the client can drop sets that are stale by the time they arrive
     /// (document switched, or edited past `version`).
@@ -119,14 +127,14 @@ pub enum Event {
         /// additional edits -- in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
         /// Whether the server left candidates out: narrowing the typed prefix
-        /// should re-issue [`Command::Completion`] with
+        /// should re-issue [`LspCommand::Completion`] with
         /// [`CompletionTrigger::Incomplete`] rather than only filter `items`.
         incomplete: bool,
         /// The answering server's trigger and commit characters; empty when
         /// no server answered.
         options: CompletionOptions,
     },
-    /// The answer to a [`Command::ResolveCompletion`]: what the server filled
+    /// The answer to a [`LspCommand::ResolveCompletion`]: what the server filled
     /// in for the item, every range in buffer (UTF-32) columns, for the client
     /// to fold into the item it holds with
     /// [`CompletionItem::adopt_resolved`]. `None` when there was nothing to
@@ -137,7 +145,7 @@ pub enum Event {
         /// What the server filled in, if anything.
         resolved: Option<CompletionItem>,
     },
-    /// Inlay hints answering a [`Command::InlayHints`].
+    /// Inlay hints answering a [`LspCommand::InlayHints`].
     ///
     /// `version` echoes the request's target so a client can drop a set the
     /// buffer has already been edited past -- a hint positioned against stale
@@ -154,7 +162,34 @@ pub enum Event {
         /// every location.
         hints: Vec<InlayHint>,
     },
-    /// A [`Command::InlayHints`] went unanswered: the server failed or timed
+    /// Ghost text one server proposes, answering a
+    /// [`LspCommand::InlineCompletion`]; never empty.
+    ///
+    /// Items are positioned against the text at `version`, but the user may
+    /// have typed on since: [`InlineCompletionItem::ghost`] re-reads an item
+    /// against the line as it is now and the caret it was asked at, and keeps
+    /// it only while what was typed is a prefix of what it proposes.
+    InlineCompletions {
+        /// The document the items are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The server that proposed them, which an accept is sent back to
+        /// ([`LspCommand::AcceptInlineCompletion`]).
+        server: LanguageServerId,
+        /// The items, ranges in buffer (UTF-32) columns, in the server's
+        /// order.
+        items: Vec<InlineCompletionItem>,
+    },
+    /// What came of a [`LanguageServerCommand::SignIn`] or
+    /// [`LanguageServerCommand::SignOut`].
+    LanguageServerAccount {
+        /// The server asked, as the command named it.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: AccountOutcome,
+    },
+    /// A [`LspCommand::InlayHints`] went unanswered: the server failed or timed
     /// out on it, a newer request replaced it, or the server went away.
     ///
     /// Not an empty [`Event::InlayHints`]: nothing was learned about the
@@ -166,7 +201,7 @@ pub enum Event {
         /// The document version the request was made against.
         version: u64,
     },
-    /// Code lenses answering a [`Command::CodeLenses`].
+    /// Code lenses answering a [`LspCommand::CodeLenses`].
     ///
     /// `version` echoes the request's target so a client can drop a set the
     /// buffer has already been edited past. Empty when no server serves the
@@ -181,7 +216,7 @@ pub enum Event {
         /// resolve them; a lens with no title is not one to show.
         lenses: Vec<CodeLens>,
     },
-    /// A [`Command::CodeLenses`] went unanswered: the server failed or timed
+    /// A [`LspCommand::CodeLenses`] went unanswered: the server failed or timed
     /// out on it, a newer request replaced it, or the server went away.
     ///
     /// Not an empty [`Event::CodeLenses`]: nothing was learned about the
@@ -193,7 +228,36 @@ pub enum Event {
         /// The document version the request was made against.
         version: u64,
     },
-    /// The answer to a [`Command::ResolveInlayHint`]: the hint with whatever
+    /// Links and colours answering a [`LspCommand::LinksAndColors`], ranges in
+    /// buffer (UTF-32) columns.
+    ///
+    /// `version` echoes the request's target so a client can drop a set the
+    /// buffer has already been edited past. Each half is `None` when nothing
+    /// was learned about it -- the server failed or timed out, a newer
+    /// request replaced this one, the server went away, or the text changed
+    /// while it was asked -- so a client keeps what it shows for that half and
+    /// asks again later; it is empty when no server serves the document or
+    /// the server offers none.
+    LinksAndColors {
+        /// The document they are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// Every link in the document. One without a target is resolved
+        /// through [`LspCommand::ResolveDocumentLink`] when it is followed.
+        links: Option<Vec<DocumentLink>>,
+        /// Every colour the document spells.
+        colors: Option<Vec<DocumentColor>>,
+    },
+    /// The answer to a [`LspCommand::ResolveDocumentLink`]: the link with its
+    /// target filled in, its range as it was asked, or why it has none.
+    DocumentLinkResolved {
+        /// The document the link was listed for.
+        doc: DocumentId,
+        /// The resolved link, or why the server gave it no target.
+        result: Result<DocumentLink, String>,
+    },
+    /// The answer to a [`LspCommand::ResolveInlayHint`]: the hint with whatever
     /// the server filled in, or unchanged when it filled in nothing.
     ///
     /// Its position is the one the command carried, and its label parts'
@@ -206,7 +270,7 @@ pub enum Event {
     },
     /// A language server said every inlay hint it answered may be stale
     /// (`workspace/inlayHint/refresh`), so a client should drop what it
-    /// holds as covered and re-issue [`Command::InlayHints`] for what it
+    /// holds as covered and re-issue [`LspCommand::InlayHints`] for what it
     /// shows.
     ///
     /// Unsolicited, and about the server rather than one document: an edit
@@ -247,7 +311,7 @@ pub enum Event {
         reason: String,
     },
     /// Local managed-language-server status, answering
-    /// [`Command::LanguageServerStatus`].
+    /// [`LanguageServerCommand::Status`].
     ///
     /// Only ever an answer. A client may treat the request it is tagged with as
     /// settled, and may replace its cached rows wholesale.
@@ -256,7 +320,7 @@ pub enum Event {
         servers: Vec<LanguageServerStatus>,
     },
     /// The inventory a client last asked for no longer describes this session:
-    /// re-issue [`Command::LanguageServerStatus`] to get a current one.
+    /// re-issue [`LanguageServerCommand::Status`] to get a current one.
     ///
     /// Emitted when a provider is retired, and after whatever replaces it has
     /// started, so the answer to the re-query describes the settled state rather
@@ -297,7 +361,7 @@ pub enum Event {
     },
     /// A running language server asked the user to choose an action
     /// (`window/showMessageRequest`). Answer with
-    /// [`Command::AnswerLanguageServerMessage`]; until then the server waits.
+    /// [`LanguageServerCommand::AnswerMessage`]; until then the server waits.
     LanguageServerMessageRequest {
         /// The question, for the answer to name.
         request: LanguageServerMessageId,
@@ -313,7 +377,7 @@ pub enum Event {
         /// way.
         actions: Vec<String>,
     },
-    /// One provider's log, answering [`Command::LanguageServerLog`]: the most
+    /// One provider's log, answering [`LanguageServerCommand::Log`]: the most
     /// recent entries this session kept, oldest first.
     LanguageServerLog {
         /// The provider.
@@ -357,9 +421,9 @@ pub enum Event {
     /// can say "this server does not support X" instead of "nothing found".
     ///
     /// Emitted only for requests a user asks for by hand --
-    /// [`Command::Hover`], [`Command::Definition`], [`Command::FindLocations`], [`Command::Rename`],
-    /// [`Command::WorkspaceSymbols`], [`Command::Format`], and a
-    /// [`Command::SignatureHelp`] marked `manual`. Background requests (inlay
+    /// [`LspCommand::Hover`], [`LspCommand::Definition`], [`LspCommand::FindLocations`], [`LspCommand::Rename`],
+    /// [`LspCommand::WorkspaceSymbols`], [`LspCommand::Format`], and a
+    /// [`LspCommand::SignatureHelp`] marked `manual`. Background requests (inlay
     /// hints, typed signature help,
     /// completion, document symbols, format-on-save) are refused silently: a
     /// notice nobody asked for, repeated on every keystroke or save, is noise.
@@ -369,12 +433,12 @@ pub enum Event {
         /// What it does not offer.
         feature: ServerFeature,
     },
-    /// Hover result answering a [`Command::Hover`].
+    /// Hover result answering a [`LspCommand::Hover`].
     HoverResult {
         /// The hover, if any.
         hover: Option<Hover>,
     },
-    /// Signature help answering a [`Command::SignatureHelp`].
+    /// Signature help answering a [`LspCommand::SignatureHelp`].
     ///
     /// Delivered whatever the document did since it was asked: signature help
     /// carries no positions to go stale, and a typist who follows `(` with an
@@ -389,7 +453,7 @@ pub enum Event {
         /// no server answered.
         options: SignatureHelpOptions,
     },
-    /// Selection ranges answering a [`Command::SelectionRanges`].
+    /// Selection ranges answering a [`LspCommand::SelectionRanges`].
     SelectionRanges {
         /// The document the request was made in.
         doc: DocumentId,
@@ -402,7 +466,7 @@ pub enum Event {
         /// server had none, and every chain is empty when no server answered.
         chains: Vec<Vec<Range>>,
     },
-    /// Document highlights answering a [`Command::DocumentHighlights`].
+    /// Document highlights answering a [`LspCommand::DocumentHighlights`].
     DocumentHighlights {
         /// The document the request was made in.
         doc: DocumentId,
@@ -412,14 +476,43 @@ pub enum Event {
         /// columns; empty when the server found none. `None` when no server
         /// answered, or the document changed before the answer arrived, so
         /// the server's ranges describe text that is no longer there.
-        highlights: Option<Vec<DocumentHighlight>>,
+        highlights: Option<Vec<karet_core::DocumentHighlight>>,
     },
-    /// Definition locations answering a [`Command::Definition`].
+    /// Linked ranges answering a [`LspCommand::LinkedEditingRanges`].
+    LinkedEditingRanges {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The linked ranges, in the server's order, in buffer columns, the
+        /// caret's among them. `None` when no server answered, it has none
+        /// there, or the document changed before the answer arrived.
+        ranges: Option<Vec<Range>>,
+    },
+    /// On-type formatting edits answering a [`LspCommand::FormatOnType`].
+    OnTypeFormatting {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against; the edits
+        /// apply to that text only, so a client whose text has moved on
+        /// drops them.
+        version: u64,
+        /// The server's edits, in buffer columns; empty when it had none,
+        /// does not format on the character, could not be asked, or the
+        /// document changed before the answer arrived.
+        edits: Vec<karet_core::TextEdit>,
+        /// Every character the server formats on, so the client need offer
+        /// only those: empty when it formats on none (does not offer on-type
+        /// formatting), so the client need offer nothing more, and `None`
+        /// when no server could be asked, so nothing is known yet.
+        triggers: Option<Vec<char>>,
+    },
+    /// Definition locations answering a [`LspCommand::Definition`].
     Definitions {
         /// The resolved locations.
         locations: Vec<Location>,
     },
-    /// Locations answering a [`Command::FindLocations`], in server order and
+    /// Locations answering a [`LspCommand::FindLocations`], in server order and
     /// in buffer columns.
     Locations {
         /// What was asked for.
@@ -427,7 +520,16 @@ pub enum Event {
         /// The resolved locations; empty when there are none, or no server to ask.
         locations: Vec<Location>,
     },
-    /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.
+    /// Hierarchy items answering a [`LspCommand::PrepareHierarchy`] (the roots)
+    /// or a [`LspCommand::ExpandHierarchy`] (one level), in server order and in
+    /// buffer columns.
+    Hierarchy {
+        /// Which way the hierarchy was asked to grow.
+        direction: HierarchyDirection,
+        /// The items; empty when there are none, or no server to ask.
+        items: Vec<HierarchyItem>,
+    },
+    /// Workspace symbols answering a [`LspCommand::WorkspaceSymbols`] query.
     WorkspaceSymbols {
         /// Matching symbols from the active repository servers, each with the
         /// file it is in. A range into a file open in this session is in
@@ -438,7 +540,7 @@ pub enum Event {
     },
     /// A workspace edit was applied, or refused.
     ///
-    /// Answers [`Command::Rename`] and [`Command::ApplyWorkspaceEdit`] with
+    /// Answers [`LspCommand::Rename`] and [`WorkspaceCommand::ApplyEdit`] with
     /// their [`RequestId`], and arrives unrequested (no id) when a language
     /// server applied one of its own (`workspace/applyEdit`). The changed text
     /// itself arrives on the snapshot stream like any other edit.
@@ -446,7 +548,7 @@ pub enum Event {
         /// What changed, what was opened to change it, and the outcome.
         applied: AppliedWorkspaceEdit,
     },
-    /// Answers [`Command::PrepareRename`].
+    /// Answers [`LspCommand::PrepareRename`].
     RenamePrepared {
         /// The document asked about.
         doc: DocumentId,
@@ -458,12 +560,12 @@ pub enum Event {
         /// language server (or the lack of one) gave a reason.
         reason: Option<String>,
     },
-    /// Answers [`Command::CodeActions`].
+    /// Answers [`LspCommand::CodeActions`].
     CodeActions {
         /// The document asked about.
         doc: DocumentId,
         /// The document version the actions were computed against; run one
-        /// with [`Command::ApplyCodeAction`] at this version.
+        /// with [`LspCommand::ApplyCodeAction`] at this version.
         version: u64,
         /// The actions, in the server's order; edits in buffer columns.
         /// Disabled ones are included with their reason.
@@ -472,7 +574,7 @@ pub enum Event {
         /// (no server, one that does not offer code actions, an error).
         reason: Option<String>,
     },
-    /// One streamed batch of a workspace search, answering [`Command::Search`].
+    /// One streamed batch of a workspace search, answering [`WorkspaceCommand::Search`].
     ///
     /// Batches arrive as the walk proceeds so a client fills its list
     /// incrementally rather than waiting for the whole tree; `files_scanned` and
@@ -486,7 +588,7 @@ pub enum Event {
         matches_found: usize,
     },
     /// A workspace search reached a terminal state. Exactly one arrives per
-    /// [`Command::Search`], including one that was superseded before it started.
+    /// [`WorkspaceCommand::Search`], including one that was superseded before it started.
     SearchFinished {
         /// How many files the walk visited in total.
         files_scanned: usize,
@@ -502,7 +604,7 @@ pub enum Event {
         error: Option<String>,
     },
     /// One streamed batch of a workspace spelling scan, answering
-    /// [`Command::ScanWorkspaceSpelling`]. Batches arrive as the walk progresses so
+    /// [`WorkspaceCommand::ScanSpelling`]. Batches arrive as the walk progresses so
     /// a client can fill a list incrementally rather than waiting for the whole
     /// workspace; `files_scanned` is cumulative across the scan.
     SpellingScanProgress {
@@ -529,7 +631,7 @@ pub enum Event {
         text: String,
     },
     /// A batch of workspace codetag-scan results (see
-    /// [`Command::ScanWorkspaceTodos`]); `files_scanned` is cumulative.
+    /// [`WorkspaceCommand::ScanTodos`]); `files_scanned` is cumulative.
     TodoScanProgress {
         /// The codetags found since the previous batch.
         hits: Vec<TodoHit>,
@@ -560,7 +662,7 @@ pub enum Event {
         hits: Vec<SpellingHit>,
     },
     /// A workspace spelling scan reached a terminal state, answering
-    /// [`Command::ScanWorkspaceSpelling`]. Exactly one arrives per scan.
+    /// [`WorkspaceCommand::ScanSpelling`]. Exactly one arrives per scan.
     SpellingScanFinished {
         /// How many files the scan visited in total.
         files_scanned: usize,
@@ -569,15 +671,22 @@ pub enum Event {
         /// The scan stopped early because of a [`Command::Cancel`].
         cancelled: bool,
     },
-    /// A workspace replace-all finished, answering [`Command::SearchReplaceAll`].
+    /// A workspace replace-all finished, answering [`WorkspaceCommand::ReplaceAll`].
     SearchReplaced {
         /// The number of files written.
         files_changed: usize,
-        /// The total number of replacements applied.
+        /// The total number of replacements applied (in the files written).
         replacements: usize,
+        /// The files that had matches but could not be written back, left as
+        /// they were. Empty when every write succeeded.
+        failures: Vec<karet_search::WriteFailure>,
+        /// Why the replace stopped before visiting every root: an invalid regex,
+        /// an invalid glob, or no search worker to run it on. `None` on every
+        /// ordinary outcome, "nothing matched" included.
+        error: Option<String>,
     },
-    /// A package's seams were indexed, answering [`Command::IndexSeams`],
-    /// [`Command::ReindexSeams`], or [`Command::SetSeamConfiguration`].
+    /// A package's seams were indexed, answering [`SeamCommand::Index`],
+    /// [`SeamCommand::Reindex`], or [`SeamCommand::SetConfiguration`].
     ///
     /// Carries the whole flattened tree rather than a page of it: the presentation layer
     /// holds a copy so navigation, lens toggles, and rerooting are answered locally,
@@ -588,7 +697,7 @@ pub enum Event {
         /// Every node, flattened.
         nodes: Vec<SeamNodeView>,
     },
-    /// One package's seams are in, part-way through a [`Command::IndexSeams`].
+    /// One package's seams are in, part-way through a [`SeamCommand::Index`].
     ///
     /// Packages are read concurrently and reported as each finishes, so a repository's
     /// first rows appear long before its last crate is parsed. Arrival order is completion
@@ -612,7 +721,7 @@ pub enum Event {
         /// Modules in this package whose text could not be found.
         unresolved_modules: Vec<(String, Vec<PathBuf>)>,
     },
-    /// An index is complete, closing a [`Command::IndexSeams`].
+    /// An index is complete, closing a [`SeamCommand::Index`].
     ///
     /// Exactly one arrives per request, after every [`Event::SeamPackageIndexed`] for it.
     SeamIndexFinished {
@@ -629,12 +738,12 @@ pub enum Event {
         /// table, which also holds each package's manifest as an anchor.
         files: usize,
     },
-    /// A package could not be indexed, answering [`Command::IndexSeams`].
+    /// A package could not be indexed, answering [`SeamCommand::Index`].
     SeamIndexFailed {
         /// Why, phrased for the reader.
         message: String,
     },
-    /// A seam query was evaluated, answering [`Command::SeamQuery`].
+    /// A seam query was evaluated, answering [`SeamCommand::Query`].
     SeamQueryResult {
         /// The matching node identities.
         nodes: Vec<String>,
@@ -646,7 +755,7 @@ pub enum Event {
         /// unreadable query is never mistaken for a query that matched nothing.
         error: Option<SeamQueryError>,
     },
-    /// One seam node's edges, answering [`Command::SeamNode`].
+    /// One seam node's edges, answering [`SeamCommand::Node`].
     SeamNodeDetail {
         /// The node the detail belongs to.
         node: String,
@@ -660,7 +769,16 @@ pub enum Event {
         /// source beneath another node's relations.
         preview: Result<SeamPreview, String>,
     },
-    /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
+    /// The markdownlint autofixes were applied, answering
+    /// [`DocumentCommand::FixMarkdownLint`].
+    MarkdownLintFixed {
+        /// The document that was fixed.
+        doc: DocumentId,
+        /// How many lint issues were fixed; `0` when none was fixable and the
+        /// document is unchanged.
+        fixed: usize,
+    },
+    /// A dictionary word was persisted, answering [`WorkspaceCommand::AddDictionaryWord`].
     DictionaryWordAdded {
         /// The accepted word.
         word: String,
@@ -675,7 +793,7 @@ pub enum Event {
         /// The settings file that would be created.
         path: PathBuf,
     },
-    /// Repository/remote facts answering [`Command::RemoteFacts`].
+    /// Repository/remote facts answering [`VcsCommand::RemoteFacts`].
     RemoteFacts {
         /// The file the facts describe.
         path: PathBuf,
@@ -683,7 +801,7 @@ pub enum Event {
         /// repository, no origin remote, outside the worktree).
         facts: Result<RemoteFacts, String>,
     },
-    /// One status entry's displayable diff, answering [`Command::PrepareChange`].
+    /// One status entry's displayable diff, answering [`VcsCommand::PrepareChange`].
     ChangePrepared {
         /// The changed file's path, as requested.
         path: PathBuf,
@@ -693,15 +811,15 @@ pub enum Event {
         /// the entry no longer exists in that section).
         result: Result<Box<PreparedChange>, String>,
     },
-    /// A document converted to markdown, answering [`Command::ConvertDocument`].
+    /// A document converted to markdown, answering [`DocumentCommand::Convert`].
     DocumentConverted {
         /// The converted document's path, as requested.
         path: PathBuf,
         /// The markdown text, or a user-facing reason conversion failed.
         markdown: Result<String, String>,
     },
-    /// An ad-hoc prepared diff, answering [`Command::PrepareDiff`] or
-    /// [`Command::DiffWithRev`].
+    /// An ad-hoc prepared diff, answering [`VcsCommand::PrepareDiff`] or
+    /// [`VcsCommand::DiffWithRev`].
     DiffPrepared {
         /// The path the diff describes, as requested.
         path: PathBuf,
@@ -737,7 +855,7 @@ pub enum Event {
     },
     /// The read-only committed sides of an unresolved merge conflict.
     MergeConflictReady {
-        /// The path requested by [`Command::MergeConflict`].
+        /// The path requested by [`VcsCommand::MergeConflict`].
         path: PathBuf,
         /// The current branch's text (Git index stage 2).
         current: String,
@@ -770,15 +888,6 @@ pub enum Event {
         /// Human-readable failure, if the action failed.
         error: Option<String>,
     },
-    /// One page of open pull requests for a remote.
-    PullRequests {
-        /// Remote queried by the command.
-        remote: String,
-        /// Returned entries.
-        items: Vec<PullRequestSummary>,
-        /// Next page advertised by the forge.
-        next_page: Option<u32>,
-    },
     /// Current-buffer blame, safe to discard when document/version/cursor changed.
     BlameResult {
         /// Attributed document.
@@ -792,7 +901,7 @@ pub enum Event {
         attribution: Option<BlameAttribution>,
     },
     /// A document's uncommitted lines against `HEAD`, answering
-    /// [`Command::LineChanges`].
+    /// [`VcsCommand::LineChanges`].
     LineChanges {
         /// The marked document.
         doc: DocumentId,
@@ -808,7 +917,7 @@ pub enum Event {
     },
     /// Console output from a commit that is still running, in arrival order.
     ///
-    /// Emitted repeatedly between [`Command::Commit`] and its outcome, batched so
+    /// Emitted repeatedly between [`VcsCommand::Commit`] and its outcome, batched so
     /// a chatty hook does not cost one event per line. A commit with no hooks
     /// emits at most git's own summary, so a client that opens a console on the
     /// first of these never opens one for an ordinary commit.
@@ -833,13 +942,13 @@ pub enum Event {
     /// commit is one the user still means to make.
     CommitCancelled,
     /// A commit message was generated from the staged diff, answering
-    /// [`Command::GenerateCommitMessage`]. The client fills its commit input with it.
+    /// [`VcsCommand::GenerateCommitMessage`]. The client fills its commit input with it.
     CommitMessageGenerated {
         /// The generated commit message.
         message: String,
     },
     /// Generating a commit message did not produce one, answering
-    /// [`Command::GenerateCommitMessage`].
+    /// [`VcsCommand::GenerateCommitMessage`].
     ///
     /// Covers every non-success outcome the client should show — nothing
     /// staged, generation unavailable or disabled, the agent failing or timing
@@ -853,13 +962,13 @@ pub enum Event {
     /// Whether AI commit-message generation can run, and with what.
     ///
     /// Pushed at startup, whenever settings reload, and in answer to
-    /// [`Command::ProbeAiCommit`] — so a client can show a resolved,
+    /// [`VcsCommand::ProbeAiCommit`] — so a client can show a resolved,
     /// verified configuration before the user asks for a generation.
     AiCommitAvailability {
         /// The resolved configuration and per-agent probe results.
         status: Box<crate::api::AiCommitAvailability>,
     },
-    /// A page of the commit-history log, answering a [`Command::VcsLog`].
+    /// A page of the commit-history log, answering a [`VcsCommand::Log`].
     VcsLog {
         /// How many commits were skipped from `HEAD` (the page offset).
         skip: usize,
@@ -879,14 +988,14 @@ pub enum Event {
         /// The new commits, newest first.
         commits: Vec<Commit>,
     },
-    /// A commit's metadata, answering the first stage of [`Command::CommitDetail`].
+    /// A commit's metadata, answering the first stage of [`VcsCommand::CommitDetail`].
     CommitDetailReady {
         /// The commit metadata (message, author/committer, parents, signature). Boxed
         /// to keep this large payload from bloating every other [`Event`] variant.
         detail: Box<CommitDetail>,
     },
     /// A commit's full detail plus its file changes, answering the final stage of
-    /// [`Command::CommitDetail`].
+    /// [`VcsCommand::CommitDetail`].
     CommitReady {
         /// The commit metadata (message, author/committer, parents, signature). Boxed
         /// to keep this large payload from bloating every other [`Event`] variant.
@@ -895,7 +1004,7 @@ pub enum Event {
         /// for the diff view.
         changes: Vec<PreparedChange>,
     },
-    /// The diff between two points, answering [`Command::RangeChanges`].
+    /// The diff between two points, answering [`VcsCommand::RangeChanges`].
     RangeReady {
         /// The resolved "before" endpoint, for the compare header (e.g. `origin/main`,
         /// or a short hash).
@@ -907,7 +1016,7 @@ pub enum Event {
         /// The files that differ between the two points, prepared for the diff view.
         changes: Vec<PreparedChange>,
     },
-    /// A page of a file's history, answering [`Command::FileHistory`].
+    /// A page of a file's history, answering [`VcsCommand::FileHistory`].
     FileHistory {
         /// The file the history is for.
         path: PathBuf,
@@ -919,7 +1028,7 @@ pub enum Event {
         has_more: bool,
     },
     /// A commit's GitHub verification status, answering
-    /// [`Command::FetchCommitVerification`]. Emitted only on a successful fetch.
+    /// [`VcsCommand::FetchCommitVerification`]. Emitted only on a successful fetch.
     CommitVerification {
         /// The commit this verdict is for.
         hash: String,
@@ -938,9 +1047,12 @@ pub enum Event {
         /// Search result page.
         page: GithubPage<GithubIssue>,
     },
-    /// A page of pull-request search results.
+    /// A page of pull requests: search results for
+    /// [`GithubCommand::SearchPullRequests`](crate::api::GithubCommand::SearchPullRequests),
+    /// or a remote's open pull requests for
+    /// [`GithubCommand::ListOpenPullRequests`](crate::api::GithubCommand::ListOpenPullRequests).
     GithubPullRequests {
-        /// Search result page.
+        /// Result page.
         page: GithubPage<GithubPullRequest>,
     },
     /// Actions workflows and runs loaded together for a layout-stable screen.
@@ -979,18 +1091,18 @@ pub enum Event {
     },
     /// A GitHub operation failed without disrupting the session actor.
     GithubError {
-        /// Short operation name.
-        operation: String,
+        /// The operation that failed.
+        operation: GithubOperation,
         /// Safe error message.
         message: String,
     },
     /// Crash-recovery swaps from a previous session were found on startup. The UI
-    /// prompts the user to [`Command::RecoverSwaps`] or [`Command::DiscardSwaps`].
+    /// prompts the user to [`DocumentCommand::RecoverSwaps`] or [`DocumentCommand::DiscardSwaps`].
     SwapsFound {
         /// The recoverable swaps.
         swaps: Vec<SwapInfo>,
     },
-    /// A visualization graph is ready to render (answers [`Command::DependencyGraph`]).
+    /// A visualization graph is ready to render (answers [`WorkspaceCommand::DependencyGraph`]).
     GraphReady {
         /// Which visualization this is.
         kind: GraphKind,
@@ -1038,38 +1150,39 @@ pub enum Event {
     /// The adapter or debuggee produced output (unsolicited; text may carry
     /// ANSI styling — render through `karet_widgets::ansi`).
     DebugOutput {
-        /// The stream (`"console"`, `"stdout"`, `"stderr"`, …).
-        category: String,
+        /// The stream it arrived on.
+        category: DebugOutputCategory,
         /// The text, possibly multi-line.
         text: String,
     },
-    /// The stopped thread's call stack (answers [`Command::DebugStackTrace`];
+    /// The stopped thread's call stack (answers [`DebugCommand::StackTrace`];
     /// empty when the debuggee is not stopped).
     DebugStack {
         /// Top frame first.
-        frames: Vec<DebugFrame>,
+        frames: Vec<StackFrame>,
     },
-    /// One frame's variable scopes (answers [`Command::DebugScopes`]).
+    /// One frame's variable scopes (answers [`DebugCommand::Scopes`]).
     DebugScopes {
         /// The frame the scopes belong to.
-        frame: i64,
+        frame: FrameId,
         /// The scopes, adapter order.
         scopes: Vec<DebugScope>,
     },
-    /// One reference's children (answers [`Command::DebugVariables`]).
+    /// One reference's children (answers [`DebugCommand::Variables`]).
     DebugVariables {
         /// The handle the variables belong to.
-        reference: i64,
+        reference: VariablesRef,
         /// The variables, adapter order.
         variables: Vec<DebugVariable>,
     },
-    /// An evaluation result (answers [`Command::DebugEvaluate`]; a rejected
+    /// An evaluation result (answers [`DebugCommand::Evaluate`]; a rejected
     /// expression answers with the adapter's error text as the result).
     DebugEvaluated {
         /// The rendered result (or error text).
         result: String,
-        /// Non-zero when the result has fetchable children.
-        reference: i64,
+        /// The handle that fetches the result's children;
+        /// [`VariablesRef::NONE`] for a scalar.
+        reference: VariablesRef,
     },
     /// The notebook kernel's state (unsolicited: starting, ready, running,
     /// interrupted, or failed).
@@ -1097,7 +1210,7 @@ pub enum Event {
         errored: bool,
     },
     /// The acknowledged breakpoints of one file (answers
-    /// [`Command::DebugSetBreakpoints`]; also unsolicited on late
+    /// [`DebugCommand::SetBreakpoints`]; also unsolicited on late
     /// verification).
     DebugBreakpoints {
         /// The source file.

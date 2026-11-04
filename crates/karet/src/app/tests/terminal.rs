@@ -121,7 +121,7 @@ fn ctrl_backtick_opens_a_terminal_then_toggles_back_and_forth() {
     let (mut app, _events) = terminal_app("cat");
     send_key(&mut app, KeyCode::Char('`'), KeyModifiers::CONTROL);
     assert_eq!(active_title(&app), "Terminal 1");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.focus_target(), FocusTarget::Terminal);
 
     // From the terminal, the same key goes back to the editor…
@@ -157,11 +157,15 @@ fn app_chords_that_belong_to_the_shell_do_not_fire_in_a_terminal() {
     app.dispatch(Command::ToggleTerminal);
     send_key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
     assert!(
-        app.overlay.is_none(),
+        app.keyboard.overlay().is_none(),
         "Ctrl+P is the shell's, not Quick Open"
     );
     send_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    assert_eq!(app.focus, Focus::Editor, "Tab completes in the shell");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Editor,
+        "Tab completes in the shell"
+    );
     send_key(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
     assert!(app.sidebar_visible, "Ctrl+B moves the shell's cursor");
     // The terminal layer keeps the escape hatches.
@@ -171,7 +175,7 @@ fn app_chords_that_belong_to_the_shell_do_not_fire_in_a_terminal() {
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     );
     assert!(
-        app.overlay.is_some(),
+        app.keyboard.overlay().is_some(),
         "Ctrl+Shift+P still opens the palette"
     );
 }

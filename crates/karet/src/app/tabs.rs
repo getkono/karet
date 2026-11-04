@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_filetype::FileKind;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use karet_widgets::PaneId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::StoredPane;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::path_under;
+use crate::paths::rebase_path;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// The activation history's hard ceiling. It only bounds memory in a very long
 /// session: entries this old are far past any "put me back where I was" reach, and
@@ -23,7 +45,7 @@ impl App {
             self.select_tab(idx);
             return;
         }
-        let tab = workspace::open_file(path);
+        let tab = Tab::open(path);
         self.push_tab(tab);
     }
 
@@ -54,11 +76,11 @@ impl App {
             self.set_active(idx);
             self.find_open = false;
             if steal_focus {
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
             return;
         }
-        let mut tab = workspace::open_file(path);
+        let mut tab = Tab::open(path);
         tab.is_preview = true;
         self.install_preview_tab(tab, steal_focus);
     }
@@ -91,10 +113,10 @@ impl App {
         };
         // Restored rather than suppressed: the move to the editor is spread across
         // `select_tab`/`push_tab`, so the one place that must not keep it is here.
-        let previous = self.focus;
+        let previous = self.keyboard.focus();
         self.open_path(&target);
         if !steal_focus {
-            self.focus = previous;
+            self.keyboard.focus_on(previous);
         }
         // The buffer is cloned out first (an O(1) rope share) so the tab can be
         // borrowed mutably to move its caret.
@@ -104,6 +126,12 @@ impl App {
         };
         if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
             tab.editor.goto(&buffer, position);
+            // A tab still waiting for its text would clamp the jump to the top
+            // of the empty buffer; the first snapshot places the caret instead.
+            if tab.fill_caret.is_some() {
+                tab.fill_caret = Some(position);
+                tab.fill_view = None;
+            }
         }
     }
 
@@ -162,10 +190,10 @@ impl App {
             }) => path.clone(),
             _ => return,
         };
-        let mut tab = workspace::open_file_ignoring_size(&path);
+        let mut tab = Tab::open_ignoring_size(&path);
         tab.view = self.alloc_view();
         self.tabs[self.active] = tab;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.register_doc(self.active);
     }
 
@@ -200,9 +228,9 @@ impl App {
     /// view is what strands a caller from another view: the tab becomes active and
     /// takes the keyboard while staying invisible, and `FocusTarget::from` then routes
     /// keys to whatever view is still on screen.
-    fn show_editor(&mut self) {
+    pub(super) fn show_editor(&mut self) {
         self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Allocate a fresh [`ViewId`] for a newly-opened view.
@@ -341,7 +369,7 @@ impl App {
                 continue;
             };
             let doc = Self::tab_doc(tab);
-            retarget_tab_path(tab, &next);
+            tab.retarget(&next);
             if let Some(doc) = doc {
                 docs.push((doc, next));
             }
@@ -349,7 +377,10 @@ impl App {
         docs.sort_by_key(|(doc, _)| *doc);
         docs.dedup_by_key(|(doc, _)| *doc);
         for (doc, path) in docs {
-            self.send_command(SessionCommand::RetargetDocument { doc, path });
+            // The session may hand the moved document to another language's
+            // server, so what the old one said it formats on no longer holds.
+            self.on_type.triggers.remove(&doc);
+            self.send_command(DocumentCommand::Retarget { doc, path });
         }
     }
 
@@ -361,11 +392,12 @@ impl App {
         for doc in stale {
             self.open_docs.remove(&doc);
             self.auto_save_pending.remove(&doc);
-            self.completion_chars.remove(&doc);
+            self.completion.chars.remove(&doc);
             self.signature.chars.remove(&doc);
+            self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
-                let _ = backend.send(id, SessionCommand::CloseDocument { doc });
+                let _ = backend.send(id, DocumentCommand::Close { doc }.into());
             }
         }
     }
@@ -568,12 +600,12 @@ impl App {
                 // both the layout and `stored`: the moment `focus_recent_pane` needs.
                 self.focus_recent_pane();
                 self.load_focused();
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             }
         } else if self.tabs.len() == 1 {
             self.tabs = vec![Tab::welcome()];
             self.set_active(0);
-            self.focus = Focus::Sidebar;
+            self.keyboard.focus_sidebar();
         } else if index == self.active {
             // The tab in front is going. Fall back to the neighbour that slides into
             // its slot only when the history knows none of the survivors.
@@ -639,7 +671,7 @@ impl App {
         self.tabs.clear();
         self.tabs.push(Tab::welcome());
         self.set_active(0);
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.find_open = false;
         self.reconcile_open_docs();
     }
@@ -652,6 +684,26 @@ impl App {
                 return;
             }
         }
+    }
+
+    /// Set the active document tab's current page (clamped to the page range). A
+    /// no-op without the `pdf` feature, where no document tab exists.
+    pub(super) fn set_document_page(&mut self, page: usize) {
+        #[cfg(feature = "pdf")]
+        if let Some(Tab {
+            kind:
+                TabKind::Document {
+                    page: current,
+                    page_count,
+                    ..
+                },
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            *current = page.min(page_count.saturating_sub(1));
+        }
+        #[cfg(not(feature = "pdf"))]
+        let _ = page;
     }
 
     /// Fill the reserved DOCX preview owned by the answering conversion request
@@ -705,17 +757,11 @@ impl App {
                 },
                 Err(message) => {
                     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                    let kind = if path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"))
-                    {
-                        FileKind::Notebook
-                    } else {
-                        FileKind::Docx
-                    };
+                    // The registry routes DOCX and notebooks by extension
+                    // alone, so no bytes are needed to name what failed.
                     tab.kind = TabKind::Placeholder {
                         path: path.to_path_buf(),
-                        kind,
+                        kind: karet_filetype::classify_ignoring_size(path, &[]),
                         dims: None,
                         len,
                     };

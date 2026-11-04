@@ -7,6 +7,7 @@
 //! launched as a bare `<id>` off `PATH`, and an Astro server launched with no
 //! TypeScript SDK.
 
+use serde_json::Value;
 use serde_json::json;
 
 use super::*;
@@ -158,6 +159,52 @@ async fn a_companion_the_user_disabled_is_not_started() -> TestResult {
     Ok(())
 }
 
+/// The `initializationOptions` the opted-in Copilot companion is launched
+/// with, given its `lsp.servers` entry's own.
+async fn copilot_initialization_options(user: Option<Value>) -> Result<Option<Value>, String> {
+    let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let command = dir.path().join("copilot").to_string_lossy().into_owned();
+    let mut settings = LspSettings::default();
+    settings.servers.insert(
+        crate::lsp::catalog::COPILOT.to_owned(),
+        LspServer {
+            command: command.clone(),
+            initialization_options: user,
+            ..LspServer::default()
+        },
+    );
+    let (mut manager, _updates, mut launched) = manager_with_recorder(settings, dir.path());
+    let _ = manager.document_opened(
+        Some("python"),
+        Some("python"),
+        &dir.path().join("app.py"),
+        1,
+        || "x = 1\n".into(),
+    );
+    let launches = observed_launches(&mut launched, 2).await;
+    let copilot = launches.into_iter().find(|spec| spec.command == command);
+    let copilot = copilot.ok_or("the opted-in Copilot was never launched")?;
+    Ok(copilot.options.initialization_options)
+}
+
+/// Copilot refuses to start without being told which editor it serves, so
+/// karet names itself -- unless the user gave options of their own, which
+/// replace karet's whole rather than merging into them.
+#[tokio::test]
+async fn copilot_is_told_the_editor_unless_the_user_says_otherwise() -> TestResult {
+    let info = json!({"name": "karet", "version": env!("CARGO_PKG_VERSION")});
+    assert_eq!(
+        copilot_initialization_options(None).await?,
+        Some(json!({"editorInfo": info, "editorPluginInfo": info}))
+    );
+    let own = json!({"editorInfo": {"name": "mine", "version": "1"}});
+    assert_eq!(
+        copilot_initialization_options(Some(own.clone())).await?,
+        Some(own)
+    );
+    Ok(())
+}
+
 /// An id karet has never heard of and the user never configured has no launch
 /// at all — guessing at `<id>` with no arguments was how the bare launch got in.
 #[tokio::test]
@@ -258,7 +305,7 @@ async fn a_project_local_astro_is_given_the_project_typescript_sdk() -> TestResu
     let spec = launches.first().ok_or("astro-ls was never launched")?;
     assert_eq!(spec.command, bin.join("astro-ls").to_string_lossy());
     assert_eq!(
-        spec.initialization_options,
+        spec.options.initialization_options,
         Some(json!({ "typescript": { "tsdk": tsdk.to_string_lossy() } })),
         "a project-local Astro was launched without a TypeScript SDK"
     );
@@ -318,7 +365,7 @@ fn a_managed_astro_keeps_the_sdk_its_install_recorded() -> TestResult {
     let astro = LanguageServerId::new("astro-language-server");
 
     assert!(manager.astro_launch_gate(&mut spec, Some(&astro), "astro", Path::new("/nowhere")));
-    assert_eq!(spec.initialization_options, Some(options));
+    assert_eq!(spec.options.initialization_options, Some(options));
     Ok(())
 }
 

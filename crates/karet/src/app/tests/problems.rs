@@ -116,12 +116,12 @@ fn f8_and_shift_f8_walk_the_active_files_problems_and_wrap() {
             diagnostic(2, 8, Severity::Warning, "second"),
         ],
     );
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     send_key(&mut app, KeyCode::F(8), KeyModifiers::NONE);
     assert_eq!(caret(&app), LineCol::new(1, 8));
     assert_eq!(
-        app.focus,
+        app.keyboard.focus(),
         Focus::Editor,
         "the walk hands focus to the editor"
     );
@@ -167,11 +167,11 @@ fn enter_on_a_problem_row_puts_the_caret_on_it() {
     publish(&mut app, vec![diagnostic(2, 8, Severity::Warning, "w")]);
     app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
     assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(caret(&app), LineCol::new(2, 8));
 }
 
@@ -214,7 +214,7 @@ fn reopening_the_panel_lands_on_the_list_not_an_abandoned_filter_edit() {
     app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
     send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
     assert!(app.problems.filter_input);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
     assert!(!app.problems.filter_input);
@@ -225,13 +225,13 @@ fn reopening_the_panel_lands_on_the_list_not_an_abandoned_filter_edit() {
 /// there) after `leave` moved focus out mid-filter: the keys drive the list, so
 /// `j` moves the selection instead of joining the filter.
 fn tab_back_lands_on_the_list(app: &mut App) {
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     send_key(
         app,
         KeyCode::Char('e'),
         KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     );
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.input_context().modal, None);
     let before = app.problems.selection.cursor();
     send_key(app, KeyCode::Char('j'), KeyModifiers::NONE);
@@ -278,14 +278,14 @@ fn clicking_back_into_the_panel_does_not_resume_an_abandoned_filter_edit() {
     let mut app = bound_app();
     app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
     send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
 
     let rows = screen(&mut app, 120, 12);
     let Some(y) = rows.iter().position(|row| row.contains("PROBLEMS")) else {
         panic!("no panel title painted:\n{}", rows.join("\n"));
     };
     app.handle_sidebar_click(1, u16::try_from(y).unwrap_or_default(), KeyModifiers::NONE);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert!(!app.problems.filter_input);
 }
 
@@ -319,7 +319,7 @@ fn the_status_bar_counts_are_painted_and_open_the_panel_when_clicked() {
             diagnostic(3, 0, Severity::Warning, "w2"),
         ],
     );
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.sidebar_panel = SidebarPanel::Explorer;
 
     let buffer = frame(&mut app, 120, 12);

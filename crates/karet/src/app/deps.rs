@@ -3,12 +3,18 @@
 //! as `Event::ManifestHints` and render as end-of-line annotations.
 
 use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_editor::editing;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
 use karet_session::ManifestHint;
 use karet_session::ManifestHintState;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The active tab's manifest hints, when it is a checked manifest at the
@@ -79,7 +85,7 @@ impl App {
         // Only once the request is actually out: a card raised for a command a
         // closed backend never took has nothing left to retire it.
         if self
-            .send(SessionCommand::RefreshManifestHints { doc })
+            .send(DocumentCommand::RefreshManifestHints { doc })
             .is_some()
         {
             self.notify_progress(

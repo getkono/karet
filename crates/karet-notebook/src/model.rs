@@ -120,8 +120,8 @@ impl Source {
 pub enum Output {
     /// `stdout`/`stderr` text.
     Stream {
-        /// The stream name (`stdout` or `stderr`).
-        name: String,
+        /// Which stream the text was written to.
+        name: StreamName,
         /// The text, in whichever encoding the file used.
         #[serde(default)]
         text: Source,
@@ -170,6 +170,55 @@ pub enum Output {
     },
 }
 
+/// The stream a [`Output::Stream`] was written to.
+///
+/// nbformat names the two standard streams; it types the field as a plain
+/// string, so any other name is kept verbatim in [`StreamName::Other`] and
+/// written back unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamName {
+    /// Standard output (`"stdout"`).
+    Stdout,
+    /// Standard error (`"stderr"`).
+    Stderr,
+    /// A name nbformat does not define, preserved for round-trip.
+    Other(String),
+}
+
+impl StreamName {
+    /// The name as nbformat writes it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Other(name) => name,
+        }
+    }
+}
+
+impl From<String> for StreamName {
+    fn from(name: String) -> Self {
+        match name.as_str() {
+            "stdout" => Self::Stdout,
+            "stderr" => Self::Stderr,
+            _ => Self::Other(name),
+        }
+    }
+}
+
+impl Serialize for StreamName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from)
+    }
+}
+
 /// `Option<Option<T>>` over the wire: distinguishes an absent key from a
 /// present `null` (a not-yet-executed code cell), which plain `Option`
 /// cannot round-trip.
@@ -214,6 +263,23 @@ mod tests {
             serde_json::to_value(&lines).unwrap_or_default(),
             json!(["a\n", "b\n"])
         );
+    }
+
+    /// The two standard streams decode to their variants, and a name nbformat
+    /// does not define survives a round trip verbatim.
+    #[test]
+    fn stream_names_decode_and_round_trip() -> Result<(), serde_json::Error> {
+        for (wire, name) in [
+            ("stdout", StreamName::Stdout),
+            ("stderr", StreamName::Stderr),
+            ("debug", StreamName::Other("debug".to_owned())),
+        ] {
+            let decoded: StreamName = serde_json::from_value(json!(wire))?;
+            assert_eq!(decoded, name);
+            assert_eq!(decoded.as_str(), wire);
+            assert_eq!(serde_json::to_value(&decoded)?, json!(wire));
+        }
+        Ok(())
     }
 
     #[test]

@@ -61,8 +61,27 @@ async fn the_handshake_declares_pull_diagnostics_with_related_documents() -> Tes
     let params = server_task.await?;
     let declared = &params["capabilities"]["textDocument"]["diagnostic"];
     assert_eq!(declared["relatedDocumentSupport"], json!(true));
-    // No `workspace/diagnostic/refresh` is answered, so none is invited.
-    assert!(params["capabilities"]["workspace"]["diagnostics"].is_null());
+    // `workspace/diagnostic/refresh` is answered, under the spec's member
+    // name and the one `lsp_types`-built servers read.
+    let workspace = &params["capabilities"]["workspace"];
+    assert_eq!(workspace["diagnostics"]["refreshSupport"], json!(true));
+    assert_eq!(workspace["diagnostic"]["refreshSupport"], json!(true));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_diagnostic_refresh_is_answered_and_surfaced() -> TestResult {
+    let (client, mut server) = connect(pulling()).await?;
+    let mut refreshes = client.refreshes();
+    server
+        .send(&json!({"jsonrpc": "2.0", "id": 4, "method": "workspace/diagnostic/refresh"}))
+        .await;
+    let answer = server.recv().await;
+    assert_eq!(answer["id"], json!(4));
+    assert!(answer.get("error").is_none(), "refresh refused: {answer}");
+    let surfaced =
+        tokio::time::timeout(std::time::Duration::from_secs(5), refreshes.recv()).await??;
+    assert_eq!(surfaced, crate::ServerRefresh::Diagnostics);
     Ok(())
 }
 

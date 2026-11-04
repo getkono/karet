@@ -10,7 +10,6 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredTree;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
-use karet_treesitter::language_id_from_injection_name;
 use karet_treesitter::outline_query;
 
 mod names;
@@ -59,17 +58,20 @@ impl OutlineExtractor {
     /// Host and injected declarations share document coordinates, so component
     /// scripts naturally nest under host sections. Markdown and MDX are deliberate
     /// exceptions: fenced examples are illustrative code, not document symbols.
-    /// MDX keeps its heading tree and merges its own declarations at the top level.
+    /// The same holds for any layer nested inside embedded markdown, such as a
+    /// Rust doc comment's examples. MDX keeps its heading tree and merges its own
+    /// declarations at the top level.
     #[must_use]
     pub fn analyze_layers(&mut self, tree: &LayeredTree, text: &str) -> Vec<Symbol> {
         if let Some(symbols) = structured::analyze(tree.root().language(), text) {
             return symbols;
         }
         let root_candidates = self.candidates(tree.root(), text);
-        if language_id_from_injection_name("markdown") == Some(tree.root().language()) {
+        let root = Some(tree.root().language());
+        if root == karet_treesitter::languages::MARKDOWN {
             return finish(root_candidates);
         }
-        if language_id_from_injection_name("mdx") == Some(tree.root().language()) {
+        if root == karet_treesitter::languages::MDX {
             let (headings, declarations) = root_candidates
                 .into_iter()
                 .partition(|candidate| candidate.heading_level.is_some());
@@ -80,8 +82,16 @@ impl OutlineExtractor {
         }
 
         let mut candidates = root_candidates;
+        let markdown: Vec<(&SyntaxTree, Vec<Span>)> = tree
+            .children()
+            .iter()
+            .filter(|layer| Some(layer.language()) == karet_treesitter::languages::MARKDOWN)
+            .map(|layer| (layer, layer.included_ranges()))
+            .collect();
         for layer in tree.children() {
-            candidates.extend(self.candidates(layer, text));
+            if !inside_markdown(&markdown, layer) {
+                candidates.extend(self.candidates(layer, text));
+            }
         }
         finish(candidates)
     }
@@ -153,6 +163,26 @@ impl OutlineExtractor {
         }
         candidates
     }
+}
+
+/// Whether `layer` sits inside a markdown layer: a code example in a doc comment
+/// (or any other embedded markdown), whose declarations illustrate code rather than
+/// declare it. The same rule a markdown root applies to its own fenced examples.
+///
+/// `markdown` holds each markdown layer with its included ranges, collected once per
+/// document: each range list is ascending and disjoint, so a binary search tests the
+/// layer's start, and the whole pass stays linear in the layer count.
+fn inside_markdown(markdown: &[(&SyntaxTree, Vec<Span>)], layer: &SyntaxTree) -> bool {
+    let start = layer.span().start;
+    markdown.iter().any(|(outer, ranges)| {
+        !std::ptr::eq(*outer, layer) && {
+            let after = ranges.partition_point(|range| range.start <= start);
+            after
+                .checked_sub(1)
+                .and_then(|index| ranges.get(index))
+                .is_some_and(|range| start < range.end)
+        }
+    })
 }
 
 fn finish(mut candidates: Vec<Candidate>) -> Vec<Symbol> {
@@ -309,13 +339,7 @@ mod tests {
         expected: &[&str],
     ) -> TestResult<Vec<Symbol>> {
         let extracted = symbols(path, source)?;
-        let actual = names(&extracted);
-        for name in expected {
-            assert!(
-                actual.contains(name),
-                "{path}: missing {name:?}: {extracted:#?}"
-            );
-        }
+        assert_eq!(names(&extracted), expected, "{path}: {extracted:#?}");
         Ok(extracted)
     }
 

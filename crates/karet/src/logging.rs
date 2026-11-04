@@ -14,11 +14,8 @@ use tracing_subscriber::EnvFilter;
 const RETAINED_LOG_FILES: usize = 7;
 
 fn directory() -> color_eyre::Result<PathBuf> {
-    let directories = directories::ProjectDirs::from("", "getkono", "karet")
+    let state = karet_session::dirs::state_dir()
         .ok_or_eyre("platform application directories are unavailable")?;
-    let state = directories
-        .state_dir()
-        .unwrap_or_else(|| directories.data_local_dir());
     Ok(state.join("logs"))
 }
 

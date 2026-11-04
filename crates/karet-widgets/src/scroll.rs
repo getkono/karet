@@ -551,28 +551,6 @@ pub fn draw_scrollable_lines(
     )
 }
 
-/// Render content whose vertical wheel is reserved for surrounding navigation,
-/// while still exposing horizontal overflow.
-pub fn draw_horizontally_scrollable_lines(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    column: &mut u16,
-) -> PaintedTracks {
-    let (area, tracks) = reserve_tracks(area, ScrollAxes::HORIZONTAL);
-    let content_width = lines.iter().map(line_width).max().unwrap_or_default();
-    let max_column = content_width.saturating_sub(usize::from(area.width));
-    *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-    f.render_widget(Paragraph::new(lines).scroll((0, *column)), area);
-    tracks.paint(
-        f.buffer_mut(),
-        ScrollbarStyles::from_theme(theme),
-        ScrollExtent::default(),
-        ScrollExtent::new(content_width, usize::from(*column), usize::from(area.width)),
-    )
-}
-
 /// The display width of a styled line in terminal cells.
 #[must_use]
 pub fn line_width(line: &Line<'_>) -> usize {

@@ -5,7 +5,7 @@
 //! [`BlameGroup`]; each group carries the **full** commit message (not just the
 //! hash); and blame can be narrowed to the function or block enclosing a line via
 //! tree-sitter. Every model derives [`serde::Serialize`], so the issue's
-//! `{lines, commit_hash, message, author, date}` shape is one [`to_json`] call away
+//! `{lines, commit_hash, message, author, date, author_time}` shape is one [`to_json`] call away
 //! — ready to feed to another tool or an AI agent.
 //!
 //! # Backend
@@ -17,6 +17,13 @@
 //! follows its **own** SemVer line starting at `1.0.0`. See the crate `README.md`.
 
 mod blame;
+
+/// Compiles the crate `README.md` examples as doctests, so the published usage
+/// snippet cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(feature = "treesitter")]
 mod treesitter;
 
@@ -36,7 +43,7 @@ pub struct LineRange {
 }
 
 /// A run of consecutive lines attributed to a single commit — the unit of semantic
-/// blame. Serializes to `{lines, commit_hash, message, author, date}`.
+/// blame. Serializes to `{lines, commit_hash, message, author, date, author_time}`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlameGroup {
     /// The grouped, consecutive lines (1-based, inclusive).
@@ -47,31 +54,32 @@ pub struct BlameGroup {
     pub message: String,
     /// The commit author's name.
     pub author: String,
-    /// The commit's author date, ISO-8601 (falls back to the raw git timestamp).
+    /// The commit's author date for display, ISO-8601 (falls back to the raw
+    /// git timestamp). Compute with [`author_time`](Self::author_time) rather
+    /// than parsing this.
     pub date: String,
+    /// The commit's author time in seconds since the Unix epoch, read from the
+    /// commit's own timestamp. A timestamp git cannot read counts as `0`, the
+    /// epoch, as `git log` shows it.
+    pub author_time: i64,
 }
 
 impl BlameGroup {
     /// An abbreviated, 7-character commit hash for display.
+    ///
+    /// A `commit_hash` that is not ASCII hex (possible only through a
+    /// hand-built or deserialized group) is returned whole when byte 7 does
+    /// not fall on a character boundary, rather than panicking.
     #[must_use]
     pub fn short_hash(&self) -> &str {
         let n = self.commit_hash.len().min(7);
-        &self.commit_hash[..n]
+        self.commit_hash.get(..n).unwrap_or(&self.commit_hash)
     }
 
     /// The first line (subject) of the commit message.
     #[must_use]
     pub fn summary(&self) -> &str {
         self.message.lines().next().unwrap_or("")
-    }
-
-    /// The author's timestamp in seconds since the Unix epoch, when `date` is a
-    /// valid Git or ISO-8601 date.
-    #[must_use]
-    pub fn author_time(&self) -> Option<i64> {
-        gix::date::parse(&self.date, None)
-            .ok()
-            .map(|time| time.seconds)
     }
 }
 
@@ -94,11 +102,16 @@ pub enum BlameError {
     Json(String),
 }
 
-/// Semantic blame narrowed to the function/block enclosing `line` (0-based).
+/// Semantic blame narrowed to the function/block enclosing `line` (1-based, the
+/// same numbering as [`BlameGroup::lines`]).
 ///
-/// Parses `source` with tree-sitter to find the innermost enclosing function, then
-/// clips whole-file blame to that line range. Falls back to the whole file when the
-/// language is unsupported or no enclosing function is found.
+/// With the `treesitter` feature, parses `source` with tree-sitter to find the
+/// innermost enclosing function, then clips whole-file blame to that line range.
+/// Falls back to the whole file when the language is unsupported (no matching
+/// `lang-*` feature), no enclosing function is found, or `line` is `0` or past
+/// the end of `source`. Without the `treesitter`
+/// feature, `source` and `line` are ignored and this always returns whole-file
+/// blame, the same as [`blame_file`].
 ///
 /// # Errors
 /// Returns [`BlameError`] if the repository can't be opened or blamed — including
@@ -157,6 +170,7 @@ mod tests {
             message: "subject line\n\nbody".to_string(),
             author: "Jane Doe".to_string(),
             date: "2026-03-16T00:00:00+00:00".to_string(),
+            author_time: 1_773_619_200,
         }
     }
 
@@ -174,13 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn author_time_parses_iso_and_raw_git_dates() {
-        let mut g = group(1, 1, "abc");
-        assert_eq!(g.author_time(), Some(1_773_619_200));
-        g.date = "1773619200 +0000".to_string();
-        assert_eq!(g.author_time(), Some(1_773_619_200));
-        g.date = "not a date".to_string();
-        assert_eq!(g.author_time(), None);
+    fn short_hash_does_not_panic_off_a_char_boundary() {
+        // `é` spans bytes 6..8, so byte 7 is inside it.
+        let g = group(1, 1, "abcdeféxyz");
+        assert_eq!(g.short_hash(), "abcdeféxyz");
+        // A multi-byte char ending exactly at byte 7 still truncates.
+        let g = group(1, 1, "abcdeéxyz");
+        assert_eq!(g.short_hash(), "abcdeé");
     }
 
     #[test]
@@ -216,15 +230,50 @@ mod tests {
 
     #[test]
     fn json_shape_matches_issue() -> Result<(), BlameError> {
-        let json = to_json(&[group(42, 58, "abc123")])?;
-        // Field names line up with the issue's structured output.
-        assert!(json.contains("\"lines\""));
-        assert!(json.contains("\"commit_hash\""));
-        assert!(json.contains("\"message\""));
-        assert!(json.contains("\"author\""));
-        assert!(json.contains("\"date\""));
-        assert!(json.contains("\"start\": 42"));
-        assert!(json.contains("\"end\": 58"));
+        let groups = [group(42, 58, "abc123")];
+        let json = to_json(&groups)?;
+        // The whole document, so a renamed, reordered, nested or dropped field
+        // fails — the shape is the contract downstream tools parse.
+        let want = r#"[
+  {
+    "lines": {
+      "start": 42,
+      "end": 58
+    },
+    "commit_hash": "abc123",
+    "message": "subject line\n\nbody",
+    "author": "Jane Doe",
+    "date": "2026-03-16T00:00:00+00:00",
+    "author_time": 1773619200
+  }
+]"#;
+        assert_eq!(json, want);
+        // And it reads back to the same groups.
+        let back: Vec<BlameGroup> =
+            serde_json::from_str(&json).map_err(|e| BlameError::Json(e.to_string()))?;
+        assert_eq!(back, groups);
+        assert_eq!(to_json(&[])?, "[]");
         Ok(())
+    }
+
+    /// Each error's message is part of what a caller shows; pin them.
+    #[test]
+    fn error_messages_are_exact() {
+        assert_eq!(
+            BlameError::NotARepository.to_string(),
+            "not a git repository"
+        );
+        assert_eq!(
+            BlameError::NotCommitted("src/a.rs".into()).to_string(),
+            "no committed history for src/a.rs yet"
+        );
+        assert_eq!(
+            BlameError::Git("boom".into()).to_string(),
+            "git error: boom"
+        );
+        assert_eq!(
+            BlameError::Json("bad".into()).to_string(),
+            "json error: bad"
+        );
     }
 }

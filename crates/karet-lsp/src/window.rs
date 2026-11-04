@@ -261,14 +261,18 @@ impl ServerMessage {
 /// Answer it with [`respond`](Self::respond). Dropping it unanswered replies
 /// `null` (no action chosen), so a consumer that gives up never leaves the
 /// server waiting.
+///
+/// The fields are read through getters so the titles shown and the actions
+/// answered cannot drift apart: [`respond`](Self::respond) indexes the same
+/// list [`actions`](Self::actions) returns.
 #[derive(Debug)]
 pub struct MessageRequest {
     /// How urgent.
-    pub level: MessageLevel,
+    level: MessageLevel,
     /// The question, verbatim.
-    pub message: String,
+    message: String,
     /// The titles of the actions offered, in the server's order.
-    pub actions: Vec<String>,
+    actions: Vec<String>,
     /// The actions exactly as sent, so the chosen one goes back with any extra
     /// properties the server attached to it.
     raw_actions: Vec<Value>,
@@ -276,6 +280,25 @@ pub struct MessageRequest {
 }
 
 impl MessageRequest {
+    /// How urgent the question is.
+    #[must_use]
+    pub fn level(&self) -> MessageLevel {
+        self.level
+    }
+
+    /// The question, verbatim.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The titles of the actions offered, in the server's order. An index into
+    /// this slice is what [`respond`](Self::respond) takes.
+    #[must_use]
+    pub fn actions(&self) -> &[String] {
+        &self.actions
+    }
+
     /// Tell the server which action was chosen: an index into
     /// [`actions`](Self::actions), or `None` for none. An index out of range
     /// answers as `None`.

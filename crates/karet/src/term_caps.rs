@@ -51,6 +51,11 @@ pub(crate) struct TerminalCapabilities {
     pub undercurl: bool,
     /// How many colours the terminal shows (see [`probe_color_depth`]).
     pub color_depth: ColorDepth,
+    /// Whether the environment leaves Kitty unicode placeholders drawable (see
+    /// [`probe_placeholders`]). Only meaningful together with Kitty graphics:
+    /// read [`kitty_placeholders`](Self::kitty_placeholders) for the combined
+    /// answer.
+    pub placeholders: bool,
 }
 
 impl TerminalCapabilities {
@@ -74,8 +79,15 @@ impl TerminalCapabilities {
         self.effective_graphics() == GraphicsProtocol::Kitty
     }
 
+    /// Whether Kitty images placed through unicode placeholders (the markdown
+    /// preview's images) are drawn: the terminal speaks Kitty graphics and the
+    /// environment does not name one that drops the placeholders.
+    #[must_use]
+    pub(crate) fn kitty_placeholders(&self) -> bool {
+        self.kitty_graphics_supported() && self.placeholders
+    }
+
     /// Whether OSC 22 pointer-shape hints were confirmed supported.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn pointer_shapes_supported(&self) -> bool {
         self.osc22_pointer_shape == Some(true)
@@ -98,14 +110,54 @@ pub(crate) fn supports_kitty_keyboard() -> bool {
 /// any input reader thread starts, or the replies leak into the UI as keystrokes.
 #[must_use]
 pub(crate) fn probe_all() -> TerminalCapabilities {
+    probe_with_keyboard(supports_kitty_keyboard())
+}
+
+/// [`probe_all`] for a caller that already asked for kitty keyboard support
+/// (the app gates on it before entering raw mode), so the query is not sent
+/// twice. Same raw-mode and before-input-thread constraint as [`probe_all`].
+#[must_use]
+pub(crate) fn probe_with_keyboard(keyboard_enhancement: bool) -> TerminalCapabilities {
     TerminalCapabilities {
-        keyboard_enhancement: supports_kitty_keyboard(),
-        graphics_env: image::detect_protocol(),
+        keyboard_enhancement,
         kitty_graphics: probe_kitty_graphics(PROBE_TIMEOUT),
         osc22_pointer_shape: probe_osc22_pointer_shape(PROBE_TIMEOUT),
+        ..probe_env()
+    }
+}
+
+/// The capabilities the environment alone answers, without a handshake: the
+/// graphics heuristic, undercurl, colour depth, and placeholders. The keyboard
+/// is unconfirmed and both handshakes unanswered. Needs no raw mode, so a
+/// headless app starts from it.
+#[must_use]
+pub(crate) fn probe_env() -> TerminalCapabilities {
+    TerminalCapabilities {
+        keyboard_enhancement: false,
+        graphics_env: image::detect_protocol(),
+        kitty_graphics: None,
+        osc22_pointer_shape: None,
         undercurl: probe_undercurl(),
         color_depth: probe_color_depth(),
+        placeholders: probe_placeholders(),
     }
+}
+
+/// Whether a terminal speaking the Kitty graphics protocol draws its unicode
+/// placeholders too. WezTerm and Konsole transmit and place Kitty images but draw no
+/// placeholders, and tmux drops the transmissions (its passthrough is off by default)
+/// while forwarding the placeholder cells — either way the image would be blank, so
+/// they keep halfblocks.
+#[must_use]
+pub(crate) fn probe_placeholders() -> bool {
+    placeholders_in(|key| std::env::var(key).ok())
+}
+
+/// [`probe_placeholders`], reading the environment through `var`.
+pub(crate) fn placeholders_in(var: impl Fn(&str) -> Option<String>) -> bool {
+    let wezterm =
+        var("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"));
+    !wezterm && var("TMUX").is_none() && var("KONSOLE_VERSION").is_none()
 }
 
 /// Whether the terminal draws a curly underline (SGR `4:3`), which diagnostics
@@ -252,9 +304,13 @@ pub(crate) fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
     });
 
     let buf = rx.recv_timeout(timeout).ok()?;
-    // A Kitty graphics acknowledgement looks like: ESC _ G i=31 ; OK ESC \
-    let ok = buf.windows(2).any(|w| w == b"_G") && buf.windows(2).any(|w| w == b"OK");
-    Some(ok)
+    Some(kitty_graphics_acknowledged(&buf))
+}
+
+/// Whether `reply`, the bytes read back after [`probe_kitty_graphics`]'s query,
+/// holds a Kitty graphics acknowledgement: `ESC _ G i=31 ; OK ESC \`.
+fn kitty_graphics_acknowledged(reply: &[u8]) -> bool {
+    reply.windows(2).any(|w| w == b"_G") && reply.windows(2).any(|w| w == b"OK")
 }
 
 /// Probe whether the terminal supports OSC 22 (mouse pointer-shape hints, e.g.
@@ -296,9 +352,13 @@ pub(crate) fn probe_osc22_pointer_shape(timeout: Duration) -> Option<bool> {
     });
 
     let buf = rx.recv_timeout(timeout).ok()?;
-    // An OSC 22 reply contains its own introducer echoed back: ESC ] 22 ; ...
-    let ok = buf.windows(3).any(|w| w == b"]22");
-    Some(ok)
+    Some(osc22_answered(&buf))
+}
+
+/// Whether `reply`, the bytes read back after [`probe_osc22_pointer_shape`]'s
+/// query, holds an OSC 22 reply, which echoes its own introducer: `ESC ] 22 ; …`.
+fn osc22_answered(reply: &[u8]) -> bool {
+    reply.windows(3).any(|w| w == b"]22")
 }
 
 #[cfg(test)]
@@ -318,6 +378,44 @@ mod tests {
             osc22_pointer_shape,
             undercurl: false,
             color_depth: ColorDepth::TrueColor,
+            placeholders: true,
+        }
+    }
+
+    /// Placeholders are drawn only where Kitty graphics are spoken (by the
+    /// heuristic or a confirmed handshake) and the environment allows them.
+    #[test]
+    fn kitty_placeholders_need_kitty_graphics_and_a_drawing_terminal() {
+        let rows = [
+            ("env kitty", GraphicsProtocol::Kitty, None, true, true),
+            (
+                "handshake kitty",
+                GraphicsProtocol::Halfblocks,
+                Some(true),
+                true,
+                true,
+            ),
+            (
+                "kitty, dropped",
+                GraphicsProtocol::Kitty,
+                Some(true),
+                false,
+                false,
+            ),
+            (
+                "no kitty",
+                GraphicsProtocol::Halfblocks,
+                Some(false),
+                true,
+                false,
+            ),
+        ];
+        for (name, env, handshake, allowed, expect) in rows {
+            let c = TerminalCapabilities {
+                placeholders: allowed,
+                ..caps(true, env, handshake, None)
+            };
+            assert_eq!(c.kitty_placeholders(), expect, "{name}");
         }
     }
 
@@ -465,5 +563,42 @@ mod tests {
         assert!(caps(true, GraphicsProtocol::Kitty, None, Some(true)).pointer_shapes_supported());
         assert!(!caps(true, GraphicsProtocol::Kitty, None, Some(false)).pointer_shapes_supported());
         assert!(!caps(true, GraphicsProtocol::Kitty, None, None).pointer_shapes_supported());
+    }
+
+    /// A graphics acknowledgement before the DA1 reply means kitty graphics; a
+    /// DA1 reply alone, an error reply, or nothing does not.
+    #[test]
+    fn kitty_graphics_reply_is_classified() {
+        let rows: [(&str, &[u8], bool); 6] = [
+            ("ack then DA1", b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c", true),
+            ("ack alone", b"\x1b_Gi=31;OK\x1b\\", true),
+            ("DA1 only", b"\x1b[?62;22c", false),
+            (
+                "an error reply",
+                b"\x1b_Gi=31;ENOTSUPPORTED\x1b\\\x1b[?62c",
+                false,
+            ),
+            ("OK outside any graphics reply", b"\x1b[?62;OKc", false),
+            ("nothing", b"", false),
+        ];
+        for (name, reply, expect) in rows {
+            assert_eq!(kitty_graphics_acknowledged(reply), expect, "{name}");
+        }
+    }
+
+    /// An echoed `ESC ] 22` before the DA1 reply means OSC 22 pointer shapes; a
+    /// DA1 reply alone, another OSC, or nothing does not.
+    #[test]
+    fn osc22_reply_is_classified() {
+        let rows: [(&str, &[u8], bool); 5] = [
+            ("reply then DA1", b"\x1b]22;default\x1b\\\x1b[?62c", true),
+            ("BEL-terminated reply", b"\x1b]22;text\x07", true),
+            ("DA1 only", b"\x1b[?62;22c", false),
+            ("another OSC", b"\x1b]2;title\x1b\\\x1b[?62c", false),
+            ("nothing", b"", false),
+        ];
+        for (name, reply, expect) in rows {
+            assert_eq!(osc22_answered(reply), expect, "{name}");
+        }
     }
 }

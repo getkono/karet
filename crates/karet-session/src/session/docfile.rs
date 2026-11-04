@@ -1,12 +1,10 @@
 //! Reading a document off disk and writing it back: format classification,
 //! the per-document serialization settings, and the save normalization.
-//!
-//! Split out of `session.rs` to keep that file under the workspace code-line
-//! ceiling — a pure relocation, no behaviour change.
 
 use super::*;
 
 /// How many leading bytes to sample when classifying a document's on-disk format.
+#[cfg(feature = "cbor")]
 const CLASSIFY_HEAD: usize = 8192;
 
 /// Load `path` into an editable buffer, decoding a known binary format (CBOR) to
@@ -20,7 +18,7 @@ pub(super) fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), Docu
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(DocumentLoadError::Missing);
         },
-        Err(error) => return Err(LoadError::Io(error.to_string()).into()),
+        Err(error) => return Err(LoadError::from(error).into()),
     };
     // Format detection ignores the size guard: once the session is asked to open a
     // document it must decode it correctly regardless of size (the guard is an
@@ -44,14 +42,14 @@ pub(super) fn load_document(path: &Path) -> Result<(TextBuffer, DocFormat), Docu
 
 pub(super) fn resolve_document_settings(
     path: &Path,
-    language: Option<&str>,
+    file_type: Option<karet_filetype::FileType>,
     settings: &crate::config::Settings,
 ) -> (DocumentSettings, Option<String>) {
     let (resolved, editorconfig_error) =
-        match crate::editorconfig::resolve(path, language, settings) {
+        match crate::editorconfig::resolve(path, file_type, settings) {
             Ok(resolved) => (resolved, None),
             Err(error) => (
-                crate::editorconfig::defaults(language, settings),
+                crate::editorconfig::defaults(file_type, settings),
                 Some(format!("EditorConfig: {error}")),
             ),
         };
@@ -105,27 +103,42 @@ pub(super) fn normalize_text_for_save(text: &str, settings: DocumentSettings) ->
     normalized
 }
 
+/// Why [`save_document`] did not write a document.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SaveError {
+    /// Writing the bytes failed, or the file changed on disk
+    /// ([`TextError::Conflict`]).
+    #[error(transparent)]
+    Text(#[from] TextError),
+    /// The edited diagnostic notation does not encode back to CBOR (it keeps
+    /// the parse position, so the message names the line and column); the file
+    /// is left untouched.
+    #[cfg(feature = "cbor")]
+    #[error(transparent)]
+    Encode(karet_cbor::CborError),
+}
+
 /// Save `doc` to disk, re-encoding a decoded binary format (CBOR) from its edit
 /// text. A CBOR encode error (e.g. malformed diagnostic notation after editing)
-/// leaves the file untouched and surfaces as a save failure. Returns
+/// leaves the file untouched and surfaces as [`SaveError::Encode`]. Returns
 /// [`TextError::Conflict`] distinctly (rather than a generic IO error) so the
 /// caller can prompt the user instead of just reporting a failure.
-pub(super) fn save_document(doc: &mut Document) -> Result<(), TextError> {
+pub(super) fn save_document(doc: &mut Document) -> Result<(), SaveError> {
     let result = match (doc.format, doc.must_create) {
         (DocFormat::Text, false) => doc.buffer.save(&doc.path).map(|_| ()),
         (DocFormat::Text, true) => doc.buffer.save_new(&doc.path).map(|_| ()),
         #[cfg(feature = "cbor")]
         (DocFormat::Cbor, must_create) => {
             let text = doc.buffer.text();
-            let bytes =
-                karet_cbor::encode_from_text(&text).map_err(|e| TextError::Io(e.to_string()))?;
+            let bytes = karet_cbor::encode_from_text(&text).map_err(SaveError::Encode)?;
             if must_create {
                 doc.buffer.save_new_bytes(&doc.path, &bytes).map(|_| ())
             } else {
                 doc.buffer.save_bytes(&doc.path, &bytes).map(|_| ())
             }
         },
-    };
+    }
+    .map_err(SaveError::Text);
     if result.is_ok() {
         doc.must_create = false;
     }

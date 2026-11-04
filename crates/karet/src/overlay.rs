@@ -10,7 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::LineCol;
-use karet_session::PullRequestSummary;
+use karet_session::GithubPullRequest;
 use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
 use karet_vcs::StashOptions;
@@ -65,7 +65,14 @@ pub enum OverlayEvent {
     /// Open the Seam view on the chosen start point.
     AcceptSeamRoot(PathBuf),
     /// Apply the chosen color theme for this session.
-    AcceptTheme(crate::app::theme_picker::ThemeChoice),
+    AcceptTheme(ThemeChoice),
+    /// Run the configured task with this label.
+    AcceptTask {
+        /// The task's `tasks` key.
+        label: String,
+        /// Its command line, shown beside the label but not matched.
+        command: String,
+    },
     /// Jump to one of several definition locations.
     AcceptLocation {
         /// The defining file.
@@ -127,6 +134,9 @@ pub(crate) struct BranchForm {
 }
 
 impl BranchForm {
+    /// The index of the form's last row, "Set upstream".
+    const LAST_ROW: usize = 4;
+
     fn new(remotes: Vec<String>) -> Self {
         let mut form = Self {
             name: String::new(),
@@ -205,6 +215,9 @@ pub(crate) struct StashForm {
 }
 
 impl StashForm {
+    /// The index of the form's last row, "Keep index".
+    const LAST_ROW: usize = 2;
+
     fn new() -> Self {
         let mut form = Self {
             message: String::new(),
@@ -250,6 +263,7 @@ pub(crate) struct TextPrompt {
     purpose: TextPurpose,
 }
 
+/// A boolean form row's value.
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -266,6 +280,7 @@ pub struct DiffTarget {
 mod aicommit;
 mod goto_line;
 mod symbols;
+mod theme_choice;
 
 pub(crate) use aicommit::AiCommitForm;
 pub use goto_line::GO_TO_LINE_PREFIX;
@@ -274,13 +289,21 @@ pub use karet_widgets::picker::Picker;
 pub use symbols::DOCUMENT_SYMBOL_PREFIX;
 pub use symbols::QuickOpenMode;
 pub use symbols::WORKSPACE_SYMBOL_PREFIX;
+pub(crate) use theme_choice::ThemeChoice;
+pub(crate) use theme_choice::ThemeSource;
 
 /// A modal overlay.
 pub enum Overlay {
     /// Interactive-rebase plan editor.
     RebaseTodo(RebaseTodoForm),
     /// A fuzzy list picker whose rows carry their accept outcomes directly.
-    Picker(Picker<OverlayEvent>),
+    Picker {
+        /// Which picker this is — how the app tells pickers apart, whatever
+        /// title they show.
+        kind: PickerKind,
+        /// The list itself.
+        picker: Picker<OverlayEvent>,
+    },
     /// Full create-branch form.
     CreateBranch(BranchForm),
     /// Stash creation form.
@@ -333,10 +356,64 @@ impl RebaseTodoForm {
     }
 }
 
-/// The quick-open picker's title, which is also how it is told apart.
-const QUICK_OPEN_TITLE: &str = "Go to File";
+/// Which picker an [`Overlay::Picker`] is. Pickers are told apart by this,
+/// never by their user-visible title, so retitling one changes nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerKind {
+    /// Quick-open's file list (Go to File).
+    QuickOpen,
+    /// Quick-open's file list while the query names a line (`main.rs:42`).
+    FileAtLine,
+    /// Quick-open's Go to Line (`:42`).
+    GoToLine,
+    /// Quick-open's Go to Symbol in Editor (`@`).
+    DocumentSymbols,
+    /// The breadcrumb's sibling-symbol picker.
+    SiblingSymbols,
+    /// Quick-open's Go to Symbol in Workspace (`#`).
+    WorkspaceSymbols,
+    /// Select Color Theme.
+    ColorTheme,
+    /// The Seam view's start points.
+    SeamRoots,
+    /// Open Recent Workspace.
+    RecentWorkspaces,
+    /// Navigation results (definitions, references, …).
+    Locations,
+    /// The command palette, or a command subset.
+    Commands,
+    /// A diff target (revision or branch).
+    DiffTarget,
+    /// Switch branch.
+    Branches,
+    /// Open pull requests.
+    PullRequests,
+    /// The stash manager.
+    Stashes,
+    /// Delete local branch.
+    DeleteLocalBranch,
+    /// Delete remote branch.
+    DeleteRemoteBranch,
+    /// Tasks: Run Task.
+    Tasks,
+}
 
 impl Overlay {
+    /// Wrap `picker` as an overlay of `kind`.
+    #[must_use]
+    pub(crate) fn picker(kind: PickerKind, picker: Picker<OverlayEvent>) -> Self {
+        Self::Picker { kind, picker }
+    }
+
+    /// Which picker this overlay is, or `None` for any other overlay.
+    #[must_use]
+    pub fn picker_kind(&self) -> Option<PickerKind> {
+        match self {
+            Self::Picker { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
     /// Build a quick-open overlay over `(display, path)` pairs, in rank order.
     #[must_use]
     pub fn quick_open(files: Vec<(String, PathBuf)>) -> Self {
@@ -344,7 +421,7 @@ impl Overlay {
             .into_iter()
             .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
             .collect();
-        Self::Picker(Picker::new(QUICK_OPEN_TITLE, items))
+        Self::picker(PickerKind::QuickOpen, Picker::new("Go to File", items))
     }
 
     /// Whether this is the quick-open (go to file) picker. Only tests ask: the
@@ -352,21 +429,21 @@ impl Overlay {
     #[cfg(test)]
     #[must_use]
     pub fn is_quick_open(&self) -> bool {
-        matches!(self, Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE)
+        self.picker_kind() == Some(PickerKind::QuickOpen)
     }
 
     /// The file the highlighted quick-open row opens, if one is highlighted.
     #[must_use]
     pub fn selected_file(&self) -> Option<&Path> {
         match self {
-            Self::Picker(picker) => picker.accepted().and_then(goto_line::opened_file),
+            Self::Picker { picker, .. } => picker.accepted().and_then(goto_line::opened_file),
             _ => None,
         }
     }
 
     /// Highlight the row that opens `path`, when it is listed.
     pub fn select_file(&mut self, path: &Path) {
-        let Self::Picker(picker) = self else {
+        let Self::Picker { picker, .. } = self else {
             return;
         };
         let row = picker
@@ -385,7 +462,10 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptWorkspace(root)))
             .collect();
-        Self::Picker(Picker::new("Open Recent Workspace", items))
+        Self::picker(
+            PickerKind::RecentWorkspaces,
+            Picker::new("Open Recent Workspace", items),
+        )
     }
 
     /// Build the picker over the start points the Seam view can be opened on.
@@ -395,7 +475,41 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
             .collect();
-        Self::Picker(Picker::new("Open Seam View at", items))
+        Self::picker(
+            PickerKind::SeamRoots,
+            Picker::new("Open Seam View at", items),
+        )
+    }
+
+    /// Replace a Seam start-point picker's rows with ones that arrived after it opened,
+    /// keeping the query and the highlighted start point where it is still offered. Any
+    /// other overlay is left alone.
+    pub fn set_seam_roots(&mut self, items: Vec<(String, PathBuf)>) {
+        let Self::Picker {
+            kind: PickerKind::SeamRoots,
+            picker,
+        } = self
+        else {
+            return;
+        };
+        let highlighted = match picker.accepted() {
+            Some(OverlayEvent::AcceptSeamRoot(root)) => Some(root.clone()),
+            _ => None,
+        };
+        picker.set_items(
+            items
+                .into_iter()
+                .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
+                .collect(),
+        );
+        let row = highlighted.and_then(|highlighted| {
+            picker.values().iter().position(
+                |event| matches!(event, OverlayEvent::AcceptSeamRoot(root) if *root == highlighted),
+            )
+        });
+        for _ in 0..row.unwrap_or_default() {
+            picker.select_down();
+        }
     }
 
     /// Build the picker offered when navigation (definitions, references, …)
@@ -431,7 +545,7 @@ impl Overlay {
             };
             items.push((label, accept));
         }
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::Locations, Picker::new(title, items))
     }
 
     /// Build the command palette.
@@ -452,7 +566,7 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::Commands, Picker::new(title, items))
     }
 
     /// Build a diff-target picker titled `title` over `(display, target)` pairs.
@@ -470,7 +584,7 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new(title, items))
+        Self::picker(PickerKind::DiffTarget, Picker::new(title, items))
     }
 
     /// Build a branch picker.
@@ -480,7 +594,7 @@ impl Overlay {
             .into_iter()
             .map(|(label, target)| (label, OverlayEvent::AcceptBranch(target)))
             .collect();
-        Self::Picker(Picker::new("Switch branch", items))
+        Self::picker(PickerKind::Branches, Picker::new("Switch branch", items))
     }
 
     /// Build the complete branch-creation form.
@@ -491,12 +605,12 @@ impl Overlay {
 
     /// Build an open-pull-request picker.
     #[must_use]
-    pub fn pull_requests(remote: String, items: Vec<PullRequestSummary>) -> Self {
+    pub fn pull_requests(remote: String, items: Vec<GithubPullRequest>) -> Self {
         let rows = items
             .into_iter()
             .map(|item| {
                 let draft = if item.draft { "draft · " } else { "" };
-                let author = item.author.as_deref().unwrap_or("unknown");
+                let author = item.creator.as_deref().unwrap_or("unknown");
                 (
                     format!("#{}  {}  {draft}{author}", item.number, item.title),
                     OverlayEvent::AcceptPullRequest {
@@ -506,7 +620,10 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new("Open pull requests", rows))
+        Self::picker(
+            PickerKind::PullRequests,
+            Picker::new("Open pull requests", rows),
+        )
     }
 
     /// Build the stash creation form.
@@ -544,7 +661,7 @@ impl Overlay {
                 action(StashAction::Drop(reference)),
             ));
         }
-        Self::Picker(Picker::new("Manage stashes", items))
+        Self::picker(PickerKind::Stashes, Picker::new("Manage stashes", items))
     }
 
     /// Build a free-text follow-up prompt.
@@ -581,7 +698,10 @@ impl Overlay {
             .into_iter()
             .map(|name| (name.clone(), OverlayEvent::AcceptDeleteLocalBranch(name)))
             .collect();
-        Self::Picker(Picker::new("Delete local branch", rows))
+        Self::picker(
+            PickerKind::DeleteLocalBranch,
+            Picker::new("Delete local branch", rows),
+        )
     }
 
     /// Build a remote-branch deletion picker.
@@ -596,14 +716,17 @@ impl Overlay {
                 )
             })
             .collect();
-        Self::Picker(Picker::new("Delete remote branch", rows))
+        Self::picker(
+            PickerKind::DeleteRemoteBranch,
+            Picker::new("Delete remote branch", rows),
+        )
     }
 
     /// The overlay title.
     #[must_use]
     pub fn title(&self) -> &str {
         match self {
-            Self::Picker(p) => p.title(),
+            Self::Picker { picker: p, .. } => p.title(),
             Self::RebaseTodo(_) => {
                 "Interactive rebase · p/r/e/s/f/d set action · K/J reorder · Enter runs"
             },
@@ -618,7 +741,7 @@ impl Overlay {
     #[must_use]
     pub fn query(&self) -> &str {
         match self {
-            Self::Picker(p) => p.query(),
+            Self::Picker { picker: p, .. } => p.query(),
             Self::RebaseTodo(_) => "oldest first, as git applies them",
             Self::CreateBranch(_) | Self::StashForm(_) | Self::AiCommit(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
@@ -629,7 +752,7 @@ impl Overlay {
     #[must_use]
     pub fn rows(&self) -> Vec<&str> {
         match self {
-            Self::Picker(p) => p.rows(),
+            Self::Picker { picker: p, .. } => p.rows(),
             Self::RebaseTodo(form) => form.rows.iter().map(String::as_str).collect(),
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
@@ -644,7 +767,7 @@ impl Overlay {
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
             Self::RebaseTodo(form) => vec![None; form.rows.len()],
-            Self::Picker(p) => p
+            Self::Picker { picker: p, .. } => p
                 .values()
                 .into_iter()
                 .map(|event| match event {
@@ -653,6 +776,7 @@ impl Overlay {
                     },
                     OverlayEvent::AcceptSymbol { detail, .. } => Some(detail.clone()),
                     OverlayEvent::AcceptTheme(choice) => Some(choice.source.label().into()),
+                    OverlayEvent::AcceptTask { command, .. } => Some(command.clone()),
                     _ => None,
                 })
                 .collect(),
@@ -667,7 +791,7 @@ impl Overlay {
     #[must_use]
     pub fn selected(&self) -> usize {
         match self {
-            Self::Picker(p) => p.selected(),
+            Self::Picker { picker: p, .. } => p.selected(),
             Self::RebaseTodo(form) => form.selected,
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
@@ -679,7 +803,7 @@ impl Overlay {
     /// Move the selection up.
     pub fn select_up(&mut self) {
         match self {
-            Self::Picker(p) => p.select_up(),
+            Self::Picker { picker: p, .. } => p.select_up(),
             Self::RebaseTodo(form) => {
                 form.selected = form
                     .selected
@@ -696,15 +820,17 @@ impl Overlay {
     /// Move the selection down.
     pub fn select_down(&mut self) {
         match self {
-            Self::Picker(p) => p.select_down(),
+            Self::Picker { picker: p, .. } => p.select_down(),
             Self::RebaseTodo(form) => {
                 form.selected = form
                     .selected
                     .saturating_add_signed(1)
                     .min(form.steps.len().saturating_sub(1));
             },
-            Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
-            Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
+            Self::CreateBranch(form) => {
+                form.selected = (form.selected + 1).min(BranchForm::LAST_ROW);
+            },
+            Self::StashForm(form) => form.selected = (form.selected + 1).min(StashForm::LAST_ROW),
             Self::AiCommit(form) => form.select_down(),
             Self::Text(_) => {},
         }
@@ -713,7 +839,7 @@ impl Overlay {
     /// Append a character to the query.
     pub fn push_char(&mut self, c: char) {
         match self {
-            Self::Picker(p) => p.push_char(c),
+            Self::Picker { picker: p, .. } => p.push_char(c),
             Self::RebaseTodo(form) => {
                 use karet_vcs::RebaseAction as A;
                 match c {
@@ -738,7 +864,7 @@ impl Overlay {
     /// Remove the last query character.
     pub fn pop_char(&mut self) {
         match self {
-            Self::Picker(p) => p.pop_char(),
+            Self::Picker { picker: p, .. } => p.pop_char(),
             Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => form.pop_char(),
             Self::StashForm(form) => {
@@ -757,7 +883,7 @@ impl Overlay {
     /// Append pasted text to the query.
     pub fn push_str(&mut self, text: &str) {
         match self {
-            Self::Picker(p) => p.push_str(text),
+            Self::Picker { picker: p, .. } => p.push_str(text),
             Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => {
                 for character in text.chars() {
@@ -785,7 +911,7 @@ impl Overlay {
     #[must_use]
     pub fn accept(&self) -> OverlayEvent {
         match self {
-            Self::Picker(p) => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
+            Self::Picker { picker: p, .. } => p.accepted().cloned().unwrap_or(OverlayEvent::Close),
             Self::RebaseTodo(form) => OverlayEvent::AcceptRebaseTodo {
                 onto: form.onto.clone(),
                 steps: form
@@ -809,165 +935,4 @@ impl Overlay {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typing_filters_and_accept_opens() {
-        let files = vec![
-            ("app.rs".to_string(), PathBuf::from("/x/app.rs")),
-            ("main.rs".to_string(), PathBuf::from("/x/main.rs")),
-        ];
-        let mut overlay = Overlay::quick_open(files);
-        // Type "ma" -> only main.rs remains.
-        overlay.push_char('m');
-        overlay.push_char('a');
-        assert_eq!(overlay.rows(), vec!["main.rs"]);
-        match overlay.accept() {
-            OverlayEvent::AcceptFile(p) => assert_eq!(p, PathBuf::from("/x/main.rs")),
-            _ => unreachable!("accept opens the single match"),
-        }
-    }
-
-    #[test]
-    fn quick_open_is_recognised_and_reselects_a_file() {
-        let files = vec![
-            ("a.rs".to_string(), PathBuf::from("/x/a.rs")),
-            ("b.rs".to_string(), PathBuf::from("/x/b.rs")),
-            ("c.rs".to_string(), PathBuf::from("/x/c.rs")),
-        ];
-        let mut overlay = Overlay::quick_open(files);
-        assert!(overlay.is_quick_open());
-        assert!(!Overlay::command_palette().is_quick_open());
-        assert_eq!(overlay.selected_file(), Some(Path::new("/x/a.rs")));
-        overlay.select_file(Path::new("/x/c.rs"));
-        assert_eq!(overlay.selected_file(), Some(Path::new("/x/c.rs")));
-        overlay.select_file(Path::new("/x/gone.rs"));
-        assert_eq!(overlay.selected_file(), Some(Path::new("/x/c.rs")));
-    }
-
-    #[test]
-    fn recent_workspace_picker_accepts_a_root() {
-        let items = vec![("~/src/karet".to_string(), PathBuf::from("/h/src/karet"))];
-        let overlay = Overlay::recent_workspaces(items);
-        assert!(!overlay.is_quick_open());
-        match overlay.accept() {
-            OverlayEvent::AcceptWorkspace(root) => assert_eq!(root, PathBuf::from("/h/src/karet")),
-            _ => unreachable!("accept reopens on the workspace"),
-        }
-    }
-
-    #[test]
-    fn palette_accepts_a_command() {
-        let mut overlay = Overlay::command_palette();
-        // "quit" filters to the Quit command.
-        for c in "quit".chars() {
-            overlay.push_char(c);
-        }
-        match overlay.accept() {
-            OverlayEvent::AcceptCommand(cmd) => assert_eq!(cmd, Command::Quit),
-            _ => unreachable!("accept runs the filtered command"),
-        }
-    }
-
-    #[test]
-    fn diff_target_picker_filters_and_accepts_a_revision() {
-        let items = vec![
-            (
-                "abc1234 first commit".to_string(),
-                DiffTarget {
-                    rev: "abc1234deadbeef".to_string(),
-                    label: "abc1234".to_string(),
-                },
-            ),
-            (
-                "feature".to_string(),
-                DiffTarget {
-                    rev: "feature".to_string(),
-                    label: "feature".to_string(),
-                },
-            ),
-        ];
-        let mut overlay = Overlay::diff_target("Open Changes: With Revision", items);
-        assert_eq!(overlay.title(), "Open Changes: With Revision");
-        for c in "feat".chars() {
-            overlay.push_char(c);
-        }
-        assert_eq!(overlay.rows(), vec!["feature"]);
-        match overlay.accept() {
-            OverlayEvent::AcceptDiffTarget { rev, label } => {
-                assert_eq!(rev, "feature");
-                assert_eq!(label, "feature");
-            },
-            _ => unreachable!("accept picks the filtered revision"),
-        }
-    }
-
-    #[test]
-    fn palette_rows_have_aligned_hints() {
-        let overlay = Overlay::command_palette();
-        assert_eq!(overlay.rows().len(), overlay.row_hints().len());
-        // The Quit row carries its Ctrl+Q hint.
-        let quit = overlay
-            .rows()
-            .iter()
-            .position(|r| *r == Command::Quit.label())
-            .expect("quit row present");
-        assert_eq!(overlay.row_hints()[quit].as_deref(), Some("Ctrl+Q"));
-    }
-
-    #[test]
-    fn create_branch_form_exposes_every_common_control() {
-        let mut overlay = Overlay::create_branch(vec!["origin".to_string()]);
-        let rows = overlay.rows();
-        assert!(rows.iter().any(|row| row.contains("Name")));
-        assert!(rows.iter().any(|row| row.contains("Start point")));
-        assert!(rows.iter().any(|row| row.contains("Switch now")));
-        assert!(rows.iter().any(|row| row.contains("Publish remote")));
-        assert!(rows.iter().any(|row| row.contains("Set upstream")));
-        for character in "feature/test".chars() {
-            overlay.push_char(character);
-        }
-        match overlay.accept() {
-            OverlayEvent::AcceptCreateBranch(options) => {
-                assert_eq!(options.name, "feature/test");
-                assert_eq!(options.start_point, "HEAD");
-                assert!(options.switch);
-            },
-            _ => unreachable!("branch form submits its options"),
-        }
-    }
-
-    #[test]
-    fn stash_form_edits_message_and_toggles_options() {
-        let mut overlay = Overlay::stash_form();
-        for character in "work".chars() {
-            overlay.push_char(character);
-        }
-        overlay.select_down();
-        overlay.push_char(' ');
-        overlay.select_down();
-        overlay.push_char(' ');
-        match overlay.accept() {
-            OverlayEvent::AcceptStash(options) => {
-                assert_eq!(options.message.as_deref(), Some("work"));
-                assert!(options.include_untracked);
-                assert!(options.keep_index);
-            },
-            _ => unreachable!("stash form submits its options"),
-        }
-    }
-
-    #[test]
-    fn remote_branch_deletion_picker_preserves_remote_and_name() {
-        let overlay =
-            Overlay::delete_remote_branches(vec![("upstream".to_string(), "feature".to_string())]);
-        match overlay.accept() {
-            OverlayEvent::AcceptDeleteRemoteBranch { remote, branch } => {
-                assert_eq!(remote, "upstream");
-                assert_eq!(branch, "feature");
-            },
-            _ => unreachable!("remote branch picker submits both parts"),
-        }
-    }
-}
+mod tests;

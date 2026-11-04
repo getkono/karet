@@ -33,8 +33,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn completion(
         &self,
         doc: &Path,
@@ -67,8 +69,10 @@ impl LspClient {
     /// inserts.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`], [`LspError::Protocol`] (an answer that is
-    /// not an item), or [`LspError::Timeout`].
+    /// Returns [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for a request that does not encode or an answer
+    /// that is not an item, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn resolve_completion(
         &self,
         item: &CompletionItem,

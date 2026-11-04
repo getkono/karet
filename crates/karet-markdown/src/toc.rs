@@ -27,7 +27,7 @@ pub const TOC_START: &str = "<!-- toc -->";
 /// The marker line closing a generated TOC.
 pub const TOC_END: &str = "<!-- /toc -->";
 /// The directive excluding a heading from the TOC.
-pub const OMIT: &str = "<!-- omit from toc -->";
+pub(crate) const OMIT: &str = "<!-- omit from toc -->";
 
 /// One heading as the TOC sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ struct TocHeading {
 /// (hyphens and underscores survive), spaces hyphenated. Uniqueness suffixes
 /// (`-1`, `-2`, …) are applied by the caller across the whole document.
 #[must_use]
-pub fn github_slugify(text: &str) -> String {
+pub(crate) fn github_slugify(text: &str) -> String {
     let mut slug = String::new();
     for c in text.trim().chars() {
         if c.is_alphanumeric() || c == '_' || c == '-' {

@@ -10,6 +10,8 @@ use karet_core::Range;
 ///
 /// A query naming anything else fails the per-language test rather than being silently
 /// ignored, since a misspelt capture would quietly drop every call it was meant to mark.
+/// Only those tests read it, so it compiles only with them.
+#[cfg(test)]
 pub const CAPTURES: &[&str] = &[
     CALL,
     CALL_NAME,
@@ -132,7 +134,7 @@ impl Import {
     ///
     /// Usually all of them: `use a::b` makes `b` mean `a::b`. Python's `import a.b` is
     /// the exception — it binds `a`, and `a.b.f()` is then written in full — which its
-    /// query states with [`IMPORT_HEAD`].
+    /// query states with an `@import.head` capture.
     #[must_use]
     pub fn bound_prefix(&self) -> usize {
         if self.binds_head && self.alias.is_none() {

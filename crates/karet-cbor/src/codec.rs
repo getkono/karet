@@ -2,17 +2,28 @@
 
 use ciborium::value::Value as CiboriumValue;
 
+use crate::MAX_DEPTH;
 use crate::error::CborError;
 use crate::value::CborValue;
 
-/// Decode CBOR `bytes` into a [`CborValue`].
+/// Decode CBOR `bytes`, which must hold exactly one data item, into a
+/// [`CborValue`].
 ///
 /// # Errors
-/// Returns [`CborError::Decode`] if `bytes` is not valid CBOR, or
+/// Returns [`CborError::Decode`] if `bytes` is not valid CBOR, nests deeper
+/// than [`MAX_DEPTH`], or has bytes after the first item (a CBOR sequence,
+/// which re-encoding the first item alone would truncate), or
 /// [`CborError::Unsupported`] for a value this crate does not model.
 pub fn decode(bytes: &[u8]) -> Result<CborValue, CborError> {
-    let value: CiboriumValue =
-        ciborium::from_reader(bytes).map_err(|e| CborError::Decode(e.to_string()))?;
+    let mut rest = bytes;
+    let value: CiboriumValue = ciborium::de::from_reader_with_recursion_limit(&mut rest, MAX_DEPTH)
+        .map_err(|e| CborError::Decode(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(CborError::Decode(format!(
+            "{} trailing byte(s) after the first CBOR item",
+            rest.len()
+        )));
+    }
     CborValue::from_ciborium(value)
 }
 
@@ -47,6 +58,59 @@ mod tests {
     fn rejects_invalid_cbor() {
         // Empty input is not a valid CBOR item.
         assert!(matches!(decode(&[]), Err(CborError::Decode(_))));
+    }
+
+    #[test]
+    fn rejects_trailing_bytes() {
+        // A two-item CBOR sequence: accepting it would show only the first item,
+        // and saving would silently drop the second.
+        assert!(matches!(
+            decode(&[0x01, 0x02]),
+            Err(CborError::Decode(message)) if message.contains("1 trailing byte")
+        ));
+        // Trailing bytes after a container, a byte string, and a tag too.
+        for bytes in [
+            &[0x82, 0x01, 0x02, 0x00][..],
+            &[0x42, 0x01, 0x02, 0xff],
+            &[0xc1, 0x01, 0x01],
+        ] {
+            assert!(
+                matches!(decode(bytes), Err(CborError::Decode(_))),
+                "{bytes:02x?}"
+            );
+            // The same bytes without the last one decode.
+            assert!(decode(&bytes[..bytes.len() - 1]).is_ok(), "{bytes:02x?}");
+        }
+    }
+
+    /// `depth` one-element arrays (`0x81`) around the integer 1.
+    fn nested_array_bytes(depth: usize) -> Vec<u8> {
+        let mut bytes = vec![0x81; depth];
+        bytes.push(0x01);
+        bytes
+    }
+
+    #[test]
+    fn decodes_nesting_up_to_max_depth_and_rejects_deeper() {
+        assert!(decode(&nested_array_bytes(MAX_DEPTH)).is_ok());
+        assert!(matches!(
+            decode(&nested_array_bytes(MAX_DEPTH + 1)),
+            Err(CborError::Decode(_))
+        ));
+        // Tags (0xc1 = tag 1) and maps (0xa1 = one pair) count against the
+        // same budget as arrays.
+        let mut tagged = vec![0xc1; MAX_DEPTH];
+        tagged.push(0x01);
+        assert!(decode(&tagged).is_ok());
+        tagged.insert(0, 0xc1);
+        assert!(matches!(decode(&tagged), Err(CborError::Decode(_))));
+        let mut mapped = Vec::new();
+        for _ in 0..=MAX_DEPTH {
+            mapped.extend([0xa1, 0x00]);
+        }
+        mapped.push(0x01);
+        assert!(matches!(decode(&mapped), Err(CborError::Decode(_))));
+        assert!(decode(&mapped[2..]).is_ok());
     }
 
     #[test]

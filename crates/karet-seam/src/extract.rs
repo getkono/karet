@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use karet_core::LineIndex;
 use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
@@ -35,7 +36,6 @@ use crate::model::Node;
 use crate::model::NodeKind;
 use crate::model::SeamLocation;
 use crate::rollup::Rollups;
-use crate::text::LineIndex;
 
 /// Errors extracting a file into the index.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -66,7 +66,7 @@ struct Frame {
 /// The package walk resolves these; a single-file extraction cannot, because the file it
 /// would have to read is exactly what it does not have.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExternalModule {
+pub(crate) struct ExternalModule {
     /// The module node already added to the index, awaiting its contents.
     pub id: SeamId,
     /// The declared module name.
@@ -79,7 +79,7 @@ pub struct ExternalModule {
 
 /// What one file's extraction produced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ExtractOutcome {
+pub(crate) struct ExtractOutcome {
     /// Every node added, in source order.
     pub added: Vec<SeamId>,
     /// Module declarations whose bodies live elsewhere.
@@ -103,7 +103,7 @@ pub struct ExtractOutcome {
 /// [`ExtractError::NoGrammar`] when the grammar is not compiled in,
 /// [`ExtractError::NoMapping`] when the language has no seam mapping, and
 /// [`ExtractError::ParseFailed`] when no tree could be produced at all.
-pub fn extract_file(
+pub(crate) fn extract_file(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
     parent: SeamId,
@@ -111,8 +111,47 @@ pub fn extract_file(
     language: LanguageId,
     text: &str,
 ) -> Result<ExtractOutcome, ExtractError> {
+    let parsed = parse_file(pool, language, text)?;
+    Ok(extract_parsed(index, parent, file, language, &parsed, text))
+}
+
+/// A file paired with its mapping and parsed, but not yet extracted into any index.
+pub(crate) struct ParsedFile {
+    mapping: &'static dyn SeamLanguage,
+    tree: SyntaxTree,
+}
+
+/// The fallible half of [`extract_file`]: resolve the mapping and parse, touching no index.
+///
+/// Split out so a caller that must first clear the file's old nodes (a re-index) can do
+/// every step that may fail *before* it removes anything, and never strands the index
+/// without the file's nodes.
+///
+/// # Errors
+/// [`ExtractError::NoMapping`] when the language has no seam mapping, and
+/// [`ExtractError::ParseFailed`] when no tree could be produced at all.
+pub(crate) fn parse_file(
+    pool: &mut ParserPool,
+    language: LanguageId,
+    text: &str,
+) -> Result<ParsedFile, ExtractError> {
     let mapping = for_language(language).ok_or(ExtractError::NoMapping)?;
     let tree = SyntaxTree::parse(pool, language, text).map_err(|_| ExtractError::ParseFailed)?;
+    Ok(ParsedFile { mapping, tree })
+}
+
+/// The infallible half of [`extract_file`]: extract an already-parsed file into `index`,
+/// nested under `parent`.
+pub(crate) fn extract_parsed(
+    index: &mut SeamIndex,
+    parent: SeamId,
+    file: FileId,
+    language: LanguageId,
+    parsed: &ParsedFile,
+    text: &str,
+) -> ExtractOutcome {
+    let ParsedFile { mapping, tree } = parsed;
+    let mapping = *mapping;
     let parent_path = index.path(parent).cloned().unwrap_or_default();
     // The root frame takes the real parent's kind. Assuming a module here would make a
     // crate-root `fn main` look like an ordinary nested function rather than an entry point.
@@ -140,8 +179,8 @@ pub fn extract_file(
     };
     tree.walk(|node| extractor.visit(node));
     let outcome = extractor.outcome;
-    crate::calls::extract::annotate(index, &tree, mapping, language, text, file, &outcome.added);
-    Ok(outcome)
+    crate::calls::extract::annotate(index, tree, mapping, language, text, file, &outcome.added);
+    outcome
 }
 
 /// Walk state: the containment stack, pending attributes, and sibling ordinals.

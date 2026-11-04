@@ -294,6 +294,13 @@ pub(crate) struct Context<'a> {
 }
 
 /// A function's identity as text.
+/// The display name of the language `path` is written in, or `None` for a file type
+/// the catalogue does not recognise.
+pub(crate) fn language_label(path: &std::path::Path) -> Option<&'static str> {
+    let file_type = karet_filetype::file_type_for_path(path);
+    file_type.is_recognized().then(|| file_type.name())
+}
+
 pub(crate) fn path_of(index: &SeamIndex, id: SeamId) -> String {
     index.path(id).map(ToString::to_string).unwrap_or_default()
 }
@@ -332,7 +339,7 @@ fn row(index: &SeamIndex, metrics: &FunctionMetrics) -> FunctionRow {
         path: path_of(index, metrics.id),
         language: node
             .and_then(|node| index.file_path(node.location.file))
-            .and_then(karet_treesitter::language_name_from_path)
+            .and_then(language_label)
             .map(str::to_owned),
         file,
         line: node.map_or(0, |node| node.location.range.start.line.saturating_add(1)),

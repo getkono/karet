@@ -50,10 +50,10 @@ async fn a_provider_that_was_not_restarted_is_not_reopened() -> TestResult {
     let (opened_tx, mut opened_rx) = mpsc::unbounded_channel();
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![root.clone()],
-        settings: crate::config::Settings {
+        loaded_config: crate::config::LoadedConfig::from_settings(crate::config::Settings {
             lsp: settings,
             ..crate::config::Settings::default()
-        },
+        }),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(marking_connector(
@@ -79,9 +79,10 @@ async fn a_provider_that_was_not_restarted_is_not_reopened() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::new("python"),
-        },
+        }
+        .into(),
     )?;
 
     // The restarted provider opens it again on its fresh task. The companion,
@@ -155,10 +156,10 @@ async fn a_document_opened_by_an_unnormalised_path_is_still_reopened() -> TestRe
     );
     let (mut session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![root.clone()],
-        settings: crate::config::Settings {
+        loaded_config: crate::config::LoadedConfig::from_settings(crate::config::Settings {
             lsp: settings,
             ..crate::config::Settings::default()
-        },
+        }),
         ..SessionConfig::default()
     });
     session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));
@@ -181,9 +182,10 @@ async fn a_document_opened_by_an_unnormalised_path_is_still_reopened() -> TestRe
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::new("rust"),
-        },
+        }
+        .into(),
     )?;
 
     let mut restarted = false;

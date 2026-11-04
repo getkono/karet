@@ -326,7 +326,7 @@ fn closing_a_document_before_open_finishes_releases_the_late_document() {
             sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::CloseDocument { doc } if *doc == DocumentId(9)
+                    SessionCommand::Document(DocumentCommand::Close { doc }) if *doc == DocumentId(9)
                 )
             })
         })
@@ -520,7 +520,7 @@ fn active_spell_language_is_named_beside_the_file_language() {
     );
 
     let rendered = screen(&mut app, 100, 12).join("\n");
-    assert!(rendered.contains("Rust · English (UK)"), "{rendered}");
+    assert!(rendered.contains("Markdown · English (UK)"), "{rendered}");
 }
 
 #[test]
@@ -545,7 +545,7 @@ fn latex_build_reserves_a_preview_and_closing_it_cancels_the_request() {
     assert!(delayed.contains("Building LaTeX preview"));
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(id, command)| {
-            matches!(command, SessionCommand::BuildLatex { doc } if *doc == DocumentId(12))
+            matches!(command, SessionCommand::Document(DocumentCommand::BuildLatex { doc }) if *doc == DocumentId(12))
                 .then_some(*id)
         })
     });

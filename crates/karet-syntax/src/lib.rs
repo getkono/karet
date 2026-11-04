@@ -1,9 +1,10 @@
 //! `karet-syntax` — tree-sitter-powered syntactic analysis for karet editors.
 //!
 //! Produces *data*, not rendering: highlight spans tagged with semantic
-//! [`TokenId`]s. Consumers apply a theme (`karet-theme`) and render. This is the
-//! crate behind the standalone "highlight a code snippet" use case. Highlighting
-//! runs a grammar's query through `karet-treesitter`'s single parse host.
+//! [`TokenId`](karet_core::TokenId)s. Consumers apply a theme (`karet-theme`)
+//! and render. This is the crate behind the standalone "highlight a code
+//! snippet" use case. Highlighting runs a grammar's query through
+//! `karet-treesitter`'s single parse host.
 //!
 //! [`Highlighter`] highlights one language. [`LayeredHighlighter`] highlights a
 //! `LayeredTree` — a document plus its injected languages — so a markdown code fence
@@ -14,42 +15,49 @@
 //! [`fold`] (any grammar) and [`fold_by_indent`] (no grammar) as fallbacks;
 //! [`SemanticBlocker`] extracts sticky-scroll
 //! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries;
-//! [`Indenter`] computes a new line's indentation from indent queries.
-
-use std::collections::HashMap;
-
-use karet_core::BytePos;
-use karet_treesitter::LanguageId;
-use karet_treesitter::LayeredTree;
-use karet_treesitter::Query;
-
-pub mod color;
+//! [`Indenter`] computes a new line's indentation from indent queries;
+//! [`TableFinder`] finds the lines GFM tables occupy.
 
 mod blocks;
+mod codetag;
 mod folding;
 mod highlight;
 mod indent;
 mod inline_macro;
 mod map;
 mod outline;
-mod semantic;
+mod tables;
 
-pub use blocks::SemanticBlock;
 pub use blocks::SemanticBlocker;
-pub use blocks::SemanticBlocks;
+pub use codetag::CodetagHit;
+pub use codetag::SemanticCommentConfig;
+pub use codetag::find_codetags;
+pub use codetag::mark_semantic_comments;
 pub use folding::Folder;
 pub use folding::fold;
 pub use folding::fold_by_indent;
 pub use highlight::Highlighter;
 pub use highlight::LayeredHighlighter;
+pub use indent::Indenter;
 pub use inline_macro::InlineMacroEngine;
 pub use inline_macro::InlineMacroExpansion;
 pub use inline_macro::InlineMacroTrigger;
+// The parse-host items this crate's signatures take or return, plus what
+// produces them (a language from a path or fence name, a tree from a parser),
+// so a consumer can depend on `karet-syntax` alone: resolve a language, parse
+// a buffer, then analyze it. The highlight/fold/semantic-block *data* shapes
+// are `karet-core` vocabulary and are named from there
+// (`karet_core::Highlights`, …), not re-exported here.
+pub use karet_treesitter::LanguageId;
+pub use karet_treesitter::LayeredParser;
+pub use karet_treesitter::LayeredTree;
+pub use karet_treesitter::ParserPool;
+pub use karet_treesitter::SyntaxTree;
+pub use karet_treesitter::TsError;
+pub use karet_treesitter::language_id_from_injection_name;
+pub use karet_treesitter::language_id_from_path;
 pub use outline::OutlineExtractor;
-pub use semantic::CodetagHit;
-pub use semantic::SemanticCommentConfig;
-pub use semantic::find_codetags;
-pub use semantic::mark_semantic_comments;
+pub use tables::TableFinder;
 
 /// Errors produced by syntactic analysis.
 #[derive(Debug, thiserror::Error)]
@@ -58,98 +66,19 @@ pub enum SyntaxError {
     /// No highlight configuration exists (is compiled in) for the language.
     #[error("unsupported language")]
     UnsupportedLanguage,
-    /// A highlight/fold query failed.
+    /// A highlight/fold query failed, as the parse host reported it.
     #[error("query error: {0}")]
-    Query(String),
-}
-
-// The highlight/fold *data* shapes live in `karet-core` (so renderers can name
-// them without pulling this crate's tree-sitter stack); this crate is the engine
-// that computes them. Re-exported here so existing imports keep working.
-pub use karet_core::FoldKind;
-pub use karet_core::FoldRegion;
-pub use karet_core::FoldRegions;
-pub use karet_core::HighlightSpan;
-pub use karet_core::Highlights;
-
-/// Computes the indentation a new line takes from the grammars' indent queries
-/// (see [`karet_treesitter::indents_query`]), across every layer of a
-/// [`LayeredTree`] — a Rust block inside a markdown code fence indents as Rust.
-///
-/// Holds the compiled queries for one tree's languages; build it once per parse
-/// and ask it about as many line breaks as that parse serves.
-pub struct Indenter {
-    queries: HashMap<LanguageId, Query>,
-}
-
-impl Indenter {
-    /// Compile the indent query of every language in `tree` that has one.
-    #[must_use]
-    pub fn for_tree(tree: &LayeredTree) -> Self {
-        let mut queries = HashMap::new();
-        for layer in tree.layers() {
-            let lang = layer.language();
-            if queries.contains_key(&lang) {
-                continue;
-            }
-            let compiled = karet_treesitter::indents_query(lang)
-                .and_then(|source| Query::compile(lang, source).ok());
-            if let Some(query) = compiled {
-                queries.insert(lang, query);
-            }
-        }
-        Self { queries }
-    }
-
-    /// The leading whitespace for the line a break over `before..after` (an
-    /// empty range for a bare caret) opens.
-    ///
-    /// `text` is the source `tree` was parsed from, before the break. The
-    /// innermost layer at `before` whose language has an indent query and finds
-    /// an enclosing node decides. `None` when none does, so the caller keeps the
-    /// copy-the-current-line fallback.
-    ///
-    /// One level inside the enclosing node follows the file, not the setting:
-    /// the node's existing body lines (the shallowest from the line after it
-    /// opens through the caret's), else the opening line plus the file's own
-    /// commonest indentation step. `unit`, the configured level, applies only
-    /// where the file shows no step at all.
-    #[must_use]
-    pub fn newline_indent(
-        &self,
-        tree: &LayeredTree,
-        text: &str,
-        (before, after): (BytePos, BytePos),
-        unit: &str,
-    ) -> Option<String> {
-        let (layer, anchor) = tree.layers_at(before).into_iter().find_map(|layer| {
-            let query = self.queries.get(&layer.language())?;
-            Some((layer, layer.newline_indent(query, text, before, after)?))
-        })?;
-        if anchor.deeper {
-            let literal = |at: usize| indent::in_literal(layer, BytePos(at));
-            indent::deeper(text, anchor.line_start.0, before.0, unit, literal)
-        } else {
-            indent::line_indent(text, anchor.line_start.0).map(str::to_owned)
-        }
-    }
+    Query(#[from] TsError),
 }
 
 #[cfg(test)]
 mod tests {
     use karet_core::BytePos;
-    use karet_core::Span;
+    use karet_core::Highlights;
     use karet_core::StandardToken;
     use karet_core::TokenId;
 
     use super::*;
-
-    fn span(start: usize, end: usize) -> Span {
-        Span {
-            start: BytePos(start),
-            end: BytePos(end),
-        }
-    }
 
     #[test]
     fn error_displays() {
@@ -160,103 +89,14 @@ mod tests {
     }
 
     #[test]
-    fn spans_in_returns_overlapping_window() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(5, 9),
-                token: TokenId::FUNCTION,
-            },
-            HighlightSpan {
-                span: span(12, 14),
-                token: TokenId::NUMBER,
-            },
-        ]);
-        // Overlaps the middle span only.
-        let got = hl.spans_in(span(6, 8));
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].token, TokenId::FUNCTION);
-        // Range covering the first two spans.
-        assert_eq!(hl.spans_in(span(0, 10)).len(), 2);
-        // Gap between spans yields nothing.
-        assert!(hl.spans_in(span(9, 12)).is_empty());
-    }
-
-    #[test]
-    fn translate_shifts_spans_after_an_insertion() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(10, 14),
-                token: TokenId::FUNCTION,
-            },
-        ]);
-        // Insert 2 bytes at 5: before is untouched, after slides right.
-        let out = hl.translate(BytePos(5), BytePos(5), BytePos(7));
-        assert_eq!(out.all()[0].span, span(0, 3));
-        assert_eq!(out.all()[1].span, span(12, 16));
-    }
-
-    #[test]
-    fn translate_shifts_spans_after_a_deletion() {
-        let hl = Highlights::from_sorted_spans(vec![HighlightSpan {
-            span: span(10, 14),
-            token: TokenId::FUNCTION,
-        }]);
-        // Delete bytes [5,8): the span slides left by 3.
-        let out = hl.translate(BytePos(5), BytePos(8), BytePos(5));
-        assert_eq!(out.all()[0].span, span(7, 11));
-    }
-
-    #[test]
-    fn translate_drops_a_span_the_edit_cut_through() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(4, 9),
-                token: TokenId::STRING,
-            },
-        ]);
-        // Typing inside the string: its extent is unknown until the reparse lands, so it
-        // renders unhighlighted rather than wrong.
-        let out = hl.translate(BytePos(6), BytePos(6), BytePos(7));
-        assert_eq!(out.all().len(), 1);
-        assert_eq!(out.all()[0].token, TokenId::KEYWORD);
-    }
-
-    #[test]
-    fn translate_preserves_sorted_non_overlapping_order() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(5, 8),
-                token: TokenId::STRING,
-            },
-            HighlightSpan {
-                span: span(9, 12),
-                token: TokenId::NUMBER,
-            },
-        ]);
-        let out = hl.translate(BytePos(4), BytePos(4), BytePos(6));
-        assert!(
-            out.all()
-                .windows(2)
-                .all(|w| w[0].span.end.0 <= w[1].span.start.0)
-        );
-        // `spans_in` relies on that invariant, so it must still find the shifted span.
-        assert_eq!(out.spans_in(span(7, 11)).len(), 1);
+    fn query_error_keeps_the_parse_host_error_as_its_source() {
+        let err = SyntaxError::from(TsError::InvalidQuery("bad capture".to_owned()));
+        assert!(matches!(
+            &err,
+            SyntaxError::Query(TsError::InvalidQuery(message)) if message == "bad capture"
+        ));
+        assert_eq!(err.to_string(), "query error: invalid query: bad capture");
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     /// The token covering `needle`'s first byte in `text`, per `highlights`.
@@ -394,7 +234,7 @@ pub fn add_one() {}
 
     #[test]
     fn layered_highlight_tracks_a_live_edit() -> Result<(), Box<dyn std::error::Error>> {
-        use karet_treesitter::Edit;
+        use karet_core::AppliedEdit;
         use karet_treesitter::LayeredParser;
         use karet_treesitter::language_id_from_injection_name;
 
@@ -413,7 +253,7 @@ pub fn add_one() {}
 
         parser.reparse(
             &mut tree,
-            &[Edit {
+            &[AppliedEdit {
                 start_byte: old.len(),
                 old_end_byte: old.len(),
                 new_end_byte: new.len(),
@@ -535,10 +375,8 @@ pub fn add_one() {}
     fn highlights_rust_code_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
         use std::path::Path;
 
-        use karet_treesitter::ParserPool;
-        use karet_treesitter::SyntaxTree;
-        use karet_treesitter::language_id_from_path;
-
+        // Every parse-host item here comes through this crate's own re-exports
+        // (`super::*`), which is what lets a consumer depend on karet-syntax alone.
         let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
             return Ok(()); // rust grammar not compiled into this build; nothing to test
         };

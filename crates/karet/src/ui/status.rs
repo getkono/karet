@@ -3,11 +3,16 @@ use super::*;
 /// What joins the right strip's segments. Three cells wide.
 const SEPARATOR: &str = " \u{b7} ";
 
-pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.status_rect = area;
-    app.status_hits.clear();
+pub(super) fn draw_status(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
+    frame.status_rect = area;
 
-    let focus = match app.focus {
+    let focus = match app.keyboard.focus() {
         Focus::Sidebar => "SIDEBAR",
         // The content area belongs to whichever view is showing, so name that
         // rather than the editor shell behind it.
@@ -82,7 +87,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     }
     // Pushed even when empty: with no tab the strip is a bare pair of spaces, and
     // dropping the segment entirely would collapse the strip's padding with it.
-    segments.push(active_tab.map_or("", Tab::language).to_owned());
+    segments.push(active_tab.map_or("", Tab::status_label).to_owned());
     if let Some(spelling) = active_tab.and_then(|tab| match &tab.kind {
         TabKind::Code { doc: Some(doc), .. } => app
             .docs
@@ -129,8 +134,22 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let focus_text = format!(" {focus} ");
     let fw = cell_width(&focus_text);
     spans.push(Span::styled(focus_text, key));
-    app.status_hits.push((x, x + fw, Command::ToggleFocus));
+    frame.status_hits.push((x, x + fw, Command::ToggleFocus));
     x += fw;
+    // A modal preset names its mode beside the focus, with the macro being
+    // recorded and the command typed so far (vim's `showcmd`).
+    if let Some((mode, recording, typed)) = app.vi_status() {
+        let mut chip = format!(" {} ", mode.label());
+        if let Some(register) = recording {
+            chip.push_str(&format!("recording @{register} "));
+        }
+        if !typed.is_empty() {
+            chip.push_str(&typed);
+            chip.push(' ');
+        }
+        x += cell_width(&chip);
+        spans.push(Span::styled(chip, key));
+    }
     let gutter = "   ";
     spans.push(Span::styled(gutter.to_string(), bar));
     x += cell_width(gutter);
@@ -142,7 +161,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     // message rendered in the bar's own style read as invisible, and covering the
     // hints also took their click targets with it.
     if !app.pending.is_empty() {
-        let ctx = Context::focus(app.focus_target());
+        let ctx = Context::focus(app.focus_target()).with_editing(app.vi_editing());
         let prefix = app
             .pending
             .iter()
@@ -157,7 +176,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         render_hints(
             &comps,
             &mut spans,
-            &mut app.status_hits,
+            &mut frame.status_hits,
             &mut x,
             rest,
             bar,
@@ -168,7 +187,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         render_hints(
             &hints,
             &mut spans,
-            &mut app.status_hits,
+            &mut frame.status_hits,
             &mut x,
             avail,
             bar,
@@ -185,7 +204,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         .saturating_add(area.width.saturating_sub(right_width));
     let (right_line, action_hits) = status_right(&segments, &actions, strip_x, bar);
     if right_width <= area.width {
-        app.status_hits.extend(action_hits);
+        frame.status_hits.extend(action_hits);
     }
     karet_widgets::status::StatusBar {
         bar,

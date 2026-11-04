@@ -80,30 +80,26 @@ pub(super) fn forward_diagnostics(
     });
     // jdtls-style `language/status` notifications carry the only feedback a
     // user gets during a 30–120 s first import; forward them for the status
-    // bar rather than leaving the server looking hung.
+    // bar rather than leaving the server looking hung. Copilot's
+    // `didChangeStatus` likewise, when it reports a problem: it is how the
+    // user learns ghost text needs a sign-in.
     tokio::spawn(async move {
         loop {
             match raw_rx.recv().await {
-                Ok(notification) if notification.method == "language/status" => {
-                    let message = notification
-                        .params
-                        .get("message")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    if !message.is_empty()
-                        && status_updates
-                            .send(LspUpdate::ServerStatus {
-                                token,
-                                key: status_key.clone(),
-                                message,
-                            })
-                            .is_err()
-                    {
+                Ok(notification) => {
+                    let Some(message) = status_message(&notification.method, &notification.params)
+                    else {
+                        continue;
+                    };
+                    let update = LspUpdate::ServerStatus {
+                        token,
+                        key: status_key.clone(),
+                        message,
+                    };
+                    if status_updates.send(update).is_err() {
                         return;
                     }
                 },
-                Ok(_) => {},
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
@@ -129,4 +125,53 @@ pub(super) fn forward_diagnostics(
             }
         }
     })
+}
+
+/// The status line a pushed notification carries, when it is one worth
+/// showing: a non-empty `language/status` message, or a `didChangeStatus`
+/// (Copilot) message reporting an `Error` or `Warning` -- its `Normal` and
+/// `Inactive` reports, sent on every keystroke's busy flip, would only be
+/// noise.
+fn status_message(method: &str, params: &serde_json::Value) -> Option<String> {
+    let message = params.get("message")?.as_str()?;
+    let worth = match method {
+        "language/status" => true,
+        "didChangeStatus" => matches!(
+            params.get("kind").and_then(serde_json::Value::as_str),
+            Some("Error" | "Warning")
+        ),
+        _ => false,
+    };
+    (worth && !message.is_empty()).then(|| message.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn only_status_lines_worth_showing_are_forwarded() {
+        let language = json!({"message": "Importing project"});
+        assert_eq!(
+            status_message("language/status", &language).as_deref(),
+            Some("Importing project")
+        );
+        assert_eq!(
+            status_message("language/status", &json!({"message": ""})),
+            None
+        );
+        let signed_out =
+            json!({"kind": "Error", "message": "You are not signed in", "busy": false});
+        assert_eq!(
+            status_message("didChangeStatus", &signed_out).as_deref(),
+            Some("You are not signed in")
+        );
+        let normal = json!({"kind": "Normal", "message": "", "busy": true});
+        assert_eq!(status_message("didChangeStatus", &normal), None);
+        let inactive = json!({"kind": "Inactive", "message": "file excluded"});
+        assert_eq!(status_message("didChangeStatus", &inactive), None);
+        assert_eq!(status_message("$/progress", &language), None);
+    }
 }

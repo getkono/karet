@@ -32,7 +32,7 @@
         fn open(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
             session.handle(
                 RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.to_path_buf(),
                     language: None,
                 },
@@ -48,7 +48,7 @@
         ) -> Option<AppliedWorkspaceEdit> {
             session.handle(
                 RequestId(50),
-                Command::ApplyWorkspaceEdit {
+                WorkspaceCommand::ApplyEdit {
                     edit,
                     label: Some("contract".into()),
                 },
@@ -109,7 +109,7 @@
             assert_eq!(std::fs::read_to_string(&open_path)?, "let old = 1;\n");
 
             // Undo is per document: undoing one leaves the other renamed.
-            session.handle(RequestId(60), Command::Undo { doc: *background });
+            session.handle(RequestId(60), DocumentCommand::Undo { doc: *background });
             assert_eq!(text(&session, *background).as_deref(), Some("use old;\n"));
             assert_eq!(text(&session, doc).as_deref(), Some("let new = 1;\n"));
             Ok(())
@@ -397,7 +397,7 @@
             // The open document followed its file.
             session.handle(
                 RequestId(70),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: moved.clone(),
                     language: None,
                 },
@@ -507,7 +507,7 @@
 
             session.handle(
                 RequestId(90),
-                Command::Rename {
+                LspCommand::Rename {
                     doc,
                     position: LineCol::new(0, 1),
                     new_name: "other".into(),
@@ -519,7 +519,7 @@
 
             session.handle(
                 RequestId(91),
-                Command::PrepareRename {
+                LspCommand::PrepareRename {
                     doc,
                     position: LineCol::new(0, 1),
                 },
@@ -639,11 +639,44 @@
             Ok(())
         }
 
+        /// The client-side identifier walks grapheme clusters: a caret just
+        /// past a combining mark is still at the end of its word, and the
+        /// mark stays in the placeholder. Falsified by a per-`char` walk,
+        /// which sees U+0301 as a non-word character and finds nothing.
+        #[test]
+        fn prepare_rename_keeps_a_combining_mark_in_its_identifier() -> TestResult {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "let cafe\u{301} = 1;\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let doc = open(&mut session, &mut events, &path).ok_or("open")?;
+            let word = Range {
+                start: LineCol::new(0, 4),
+                end: LineCol::new(0, 9),
+            };
+            for caret in [4, 8, 9] {
+                let (target, _) = prepared(
+                    &mut session,
+                    &mut events,
+                    doc,
+                    LineCol::new(0, caret),
+                    RenameAnswer::Identifier,
+                )
+                .ok_or("answer")?;
+                assert_eq!(
+                    target.map(|target| (target.range, target.placeholder)),
+                    Some((word, "cafe\u{301}".into())),
+                    "caret at {caret}"
+                );
+            }
+            Ok(())
+        }
+
         /// One frame of the fake server's side of an in-memory LSP wire.
         async fn read_json(
             reader: &mut tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
         ) -> Option<serde_json::Value> {
-            let bytes = karet_lsp::codec::read_frame(reader).await.ok()??;
+            let bytes = karet_jsonrpc::framing::content_length::read_frame(reader).await.ok()??;
             serde_json::from_slice(&bytes).ok()
         }
 
@@ -664,7 +697,10 @@
                 let init = read_json(&mut reader).await?;
                 let reply = serde_json::json!({"jsonrpc": "2.0", "id": init["id"],
                                                "result": {"capabilities": {}}});
-                karet_lsp::codec::write_frame(&mut server_write, reply.to_string().as_bytes())
+                karet_jsonrpc::framing::content_length::write_frame(
+                    &mut server_write,
+                    reply.to_string().as_bytes(),
+                )
                     .await
                     .ok()?;
                 read_json(&mut reader).await?; // initialized
@@ -677,7 +713,10 @@
                         "newText": "new"
                     }]}}}
                 });
-                karet_lsp::codec::write_frame(&mut server_write, request.to_string().as_bytes())
+                karet_jsonrpc::framing::content_length::write_frame(
+                    &mut server_write,
+                    request.to_string().as_bytes(),
+                )
                     .await
                     .ok()?;
                 read_json(&mut reader).await

@@ -3,6 +3,48 @@
 use super::*;
 
 impl GitHubClient {
+    /// List one page of `repository`'s open pull requests, most recently
+    /// updated first, through the reviewed RFC-3339 wire adapter.
+    ///
+    /// Unlike [`GitHubClient::search_pull_requests`], the listing reports each
+    /// pull request's draft state and head/base commits. GitHub's listing omits
+    /// mergeability, so `mergeable` is `None` and `merged` is `false` on every
+    /// row. `next_page` is set whenever the page came back full.
+    ///
+    /// # Errors
+    /// Returns a transport, status, or decode error.
+    pub async fn open_pull_requests(
+        &self,
+        repository: &RepositoryIdentity,
+        page: u32,
+    ) -> Result<Page<PullRequestSummary>, GitHubError> {
+        let page = page.max(1);
+        let response: Vec<PullRequestResponse> = self
+            .get_json(
+                &format!("/repos/{}/{}/pulls", repository.owner, repository.repo),
+                &[
+                    ("state", "open".to_string()),
+                    ("sort", "updated".to_string()),
+                    ("direction", "desc".to_string()),
+                    ("per_page", PER_PAGE.to_string()),
+                    ("page", page.to_string()),
+                ],
+            )
+            .await?;
+        let next_page = (response.len() == PER_PAGE as usize)
+            .then(|| page.checked_add(1))
+            .flatten();
+        Ok(Page {
+            items: response
+                .into_iter()
+                .map(PullRequestResponse::into_summary)
+                .collect(),
+            page,
+            next_page,
+            total_count: None,
+        })
+    }
+
     /// Fetch every commit currently contained in a pull request.
     ///
     /// # Errors

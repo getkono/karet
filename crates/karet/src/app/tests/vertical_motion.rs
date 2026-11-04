@@ -297,3 +297,109 @@ fn with_word_wrap_motion_acts_on_visual_rows() {
         "Home on a continuation row goes to its start"
     );
 }
+
+#[test]
+fn a_click_past_the_end_of_a_wrapped_row_keeps_the_caret_on_that_row() {
+    // `alpha ` fills row 0 and the long word starts row 1, so column 6 is both
+    // the end of row 0 and the start of row 1.
+    let long = "x".repeat(40);
+    let (mut rig, width) = wrapped_rig(&format!("|alpha {long}"));
+    assert!(width < 46, "the line wraps");
+    rig.run(&[click(At::Offset(0, 0, 10, 0))]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(0, 6));
+    // Home acts on the caret's visual row: row 0's start, not row 1's.
+    rig.run(&[key(KeyCode::Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        LineCol::new(0, 0),
+        "the caret stayed on the clicked row"
+    );
+
+    // The same position clicked at the start of row 1 stays on row 1.
+    rig.run(&[PAUSE, click(At::Offset(0, 0, 0, 1))]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(0, 6));
+    rig.run(&[key(KeyCode::Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        LineCol::new(0, 6),
+        "Home on row 1 keeps its start"
+    );
+}
+
+/// A wrapped rig over a short line, a line indented four cells that wraps
+/// (its continuation rows indented four cells too, under
+/// `"wrappingIndent": "same"`), and another short line, with the caret at
+/// `(0, col)`; and the screen column of the text's first cell.
+fn indented_wrap_rig(col: usize) -> (Rig, u16) {
+    let short = "0123456789";
+    let mut first = short.to_owned();
+    first.insert(col, '|');
+    let long = format!("    {}", "xxxx ".repeat(12));
+    let mut rig = Rig::sized(&format!("{first}\n{long}\n{short}"), 30, 12);
+    let editor = serde_json::from_str(r#"{ "wordWrap": "on", "wrappingIndent": "same" }"#);
+    rig.app.settings.editor = editor.unwrap_or_default();
+    rig.render();
+    assert!(
+        rig.tab().editor.content_width() < 60,
+        "the indented line wraps"
+    );
+    let (x0, _) = rig.cell(text(0, 0));
+    (rig, x0)
+}
+
+/// The screen cell the primary caret is drawn in.
+fn caret_cell(rig: &Rig) -> (u16, u16) {
+    let caret = rig.tab().editor.cursor();
+    rig.cell(text(caret.line, caret.col))
+}
+
+#[test]
+fn the_goal_column_counts_a_continuation_rows_indent() {
+    use KeyCode::*;
+    let (mut rig, x0) = indented_wrap_rig(6);
+    rig.run(&[key(Down)]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(1, 6));
+    let (_, first_row) = caret_cell(&rig);
+    rig.run(&[key(Down)]);
+    assert_eq!(
+        caret_cell(&rig),
+        (x0 + 6, first_row + 1),
+        "the continuation row keeps the screen column, its indent counted"
+    );
+    rig.run(&[key(Up)]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(1, 6));
+    rig.run(&[key(Up)]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(0, 6));
+
+    // A goal inside the indent lands on the continuation row's start: drawn
+    // right after the indent, and where Home on that row goes.
+    let (mut rig, x0) = indented_wrap_rig(2);
+    rig.run(&[key(Down), key(Down)]);
+    let landed = rig.tab().editor.cursor();
+    assert_eq!(landed.line, 1);
+    assert!(landed.col > 4, "on the continuation row, not the first");
+    assert_eq!(caret_cell(&rig).0, x0 + 4);
+    rig.run(&[key(Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        landed,
+        "already at the row start"
+    );
+}
+
+#[test]
+fn a_click_in_a_continuation_rows_indent_lands_on_the_row_start() {
+    let (mut rig, x0) = indented_wrap_rig(0);
+    let (_, first_row) = rig.cell(text(1, 0));
+    rig.run(&[click(At::Cell(x0 + 1, first_row + 1))]);
+    let landed = rig.tab().editor.cursor();
+    assert_eq!(landed.line, 1);
+    assert!(landed.col > 4, "on the continuation row, not the first");
+    assert_eq!(caret_cell(&rig), (x0 + 4, first_row + 1));
+    rig.run(&[key(KeyCode::Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        landed,
+        "already at the row start"
+    );
+}

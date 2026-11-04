@@ -24,9 +24,9 @@
 //!   from the active configuration respectively — and the configuration can differ
 //!   between the run that wrote the cache and the run that reads it. Recomputing them is
 //!   cheap and storing them would let a stale answer survive a configuration change.
-//! - **Effective visibility.** It belongs to the semantic tier, which resolves re-export
-//!   chains across the whole index. It is not a fact about one file, and it carries a
-//!   `SeamId` that would not survive the trip.
+//! - **Effective visibility.** It belongs to the semantic tier, which would resolve
+//!   re-export chains across the whole index (nothing populates it yet). It is not a fact
+//!   about one file, and it carries a `SeamId` that would not survive the trip.
 //! - **Edges.** A call edge says which function a call *reaches*, which depends on every
 //!   other file — a function added elsewhere can change the answer. So the raw call sites
 //!   and imports are stored, being facts about this file alone, and the edges are
@@ -225,8 +225,8 @@ impl FileContribution {
 
 /// Drop the parts of a facet that are not a fact about one file.
 ///
-/// Effective reach is resolved across the whole index and carries an index-local id, so
-/// it is recomputed rather than carried.
+/// Effective reach would be resolved across the whole index and carries an index-local
+/// id, so it is dropped rather than carried.
 #[must_use]
 pub(crate) fn structural_facet(facet: &Facet) -> Facet {
     Facet {

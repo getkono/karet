@@ -140,6 +140,8 @@ pub fn breadcrumb_segment_spans(components: &[String]) -> Vec<(u16, u16)> {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
+
     use super::*;
 
     #[test]
@@ -156,21 +158,26 @@ mod tests {
     /// Draw `crumbs` into a one-row buffer `width` wide: the recorded hits and
     /// the painted row.
     fn draw(crumbs: &Breadcrumbs<'_>, width: u16) -> (Vec<BreadcrumbHit>, String) {
+        let (hits, buffer) = draw_cells(crumbs, width);
+        let painted = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        (hits, painted)
+    }
+
+    /// Draw `crumbs` as [`draw`] does, keeping the painted cells.
+    fn draw_cells(crumbs: &Breadcrumbs<'_>, width: u16) -> (Vec<BreadcrumbHit>, Buffer) {
         let mut hits = Vec::new();
         let theme = Theme::dark();
-        let painted = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 1))
+        let buffer = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 1))
             .and_then(|mut terminal| {
                 terminal.draw(|f| hits = crumbs.draw(f, &theme, f.area()))?;
-                Ok(terminal
-                    .backend()
-                    .buffer()
-                    .content()
-                    .iter()
-                    .map(ratatui::buffer::Cell::symbol)
-                    .collect::<String>())
+                Ok(terminal.backend().buffer().clone())
             })
-            .unwrap_or_default();
-        (hits, painted)
+            .unwrap_or_else(|_| Buffer::empty(Rect::default()));
+        (hits, buffer)
     }
 
     fn crumbs<'a>(path: &'a Path, symbols: &'a [String]) -> Breadcrumbs<'a> {
@@ -244,6 +251,37 @@ mod tests {
         assert!(
             hits.iter()
                 .all(|hit| matches!(hit.target, BreadcrumbTarget::Path(_)))
+        );
+    }
+
+    #[test]
+    fn every_painted_cell_takes_the_active_line_number_color() {
+        let (_, buffer) = draw_cells(&crumbs(Path::new("/w/a.rs"), &[]), 40);
+        let sep = BREADCRUMB_SEP;
+        let width = UnicodeWidthStr::width(format!("/{sep}w{sep}a.rs").as_str());
+        let expected = Theme::dark().style(ThemeRole::LineNumberActive).fg;
+        assert!(expected.is_some());
+        for x in 0..u16::try_from(width).unwrap_or(0) {
+            assert_eq!(buffer[(x, 0)].fg, expected.unwrap_or_default(), "x={x}");
+        }
+    }
+
+    #[test]
+    fn a_symlink_appends_its_glyph_to_the_file_segment() {
+        let symbols = ["App".to_string()];
+        let mut link = crumbs(Path::new("/w/a.rs"), &symbols);
+        link.is_symlink = true;
+        let (hits, painted) = draw(&link, 40);
+        let sep = BREADCRUMB_SEP;
+        assert_eq!(painted.trim_end(), format!("/{sep}w{sep}a.rs @{sep}App"));
+        let file = hits
+            .iter()
+            .find(|hit| hit.target == BreadcrumbTarget::Path(PathBuf::from("/w/a.rs")));
+        let start = column_of(&painted, "a.rs");
+        assert_eq!(
+            file.map(|hit| (hit.start, hit.end)),
+            start.map(|start| (start, start + 6)),
+            "the glyph is part of the clickable file segment"
         );
     }
 

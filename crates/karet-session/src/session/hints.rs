@@ -7,7 +7,7 @@ impl Session {
     /// Queue a dependency-freshness check for `doc_id` when it is a
     /// `Cargo.toml` and `deps.enabled` is on; the worker spawns on first use.
     pub(crate) fn refresh_manifest_hints(&mut self, doc_id: DocumentId) {
-        if !self.config.settings.deps.enabled {
+        if !self.config.settings().deps.enabled {
             return;
         }
         let Some(doc) = self.store.docs.get(&doc_id) else {
@@ -20,16 +20,11 @@ impl Session {
         {
             return;
         }
-        let lockfile = doc
-            .path
-            .parent()
-            .map(|dir| dir.join("Cargo.lock"))
-            .and_then(|path| std::fs::read_to_string(path).ok());
         let job = crate::manifest_hints::HintJob {
             doc: doc_id,
             version: doc.buffer.version(),
             manifest: doc.buffer.text(),
-            lockfile,
+            path: doc.path.clone(),
         };
         let worker = self
             .manifest_hints_worker

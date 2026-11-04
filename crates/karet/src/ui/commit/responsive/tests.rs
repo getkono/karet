@@ -1,14 +1,14 @@
 use super::*;
 
-fn file(path: &str, old: &str, new: &str) -> render::FileView {
-    crate::render::test_file_view(path, old, new)
+fn file(path: &str, old: &str, new: &str) -> crate::tab::ChangedFile {
+    crate::tab::test_changed_file(path, old, new)
 }
 
 /// Build a file document the way a paint does, with the tree derived from the same
 /// files and nothing folded.
 fn document(
     theme: &Theme,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     width: u16,
     stacked: bool,
     toggled: &BTreeSet<usize>,

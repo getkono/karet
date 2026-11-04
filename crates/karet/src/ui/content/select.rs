@@ -17,11 +17,11 @@ use ratatui::layout::Rect;
 use crate::app::SelectRegion;
 use crate::app::SelectSurface;
 use crate::app::SurfaceSelection;
-use crate::app::select::SurfaceRow;
-use crate::app::select::diff_row;
-use crate::app::select::hex_row;
-use crate::app::select::markdown_row;
-use crate::render::FileView;
+use crate::tab::ChangedFile;
+use crate::tab::rows::SurfaceRow;
+use crate::tab::rows::diff_row;
+use crate::tab::rows::hex_row;
+use crate::tab::rows::markdown_row;
 
 /// The rect `draw_scrollable_lines` paints rows into for `area`.
 ///
@@ -38,7 +38,7 @@ pub(super) fn unified(
     theme: &Theme,
     selection: Option<SurfaceSelection>,
     area: Rect,
-    file: &FileView,
+    file: &ChangedFile,
     scroll: u16,
     column: u16,
 ) -> Vec<SelectRegion> {
@@ -61,7 +61,7 @@ pub(super) fn side_by_side(
     theme: &Theme,
     selection: Option<SurfaceSelection>,
     panes: (Rect, Rect),
-    file: &FileView,
+    file: &ChangedFile,
     scroll: u16,
     column: u16,
 ) -> Vec<SelectRegion> {
@@ -133,7 +133,7 @@ pub(in crate::ui) fn commit_cards(
     theme: &Theme,
     selection: Option<SurfaceSelection>,
     regions: &[SelectRegion],
-    files: &[crate::render::FileView],
+    files: &[crate::tab::ChangedFile],
     toggled: &std::collections::BTreeSet<usize>,
 ) {
     for region in regions {
@@ -159,10 +159,13 @@ fn paint(
     theme: &Theme,
     selection: Option<SurfaceSelection>,
     region: &SelectRegion,
-    file: &FileView,
+    file: &ChangedFile,
 ) {
     paint_rows(f, theme, selection, region, &|row| {
-        diff_row(file, region.surface, row)
+        region
+            .surface
+            .diff_column()
+            .and_then(|column| diff_row(file, column, row))
     });
 }
 
