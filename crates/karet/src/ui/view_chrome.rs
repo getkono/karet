@@ -19,13 +19,18 @@ fn button_text(view: View, icon_style: karet_filetype::IconStyle, labelled: bool
 }
 
 /// Draw the view switcher across `area`, recording each button's column span in
-/// `app.view_hits` for the click handler.
+/// `frame.view_hits` for the click handler.
 ///
 /// Labels are dropped for every button at once when they do not all fit, so the
 /// row never shows a mix of named and unnamed views.
-pub(super) fn draw_view_chrome(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.view_chrome_rect = area;
-    app.view_hits.clear();
+pub(super) fn draw_view_chrome(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
+    frame.view_chrome_rect = area;
     f.render_widget(
         Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
         area,
@@ -54,7 +59,7 @@ pub(super) fn draw_view_chrome(f: &mut Frame, app: &mut App, theme: &Theme, area
             ChromeButtonState::Normal
         };
         spans.push(Span::styled(text, chrome_button_style(theme, state)));
-        app.view_hits.push((x, x.saturating_add(width), view));
+        frame.view_hits.push((x, x.saturating_add(width), view));
         x = x.saturating_add(width);
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);

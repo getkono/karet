@@ -2,14 +2,26 @@
 //! symbols, and the non-UTF-8 fallback. Called only from the
 //! [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::Diagnostic;
+use karet_core::NotificationKind;
+use karet_core::Symbol;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::TabKind;
 
 impl App {
     /// Bind an answered open to the code tab that requested it, or release the
     /// document if the view has since closed.
     pub(super) fn on_opened(&mut self, id: Option<RequestId>, doc: DocumentId) {
         if id.is_some_and(|request| self.abandoned_open.remove(&request)) {
-            self.send_command(SessionCommand::CloseDocument { doc });
+            self.send_command(DocumentCommand::Close { doc });
             return;
         }
         let pending = id.and_then(|request| self.pending_open.remove(&request));
@@ -28,10 +40,11 @@ impl App {
                     break;
                 }
             }
-            if bound {
-                self.open_docs.insert(doc);
-            } else {
-                self.send_command(SessionCommand::CloseDocument { doc });
+            // The session counts every open, but the app holds one reference
+            // per document (`reconcile_open_docs` closes it once): a second
+            // view's open of a document already held gives its extra one back.
+            if !bound || !self.open_docs.insert(doc) {
+                self.send_command(DocumentCommand::Close { doc });
             }
         }
     }
@@ -39,11 +52,13 @@ impl App {
     /// An open the session answered with an error rather than a document: the
     /// requesting tab's text will never arrive, so it stops waiting and shows
     /// why. No `Opened` follows, so the request is forgotten here.
-    pub(super) fn on_open_failed(&mut self, request: RequestId, message: &str) {
+    ///
+    /// Returns the notification tag the failure reports under when the request
+    /// was a pending open, so the caller's toast collapses with any other failed
+    /// open of the same path.
+    pub(super) fn on_open_failed(&mut self, request: RequestId, message: &str) -> Option<String> {
         self.abandoned_open.remove(&request);
-        let Some(pending) = self.pending_open.remove(&request) else {
-            return;
-        };
+        let pending = self.pending_open.remove(&request)?;
         for tab in self.all_tabs_mut() {
             if tab.view == pending.view
                 && tab.fill_caret.is_some()
@@ -53,6 +68,16 @@ impl App {
                 tab.fill_error = Some(message.to_string());
             }
         }
+        Some(Self::open_failure_tag(&pending.path))
+    }
+
+    /// The notification tag every failed open of `path` shares.
+    ///
+    /// A split made before its source's open is answered sends a second
+    /// `OpenDocument` for the same path, so a file that cannot open fails twice;
+    /// sharing one tag per path collapses the two into one card.
+    fn open_failure_tag(path: &Path) -> String {
+        format!("io.open-failed:{}", path.display())
     }
 
     /// Merge a published diagnostic layer over the retained LaTeX layer.
@@ -86,6 +111,7 @@ impl App {
         self.docs.symbols.remove(&doc);
         self.forget_inlay_hints(doc);
         self.forget_code_lenses(doc);
+        self.forget_links_and_colors(doc);
         self.forget_line_changes(Some(doc));
         self.docs.outline_versions.remove(&doc);
         self.docs.outline_loading.remove(&doc);
@@ -155,10 +181,11 @@ impl App {
                 tab.markdown_preview = None;
             }
         }
-        self.notify(
+        self.notify_tagged(
             Report::Alert,
             NotificationKind::Io,
             format!("opened {} read-only: not valid UTF-8", path.display()),
+            Some(Self::open_failure_tag(&path)),
         );
     }
 }

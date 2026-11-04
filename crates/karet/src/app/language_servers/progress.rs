@@ -8,7 +8,10 @@
 //!
 //! The manager tab keeps its detailed per-provider table; this is additive.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_fileview::viewer::human_size;
+
+use crate::app::App;
 
 impl App {
     /// The notification tag every managed-operation card shares.
@@ -43,12 +46,12 @@ impl App {
         let body = match (pending.downloaded, pending.total) {
             (Some(done), Some(total)) if total > 0 => Some(format!(
                 "{} of {} ({}%)",
-                human_bytes(done),
-                human_bytes(total),
+                human_size(done),
+                human_size(total),
                 done.saturating_mul(100) / total
             )),
             // Upstream did not declare a size, so a percentage would be invented.
-            (Some(done), _) => Some(human_bytes(done)),
+            (Some(done), _) => Some(human_size(done)),
             _ => None,
         };
         self.notify_progress(

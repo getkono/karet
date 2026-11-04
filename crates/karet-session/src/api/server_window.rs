@@ -44,9 +44,9 @@ pub struct LanguageServerWork {
     pub server: LanguageServerId,
     /// The repository root its connection serves.
     pub root: PathBuf,
-    /// The server's name for the work, for [`Command::CancelLanguageServerWork`].
+    /// The server's name for the work, for [`LanguageServerCommand::CancelWork`].
     ///
-    /// [`Command::CancelLanguageServerWork`]: crate::Command::CancelLanguageServerWork
+    /// [`LanguageServerCommand::CancelWork`]: crate::LanguageServerCommand::CancelWork
     pub token: WorkToken,
     /// Which step this is.
     pub phase: WorkPhase,

@@ -35,7 +35,7 @@ fn an_install_approved_outside_the_manager_still_reports_progress() {
     assert!(painted.contains("Installing"), "{painted}");
     assert!(painted.contains("texlab"), "{painted}");
     assert!(painted.contains("50%"), "the size is weighable: {painted}");
-    assert!(painted.contains("14.0 MB"), "{painted}");
+    assert!(painted.contains("14.0 MiB"), "{painted}");
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn a_download_with_no_declared_size_reports_bytes_rather_than_a_made_up_percent(
         },
     );
     let painted = screen(&mut app, 100, 18).join("\n");
-    assert!(painted.contains("2.0 KB"), "{painted}");
+    assert!(painted.contains("2.0 KiB"), "{painted}");
     assert!(!painted.contains('%'), "no invented percentage: {painted}");
 }
 

@@ -11,12 +11,12 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use karet_core::Diagnostic;
+use karet_core::Highlights;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Severity;
 use karet_core::StandardToken;
 use karet_core::TokenId;
-use karet_syntax::Highlights;
 use spellbook::Dictionary;
 
 use super::context::is_non_prose_string;

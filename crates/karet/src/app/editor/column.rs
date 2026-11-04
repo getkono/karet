@@ -10,12 +10,19 @@
 //! happened to stop. Inlay hints are not counted, as they are not text.
 
 use karet_core::CursorState;
+use karet_core::LineCol;
 use karet_core::Selection;
 use karet_editor::cluster_bounds;
 use karet_editor::cluster_widths;
+use karet_editor::resolve_folds;
 use karet_session::ViewId;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 
-use super::super::*;
+use crate::app::App;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// A corner of a box selection: a buffer line and a display-cell column on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,15 +227,12 @@ impl App {
             return;
         };
         let cursors = box_cursors(buffer, state.anchor, head, tab_width);
-        let scroll_col = editor.scroll_col;
-        editor.set_cursor_state(buffer, cursors);
         if pointer {
-            // `set_cursor_state` reveals with the keyboard's margin. Undo its
-            // horizontal part and reveal again as a pointer move, which keeps
-            // a head already on screen exactly where it is.
-            editor.scroll_col = scroll_col;
-            let primary = editor.cursors().primary().head;
-            editor.extend_to(buffer, primary);
+            // A pointer move keeps a head already on screen exactly where it
+            // is; the keyboard reveals it with its usual margin.
+            editor.set_cursor_state_from_pointer(buffer, cursors);
+        } else {
+            editor.set_cursor_state(buffer, cursors);
         }
         state.head = head;
         state.cursors = editor.cursors().clone();
@@ -337,7 +341,8 @@ impl App {
             let past = match tab.editor.screen_cell(area, buffer, &fold_lines, pos) {
                 Some((x, _)) => u32::from(col.saturating_sub(x)),
                 None => {
-                    tab.editor.scroll_col.saturating_sub(len) + u32::from(col.saturating_sub(left))
+                    tab.editor.scroll_col().saturating_sub(len)
+                        + u32::from(col.saturating_sub(left))
                 },
             };
             cell = cell.saturating_add(past);
@@ -354,6 +359,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn chars(text: &str) -> Vec<char> {

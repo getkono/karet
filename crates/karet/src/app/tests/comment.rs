@@ -15,7 +15,7 @@ fn editor_app(name: &str, text: &str, carets: &[LineCol]) -> App {
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     app.tabs[idx].editor.set_carets(carets);
     app

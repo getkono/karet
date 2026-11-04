@@ -1,4 +1,21 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::PreparedChange;
+use karet_session::RequestId;
+use karet_session::VcsCommand;
+use karet_session::ViewId;
+use karet_vcs::StatusKind;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::pending::Pending;
+use crate::tab::ChangedFile;
+use crate::tab::PagerState;
+use crate::tab::Section;
+use crate::tab::TabKind;
+use crate::tab::ViewMode;
 
 /// A trivially-constructible prepared change for a binary pair: an empty diff
 /// flagged binary, so the painter shows the standard placeholder without a
@@ -40,7 +57,7 @@ pub(super) fn diff_line_of_row(text: &str, row: u32) -> u32 {
 /// hunk lands on the last one; a binary or hunkless diff has no row.
 fn landing_row(prepared: &karet_diff::PreparedDiff, layout: ViewMode, line: u32) -> Option<usize> {
     let line = line.saturating_add(1);
-    let hunks = &prepared.diff.hunks;
+    let hunks = &prepared.diff().hunks;
     let index = hunks
         .iter()
         .position(|hunk| {
@@ -62,7 +79,7 @@ impl App {
     pub(super) fn request_change_diff(&mut self, path: PathBuf, section: Section) {
         let staged = section == Section::Staged;
         if self
-            .send(SessionCommand::PrepareChange { path, staged })
+            .send(VcsCommand::PrepareChange { path, staged })
             .is_none()
         {
             self.notify(
@@ -115,7 +132,7 @@ impl App {
             ViewMode::Unified => karet_diff::unified_hunk_at_row(prepared, row),
             ViewMode::SideBySide => karet_diff::side_by_side_hunk_at_row(prepared, row),
         };
-        let Some(hunk) = hunk_index.and_then(|index| prepared.diff.hunks.get(index)) else {
+        let Some(hunk) = hunk_index.and_then(|index| prepared.diff().hunks.get(index)) else {
             self.notify(
                 Report::Refusal,
                 NotificationKind::Vcs,
@@ -123,10 +140,10 @@ impl App {
             );
             return;
         };
-        let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
+        let patch = karet_diff::format_hunk_patch(prepared.diff(), hunk);
         let (path, section) = (path.clone(), *section);
         if self
-            .send(SessionCommand::ApplyIndexPatch { patch, reverse })
+            .send(VcsCommand::ApplyIndexPatch { patch, reverse })
             .is_none()
         {
             self.notify(
@@ -189,7 +206,7 @@ impl App {
             }
             match result {
                 Ok(prepared) => {
-                    *file = Some(Box::new(FileView::new(*prepared)));
+                    *file = Some(Box::new(ChangedFile::new(*prepared)));
                     *loading_since = None;
                     *error = None;
                 },
@@ -237,7 +254,7 @@ impl App {
                         {
                             pager.scroll = u16::try_from(row).unwrap_or(u16::MAX);
                         }
-                        *file = Some(Box::new(FileView::new(*prepared)));
+                        *file = Some(Box::new(ChangedFile::new(*prepared)));
                         *loading_since = None;
                         *error = None;
                     }

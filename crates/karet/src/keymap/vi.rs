@@ -490,7 +490,7 @@ impl Engine {
     /// the character it typed last; helix keeps it. Finishes the change the
     /// insert belonged to, for `.`.
     pub(crate) fn enter_normal(&mut self, preset: KeymapPreset, snap: &Snapshot) -> Vec<Effect> {
-        let doc = Doc::new(snap.buffer);
+        let doc = Doc::new(snap.buffer, snap.selection.head.line);
         let was_insert = self.mode == Mode::Insert;
         self.mode = Mode::Normal;
         self.pending = Pending::default();
@@ -525,7 +525,7 @@ impl Engine {
         snap: &Snapshot,
         clipboard: &mut dyn Clipboard,
     ) -> (Outcome, Vec<Effect>) {
-        let doc = Doc::new(snap.buffer);
+        let doc = Doc::new(snap.buffer, snap.selection.head.line);
         let forced = self.sync(preset, &doc, snap);
         let mut fx = Vec::new();
         self.keys.push(event);

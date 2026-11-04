@@ -11,7 +11,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -48,7 +48,7 @@
         writer.finish()?;
         std::fs::write(&path, &bytes)?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        session.handle(RequestId(1), Command::ConvertDocument { path: path.clone() });
+        session.handle(RequestId(1), DocumentCommand::Convert { path: path.clone() });
         // The conversion runs on its own thread; await its answer.
         let markdown = await_event(&mut events, EVENT_DEADLINE, |_, event| match event {
             Event::DocumentConverted { markdown, .. } => Some(markdown),
@@ -58,6 +58,7 @@
         Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
     fn cbor_opens_decoded_and_save_reencodes() -> TestResult {
         let dir = tempfile::tempdir()?;
@@ -72,7 +73,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -96,7 +97,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -105,7 +106,7 @@
         while events.try_recv().is_some() {}
 
         // Save re-encodes to CBOR; the file on disk decodes to the edited value.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -125,6 +126,7 @@
         Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
     fn cbor_save_of_malformed_edit_leaves_file_untouched() -> TestResult {
         let dir = tempfile::tempdir()?;
@@ -139,7 +141,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -159,7 +161,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -168,26 +170,30 @@
         while events.try_recv().is_some() {}
 
         // Save fails to encode; no Saved event, and the file is unchanged.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
         let mut saved = false;
-        let mut failed = false;
+        let mut failure = None;
         while let Some((_, ev)) = events.try_recv() {
             match ev {
                 Event::Saved { .. } => saved = true,
                 Event::Notification {
                     severity: Severity::Error,
+                    message,
                     ..
-                } => failed = true,
+                } => failure = Some(message),
                 _ => {},
             }
         }
         assert!(!saved, "a malformed cbor buffer must not save");
+        let failure = failure.ok_or("the failure should surface as an error notification")?;
+        // The encode error keeps its parse position, rather than being reported
+        // as an I/O failure.
         assert!(
-            failed,
-            "the failure should surface as an error notification"
+            failure.contains("diagnostic notation parse error at line") && !failure.contains("i/o"),
+            "{failure}"
         );
         assert_eq!(std::fs::read(&path)?, bytes, "the file is untouched");
         Ok(())

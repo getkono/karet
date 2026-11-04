@@ -20,16 +20,11 @@ use karet_fuzzy::Matcher;
 use super::Overlay;
 use super::OverlayEvent;
 use super::Picker;
+use super::PickerKind;
 use crate::cli;
 
 /// The sigil that turns quick-open into Go to Line.
 pub const GO_TO_LINE_PREFIX: &str = ":";
-
-/// The go-to-line picker's title, which is also how it is told apart.
-pub(super) const GO_TO_LINE_TITLE: &str = "Go to Line";
-
-/// The file picker's title while its query names a line (`main.rs:42`).
-pub(super) const FILE_AT_LINE_TITLE: &str = "Go to File at Line";
 
 /// The active editor a go-to-line moves in.
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +48,10 @@ impl Overlay {
     pub fn go_to_line(query: &str, target: Option<LineTarget<'_>>) -> Self {
         let body = query.strip_prefix(GO_TO_LINE_PREFIX).unwrap_or(query);
         let row = line_row(body, target);
-        Self::Picker(Picker::new(GO_TO_LINE_TITLE, vec![row]).with_prefix(query))
+        Self::picker(
+            PickerKind::GoToLine,
+            Picker::new("Go to Line", vec![row]).with_prefix(query),
+        )
     }
 
     /// Build quick-open over `(display, path)` pairs, in rank order, for
@@ -76,7 +74,10 @@ impl Overlay {
             .filter_map(|index| files.get_mut(index).and_then(Option::take))
             .map(|(label, path)| (label, OverlayEvent::AcceptLocation { path, position }))
             .collect();
-        Self::Picker(Picker::new(FILE_AT_LINE_TITLE, items).with_prefix(query))
+        Self::picker(
+            PickerKind::FileAtLine,
+            Picker::new("Go to File at Line", items).with_prefix(query),
+        )
     }
 }
 

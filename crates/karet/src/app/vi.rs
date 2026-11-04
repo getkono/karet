@@ -8,12 +8,26 @@
 //! plain key nothing takes is dropped: Normal mode never types. Visual mode
 //! asks the grammar first, since its `u`, `U` and `~` are case operators.
 
+use std::sync::Arc;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::Selection;
+use karet_editor::editing;
 use karet_session::config::schema::KeymapPreset;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::command::Command;
+use crate::keymap;
+use crate::keymap::Context;
 use crate::keymap::Editing;
+use crate::keymap::Focus;
+use crate::keymap::KeyChord;
+use crate::keymap::Resolved;
 use crate::keymap::vi::Clipboard as ViClipboard;
 use crate::keymap::vi::Effect;
 use crate::keymap::vi::Engine;
@@ -22,6 +36,9 @@ use crate::keymap::vi::Outcome;
 use crate::keymap::vi::Scroll;
 use crate::keymap::vi::Snapshot;
 use crate::keymap::vi::Typed;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// How deeply macros and `.` may replay into each other before the replay is
 /// abandoned (a macro that runs itself).
@@ -72,7 +89,7 @@ impl App {
     pub(crate) fn vi_editing(&self) -> Editing {
         let preset = self.keymap_preset();
         if !preset.is_modal()
-            || self.focus != Focus::Editor
+            || self.keyboard.focus() != Focus::Editor
             || self.view != View::Editor
             || self.active_code_doc().is_none()
         {
@@ -290,7 +307,7 @@ impl App {
         }
         self.dismiss_completion();
         self.dismiss_signature_help();
-        self.snippet = None;
+        self.completion.snippet = None;
         let _ = self.dismiss_hover();
         if let Some(effects) =
             self.vi_with_snapshot(|engine, snap, _| engine.enter_normal(preset, snap))
@@ -361,7 +378,7 @@ impl App {
             .viewport()
             .end
             .line
-            .saturating_sub(tab.editor.scroll_line);
+            .saturating_sub(tab.editor.scroll_line());
         match scroll {
             Scroll::Center => tab.editor.center_on(line),
             Scroll::Top => tab.editor.scroll_to_line(line),

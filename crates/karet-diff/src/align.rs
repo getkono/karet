@@ -145,6 +145,12 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].left.is_some() && rows[0].right.is_some());
         assert!(rows[1].left.is_none() && rows[1].right.is_some());
+        // Each add points back at its own line in the hunk, not the block's first.
+        let right: Vec<_> = rows
+            .iter()
+            .map(|r| r.right.as_ref().map(|c| c.hunk_line_idx))
+            .collect();
+        assert_eq!(right, vec![Some(1), Some(2)]);
     }
 
     #[test]

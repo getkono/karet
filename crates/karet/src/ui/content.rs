@@ -1,7 +1,8 @@
 use super::*;
 
+mod color;
 mod conflict_side;
-mod diff;
+pub(in crate::ui) mod diff;
 mod overview;
 mod scans;
 pub(in crate::ui) mod select;
@@ -22,7 +23,8 @@ pub(super) fn draw_pane_content(
     let Some(tab) = tabs.get_mut(active) else {
         return PaneContent::default();
     };
-    let word_wrap = crate::app::effective_word_wrap(tab, ctx.word_wrap);
+    let word_wrap = tab.word_wrap(ctx.word_wrap);
+    let markdown = tab.is_markdown();
     // Written by the image/PDF render arms; stays `None` (and non-`mut`) when neither
     // media feature is compiled in.
     #[cfg(any(feature = "images", feature = "pdf"))]
@@ -141,7 +143,7 @@ pub(super) fn draw_pane_content(
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
                 let mut frame_decos =
-                    swatches::frame_decorations(ctx, buffer, tab.editor.scroll_line, area);
+                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line(), area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
                 // The lightbulb shares the marker lane too: after a breakpoint,
                 // which is state the user set.
@@ -220,6 +222,19 @@ pub(super) fn draw_pane_content(
                     );
                 } else {
                     f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                    let source = swatches::LinkSource {
+                        buffer,
+                        path,
+                        markdown,
+                        root: ctx.root,
+                    };
+                    swatches::source_link_osc8(
+                        f.buffer_mut(),
+                        &source,
+                        &tab.editor,
+                        &fold_lines,
+                        editor_rect,
+                    );
                 }
                 // Read the extents back after the render: the widget clamps the
                 // offsets and measures the viewport as it paints, so the bar is
@@ -230,12 +245,12 @@ pub(super) fn draw_pane_content(
                         ScrollbarStyles::from_theme(theme),
                         ScrollExtent::new(
                             buffer.line_count(),
-                            tab.editor.scroll_line as usize,
+                            tab.editor.scroll_line() as usize,
                             tab.editor.visible_lines() as usize,
                         ),
                         ScrollExtent::new(
                             tab.editor.longest_col() as usize,
-                            tab.editor.scroll_col as usize,
+                            tab.editor.scroll_col() as usize,
                             tab.editor.content_width().into(),
                         ),
                         &markers,
@@ -265,7 +280,7 @@ pub(super) fn draw_pane_content(
                             hover: ctx.markdown_link_hover,
                             source: path,
                             root: ctx.root,
-                            source_scroll: Some(tab.editor.scroll_line as usize),
+                            source_scroll: Some(tab.editor.scroll_line() as usize),
                             env: ctx.preview,
                             selection: ctx.selection,
                         },
@@ -523,7 +538,7 @@ pub(super) fn draw_pane_content(
             hits,
         ),
         TabKind::Hex { bytes, scroll, .. } => {
-            let rows = bytes.len().div_ceil(16);
+            let rows = karet_fileview::hex::row_count(bytes);
             *scroll = (*scroll).min(rows.saturating_sub(1));
             let (dump, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
             f.render_widget(HexView::new(bytes).scroll(*scroll).theme(theme), dump);
@@ -750,10 +765,8 @@ fn draw_merge_conflict(
         columns[3],
     );
 
-    conflict.current_editor.scroll_line = merged_editor.scroll_line;
-    conflict.current_editor.scroll_col = merged_editor.scroll_col;
-    conflict.incoming_editor.scroll_line = merged_editor.scroll_line;
-    conflict.incoming_editor.scroll_col = merged_editor.scroll_col;
+    conflict.current_editor.mirror_scroll(merged_editor);
+    conflict.incoming_editor.mirror_scroll(merged_editor);
     conflict_side::draw_conflict_side(
         f,
         theme,
@@ -807,7 +820,7 @@ fn draw_merge_conflict(
             ScrollbarStyles::from_theme(theme),
             ScrollExtent::new(
                 merged.line_count(),
-                merged_editor.scroll_line as usize,
+                merged_editor.scroll_line() as usize,
                 merged_editor.visible_lines() as usize,
             ),
             ScrollExtent::default(),

@@ -11,7 +11,7 @@ fn line_change_requests(backend: &RecordingBackend) -> Vec<(RequestId, DocumentI
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::LineChanges { doc } => Some((*id, *doc)),
+                    SessionCommand::Vcs(VcsCommand::LineChanges { doc }) => Some((*id, *doc)),
                     _ => None,
                 })
                 .collect()
@@ -37,7 +37,7 @@ fn app_with_doc() -> (App, Arc<RecordingBackend>) {
     app.backend = Some(backend.clone());
     app.settings.git.decorations = true;
     app.push_tab(text_tab("main.rs", "zero\none\ntwo\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(9));
     }

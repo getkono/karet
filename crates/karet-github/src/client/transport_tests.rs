@@ -415,3 +415,67 @@ async fn search_page_zero_is_page_one_and_points_at_page_two() -> Result<(), Git
     }
     Ok(())
 }
+
+/// One open pull request as GitHub's `/pulls` listing returns it.
+fn listed_pull_request(number: u64, draft: bool) -> String {
+    format!(
+        r#"{{"number":{number},"title":"Improve checkout","state":"open","draft":{draft},
+            "node_id":"PR_{number}","html_url":"https://github.com/getkono/karet/pull/{number}",
+            "user":{{"id":7,"login":"octocat"}},
+            "created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z",
+            "head":{{"ref":"topic","sha":"abc123","repo":{{"full_name":"octocat/karet"}}}},
+            "base":{{"ref":"master","sha":"def456","repo":{{"full_name":"getkono/karet"}}}}}}"#
+    )
+}
+
+#[tokio::test]
+async fn open_pull_requests_lists_open_rows_and_pages_only_when_full() -> Result<(), GitHubError> {
+    let full: Vec<String> = (1..=50).map(|n| listed_pull_request(n, false)).collect();
+    let (base, server) = serve(vec![
+        ("200 OK", vec![], format!("[{}]", full.join(","))),
+        (
+            "200 OK",
+            vec![],
+            format!("[{}]", listed_pull_request(51, true)),
+        ),
+    ])
+    .map_err(io_error)?;
+    let client = GitHubClient::with_auth_at(None, AuthSource::Explicit, &base)?;
+    let repository = repository();
+
+    // Page 0 is page 1; a full page points at the next one.
+    let first = client.open_pull_requests(&repository, 0).await?;
+    assert_eq!((first.page, first.next_page), (1, Some(2)));
+    assert_eq!(first.items.len(), 50);
+    assert_eq!(first.total_count, None);
+
+    // A short page is the last, and each row keeps what the picker shows.
+    let last = client.open_pull_requests(&repository, 2).await?;
+    assert_eq!((last.page, last.next_page), (2, None));
+    let [pull] = last.items.as_slice() else {
+        return Err(GitHubError::Decode(format!("{:?}", last.items)));
+    };
+    assert_eq!(pull.number, 51);
+    assert!(pull.draft);
+    assert_eq!(pull.creator.as_deref(), Some("octocat"));
+    assert_eq!(pull.creator_id, Some(7));
+    assert_eq!(
+        (pull.head_sha.as_str(), pull.base_sha.as_str()),
+        ("abc123", "def456")
+    );
+    assert_eq!((pull.mergeable, pull.merged), (None, false));
+
+    let received = server
+        .join()
+        .map_err(|_| GitHubError::Transport("loopback server panicked".to_string()))?
+        .map_err(io_error)?;
+    let lines: Vec<&str> = received.iter().map(|r| r.request_line.as_str()).collect();
+    assert_eq!(
+        lines,
+        [
+            "GET /repos/getkono/karet/pulls?state=open&sort=updated&direction=desc&per_page=50&page=1 HTTP/1.1",
+            "GET /repos/getkono/karet/pulls?state=open&sort=updated&direction=desc&per_page=50&page=2 HTTP/1.1",
+        ]
+    );
+    Ok(())
+}

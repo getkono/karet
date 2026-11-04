@@ -12,61 +12,29 @@
 //! reload keeps the pick while it leaves `workbench.colorTheme` alone, and
 //! drops it in favour of the setting once the setting itself changes.
 
-use super::*;
-use crate::overlay::Picker;
+use std::path::Path;
+use std::path::PathBuf;
 
-/// The picker's title, which is also how an open overlay is recognised as it.
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::ConfigDiagnostic;
+use karet_theme::Theme;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::overlay::Overlay;
+use crate::overlay::OverlayEvent;
+use crate::overlay::Picker;
+use crate::overlay::PickerKind;
+use crate::overlay::ThemeChoice;
+use crate::overlay::ThemeSource;
+
+/// The picker's title. An open overlay is recognised as it by
+/// [`PickerKind::ColorTheme`], not by this.
 pub(crate) const THEME_PICKER_TITLE: &str = "Select Color Theme";
 
 /// The directory, beside a `setting.jsonc`, that holds the themes offered.
 pub(crate) const THEMES_DIR: &str = "themes";
-
-/// Where a theme the picker offers comes from, shown beside its name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ThemeSource {
-    /// Compiled in.
-    BuiltIn,
-    /// The user's `themes` directory.
-    User,
-    /// The project's `.karet/themes` directory.
-    Project,
-    /// Named by `workbench.colorTheme`, outside both directories.
-    Settings,
-}
-
-impl ThemeSource {
-    /// The hint shown at the right of the theme's row.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::BuiltIn => "built-in",
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Settings => "settings",
-        }
-    }
-}
-
-/// One theme the picker offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ThemeChoice {
-    /// The row's name: the file stem, or `Dark` for the built-in theme.
-    pub(crate) label: String,
-    /// The `workbench.colorTheme` value that loads it.
-    pub(crate) setting: String,
-    /// Where it comes from.
-    pub(crate) source: ThemeSource,
-}
-
-impl ThemeChoice {
-    /// The built-in dark theme.
-    fn built_in() -> Self {
-        Self {
-            label: "Dark".to_string(),
-            setting: "dark".to_string(),
-            source: ThemeSource::BuiltIn,
-        }
-    }
-}
 
 /// The picker's preview and the session's pick.
 #[derive(Debug, Default)]
@@ -97,11 +65,35 @@ struct Pick {
     setting: String,
 }
 
+/// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
+/// (also the empty string), or a path to a VS Code `.json` theme file.
+/// Returns a human-readable message on a read/parse failure so the caller can warn
+/// and fall back to the default.
+pub(crate) fn load_theme(name: &str) -> Result<Theme, String> {
+    if name.is_empty() || name == "dark" {
+        return Ok(Theme::dark());
+    }
+    let path = Path::new(name);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "json" {
+        return Err(format!(
+            "theme `{name}`: only the built-in `dark` theme and VS Code JSON theme files are supported"
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
+    Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
+}
+
 /// The `themes` directories searched, user first: beside the user's
 /// `setting.jsonc` and beside the project's.
 pub(crate) fn theme_dirs(root: &Path) -> Vec<(ThemeSource, PathBuf)> {
-    use karet_session::config::load::project_config_dir;
-    use karet_session::config::load::user_config_dir;
+    use karet_session::config::project_config_dir;
+    use karet_session::config::user_config_dir;
     [
         user_config_dir().map(|dir| (ThemeSource::User, dir.join(THEMES_DIR))),
         project_config_dir(std::slice::from_ref(&root.to_path_buf()))
@@ -193,7 +185,7 @@ impl Overlay {
         for _ in 0..row.unwrap_or_default() {
             picker.select_down();
         }
-        Self::Picker(picker)
+        Self::picker(PickerKind::ColorTheme, picker)
     }
 
     /// The setting of the highlighted theme, when this is the theme picker
@@ -206,8 +198,8 @@ impl Overlay {
     }
 
     /// Whether this is the Select Color Theme picker.
-    fn is_theme_picker(&self) -> bool {
-        matches!(self, Self::Picker(picker) if picker.title() == THEME_PICKER_TITLE)
+    pub(super) fn is_theme_picker(&self) -> bool {
+        self.picker_kind() == Some(PickerKind::ColorTheme)
     }
 }
 
@@ -233,9 +225,9 @@ impl App {
             .pick
             .as_ref()
             .map_or_else(|| configured.clone(), |pick| pick.setting.clone());
-        self.overlay = Some(Overlay::color_themes(discover(dirs, &configured), &current));
+        self.open_overlay(Overlay::color_themes(discover(dirs, &configured), &current));
         // Reopened over a preview that never settled, the theme to put back is
-        // still the one from before it.
+        // still the one from before it (replacing the open picker restored it).
         let original = match self.theme_ui.preview.take() {
             Some(preview) => preview.original,
             None => self.theme.clone(),
@@ -247,17 +239,14 @@ impl App {
         self.sync_theme_preview();
     }
 
-    /// Follow the picker: paint the highlighted theme while it is open, and
-    /// put back the theme from before it once it has closed without a pick.
-    /// A theme that fails to load previews as the one from before the picker.
+    /// Follow the open picker: paint the theme on its highlighted row. A theme
+    /// that fails to load previews as the one from before the picker. Closing
+    /// the picker puts that theme back ([`App::close_overlay`]).
     pub(crate) fn sync_theme_preview(&mut self) {
         let Some(preview) = self.theme_ui.preview.as_mut() else {
             return;
         };
-        let Some(overlay) = self.overlay.as_ref().filter(|o| o.is_theme_picker()) else {
-            if let Some(preview) = self.theme_ui.preview.take() {
-                self.theme = preview.original;
-            }
+        let Some(overlay) = self.keyboard.overlay().filter(|o| o.is_theme_picker()) else {
             return;
         };
         let highlighted = overlay.highlighted_theme();
@@ -269,6 +258,13 @@ impl App {
             .and_then(|setting| load_theme(setting).ok())
             .unwrap_or_else(|| preview.original.clone());
         preview.shown = highlighted;
+    }
+
+    /// Put back the theme from before the picker, ending its preview.
+    pub(super) fn restore_theme_preview(&mut self) {
+        if let Some(preview) = self.theme_ui.preview.take() {
+            self.theme = preview.original;
+        }
     }
 
     /// Apply the theme accepted in the picker for the rest of the session.

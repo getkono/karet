@@ -14,7 +14,7 @@ use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerSource;
 use karet_session::LanguageServerStatus;
 
-use crate::app::util::path_under;
+use crate::paths::path_under;
 
 /// One file's language-server condition, separated by cause.
 ///

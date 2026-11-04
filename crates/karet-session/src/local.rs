@@ -3,7 +3,7 @@
 //! In local mode the UI renders from owned [`DocSnapshot`]s the session pushes on
 //! the snapshot stream, rather than borrowing document state
 //! across the actor task boundary. A snapshot is cheap to produce — the buffer
-//! clone shares the rope (O(1) structural sharing) and highlights/decorations are
+//! clone shares the rope (O(1) structural sharing) and highlights/folds are
 //! `Arc`-shared — so a snapshot can be minted on every applied edit.
 //!
 //! Snapshots ride a dedicated local channel rather than [`Event`](crate::api::Event)
@@ -15,10 +15,9 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use karet_core::CursorState;
-use karet_core::Decoration;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_text::TextBuffer;
 use tokio::sync::mpsc;
 
@@ -33,12 +32,12 @@ pub struct DocSnapshot {
     pub buffer: TextBuffer,
     /// Syntax highlights for this version.
     pub highlights: Arc<Highlights>,
-    /// Foldable regions for this version (tree-sitter fold ranges).
+    /// Foldable regions for this version: the primary language server's
+    /// folding ranges when it offers them, else tree-sitter's fold ranges (or
+    /// indentation's, for text no grammar parses).
     pub folds: Arc<FoldRegions>,
     /// Semantic block headers and scope ranges for sticky-scroll rendering.
     pub semantic_blocks: Arc<SemanticBlocks>,
-    /// Decorations merged across producers (empty until producers attach).
-    pub decorations: Arc<Vec<Decoration>>,
     /// Inclusive 0-based line ranges covered by syntax errors in the last
     /// computed parse (tree-sitter `ERROR`/missing nodes). Like
     /// [`highlights`](Self::highlights), this lags edits by one background

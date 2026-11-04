@@ -247,10 +247,11 @@ async fn a_snapshot_carries_the_overlay_in_buffer_bytes() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let mac = TokenId::semantic(T::Macro, M::NONE);
@@ -287,10 +288,11 @@ async fn a_restart_drops_the_overlay_until_the_replacement_answers() -> TestResu
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let bound = Duration::from_secs(10);
@@ -307,9 +309,10 @@ async fn a_restart_drops_the_overlay_until_the_replacement_answers() -> TestResu
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: crate::api::LanguageServerId::RustAnalyzer,
-        },
+        }
+        .into(),
     )?;
     let (dropped, relaid) = tokio::time::timeout(bound, async {
         let mut dropped = false;

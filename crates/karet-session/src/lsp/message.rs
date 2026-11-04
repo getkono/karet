@@ -1,6 +1,7 @@
 //! The vocabulary spoken between the session actor and its server tasks.
 //!
-//! [`ServerCmd`] travels down to one per-language task; [`LspUpdate`] travels
+//! [`ServerCmd`] travels down to the task serving one slot (a provider at a
+//! repository root, see [`SlotKey`]); [`LspUpdate`] travels
 //! back. Both are plain data on purpose: the task owns the `LspClient` and the
 //! protocol, while position conversion (LSP UTF-16 ↔ buffer UTF-32) and event
 //! emission happen on the actor, where the buffer lives.
@@ -17,6 +18,7 @@ use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
@@ -34,6 +36,9 @@ use super::code_actions::CodeActionCmd;
 use super::code_lens::CodeLensAnswer;
 use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
+use super::inline_completion::InlineCompletionCmd;
+use super::link_color::LinkColorAnswer;
+use super::link_color::LinkColorCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -44,7 +49,7 @@ use crate::api::LanguageServerRuntimeState;
 use crate::api::LocationKind;
 use crate::api::RequestId;
 
-/// A command for one per-language server task.
+/// A command for the server task serving one slot.
 pub(crate) enum ServerCmd {
     /// Forward `textDocument/didOpen`.
     DidOpen {
@@ -155,7 +160,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request signature help; `manual` as on
-    /// [`crate::api::Command::SignatureHelp`].
+    /// [`crate::api::LspCommand::SignatureHelp`].
     SignatureHelp {
         request: RequestId,
         doc: DocumentId,
@@ -164,7 +169,7 @@ pub(crate) enum ServerCmd {
         manual: bool,
     },
     /// Request the selection ranges around each of `positions`, for a
-    /// [`crate::api::Command::SelectionRanges`].
+    /// [`crate::api::LspCommand::SelectionRanges`].
     SelectionRanges {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -176,7 +181,7 @@ pub(crate) enum ServerCmd {
         positions: Vec<LineCol>,
     },
     /// Request the occurrences of the symbol at `position`, for a
-    /// [`crate::api::Command::DocumentHighlights`].
+    /// [`crate::api::LspCommand::DocumentHighlights`].
     DocumentHighlights {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -188,7 +193,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request definition locations, or with a `kind` the locations a
-    /// [`crate::api::Command::FindLocations`] asks for.
+    /// [`crate::api::LspCommand::FindLocations`] asks for.
     Definition {
         request: RequestId,
         doc: DocumentId,
@@ -257,6 +262,13 @@ pub(crate) enum ServerCmd {
     /// One code-lens step: a listing or a run; always answered with an
     /// [`LspUpdate::CodeLens`].
     CodeLens(CodeLensCmd),
+    /// One document-link or colour step: a listing or a link resolve; always
+    /// answered with an [`LspUpdate::LinkColor`].
+    LinkColor(LinkColorCmd),
+    /// One inline-completion step: asking for items, or telling the server
+    /// one was accepted. Answered with an [`LspUpdate::InlineCompletions`]
+    /// only when there are items to show (see `inline_completion`).
+    InlineCompletion(InlineCompletionCmd),
 }
 
 /// How a server's diagnostic set reached the client.
@@ -436,7 +448,7 @@ pub(crate) struct DocumentHighlightsAnswer {
     pub(crate) version: u64,
     /// The occurrences, in UTF-16 columns; `None` when no server answered
     /// (none could be asked, it does not offer highlights, or it failed).
-    pub(crate) highlights: Option<Vec<karet_lsp::DocumentHighlight>>,
+    pub(crate) highlights: Option<Vec<karet_core::DocumentHighlight>>,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -514,6 +526,34 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped hints.
         hints: Vec<InlayHint>,
+    },
+    /// Inline completions answering an [`InlineCompletionCmd::Ask`], from the
+    /// server `server` names. Ranges remain in UTF-16 until the session adopts
+    /// the update. Never empty: a server with nothing to propose stays quiet.
+    InlineCompletions {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The slot whose server answered, which an accept is routed back to.
+        server: SlotKey,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The items.
+        items: Vec<InlineCompletionItem>,
+    },
+    /// The answer to an [`InlineCompletionCmd::Account`] step.
+    Account {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The provider the step named.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: crate::api::AccountOutcome,
     },
     /// A [`ServerCmd::InlayHints`] request a server existed for but did not
     /// answer: it failed, timed out, was superseded, or its slot retired.
@@ -690,6 +730,12 @@ pub(crate) enum LspUpdate {
         generation: u64,
         answer: CodeLensAnswer,
     },
+    /// The answer to a [`ServerCmd::LinkColor`]; a listing's ranges in
+    /// UTF-16 columns.
+    LinkColor {
+        generation: u64,
+        answer: LinkColorAnswer,
+    },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
         /// The incarnation of the slot that published these.
@@ -720,7 +766,23 @@ pub(crate) enum LspUpdate {
         /// The tokens, in UTF-16 columns.
         tokens: Vec<karet_core::SemanticToken>,
     },
-    /// The server binary could not be started (reported once per language).
+    /// A document's folding ranges from its primary server, replacing the
+    /// grammar's fold regions on its snapshots (see `super::folding`).
+    FoldingRanges {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they fold.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The regions, normalized.
+        folds: karet_core::FoldRegions,
+    },
+    /// The server binary could not be started (reported once per outage of the
+    /// slot: the first failed launch reports it, and only a later successful
+    /// connection re-arms the report).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.
         token: SlotToken,
@@ -746,7 +808,8 @@ pub(crate) enum LspUpdate {
         /// The human-readable diagnosis (what is missing and how to fix it).
         message: String,
     },
-    /// A running server's connection closed (reported once per language).
+    /// A running server's connection closed (reported once per connection of
+    /// the slot: the task drops the dead client after reporting it).
     ServerDied {
         /// The incarnation of the slot that died.
         token: SlotToken,

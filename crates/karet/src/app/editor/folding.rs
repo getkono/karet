@@ -6,11 +6,13 @@
 //! lifts it onto its header (as toggling a fold does) or, for "fold level",
 //! is skipped, as VS Code skips the region the cursor is in.
 
-use karet_syntax::FoldKind;
-use karet_syntax::FoldRegion;
-use karet_syntax::FoldRegions;
+use karet_core::FoldKind;
+use karet_core::FoldRegion;
+use karet_core::FoldRegions;
 
-use super::super::*;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The region a cursor-scoped fold command acts on at `line`: the one headed
 /// on that line, else the innermost one containing it.

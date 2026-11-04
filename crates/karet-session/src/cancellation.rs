@@ -102,6 +102,7 @@ impl Cancellation {
     }
 
     /// Wait until the owning client cancels this request.
+    #[cfg(any(feature = "github", feature = "aicommit", test))]
     pub(crate) async fn cancelled(&self) {
         while !self.is_cancelled() {
             self.state.notify.notified().await;
@@ -129,6 +130,22 @@ impl Drop for Cancellation {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cancellation_hub_signals_live_job_and_forgets_finished_job() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(41));
+        assert!(!token.is_cancelled());
+        hub.cancel(RequestId(41));
+        assert!(token.is_cancelled());
+        drop(token);
+
+        // Cancelling after completion is a harmless no-op and does not poison a
+        // later request that happens to use a different id.
+        hub.cancel(RequestId(41));
+        let next = hub.register(RequestId(42));
+        assert!(!next.is_cancelled());
+    }
+
     #[tokio::test]
     async fn cancellation_wakes_an_async_reader() {
         let hub = CancellationHub::default();
@@ -143,6 +160,19 @@ mod tests {
                 .await
                 .is_ok(),
             "cancellation must wake a pending network-read future"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_uncancelled_token_keeps_its_reader_waiting() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(10));
+        // The paused clock jumps straight to the deadline once nothing else can run.
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(60), token.cancelled()).await;
+        assert!(
+            waited.is_err(),
+            "nothing cancelled it, so it must not return"
         );
     }
 

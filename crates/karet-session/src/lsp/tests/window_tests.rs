@@ -110,10 +110,11 @@ async fn what_a_server_says_reaches_the_client_and_the_client_answers() -> TestR
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let (mut work, mut shown, mut question) = (None, None, None);
@@ -152,36 +153,40 @@ async fn what_a_server_says_reaches_the_client_and_the_client_answers() -> TestR
 
     backend.send(
         backend.next_id(),
-        Command::AnswerLanguageServerMessage {
+        LanguageServerCommand::AnswerMessage {
             request,
             action: Some(1),
-        },
+        }
+        .into(),
     )?;
     let answer = reply_to(&mut observed, "q1").await.ok_or("no answer")?;
     assert_eq!(answer["result"], json!({"title": "Reload", "x": 1}));
     // A second answer to the same question is a no-op, not a second reply.
     backend.send(
         backend.next_id(),
-        Command::AnswerLanguageServerMessage {
+        LanguageServerCommand::AnswerMessage {
             request,
             action: Some(0),
-        },
+        }
+        .into(),
     )?;
     backend.send(
         backend.next_id(),
-        Command::AnswerLanguageServerMessage {
+        LanguageServerCommand::AnswerMessage {
             request: LanguageServerMessageId(999),
             action: None,
-        },
+        }
+        .into(),
     )?;
 
     backend.send(
         backend.next_id(),
-        Command::CancelLanguageServerWork {
+        LanguageServerCommand::CancelWork {
             server: work.server.clone(),
             root: work.root.clone(),
             token: work.token.clone(),
-        },
+        }
+        .into(),
     )?;
     // Everything the server receives before the cancel was sent before it, so
     // a second reply to `q1` would be among it.
@@ -204,9 +209,10 @@ async fn what_a_server_says_reaches_the_client_and_the_client_answers() -> TestR
     let log_request = backend.next_id();
     backend.send(
         log_request,
-        Command::LanguageServerLog {
+        LanguageServerCommand::Log {
             server: LanguageServerId::RustAnalyzer,
-        },
+        }
+        .into(),
     )?;
     let entries = loop {
         let (id, event) = next_event(&mut events).await.ok_or("a log")?;

@@ -1,4 +1,5 @@
-//! Repository discovery and the error-mapping helpers shared by the other modules.
+//! Repository discovery and the `gix` error-mapping helpers shared by the other
+//! modules. The `git` subprocess runners live in [`crate::subprocess`].
 
 use std::path::Path;
 use std::path::PathBuf;

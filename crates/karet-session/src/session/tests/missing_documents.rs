@@ -6,7 +6,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -19,7 +19,7 @@
         );
         assert!(!path.exists());
 
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -40,7 +40,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -48,7 +48,7 @@
         let doc = opened_doc(&mut events).ok_or("a missing file must still open")?;
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: Change::new(
                     0,
@@ -63,7 +63,7 @@
         while events.try_recv().is_some() {}
         std::fs::write(&path, "external\n")?;
 
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });

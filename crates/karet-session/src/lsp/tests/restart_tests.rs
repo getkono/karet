@@ -18,10 +18,11 @@ async fn a_server_that_can_never_start_stops_being_retried() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let mut unavailable = false;
@@ -74,10 +75,11 @@ async fn a_transient_failure_is_retried_rather_than_giving_up() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

@@ -34,7 +34,6 @@ use karet_core::Severity;
 use karet_session::config::ConfigDiagnostic;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::layer::all_stacks;
 use super::layer::takes_sequences;
@@ -144,8 +143,8 @@ impl KeymapReport {
 /// The keymap files for a workspace rooted at `roots`, lowest precedence first.
 #[must_use]
 pub fn paths(roots: &[PathBuf]) -> Vec<(Source, PathBuf)> {
-    use karet_session::config::load::project_config_dir;
-    use karet_session::config::load::user_config_dir;
+    use karet_session::config::project_config_dir;
+    use karet_session::config::user_config_dir;
     [
         user_config_dir().map(|dir| (Source::User, dir.join(FILE_NAME))),
         project_config_dir(roots).map(|dir| (Source::Project, dir.join(FILE_NAME))),
@@ -178,18 +177,6 @@ pub fn load_files(files: &[(Source, PathBuf)]) -> (Keymap, KeymapReport) {
         })
         .collect();
     merge(&inputs)
-}
-
-/// Watch the keymap files at `paths` for changes, so a save reloads them. `None`
-/// when the platform watch backend cannot start: the keymap then stays as loaded.
-#[must_use]
-pub fn watch(
-    paths: &[PathBuf],
-) -> Option<(
-    karet_watch::Watcher,
-    UnboundedReceiver<karet_watch::FsEvent>,
-)> {
-    karet_watch::Watcher::spawn_with_paths(&[], &[], paths).ok()
 }
 
 /// One keymap file's contents, as read: `Ok(None)` for a missing file.

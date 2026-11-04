@@ -2,7 +2,7 @@
 //! the word step, the smallest-enclosing pick, per-caret growth and merging,
 //! and Shrink restoring the exact set each press grew from.
 
-use crate::*;
+use super::*;
 
 /// `call(alpha, beta)  x`: the ranges a syntax tree would report around it.
 const TEXT: &str = "call(alpha, beta)  x";

@@ -2,7 +2,40 @@ pub(crate) mod aicommit;
 mod branches;
 pub(crate) mod commit_box;
 
-use super::*;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::NotificationKind;
+use karet_session::ChangeSummary;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentId;
+use karet_session::RangeSpec;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_vcs::Commit;
+
+use crate::app::App;
+use crate::app::GRAPH_LOG_PAGE;
+use crate::app::SCM_LOG_PAGE;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::describe_paths;
+use crate::app::notifications::Report;
+use crate::app::state::CommitInput;
+use crate::app::state::LiveBlame;
+use crate::command::Command;
+use crate::keymap::SidebarPanel;
+use crate::overlay::Overlay;
+use crate::paths::canonical_nearest as canonical;
+use crate::pending::Pending;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Refresh branch, remote, recovery, and stash facts without blocking the UI.
@@ -11,13 +44,13 @@ impl App {
             return;
         }
         self.scm.repository_loading_since = Some(Pending::start());
-        self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
+        self.scm.repository_request = self.send(VcsCommand::RepositorySnapshot);
     }
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
         if self
-            .send(SessionCommand::VcsAction {
+            .send(VcsCommand::Action {
                 action: action.clone(),
             })
             .is_some()
@@ -96,7 +129,7 @@ impl App {
                 commands.insert(2, Command::ScmSkip);
             }
         }
-        self.overlay = Some(Overlay::commands("Source Control", commands));
+        self.open_overlay(Overlay::commands("Source Control", commands));
     }
 
     /// Request live blame when its document/version/cursor anchor changed.
@@ -139,7 +172,7 @@ impl App {
         if self.pending_blame.is_some() {
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Blame { doc, version, line }) {
+        if let Some(id) = self.send(VcsCommand::Blame { doc, version, line }) {
             self.pending_blame = Some((id, doc, version, line));
         }
     }
@@ -166,7 +199,7 @@ impl App {
         self.loaded_config.settings.git.blame = enabled;
         // The persistent write runs on the backend; a failure comes back as an
         // ordinary notification event.
-        self.send_command(SessionCommand::SetBlameEnabled { enabled });
+        self.send_command(VcsCommand::SetBlameEnabled { enabled });
         self.pending_blame = None;
         self.failed_blame = None;
         self.live_blame = None;
@@ -189,7 +222,7 @@ impl App {
         }
         self.scm.log_loading = true;
         self.scm.log_loading_since = Some(Pending::start());
-        self.send_command(SessionCommand::VcsLog {
+        self.send_command(VcsCommand::Log {
             skip,
             limit: SCM_LOG_PAGE,
         });
@@ -209,7 +242,7 @@ impl App {
     pub(super) fn open_commit(&mut self, rev: String) {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
+        if let Some(id) = self.send(VcsCommand::CommitDetail { rev }) {
             self.pending_commit_detail.insert(id, view);
         }
     }
@@ -218,7 +251,7 @@ impl App {
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::VcsLog {
+        if let Some(id) = self.send(VcsCommand::Log {
             skip: 0,
             limit: GRAPH_LOG_PAGE,
         }) {
@@ -250,7 +283,7 @@ impl App {
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::FileHistory {
+        if let Some(id) = self.send(VcsCommand::FileHistory {
             path,
             skip: 0,
             limit: GRAPH_LOG_PAGE,
@@ -287,12 +320,10 @@ impl App {
                 "go to commit: enter a hash, ref, or range (a..b, a...b)",
             );
         } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
-            self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base,
-                },
+            self.open_range(RangeSpec::Between {
+                base,
+                head,
+                merge_base,
             });
         } else {
             self.open_commit(rev);
@@ -323,11 +354,11 @@ impl App {
     /// Submit a backend command and return its [`RequestId`], so the answering
     /// event can be correlated — the one submission primitive (a failed or
     /// backend-less submission notifies and returns `None`).
-    pub(super) fn send(&mut self, command: SessionCommand) -> Option<RequestId> {
+    pub(super) fn send(&mut self, command: impl Into<SessionCommand>) -> Option<RequestId> {
         let (id, result) = {
             let backend = self.backend.as_ref()?;
             let id = backend.next_id();
-            (id, backend.send(id, command))
+            (id, backend.send(id, command.into()))
         };
         match result {
             Ok(()) => Some(id),
@@ -339,12 +370,12 @@ impl App {
     }
 
     /// Submit a backend command whose answer needs no correlation.
-    pub(super) fn send_command(&mut self, command: SessionCommand) {
+    pub(super) fn send_command(&mut self, command: impl Into<SessionCommand>) {
         let _ = self.send(command);
     }
 
     /// Send a path-scoped Source-Control command for the current selection.
-    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> SessionCommand) {
+    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> VcsCommand) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
@@ -368,10 +399,10 @@ impl App {
             }
         }
         if !to_unstage.is_empty() {
-            self.send_command(SessionCommand::Unstage { paths: to_unstage });
+            self.send_command(VcsCommand::Unstage { paths: to_unstage });
         }
         if !to_stage.is_empty() {
-            self.send_command(SessionCommand::Stage { paths: to_stage });
+            self.send_command(VcsCommand::Stage { paths: to_stage });
         }
     }
 
@@ -387,7 +418,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -403,7 +435,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -419,7 +452,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -427,8 +461,7 @@ impl App {
     pub(super) fn scm_open_commit_input(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::SourceControl;
-        self.focus = Focus::Sidebar;
-        self.commit_input.focused = true;
+        self.keyboard.focus_commit_box();
     }
 
     /// Ask before throwing away the working-tree changes to the selection.
@@ -459,7 +492,7 @@ impl App {
         if self.commit_generate_cancel() {
             return;
         }
-        self.commit_input.focused = false;
+        self.keyboard.release_commit_box();
         self.notify(
             Report::Outcome,
             NotificationKind::Vcs,
@@ -494,7 +527,7 @@ impl App {
             );
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Commit { message }) {
+        if let Some(id) = self.send(VcsCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.notify_progress(
                 NotificationKind::Vcs,
@@ -564,7 +597,7 @@ impl App {
             return;
         }
         let count = paths.len();
-        self.send_command(SessionCommand::Discard { paths });
+        self.send_command(VcsCommand::Discard { paths });
         // Its own tag, not the shared operation one: a discard answers with a
         // status refresh rather than an operation-finished event, so it is retired
         // from `on_vcs_status` — and that fires for unrelated worktree changes too,
@@ -685,7 +718,7 @@ impl App {
             merged.append(commits);
             *commits = merged;
             // The lane layout is sequential from the tip, so a new tip invalidates it.
-            *rails = crate::ui::commit::list::commit_rails(commits);
+            *rails = crate::tab::commit_rails(commits);
             // Keep the viewport and the selection on the same commits they were on.
             if *list_offset > 0 {
                 *list_offset = list_offset.saturating_add(u16::try_from(inserted).unwrap_or(0));
@@ -757,4 +790,26 @@ impl CommitInput {
         self.edit
             .place_cursor(&self.text, column, row, width, extend);
     }
+}
+
+/// Parse a revision-range spec typed into the go-to-commit input into
+/// `(base, head, merge_base)`, or `None` when it is a single revision.
+///
+/// A three-dot `a...b` selects the merge-base range; a two-dot `a..b` the raw tips. An
+/// omitted side defaults to `HEAD` (matching git: `..b`, `a..`). Whitespace is trimmed.
+pub(super) fn parse_rev_range(input: &str) -> Option<(String, String, bool)> {
+    // Three-dot first: "..." also contains "..".
+    let (sep, merge_base) = if input.contains("...") {
+        ("...", true)
+    } else if input.contains("..") {
+        ("..", false)
+    } else {
+        return None;
+    };
+    let (base, head) = input.split_once(sep)?;
+    let side = |s: &str| {
+        let s = s.trim();
+        if s.is_empty() { "HEAD" } else { s }.to_string()
+    };
+    Some((side(base), side(head), merge_base))
 }

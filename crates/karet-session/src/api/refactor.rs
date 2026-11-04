@@ -2,7 +2,7 @@
 //! action, applying a workspace edit, and formatting by hand.
 //!
 //! Every workspace edit -- a rename's, a code action's, a client's
-//! [`Command::ApplyWorkspaceEdit`](super::Command::ApplyWorkspaceEdit), a
+//! [`WorkspaceCommand::ApplyEdit`](super::WorkspaceCommand::ApplyEdit), a
 //! language server's `workspace/applyEdit` -- goes through one apply path in
 //! the backend, and every one reports through the same
 //! [`Event::WorkspaceEdit`](super::Event::WorkspaceEdit), so a client learns
@@ -16,7 +16,7 @@ use karet_core::Range;
 use super::DocumentId;
 
 /// Why a client asks for code actions
-/// ([`Command::CodeActions`](super::Command::CodeActions)), which a language
+/// ([`LspCommand::CodeActions`](super::LspCommand::CodeActions)), which a language
 /// server may use to decide how much work to do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CodeActionTrigger {
@@ -30,7 +30,7 @@ pub enum CodeActionTrigger {
     Automatic,
 }
 
-/// A [`Command::Format`](super::Command::Format): format part or all of an
+/// A [`LspCommand::Format`](super::LspCommand::Format): format part or all of an
 /// open document with its language's formatter, by hand.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FormatRequest {
@@ -76,10 +76,10 @@ pub struct AppliedWorkspaceEdit {
     pub edited: Vec<PathBuf>,
     /// Documents the backend opened to edit them, because no client had them
     /// open. Each is held with one reference on the client's behalf, exactly
-    /// as if the client had sent [`Command::OpenDocument`]: it carries unsaved,
+    /// as if the client had sent [`DocumentCommand::Open`]: it carries unsaved,
     /// undoable changes, and the client owns closing it.
     ///
-    /// [`Command::OpenDocument`]: super::Command::OpenDocument
+    /// [`DocumentCommand::Open`]: super::DocumentCommand::Open
     pub opened: Vec<(DocumentId, PathBuf)>,
     /// Files and directories the edit moved, `(from, to)`. Open documents
     /// under them have already been retargeted.
@@ -94,6 +94,8 @@ mod tests {
     use super::*;
     use crate::api::Command;
     use crate::api::Event;
+    use crate::api::LspCommand;
+    use crate::api::WorkspaceCommand;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -118,34 +120,40 @@ mod tests {
             start: LineCol::new(1, 2),
             end: LineCol::new(1, 5),
         };
-        let commands = [
-            Command::PrepareRename {
+        let commands: [Command; 6] = [
+            LspCommand::PrepareRename {
                 doc: DocumentId(1),
                 position: LineCol::new(1, 3),
-            },
-            Command::ApplyWorkspaceEdit {
+            }
+            .into(),
+            WorkspaceCommand::ApplyEdit {
                 edit: WorkspaceEdit::default(),
                 label: Some("fix".into()),
-            },
-            Command::CodeActions {
+            }
+            .into(),
+            LspCommand::CodeActions {
                 doc: DocumentId(1),
                 range,
                 kinds: vec!["source.organizeImports".into()],
                 trigger: CodeActionTrigger::Automatic,
-            },
-            Command::ApplyCodeAction {
+            }
+            .into(),
+            LspCommand::ApplyCodeAction {
                 doc: DocumentId(1),
                 version: 4,
                 action: action(),
-            },
-            Command::Format(FormatRequest {
+            }
+            .into(),
+            LspCommand::Format(FormatRequest {
                 doc: DocumentId(1),
                 scope: FormatScope::Document,
-            }),
-            Command::Format(FormatRequest {
+            })
+            .into(),
+            LspCommand::Format(FormatRequest {
                 doc: DocumentId(1),
                 scope: FormatScope::Ranges(vec![range]),
-            }),
+            })
+            .into(),
         ];
         for command in commands {
             let json = serde_json::to_string(&command)?;

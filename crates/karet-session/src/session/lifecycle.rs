@@ -1,10 +1,18 @@
+//! Bringing a session up: construction and the deferred start.
+//!
+//! [`Session::new`] builds the actor's state and spawns its background workers
+//! (file watcher, VCS, search, seam index, spell and TODO scans, highlighting,
+//! LaTeX, the managed-LSP registry); each worker's own module owns its loop.
+//! `start` runs what must not block construction -- the first VCS status, the
+//! commit-message agent probe, and the GitHub forge -- from the actor task.
+
 use super::*;
 
 impl Session {
     /// Create a session and its paired event and snapshot receivers.
     #[must_use]
     pub fn new(config: SessionConfig) -> (Self, EventRx, SnapshotRx) {
-        let (events, erx) = mpsc::unbounded_channel();
+        let (events, erx) = EventTx::channel();
         let (snapshots, srx) = mpsc::unbounded_channel();
         // Discover the source-control repository (from the first root) before the
         // watcher, so its git-metadata directories can be watched for index/HEAD/refs
@@ -18,10 +26,13 @@ impl Session {
             .map(Repository::metadata_dirs)
             .unwrap_or_default();
         let config_manager = ConfigManager::from_loaded(&config.loaded_config);
-        let config_paths = config_manager
+        // The settings layers plus the client's keymap files: one watcher serves
+        // every configuration file, so the client runs none of its own.
+        let mut config_paths = config_manager
             .as_ref()
             .map(ConfigManager::paths)
             .unwrap_or_default();
+        config_paths.extend(config.keymap_paths.iter().cloned());
         // Best-effort: a watcher failure (or no roots) just disables external-change
         // detection; editing still works.
         let (watcher, fs_rx) = if config.roots.is_empty() && config_paths.is_empty() {
@@ -50,7 +61,7 @@ impl Session {
             .swap_dir
             .clone()
             .map(|dir| SwapStore::with_dir(dir, session_id));
-        let pending_swaps = if config.settings.files.backup {
+        let pending_swaps = if config.settings().files.backup {
             swaps
                 .as_ref()
                 .map(|store| scan(store.dir()))
@@ -65,9 +76,10 @@ impl Session {
         let (spell_tx, spell_rx) = crate::spell::spawn();
         #[cfg(feature = "mdlint")]
         let lint_config = super::mdlint::discover_config(&config.roots);
-        // Language servers spawn lazily, per language, on the first matching open.
+        // Language servers spawn lazily, one per provider at a repository root, on
+        // the first matching open.
         let debug = crate::dap::DebugManager::new(
-            config.settings.debug.clone(),
+            config.settings().debug.clone(),
             config.roots.first().cloned(),
             config.process_supervisor.clone(),
             events.clone(),
@@ -78,12 +90,12 @@ impl Session {
             events.clone(),
         );
         let (mut lsp, lsp_rx) = LspManager::new(
-            config.settings.lsp.clone(),
+            config.settings().lsp.clone(),
             config.roots.first().cloned(),
             config.process_supervisor.clone(),
             config.lsp_registry_dir.clone(),
         );
-        lsp.set_semantic_highlighting(config.settings.editor.semantic_highlighting.enabled);
+        lsp.set_semantic_highlighting(config.settings().editor.semantic_highlighting.enabled);
         let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
             config.lsp_registry_dir.clone(),
             config.process_supervisor.clone(),

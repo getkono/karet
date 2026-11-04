@@ -48,9 +48,9 @@
             return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
-        session.config.settings.git.ai_commit.enabled = false;
+        session.config.loaded_config.settings.git.ai_commit.enabled = false;
 
-        session.handle(RequestId(1), Command::GenerateCommitMessage);
+        session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
 
         let (id, message) =
             failure(&drain(&mut events)).ok_or("a refusal answers the request")?;
@@ -73,7 +73,7 @@
         // how long it takes.
         let (id, message) = runtime
             .block_on(async {
-                session.handle(RequestId(1), Command::GenerateCommitMessage);
+                session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
                 next_event(&mut events, EVENT_DEADLINE, |id, event| match event {
                     Event::CommitMessageFailed { message } => Some((id, message)),
                     _ => None,
@@ -95,7 +95,7 @@
         let (mut session, mut events) = ai_session(root);
 
         // No runtime here at all: the request must still be answered.
-        session.handle(RequestId(1), Command::GenerateCommitMessage);
+        session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
 
         let (id, message) =
             failure(&drain(&mut events)).ok_or("answered even without a reactor")?;
@@ -111,9 +111,9 @@
             return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
-        session.config.settings.git.ai_commit.enabled = false;
+        session.config.loaded_config.settings.git.ai_commit.enabled = false;
 
-        session.handle(RequestId(1), Command::ProbeAiCommit);
+        session.handle(RequestId(1), VcsCommand::ProbeAiCommit);
 
         let status = availability(&drain(&mut events)).ok_or("availability is pushed")?;
         assert!(!status.enabled);
@@ -137,12 +137,12 @@
         let (mut session, mut events) = ai_session(root);
         // Off, so `start` reports without launching anything — the point here is
         // that the client is told *something* before it asks.
-        session.config.settings.git.ai_commit.enabled = false;
+        session.config.loaded_config.settings.git.ai_commit.enabled = false;
 
         session.start();
 
         let status = availability(&drain(&mut events)).ok_or("startup pushes availability")?;
-        assert_eq!(status.options, session.config.settings.git.ai_commit);
+        assert_eq!(status.options, session.config.loaded_config.settings.git.ai_commit);
         Ok(())
     }
 
@@ -153,7 +153,7 @@
             return Ok(());
         };
         let (mut session, _events) = ai_session(root);
-        session.config.settings.git.ai_commit.binary = Some("./payload.sh".to_string());
+        session.config.loaded_config.settings.git.ai_commit.binary = Some("./payload.sh".to_string());
 
         // Attributed to the user layer: the machine owner's own file, honoured.
         session.config.loaded_config.explicit.insert(
@@ -176,7 +176,7 @@
             "a repository may not name the program karet launches"
         );
         // Everything else the repository asked for is still honoured.
-        session.config.settings.git.ai_commit.model = "haiku".to_string();
+        session.config.loaded_config.settings.git.ai_commit.model = "haiku".to_string();
         assert_eq!(session.ai_commit_options().model, "haiku");
         Ok(())
     }
@@ -188,10 +188,10 @@
             return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
-        session.config.settings.git.ai_commit.enabled = false;
+        session.config.loaded_config.settings.git.ai_commit.enabled = false;
 
         // A reload that leaves `git.aiCommit` alone says nothing about it...
-        let mut report = crate::config::LoadedConfig::from_settings(session.config.settings.clone());
+        let mut report = crate::config::LoadedConfig::from_settings(session.config.loaded_config.settings.clone());
         session.apply_config_report(report.clone());
         assert!(
             availability(&drain(&mut events)).is_none(),

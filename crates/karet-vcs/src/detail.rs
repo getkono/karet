@@ -69,8 +69,6 @@ pub struct CommitSignature {
 pub struct CommitDetail {
     /// The full commit hash (hex).
     pub hash: String,
-    /// The abbreviated hash (first 7 hex characters).
-    pub short_hash: String,
     /// The first line of the commit message (its subject).
     pub summary: String,
     /// The message body: everything after the subject's trailing blank line, trimmed.
@@ -88,6 +86,15 @@ pub struct CommitDetail {
     pub signature: Option<CommitSignature>,
 }
 
+impl CommitDetail {
+    /// The abbreviated hash for display: the first 7 characters of
+    /// [`hash`](Self::hash), derived on each call so it cannot disagree with it.
+    #[must_use]
+    pub fn short_hash(&self) -> &str {
+        crate::log::abbreviate(&self.hash)
+    }
+}
+
 impl Repository {
     /// Resolve `rev` — any git revision spec (a full or abbreviated hash, a ref name,
     /// `HEAD`, `HEAD~3`, `main^`, …) — to its [`CommitDetail`].
@@ -102,7 +109,6 @@ impl Repository {
             .map_err(to_git)?;
         let commit = self.inner.find_commit(id).map_err(to_git)?;
         let hash = id.detach().to_hex().to_string();
-        let short_hash = hash.chars().take(7).collect();
 
         let summary = commit
             .message()
@@ -127,7 +133,6 @@ impl Repository {
 
         Ok(CommitDetail {
             hash,
-            short_hash,
             summary,
             body,
             author,
@@ -255,8 +260,8 @@ mod tests {
         assert_eq!(detail.author.name, "Author Person");
         assert_eq!(detail.author.email, "author@example.com");
         assert_eq!(detail.committer.name, "Committer Person");
-        assert_eq!(detail.short_hash.len(), 7);
-        assert!(detail.hash.starts_with(&detail.short_hash));
+        assert_eq!(detail.short_hash().len(), 7);
+        assert!(detail.hash.starts_with(detail.short_hash()));
         assert!(detail.parents.is_empty(), "root commit has no parents");
         assert!(
             detail.signature.is_none(),
@@ -280,7 +285,7 @@ mod tests {
         assert_eq!(repo.commit_detail("HEAD~2")?.summary, "commit 0");
         // The abbreviated hash of HEAD resolves to the same commit.
         let head = repo.commit_detail("HEAD")?;
-        assert_eq!(repo.commit_detail(&head.short_hash)?.hash, head.hash);
+        assert_eq!(repo.commit_detail(head.short_hash())?.hash, head.hash);
         Ok(())
     }
 

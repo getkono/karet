@@ -41,7 +41,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -83,7 +83,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 3,
@@ -117,7 +117,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 2,
                 match_limit: 1000,
@@ -145,7 +145,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: karet_search::SearchQuery {
                     pattern: "(".to_owned(),
                     regex: true,
@@ -172,7 +172,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query(""),
                 file_limit: 100,
                 match_limit: 100,
@@ -203,17 +203,17 @@
         std::fs::write(dir.path().join("a.rs"), "needle\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
-            settings: {
+            loaded_config: crate::config::LoadedConfig::from_settings({
                 let mut settings = crate::config::Settings::default();
                 settings.search.exclude = vec!["vendor/**".to_owned()];
                 settings
-            },
+            }),
             ..SessionConfig::default()
         });
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -239,7 +239,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("needle"),
                 file_limit: 100,
                 match_limit: 100,
@@ -264,7 +264,7 @@
 
         session.handle(
             RequestId(1),
-            Command::Search {
+            WorkspaceCommand::Search {
                 query: literal_query("a"),
                 file_limit: 100,
                 match_limit: 10,

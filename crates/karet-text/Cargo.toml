@@ -25,6 +25,7 @@ ropey.workspace = true
 memchr.workspace = true                # fast line-ending scanning (load/save, EOL detection)
 tempfile.workspace = true              # atomic crash-safe save (temp + fsync + rename)
 thiserror.workspace = true
+unicode-segmentation.workspace = true  # grapheme clusters for the `words` model
 
 [lints]
 workspace = true

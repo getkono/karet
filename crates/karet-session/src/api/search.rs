@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-/// One file's workspace-search matches, streamed by [`Command::Search`](super::Command::Search).
+/// One file's workspace-search matches, streamed by [`WorkspaceCommand::Search`](super::WorkspaceCommand::Search).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SearchHit {
     /// The absolute path of the matching file.

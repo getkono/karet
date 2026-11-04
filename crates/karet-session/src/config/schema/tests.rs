@@ -32,7 +32,34 @@ fn defaults_are_sane() {
     assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
     assert!(s.editor.completion.enabled, "completion defaults on (#57)");
     assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
+    assert!(
+        s.editor.inline_completion.enabled,
+        "ghost text is asked for wherever a server offers it"
+    );
     assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+}
+
+/// Ghost text switches off per language without touching the rest: an
+/// override that names only `inlineCompletion` leaves the popup alone.
+#[test]
+fn inline_completion_switches_off_per_language() {
+    let parsed: Editor =
+        serde_json::from_str(r#"{ "[markdown]": { "inlineCompletion": { "enabled": false } } }"#)
+            .unwrap_or_default();
+    let markdown = parsed.for_language(karet_filetype::file_type_for_language("markdown"));
+    assert!(!markdown.inline_completion());
+    assert!(markdown.completion().enabled());
+    assert!(
+        parsed
+            .for_language(karet_filetype::file_type_for_language("rust"))
+            .inline_completion()
+    );
+    let off: Editor =
+        serde_json::from_str(r#"{ "inlineCompletion": { "enabled": false } }"#).unwrap_or_default();
+    assert!(
+        !off.for_language(karet_filetype::file_type_for_language("rust"))
+            .inline_completion()
+    );
 }
 
 #[test]
@@ -97,6 +124,52 @@ fn language_selector_normalizes_and_displays() {
     assert!(LanguageSelector::from_language("[rust]").is_none());
 }
 
+/// A file type whose display name differs from its selector takes the selector's
+/// patch: `Cargo.lock` is `"Cargo lockfile"` to a person and `toml` to config.
+/// Falsified by resolving against the display name (#617), which applies a
+/// `[cargo lockfile]` patch and misses `[toml]`.
+#[test]
+fn overrides_resolve_by_config_selector_not_display_name() {
+    let parsed: Editor = serde_json::from_str(
+        r#"{
+            "tabSize": 4,
+            "[toml]": { "tabSize": 2, "autoClosingBrackets": "never" },
+            "[cargo lockfile]": { "tabSize": 8 }
+        }"#,
+    )
+    .unwrap_or_default();
+    let lockfile = karet_filetype::file_type_for_path(std::path::Path::new("/w/Cargo.lock"));
+    assert_eq!(lockfile.name(), "Cargo lockfile");
+    let resolved = parsed.for_language(Some(lockfile));
+    assert_eq!(resolved.tab_size(), 2);
+    assert_eq!(resolved.auto_closing_brackets(), AutoClosing::Never);
+    // `None` and a file type with no selector both resolve to the globals.
+    assert_eq!(parsed.for_language(None).tab_size(), 4);
+    let unknown = karet_filetype::file_type_for_path(std::path::Path::new("/w/notes.unknownext"));
+    assert_eq!(unknown.config_selector(), None);
+    assert_eq!(parsed.for_language(Some(unknown)).tab_size(), 4);
+}
+
+/// Every registry selector is already in `LanguageSelector`'s normal form, so the
+/// borrowed lookup in [`Editor::for_language`] finds the key deserialization
+/// stored. Falsified by a registry selector with uppercase or padding, whose
+/// `[selector]` override would then never apply.
+#[test]
+fn registry_selectors_are_normalized_language_selectors() {
+    for file_type in karet_filetype::all_file_types() {
+        let Some(selector) = file_type.config_selector() else {
+            continue;
+        };
+        let normalized = LanguageSelector::from_language(selector);
+        assert_eq!(
+            normalized.as_ref().map(LanguageSelector::language),
+            Some(selector),
+            "{}",
+            file_type.name()
+        );
+    }
+}
+
 #[test]
 fn language_override_resolves_every_editor_setting() {
     let parsed: Editor = serde_json::from_str(
@@ -131,7 +204,7 @@ fn language_override_resolves_every_editor_setting() {
     )
     .unwrap_or_default();
 
-    let rust = parsed.for_language(Some("rust"));
+    let rust = parsed.for_language(karet_filetype::file_type_for_language("rust"));
     assert_eq!(rust.tab_size(), 2);
     assert!(!rust.insert_spaces());
     assert_eq!(rust.line_numbers(), LineNumbers::Relative);
@@ -156,7 +229,7 @@ fn language_override_resolves_every_editor_setting() {
         DiagnosticSeverity::Error
     );
 
-    let python = parsed.for_language(Some("python"));
+    let python = parsed.for_language(karet_filetype::file_type_for_language("python"));
     assert_eq!(python.auto_closing_brackets(), AutoClosing::LanguageDefined);
     assert_eq!(python.tab_size(), 8);
     assert_eq!(
@@ -202,5 +275,22 @@ fn camel_case_enum_labels_round_trip() {
     assert_eq!(
         serde_json::from_str::<AutoSave>("\"onFocusChange\"").ok(),
         Some(AutoSave::OnFocusChange)
+    );
+}
+
+#[test]
+fn files_encoding_takes_editorconfig_charset_names() {
+    // The former informational default, `"utf-8"`, still parses, so a file
+    // that spelled it out keeps loading.
+    let parse = |text: &str| serde_json::from_str::<Encoding>(text).ok();
+    assert_eq!(Files::default().encoding, Encoding::Auto);
+    assert_eq!(parse("\"auto\""), Some(Encoding::Auto));
+    assert_eq!(parse("\"utf-8\""), Some(Encoding::Utf8));
+    assert_eq!(parse("\"utf8\""), Some(Encoding::Utf8));
+    assert_eq!(parse("\"utf-8-bom\""), Some(Encoding::Utf8Bom));
+    assert_eq!(parse("\"latin1\""), None, "karet edits UTF-8 only");
+    assert_eq!(
+        serde_json::to_string(&Encoding::Utf8Bom).ok().as_deref(),
+        Some("\"utf-8-bom\"")
     );
 }

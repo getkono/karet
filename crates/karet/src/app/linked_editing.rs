@@ -2,7 +2,7 @@
 //! range the language server links to the caret's -- an HTML or JSX tag's
 //! name and its closing tag's -- so what is typed next lands in all of them.
 //!
-//! The app asks through the session seam (`Command::LinkedEditingRanges`) and
+//! The app asks through the session seam (`LspCommand::LinkedEditingRanges`) and
 //! places the carets when the answering `Event::LinkedEditingRanges` arrives,
 //! provided the text and the selections are still the ones it asked about.
 //! Each caret sits at the same offset in its range as the caret does in its
@@ -10,11 +10,18 @@
 //! is ordinary multi-caret editing: it ends with the carets.
 
 use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
 use karet_core::Selection;
-use karet_session::Command as SessionCommand;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RequestId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// A Start Linked Editing waiting on the server's linked ranges.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,8 +114,8 @@ impl App {
         };
         let id = backend.next_id();
         let position = cursors.primary().head;
-        let command = SessionCommand::LinkedEditingRanges { doc, position };
-        if backend.send(id, command).is_ok() {
+        let command = LspCommand::LinkedEditingRanges { doc, position };
+        if backend.send(id, command.into()).is_ok() {
             self.pending_linked = Some(PendingLinked {
                 id,
                 doc,
@@ -168,6 +175,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn on(line: u32, from: u32, to: u32) -> Range {

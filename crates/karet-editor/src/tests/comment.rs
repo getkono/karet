@@ -234,3 +234,111 @@ fn block_comment_applies_at_every_caret_once_per_line() -> Outcome {
     assert_eq!(after.selections.len(), 3);
     Ok(())
 }
+
+/// Toggle a block comment with the given delimiters over `text`.
+fn block_with(
+    text: &str,
+    cursors: &CursorState,
+    open: &str,
+    close: &str,
+) -> Result<String, &'static str> {
+    let edit = toggle_block_comment(&TextBuffer::from_text(text), cursors, 0, open, close)
+        .ok_or(NO_EDIT)?;
+    Ok(apply(text, &edit))
+}
+
+#[test]
+fn a_selection_whose_delimiters_share_chars_is_wrapped_not_unwrapped() -> Outcome {
+    // `/*/` starts with `/*` and ends with `*/`, but the two overlap.
+    let (out, _) = block("a /*/\n", &select((0, 2), (0, 5)))?;
+    assert_eq!(out, "a /* /*/ */\n");
+    // The same with delimiters of different widths: `<!--->` is six chars,
+    // one short of `<!--` and `-->` side by side.
+    let out = block_with("<!--->\n", &select((0, 0), (0, 6)), "<!--", "-->")?;
+    assert_eq!(out, "<!-- <!---> -->\n");
+    // Seven or more is a real comment.
+    let out = block_with("<!--x-->\n", &select((0, 0), (0, 8)), "<!--", "-->")?;
+    assert_eq!(out, "x\n");
+    Ok(())
+}
+
+#[test]
+fn a_selection_with_only_an_opening_delimiter_is_wrapped() -> Outcome {
+    let (out, _) = block("/* abc\n", &select((0, 0), (0, 6)))?;
+    assert_eq!(out, "/* /* abc */\n");
+    Ok(())
+}
+
+#[test]
+fn unwrapping_removes_only_the_padding_that_is_there() -> Outcome {
+    // No padding on either side.
+    let (out, _) = block("/*a*/\n", &select((0, 0), (0, 5)))?;
+    assert_eq!(out, "a\n");
+    let (out, _) = block("/*a\nb*/\n", &select((0, 0), (1, 3)))?;
+    assert_eq!(out, "a\nb\n");
+    // One space between the delimiters is padding for the opener alone.
+    let (out, _) = block("x/* */y\n", &select((0, 1), (0, 6)))?;
+    assert_eq!(out, "xy\n");
+    // A closer at the start of its line has no room for padding before it.
+    let (out, _) = block("/*\n*/\n", &select((0, 0), (1, 2)))?;
+    assert_eq!(out, "\n\n");
+    Ok(())
+}
+
+#[test]
+fn a_closer_that_begins_with_a_space_is_not_mistaken_for_padding() -> Outcome {
+    // With ` */` as the closer, the space after `/*` is the closer's own.
+    let out = block_with("/* */x\n", &select((0, 0), (0, 5)), "/*", " */")?;
+    assert_eq!(out, "x\n");
+    Ok(())
+}
+
+#[test]
+fn unwrapping_finds_the_closer_on_a_last_line_shorter_than_the_first_indent() -> Outcome {
+    // The last line's content ends left of the column the selection starts at.
+    let (out, _) = block("    /* abc\nx */  \n", &select((0, 4), (1, 6)))?;
+    assert_eq!(out, "    abc\nx  \n");
+    Ok(())
+}
+
+#[test]
+fn wrap_style_detection_needs_both_delimiters_apart() -> Outcome {
+    let wrap = LineComment::Wrap {
+        open: "<!--",
+        close: "-->",
+    };
+    // The delimiters overlap: not a comment, so it is wrapped.
+    let (out, _) = line("<!--->\n", &carets(&[(0, 0)]), wrap)?;
+    assert_eq!(out, "<!-- <!---> -->\n");
+    // Only an opener: not a comment either.
+    let (out, _) = line("<!-- abc\n", &carets(&[(0, 0)]), wrap)?;
+    assert_eq!(out, "<!-- <!-- abc -->\n");
+    Ok(())
+}
+
+#[test]
+fn wrap_style_uncomment_removes_only_the_padding_that_is_there() -> Outcome {
+    let wrap = LineComment::Wrap {
+        open: "<!--",
+        close: "-->",
+    };
+    let (out, _) = line("<!--a-->\n", &carets(&[(0, 0)]), wrap)?;
+    assert_eq!(out, "a\n");
+    let (out, _) = line("<!-- -->\n", &carets(&[(0, 0)]), wrap)?;
+    assert_eq!(out, "\n");
+    // Trailing whitespace past the closer stays.
+    let (out, _) = line("<!-- a -->  \n", &carets(&[(0, 0)]), wrap)?;
+    assert_eq!(out, "a  \n");
+    Ok(())
+}
+
+#[test]
+fn a_bare_marker_keeps_the_whitespace_after_it() -> Outcome {
+    // `// ` holds no content: its space is trailing whitespace, not padding.
+    let (out, _) = line("// \n", &carets(&[(0, 0)]), SLASHES)?;
+    assert_eq!(out, " \n");
+    // Trailing whitespace on a line being commented is left in place.
+    let (out, _) = line("a  \n", &carets(&[(0, 0)]), SLASHES)?;
+    assert_eq!(out, "// a  \n");
+    Ok(())
+}

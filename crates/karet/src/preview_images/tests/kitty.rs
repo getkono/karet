@@ -32,7 +32,7 @@ fn a_ready_image_is_transmitted_once_and_placed_per_box() {
         output.starts_with(&format!("\x1b_Ga=t,i={id},f=32,s=40,v=20,o=z,q=2,")),
         "the full 40×20 image goes out: {output:?}"
     );
-    assert!(output.ends_with(&crate::preview_images::kitty::place(id, 1, 5, 2)));
+    assert!(output.ends_with(&karet_fileview::image::kitty_place(id, 1, 5, 2)));
     // The same box again: nothing more to say.
     let _ = lookup_in(&images, dir.path(), "a.png", (5, 2));
     assert_eq!(images.take_output(), "");
@@ -45,7 +45,7 @@ fn a_ready_image_is_transmitted_once_and_placed_per_box() {
     assert_eq!(placement, 2);
     assert_eq!(
         images.take_output(),
-        crate::preview_images::kitty::place(id, 2, 3, 1)
+        karet_fileview::image::kitty_place(id, 2, 3, 1)
     );
 }
 

@@ -1,16 +1,36 @@
-use karet_core::CursorState;
-use karet_core::Selection;
-use karet_session::backup;
-use karet_session::backup::LayoutAxis;
-use karet_session::backup::LayoutNode;
-use karet_session::backup::LayoutPane;
-use karet_session::backup::LayoutTab;
-use karet_session::backup::WorkspaceLayout;
-use karet_widgets::pane::tree::PaneTree;
+use std::path::Path;
+use std::path::PathBuf;
 
-use super::*;
+use karet_core::CursorState;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Selection;
+use karet_session::layout;
+use karet_session::layout::LayoutAxis;
+use karet_session::layout::LayoutNode;
+use karet_session::layout::LayoutPane;
+use karet_session::layout::LayoutTab;
+use karet_session::layout::WorkspaceLayout;
+use karet_widgets::DropZone;
+use karet_widgets::PaneId;
+use karet_widgets::PaneLayout;
+use karet_widgets::SplitAxis;
+use karet_widgets::SplitDir;
+use karet_widgets::drop_zone;
+use karet_widgets::pane::tree::PaneTree;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::hit::tab_at;
+use crate::app::notifications::Report;
+use crate::app::state::StoredPane;
 use crate::tab::FillView;
+use crate::tab::MarkdownPreviewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::tab::place_fill;
+use crate::workspace;
 
 impl App {
     /// Grow the focused pane toward `dir` by the keyboard resize step.
@@ -24,14 +44,15 @@ impl App {
             return;
         }
         self.layout
-            .resize_pane(self.focus_pane(), dir, STEP, self.main_rect);
+            .resize_pane(self.focus_pane(), dir, STEP, self.last_frame.main_rect);
     }
 
     /// While dragging, move the active tab under column `x` within the focused pane.
     pub(super) fn drag_tab_to(&mut self, x: u16) {
         let focused = self.focus_pane();
         let hit = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == focused)
             .and_then(|f| tab_at(&f.tab_hits, x));
@@ -44,7 +65,8 @@ impl App {
 
     /// The pane whose *content* area contains `(x, y)`, and that content rect.
     pub(super) fn pane_at_content(&self, x: u16, y: u16) -> Option<(PaneId, Rect)> {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|f| rect_contains(f.content_rect, (x, y)))
             .map(|f| (f.pane, f.content_rect))
@@ -58,7 +80,8 @@ impl App {
         };
         // Over the origin pane's own tab strip: reorder in place, no drop target.
         let on_from_strip = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == drag.from_pane)
             .is_some_and(|f| rect_contains(f.tabstrip_rect, (x, y)));
@@ -132,7 +155,7 @@ impl App {
         }
         self.layout.set_focus(dest);
         self.load_focused();
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.reconcile_open_docs();
     }
 
@@ -144,15 +167,7 @@ impl App {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let is_markdown = match &tab.kind {
-            TabKind::Code { path, text, .. } => {
-                let head = text.as_bytes();
-                let head = head.get(..crate::workspace::HEAD_BYTES).unwrap_or(head);
-                karet_filetype::classify_ignoring_size(path, head) == FileKind::Markdown
-            },
-            _ => false,
-        };
-        if !is_markdown {
+        if !tab.is_markdown() {
             self.notify(
                 Report::Refusal,
                 NotificationKind::System,
@@ -165,7 +180,7 @@ impl App {
             .take()
             .is_none()
             .then(MarkdownPreviewState::default);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
     }
 
     /// Split the focused pane in `dir` via the keyboard, opening a second view of the
@@ -185,7 +200,11 @@ impl App {
         );
         self.layout.set_focus(new_pane);
         self.load_focused();
-        self.focus = Focus::Editor;
+        // A copy of a tab whose open the session has not answered yet has no
+        // document, and the answer binds only the source's view: the copy asks
+        // for its own, or it would never fill.
+        self.register_doc(self.active);
+        self.keyboard.focus_editor();
     }
 
     /// Build a second view of the active tab for a new pane: the same document
@@ -197,7 +216,7 @@ impl App {
             Some(t) => match &t.kind {
                 TabKind::Code {
                     path,
-                    language,
+                    file_type,
                     doc,
                     next_version,
                     buffer,
@@ -213,11 +232,19 @@ impl App {
                     // The worker's table lines for this document, so the new view
                     // keeps them until the next snapshot rather than losing them.
                     markdown_table_lines: t.markdown_table_lines.clone(),
+                    // A source still waiting for its text leaves the copy waiting
+                    // too: edits stay refused against the empty placeholder, the
+                    // loading placeholder (or the open's failure) shows, and the
+                    // first fill puts the held caret and view back.
+                    fill_caret: t.fill_caret,
+                    fill_since: t.fill_since,
+                    fill_view: t.fill_view.clone(),
+                    fill_error: t.fill_error.clone(),
                     ..Tab::new(
                         t.title.clone(),
                         TabKind::Code {
                             path: path.clone(),
-                            language,
+                            file_type: *file_type,
                             doc: *doc,
                             next_version: *next_version,
                             // The same buffer, not a copy of it.
@@ -293,9 +320,9 @@ impl App {
             .then(|| self.workspace_layout())
             .flatten();
         match layout {
-            Some(layout) => backup::write_layout(dir, &self.layout_root(), &layout),
+            Some(layout) => layout::write_layout(dir, &self.layout_root(), &layout),
             None => {
-                backup::remove_layout(dir, &self.layout_root());
+                layout::remove_layout(dir, &self.layout_root());
                 Ok(())
             },
         }
@@ -307,7 +334,7 @@ impl App {
         if !self.settings.workbench.restore_layout || !self.startup_is_pristine() {
             return;
         }
-        if let Some(layout) = backup::read_layout(dir, &self.layout_root()) {
+        if let Some(layout) = layout::read_layout(dir, &self.layout_root()) {
             self.apply_workspace_layout(layout);
         }
     }
@@ -456,8 +483,8 @@ impl App {
             },
             TabKind::Code { .. } => (
                 tab.editor.cursors().clone(),
-                tab.editor.scroll_line,
-                tab.editor.scroll_col,
+                tab.editor.scroll_line(),
+                tab.editor.scroll_col(),
             ),
             _ => (
                 CursorState::single(Selection::caret(LineCol::new(0, 0))),
@@ -575,7 +602,7 @@ impl App {
             if !path.is_file() {
                 continue;
             }
-            let mut tab = workspace::open_file(&path);
+            let mut tab = Tab::open(&path);
             tab.view = self.alloc_view();
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;

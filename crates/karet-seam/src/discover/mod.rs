@@ -118,8 +118,9 @@ pub struct DiscoveryOptions {
     pub max_packages: usize,
     /// Stop after visiting this many directories.
     ///
-    /// Depth alone does not bound the walk — a shallow tree can still be enormous — and
-    /// discovery runs synchronously while a reader waits for a picker to open.
+    /// Depth alone does not bound the walk — a shallow tree can still be enormous — so
+    /// this bounds the walk, which a caller runs on a worker while its picker waits for
+    /// the packages to arrive.
     pub max_directories: usize,
 }
 
@@ -131,8 +132,8 @@ impl Default for DiscoveryOptions {
             max_depth: 3,
             max_packages: 512,
             // Generous enough that no real repository is cut short, low enough that a
-            // pathological tree cannot stall the picker for longer than it takes to
-            // notice.
+            // pathological tree cannot keep a picker's packages from arriving for longer
+            // than it takes to notice.
             max_directories: 8192,
         }
     }

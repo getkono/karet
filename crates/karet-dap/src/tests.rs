@@ -14,6 +14,8 @@ use tokio::io::BufReader;
 
 use super::*;
 
+mod connect;
+
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// What the fake adapter advertises and how it behaves.
@@ -373,13 +375,15 @@ async fn inspection_converts_positions_and_rejections_surface() -> TestResult {
     client.start(StartConfig::default(), &[]).await?;
     let stack = client.stack_trace(1).await?;
     assert_eq!(stack.len(), 1);
+    assert_eq!(stack[0].id, FrameId(41));
     assert_eq!(stack[0].line, 9, "wire line 10 → 0-based 9");
     assert_eq!(
         stack[0].source_path.as_deref(),
         Some(Path::new("/w/main.rs"))
     );
-    let ok = client.evaluate("1 + 41", Some(41)).await?;
+    let ok = client.evaluate("1 + 41", Some(FrameId(41))).await?;
     assert_eq!(ok.result, "42");
+    assert_eq!(ok.variables_reference, VariablesRef::NONE);
     let err = client.evaluate("boom", None).await;
     assert!(
         matches!(err, Err(DapError::Adapter(ref m)) if m.contains("invalid expression")),
@@ -464,11 +468,11 @@ async fn threads_drop_entries_without_an_id_and_default_the_name() -> TestResult
 async fn scopes_request_the_frame_and_default_missing_fields() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    let scopes = client.scopes(41).await?;
+    let scopes = client.scopes(FrameId(41)).await?;
     assert_eq!(last_arguments(&log, "scopes"), Some(json!({"frameId": 41})));
     let got: Vec<(&str, i64, bool)> = scopes
         .iter()
-        .map(|s| (s.name.as_str(), s.variables_reference, s.expensive))
+        .map(|s| (s.name.as_str(), s.variables_reference.0, s.expensive))
         .collect();
     assert_eq!(
         got,
@@ -481,16 +485,16 @@ async fn scopes_request_the_frame_and_default_missing_fields() -> TestResult {
 async fn variables_request_the_reference_and_default_missing_fields() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    let variables = client.variables(7).await?;
+    let variables = client.variables(VariablesRef(7)).await?;
     assert_eq!(
         last_arguments(&log, "variables"),
         Some(json!({"variablesReference": 7}))
     );
-    let field = |name: &str, value: &str, ty: Option<&str>, reference| Variable {
+    let field = |name: &str, value: &str, ty: Option<&str>, reference| DebugVariable {
         name: name.to_owned(),
         value: value.to_owned(),
         ty: ty.map(str::to_owned),
-        variables_reference: reference,
+        variables_reference: VariablesRef(reference),
     };
     assert_eq!(
         variables,
@@ -507,7 +511,7 @@ async fn variables_request_the_reference_and_default_missing_fields() -> TestRes
 async fn evaluate_sends_the_frame_only_when_given() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    client.evaluate("a", Some(41)).await?;
+    client.evaluate("a", Some(FrameId(41))).await?;
     assert_eq!(
         last_arguments(&log, "evaluate"),
         Some(json!({"expression": "a", "context": "repl", "frameId": 41}))
@@ -546,15 +550,6 @@ fn port_substitution_replaces_every_occurrence() {
     assert!(substitute_port(&[], 4711).is_empty());
 }
 
-#[test]
-fn free_port_is_a_bindable_loopback_port() -> TestResult {
-    let port = free_port()?;
-    assert_ne!(port, 0);
-    // Dropped, so it is free again for the adapter to bind.
-    drop(std::net::TcpListener::bind(("127.0.0.1", port))?);
-    Ok(())
-}
-
 #[tokio::test]
 async fn a_missing_adapter_executable_is_a_launch_error() {
     let missing = "karet-dap-test-no-such-adapter";
@@ -571,52 +566,45 @@ async fn a_missing_adapter_executable_is_a_launch_error() {
             got.err()
         );
     }
-    let got = DapClient::spawn_command_tcp(tokio::process::Command::new(missing), 1).await;
+    let got = DapClient::spawn_tcp(tokio::process::Command::new(missing), 1).await;
     assert!(matches!(got, Err(DapError::Launch(_))), "{:?}", got.err());
 }
 
 #[tokio::test]
-async fn a_socket_that_never_accepts_is_a_launch_error_at_the_deadline() -> TestResult {
-    let port = free_port()?; // nobody listens on it
-    let started = std::time::Instant::now();
-    let got = connect_with_retries(port, Duration::from_millis(200)).await;
-    let elapsed = started.elapsed();
-    assert!(
-        matches!(&got, Err(DapError::Launch(m)) if m.contains(&port.to_string())),
-        "{:?}",
-        got.err()
-    );
-    assert!(
-        elapsed >= Duration::from_millis(200),
-        "gave up before the deadline"
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn spawn_command_tcp_retries_until_the_adapter_listens() -> TestResult {
-    // The child stands in for an adapter that is slow to boot; the socket is
-    // bound here, only after the client has started retrying, and speaks DAP
-    // so the connection is proven end to end.
-    let port = free_port()?;
-    let adapter = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-        let (stream, _) = listener.accept().await?;
-        let (read, write) = stream.into_split();
-        let log: Log = Arc::default();
-        run_adapter(BufReader::new(read), write, full_script(), Arc::clone(&log)).await;
-        Ok::<_, std::io::Error>(commands(&log))
-    });
-    let mut command = tokio::process::Command::new("sh");
-    command.args(["-c", "exec sleep 30"]);
-    let mut client = DapClient::spawn_command_tcp(command, port).await?;
-    let caps = client.initialize("fake").await?;
-    assert!(caps.support_terminate_debuggee);
-    client.disconnect(false).await?;
-    let seen = tokio::time::timeout(Duration::from_secs(5), adapter).await???;
-    assert_eq!(seen, ["initialize", "disconnect"]);
+async fn spawn_with_hands_prepare_the_spec_and_propagates_its_error() -> TestResult {
+    // Stdio passes the spec through verbatim (`${port}` is only a TCP
+    // placeholder); TCP substitutes a real port into every occurrence. A
+    // failing `prepare` aborts the launch with its own error, untouched.
+    for transport in [DapTransport::Stdio, DapTransport::Tcp] {
+        let spec = DapSpec {
+            command: "adapter".to_owned(),
+            args: vec!["--port".to_owned(), "${port}".to_owned()],
+            transport,
+        };
+        let mut seen = None;
+        let got = DapClient::spawn_with(&spec, |given| {
+            seen = Some(given.clone());
+            Err(DapError::Launch("prepare refused".to_owned()))
+        })
+        .await;
+        assert!(
+            matches!(&got, Err(DapError::Launch(m)) if m == "prepare refused"),
+            "{transport:?}: {:?}",
+            got.err()
+        );
+        let seen = seen.ok_or("prepare never ran")?;
+        assert_eq!(seen.command, "adapter");
+        assert_eq!(seen.transport, transport);
+        assert_eq!(seen.args[0], "--port");
+        match transport {
+            DapTransport::Stdio => assert_eq!(seen.args[1], "${port}"),
+            DapTransport::Tcp => assert!(
+                seen.args[1].parse::<u16>().is_ok_and(|port| port != 0),
+                "{:?}",
+                seen.args
+            ),
+        }
+    }
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 //!
 //! Off unless `editor.formatOnType` says otherwise for the language, and
 //! Toggle Format on Type flips that for the session. While on, a typed
-//! character goes to the session as `Command::FormatOnType`; the answering
+//! character goes to the session as `LspCommand::FormatOnType`; the answering
 //! `Event::OnTypeFormatting` names the server's trigger characters, after
 //! which only those are sent. Its edits are applied here, by the app, as an
 //! edit of its own -- and only when the text is still the text the server was
@@ -14,11 +14,18 @@
 use std::collections::HashMap;
 
 use karet_core::Change;
+use karet_core::EditCause;
+use karet_core::NotificationKind;
 use karet_core::TextEdit;
-use karet_session::Command as SessionCommand;
+use karet_editor::editing;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RequestId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The on-type formatting state of the app.
 #[derive(Debug, Default)]
@@ -26,7 +33,8 @@ pub(crate) struct OnTypeState {
     /// The request in flight, if any; a newer one supersedes it.
     pending: Option<PendingOnType>,
     /// The trigger characters each document's server answered with, empty
-    /// for a server that formats on none; dropped when the document closes.
+    /// for a server that formats on none; dropped when the document closes,
+    /// is moved, or may have changed servers.
     /// A document without an entry is offered every typed character until
     /// its server says which it formats on.
     pub(crate) triggers: HashMap<DocumentId, Vec<char>>,
@@ -54,7 +62,7 @@ impl App {
         let setting = self
             .settings
             .editor
-            .for_language(tab_language(tab))
+            .for_language(tab.config_file_type())
             .format_on_type();
         setting != self.on_type.flipped
     }
@@ -74,6 +82,15 @@ impl App {
             NotificationKind::Lsp,
             format!("format on type: {state}"),
         );
+    }
+
+    /// Forget every document's remembered trigger characters, so each is
+    /// offered typed characters again until its server answers anew. Called
+    /// when the `lsp` settings change and when a managed server is installed,
+    /// updated, or removed: a document may now be served by a server that
+    /// formats on characters the old one did not.
+    pub(super) fn forget_on_type_triggers(&mut self) {
+        self.on_type.triggers.clear();
     }
 
     /// After `ch` was typed (`\n` for Enter): offer it to the language
@@ -116,8 +133,8 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::FormatOnType { doc, position, ch };
-        if backend.send(id, command).is_ok() {
+        let command = LspCommand::FormatOnType { doc, position, ch };
+        if backend.send(id, command.into()).is_ok() {
             self.on_type.pending = Some(PendingOnType { id, doc, version });
         }
     }

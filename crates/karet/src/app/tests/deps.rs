@@ -38,16 +38,16 @@ fn manifest_app(hints: Vec<ManifestHint>, caret: LineCol) -> App {
     if let TabKind::Code {
         path,
         doc,
-        language,
+        file_type,
         ..
     } = &mut tab.kind
     {
         *path = std::path::PathBuf::from("Cargo.toml");
-        *language = "TOML";
+        *file_type = language_type("TOML");
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     let version = match &app.tabs[idx].kind {
         TabKind::Code { buffer, .. } => buffer.version(),

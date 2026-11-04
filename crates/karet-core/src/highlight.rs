@@ -20,6 +20,23 @@ pub struct HighlightSpan {
     pub token: TokenId,
 }
 
+/// A highlighted run within a single line: byte offsets relative to the line's
+/// start, tagged with a semantic [`TokenId`].
+///
+/// The line-relative counterpart of [`HighlightSpan`], for consumers that carry
+/// per-line token tables (a prepared diff, a source preview) rather than a whole
+/// buffer's spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TokenSpan {
+    /// The run's starting byte offset within its line.
+    pub start: usize,
+    /// The run's ending byte offset (exclusive) within its line.
+    pub end: usize,
+    /// The run's semantic token class.
+    pub token: TokenId,
+}
+
 /// An ordered, non-overlapping set of [`HighlightSpan`]s for a buffer.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -192,6 +209,9 @@ pub enum FoldKind {
     Comment,
     /// A run of import (`use`, `import`, `#include`) declarations.
     Imports,
+    /// A region the source marks out itself (`#region` … `#endregion`, or an
+    /// editor fold marker), as a language server reports it.
+    Region,
 }
 
 /// The foldable regions of a buffer, in document order (outermost first), with at
@@ -209,11 +229,66 @@ impl FoldRegions {
         Self { regions }
     }
 
+    /// Normalize regions from a source that promises no order (a language
+    /// server's answer): a region that hides no line (`end <= start`) is
+    /// dropped, the rest are put in document order, and where several start on
+    /// one line only the outermost is kept.
+    #[must_use]
+    pub fn from_unordered(mut regions: Vec<FoldRegion>) -> Self {
+        regions.retain(|region| region.end > region.start);
+        regions.sort_by_key(|region| (region.start, std::cmp::Reverse(region.end)));
+        regions.dedup_by_key(|region| region.start);
+        Self { regions }
+    }
+
     /// The fold regions, outermost first.
     #[must_use]
     pub fn regions(&self) -> &[FoldRegion] {
         &self.regions
     }
+
+    /// These regions carried across `edit`, by line.
+    ///
+    /// A region wholly before the edit's first line stays; one wholly after
+    /// its last replaced line moves by the change in line count; one that
+    /// holds the edit keeps its header and moves its end. A region with its
+    /// header or its end strictly inside the replaced lines is dropped, since
+    /// no line maps it, as is one the edit leaves hiding nothing.
+    #[must_use]
+    pub fn translate(&self, edit: &AppliedEdit) -> Self {
+        let start_row = row(edit.start_point.row);
+        let old_end = row(edit.old_end_point.row);
+        let new_end = row(edit.new_end_point.row);
+        let moved = |line: u32| line.saturating_add(new_end).saturating_sub(old_end);
+        let regions = self
+            .regions
+            .iter()
+            .filter_map(|region| {
+                if region.end <= start_row {
+                    Some(*region)
+                } else if region.start > start_row && region.start >= old_end {
+                    Some(FoldRegion {
+                        start: moved(region.start),
+                        end: moved(region.end),
+                        kind: region.kind,
+                    })
+                } else if region.start <= start_row && region.end >= old_end {
+                    Some(FoldRegion {
+                        end: moved(region.end),
+                        ..*region
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self::from_unordered(regions)
+    }
+}
+
+/// An edit's row as a fold line, saturating on a buffer past `u32::MAX` lines.
+fn row(row: usize) -> u32 {
+    u32::try_from(row).unwrap_or(u32::MAX)
 }
 
 /// One semantic source block with a header and an enclosing lifetime, the unit
@@ -516,5 +591,103 @@ mod tests {
         let comment = FoldRegion::new(1, 2).with_kind(FoldKind::Comment);
         assert_eq!((comment.start, comment.end), (1, 2));
         assert_eq!(comment.kind, FoldKind::Comment);
+    }
+
+    /// An unordered answer comes out in document order, an empty or inverted
+    /// region dropped and only the outermost kept per header line. Falsified
+    /// by keeping the first region seen on a shared line (the inner one here).
+    #[test]
+    fn unordered_regions_normalize() {
+        let f = FoldRegions::from_unordered(vec![
+            FoldRegion::new(5, 9),
+            FoldRegion::new(0, 2).with_kind(FoldKind::Comment),
+            FoldRegion::new(5, 6).with_kind(FoldKind::Region),
+            FoldRegion::new(5, 12).with_kind(FoldKind::Region),
+            FoldRegion::new(3, 3),
+            FoldRegion::new(8, 4),
+        ]);
+        assert_eq!(
+            f.regions(),
+            [
+                FoldRegion::new(0, 2).with_kind(FoldKind::Comment),
+                FoldRegion::new(5, 12).with_kind(FoldKind::Region),
+            ]
+        );
+    }
+
+    /// An edit replacing rows `start..=old_end` with rows `start..=new_end`.
+    fn rows(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        let point = |row| crate::coord::BytePoint { row, col: 0 };
+        AppliedEdit {
+            start_byte: 0,
+            old_end_byte: 0,
+            new_end_byte: 0,
+            start_point: point(start),
+            old_end_point: point(old_end),
+            new_end_point: point(new_end),
+            replaced: String::new(),
+        }
+    }
+
+    /// Lines inserted inside a region stretch it and move the regions after
+    /// it, leaving the ones before alone; an edit within one line moves
+    /// nothing. Falsified by shifting a holding region's header, or by not
+    /// moving the regions below.
+    #[test]
+    fn translating_moves_regions_by_lines() {
+        let f = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 1),
+            FoldRegion::new(2, 6),
+            FoldRegion::new(8, 9).with_kind(FoldKind::Imports),
+        ]);
+        let grown = f.translate(&rows(4, 4, 6));
+        assert_eq!(
+            grown.regions(),
+            [
+                FoldRegion::new(0, 1),
+                FoldRegion::new(2, 8),
+                FoldRegion::new(10, 11).with_kind(FoldKind::Imports),
+            ]
+        );
+        assert_eq!(f.translate(&rows(3, 3, 3)).regions(), f.regions());
+    }
+
+    /// Deleting lines pulls later regions up, drops a region whose header the
+    /// deletion swallowed, and drops one it leaves hiding nothing. Falsified
+    /// by keeping a region whose header line no longer exists.
+    #[test]
+    fn translating_a_deletion_drops_what_it_swallowed() {
+        let f = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 3),
+            FoldRegion::new(4, 7),
+            FoldRegion::new(10, 12),
+        ]);
+        // Rows 2..=5 collapse onto row 2: (0, 3) ends inside, (4, 7) starts
+        // inside, (10, 12) is below and moves up by three.
+        assert_eq!(
+            f.translate(&rows(2, 5, 2)).regions(),
+            [FoldRegion::new(7, 9)]
+        );
+        // A region holding the deletion shrinks to nothing and goes.
+        let single = FoldRegions::from_sorted_regions(vec![FoldRegion::new(1, 2)]);
+        assert!(single.translate(&rows(1, 2, 1)).regions().is_empty());
+    }
+
+    /// `TokenSpan` moved here from `karet-diff`, whose prepared diffs and the
+    /// seam previews already cross the backend seam with it: the wire shape
+    /// must stay `{start, end, token}` with the token as a bare number.
+    /// Falsified by renaming a field or wrapping the token.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn token_span_keeps_its_wire_shape() -> Result<(), serde_json::Error> {
+        let span = TokenSpan {
+            start: 2,
+            end: 5,
+            token: TokenId(7),
+        };
+        let json = serde_json::to_string(&span)?;
+        assert_eq!(json, r#"{"start":2,"end":5,"token":7}"#);
+        assert_eq!(serde_json::from_str::<TokenSpan>(&json)?, span);
+        Ok(())
     }
 }

@@ -20,11 +20,11 @@ use karet_seam::FileStamp;
 use karet_seam::IndexObserver;
 use karet_seam::IndexedPackage;
 use karet_seam::config::Configuration;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use super::project;
 use crate::api::Event;
 use crate::api::RequestId;
+use crate::event_tx::EventTx;
 use crate::seam_cache::SeamCache;
 
 /// What one index run needs from its caller, and gives back to it.
@@ -38,7 +38,7 @@ pub(super) struct Observer<'a> {
     /// Applied per package rather than once at the end, because a package is sent the
     /// moment it is done and must be right when it arrives.
     configuration: Option<Configuration>,
-    events: &'a tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: &'a EventTx,
     /// Contributions from every package, for the cache write once the run is over.
     contributions: Mutex<Vec<FileContribution>>,
     /// How many files were parsed rather than replayed.
@@ -56,7 +56,7 @@ impl<'a> Observer<'a> {
         id: RequestId,
         cache: &'a SeamCache,
         configuration: Option<Configuration>,
-        events: &'a tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        events: &'a EventTx,
     ) -> Self {
         Self {
             id,
@@ -131,7 +131,7 @@ impl IndexObserver for Observer<'_> {
             .filter_map(|(id, candidates)| Some((index.path(*id)?.to_string(), candidates.clone())))
             .collect();
 
-        let _ = self.events.send((
+        self.events.emit(
             Some(self.id),
             Event::SeamPackageIndexed {
                 order: indexed.order,
@@ -139,6 +139,6 @@ impl IndexObserver for Observer<'_> {
                 nodes,
                 unresolved_modules,
             },
-        ));
+        );
     }
 }

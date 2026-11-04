@@ -2,13 +2,13 @@
 //! each highlight's kind maps (an absent or unknown kind is text), and the
 //! refusal a server that never advertised it gets instead of a request.
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
 use karet_core::LineCol;
 use karet_core::Range;
 use serde_json::Value;
 use serde_json::json;
 
-use super::DocumentHighlight;
-use super::HighlightKind;
 use crate::LspClient;
 use crate::LspError;
 use crate::Path;

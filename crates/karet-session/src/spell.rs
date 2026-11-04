@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use karet_core::Diagnostic;
-use karet_syntax::Highlights;
+use karet_core::Highlights;
 use spellbook::Dictionary;
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -278,11 +278,7 @@ fn dictionary_roots() -> Vec<PathBuf> {
 }
 
 fn user_dictionary_dir() -> Option<PathBuf> {
-    Some(
-        directories::ProjectDirs::from("", "getkono", "karet")?
-            .data_local_dir()
-            .join("dictionaries"),
-    )
+    crate::dirs::data_local_dir().map(|dir| dir.join("dictionaries"))
 }
 
 #[cfg(test)]

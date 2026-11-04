@@ -16,7 +16,7 @@ fn previewing(readme: &str, files: &[(&str, &[u8])]) -> (App, std::path::PathBuf
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
-    app.main_rect = Rect::new(0, 0, 100, 30);
+    app.last_frame.main_rect = Rect::new(0, 0, 100, 30);
     app.dispatch(Command::MarkdownPreviewSide);
     let _ = screen(&mut app, 100, 30);
     (app, root)
@@ -63,7 +63,7 @@ fn plain(text: &str) -> String {
 /// How many halfblock cells the screen shows inside the preview. (A cell may carry
 /// its glyph inside an OSC 8 hyperlink, so the glyph is matched within the symbol.)
 fn halfblocks(app: &mut App) -> usize {
-    let rect = app.markdown_preview_rect;
+    let rect = app.last_frame.markdown_preview_rect();
     let buffer = frame(app, 100, 30);
     let mut count = 0;
     for y in rect.y..rect.bottom() {
@@ -115,7 +115,7 @@ fn a_centered_image_paints_in_the_middle_of_the_preview() {
         &[("logo.png", &png(16, 16, [0, 200, 0]))],
     );
     app.preview_images.settle();
-    let rect = app.markdown_preview_rect;
+    let rect = app.last_frame.markdown_preview_rect();
     let buffer = frame(&mut app, 100, 30);
     let columns: Vec<u16> = (rect.x..rect.right())
         .filter(|&x| (rect.y..rect.bottom()).any(|y| buffer[(x, y)].symbol().contains('▀')))
@@ -202,8 +202,8 @@ fn ctrl_clicking_an_image_opens_it_in_its_own_tab() {
     app.preview_images.settle();
     let _ = screen(&mut app, 100, 30);
     let Some(hit) = app
-        .markdown_link_hits
-        .iter()
+        .last_frame
+        .markdown_link_hits()
         .find(|hit| hit.target == "logo.png")
         .cloned()
     else {

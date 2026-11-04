@@ -2,10 +2,20 @@
 //! its first stop, following every edit, and Tab / Shift+Tab / Esc (see
 //! [`crate::completion::SnippetSession`]).
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use karet_core::CompletionItem;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::TextEdit;
+use karet_editor::editing;
+use karet_session::ViewId;
 
-use super::*;
+use crate::app::App;
 use crate::completion::SnippetSession;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The session `item`'s snippet starts, inserted as `text` by the
@@ -54,7 +64,7 @@ impl App {
             self.submit_multi_edit(EditCause::Replace, multi);
             return;
         };
-        self.snippet = None;
+        self.completion.snippet = None;
         let primary = multi
             .cursors
             .selections
@@ -66,25 +76,25 @@ impl App {
         let after = self.active_next_version();
         if let Some(version) = after.filter(|_| after != before && !session.finished()) {
             session.version = version;
-            self.snippet = Some(session);
+            self.completion.snippet = Some(session);
         }
     }
 
     /// Follow a change view `view` applied from version `base` to `version`;
     /// a change the session cannot follow ends it.
     pub(crate) fn carry_snippet(&mut self, view: ViewId, versions: (u64, u64), edits: &[TextEdit]) {
-        let Some(session) = self.snippet.as_mut() else {
+        let Some(session) = self.completion.snippet.as_mut() else {
             return;
         };
         if session.view == view && !session.carry(versions, edits) {
-            self.snippet = None;
+            self.completion.snippet = None;
         }
     }
 
     /// Whether the session is still about the active view as it stands: the
     /// same view, at the version the session last followed.
     fn snippet_live(&self) -> bool {
-        let Some(session) = &self.snippet else {
+        let Some(session) = &self.completion.snippet else {
             return false;
         };
         self.tabs.get(self.active).is_some_and(|tab| {
@@ -104,7 +114,7 @@ impl App {
     /// Tab or Shift+Tab from a caret outside the snippet, which then
     /// indents or dedents as usual.
     pub(crate) fn snippet_key(&mut self, key: KeyEvent) -> bool {
-        if self.snippet.is_none() || !self.editor_owns_keyboard() {
+        if self.completion.snippet.is_none() || !self.editor_owns_keyboard() {
             return false;
         }
         let forward = match (key.code, key.modifiers) {
@@ -113,16 +123,16 @@ impl App {
             | (KeyCode::Tab, KeyModifiers::SHIFT) => false,
             (KeyCode::Esc, KeyModifiers::NONE) => {
                 let live = self.snippet_live();
-                self.snippet = None;
+                self.completion.snippet = None;
                 return live;
             },
             _ => return false,
         };
         if !self.snippet_live() {
-            self.snippet = None;
+            self.completion.snippet = None;
             return false;
         }
-        let Some(mut session) = self.snippet.take() else {
+        let Some(mut session) = self.completion.snippet.take() else {
             return false;
         };
         let Some(Tab {
@@ -140,7 +150,7 @@ impl App {
         session.step(forward);
         editor.set_cursor_state(buffer, session.cursors(caret));
         if !session.finished() {
-            self.snippet = Some(session);
+            self.completion.snippet = Some(session);
         }
         true
     }

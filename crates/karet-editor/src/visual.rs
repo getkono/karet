@@ -1,12 +1,19 @@
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
+use karet_core::LineCol;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::cluster_bounds;
+use crate::view::gutter_width;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct VisualAnchor {
@@ -27,6 +34,14 @@ pub(super) struct VisualRange {
     /// it to (or take it from) [`offset_within_row`], so the four agree on
     /// which cell shows which column.
     pub(super) indent: u32,
+    /// The screen column `start` renders at ([`display_col`], hints
+    /// included), when known: a soft-wrapped row measures it once with its
+    /// line, and a row from the line start has 0. With it, a row's cells are
+    /// measured from its own first column, so painting and caret placement
+    /// deep inside a long wrapped line need not walk the line before the
+    /// row. `start` is then a grapheme-cluster boundary, so the row's chars
+    /// segment from it as they do in the whole line.
+    pub(super) origin: Option<u32>,
 }
 
 impl VisualRange {
@@ -34,12 +49,14 @@ impl VisualRange {
         Self::new(at, at)
     }
 
-    /// An unindented row showing `start..end`.
+    /// An unindented row showing `start..end`; its origin is known only
+    /// when it starts the line.
     pub(super) const fn new(start: u32, end: u32) -> Self {
         Self {
             start,
             end,
             indent: 0,
+            origin: if start == 0 { Some(0) } else { None },
         }
     }
 }
@@ -86,6 +103,9 @@ pub(super) struct Layout<'a> {
     pub(super) wrap_column: Option<u32>,
     /// How a wrapped line's continuation rows are indented.
     pub(super) wrapping_indent: WrappingIndent,
+    /// The wrapped lines already measured, so walking the rows of a long
+    /// line wraps it once rather than once per row.
+    pub(super) wraps: &'a WrapCache,
 }
 
 /// What one visual row of a shown line holds.
@@ -148,11 +168,11 @@ impl<'a> Layout<'a> {
         buffer: &TextBuffer,
         line: u32,
         scroll_col: u32,
-    ) -> Vec<VisualRange> {
+    ) -> Arc<[VisualRange]> {
         if self.wrap {
             visual_ranges(buffer, line, *self)
         } else {
-            vec![VisualRange::new(scroll_col, u32::MAX)]
+            Arc::new([VisualRange::new(scroll_col, u32::MAX)])
         }
     }
 }
@@ -302,10 +322,11 @@ pub(super) fn source_col_at_display_offset(
     // Walk whole grapheme clusters: a column inside one is never a caret
     // position, so a cell resolves to a cluster's start or its end.
     while source < end {
+        // Bisected: the bounds ascend, and a scan from the line start would
+        // cost the whole prefix for every column of a deep row.
         let next = bounds
-            .iter()
+            .get(bounds.partition_point(|&bound| bound <= source))
             .copied()
-            .find(|&bound| bound > source)
             .unwrap_or(len);
         // The hint anchored at `source` paints between its caret slot and the
         // character there, so its cells belong to this column.
@@ -334,11 +355,13 @@ pub(super) fn source_col_at_display_offset(
     source
 }
 
+/// The rows `line` takes as `layout` lays it out: one unless it soft-wraps,
+/// and then measured once per content and geometry ([`WrapCache`]).
 pub(super) fn visual_ranges(
     buffer: &TextBuffer,
     line: u32,
     layout: Layout<'_>,
-) -> Vec<VisualRange> {
+) -> Arc<[VisualRange]> {
     // Checked before the line is collected: an unwrapped view walks rows
     // through here once per line.
     if !layout.wrap
@@ -347,21 +370,27 @@ pub(super) fn visual_ranges(
             .iter()
             .any(|range| range.contains(&line))
     {
-        return vec![VisualRange::new(0, line_len(buffer, line))];
+        return Arc::new([VisualRange::new(0, line_len(buffer, line))]);
     }
-    let chars: Vec<char> = buffer
-        .line(line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
+    layout
+        .wraps
+        .rows(buffer, line, layout, || wrap_line(buffer, line, layout))
+}
+
+/// The soft-wrapped rows of `line`, in one pass over it.
+fn wrap_line(buffer: &TextBuffer, line: u32, layout: Layout<'_>) -> Vec<VisualRange> {
+    let chars = line_chars(buffer, line);
     let len = chars.len() as u32;
     if len == 0 {
         return vec![VisualRange::empty(0)];
     }
-    let hints = layout.hints_on(line);
     let full = layout.wrap_width();
     let indent = continuation_indent(&chars, full, layout);
-    let widths = cluster_widths(&chars);
+    // Every column's screen column, hints included, measured once: a
+    // cluster's cells are the difference across it, so no row re-walks the
+    // line before it to find where it starts.
+    let cols = display_cols(&chars, layout.tab_width, layout.hints_on(line));
+    let col_at = |index: u32| cols.get(index as usize).copied().unwrap_or(0);
     // Rows break between grapheme clusters only, so a wrap never splits a
     // combining sequence, a ZWJ emoji or a flag across two rows.
     let runs = clusters(&chars);
@@ -374,21 +403,14 @@ pub(super) fn visual_ranges(
         let width = full.saturating_sub(row_indent).max(1);
         let mut next = first;
         let mut used = 0_u32;
-        // `display_col(start)` stops short of the hint at `start`: this row
-        // paints it, so its cells are counted below.
-        let mut absolute = display_col(&chars, start, layout.tab_width, hints);
+        // A cluster's step includes the hint anchored at its first column:
+        // the row that starts there paints it.
         while let Some(&(from, to, _)) = runs.get(next) {
-            let step = (from..to).fold(0_u32, |step, index| {
-                let hint = hints.width_at(index);
-                let at = absolute.saturating_add(step).saturating_add(hint);
-                let cells = width_at(&chars, &widths, index, at, layout.tab_width);
-                step.saturating_add(hint).saturating_add(cells)
-            });
+            let step = col_at(to).saturating_sub(col_at(from));
             if next > first && used.saturating_add(step) > width {
                 break;
             }
             used = used.saturating_add(step);
-            absolute = absolute.saturating_add(step);
             next += 1;
             if used >= width {
                 break;
@@ -407,6 +429,7 @@ pub(super) fn visual_ranges(
             start,
             end: runs.get(end).map_or(len, |cluster| cluster.0),
             indent: row_indent,
+            origin: Some(col_at(start)),
         });
         first = end;
     }
@@ -643,16 +666,78 @@ pub(super) fn offset_within_row(
 ///
 /// Non-decreasing, so the horizontal-scroll searches below can bisect it.
 fn display_cols(chars: &[char], tab_width: u16, hints: LineHints<'_>) -> Vec<u32> {
+    display_cols_from(chars, (0, 0), tab_width, hints)
+}
+
+/// [`display_cols`] of `chars`, the line's columns from `base` on, given
+/// that column `base` renders at screen column `origin`: entry `i` is
+/// column `base + i`'s.
+fn display_cols_from(
+    chars: &[char],
+    (base, origin): (u32, u32),
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> Vec<u32> {
     let widths = cluster_widths(chars);
     let mut cols = Vec::with_capacity(chars.len().saturating_add(1));
-    let mut col = 0_u32;
+    let mut col = origin;
     cols.push(col);
     for index in (0_u32..).take(chars.len()) {
-        col = col.saturating_add(hints.width_at(index));
+        col = col.saturating_add(hints.width_at(base.saturating_add(index)));
         col = col.saturating_add(width_at(chars, &widths, index, col, tab_width));
         cols.push(col);
     }
     cols
+}
+
+/// The screen columns of line `line`'s columns, from where `range` lets them
+/// be measured up to `upto` (and [`GRAPHEME_LOOKAHEAD`] past it, so the
+/// cluster ending there keeps its width).
+///
+/// A row whose [`origin`](VisualRange::origin) is known is measured from its
+/// own start, so a row deep inside a long wrapped line costs its own columns;
+/// any other (an unwrapped row scrolled sideways) from the line start.
+struct RowCols {
+    /// The column `cols[0]` belongs to.
+    base: u32,
+    cols: Vec<u32>,
+}
+
+impl RowCols {
+    fn new(
+        buffer: &TextBuffer,
+        line: u32,
+        range: VisualRange,
+        upto: u32,
+        layout: Layout<'_>,
+    ) -> Self {
+        let base = range.origin.map_or(0, |_| range.start);
+        let to = upto.saturating_add(GRAPHEME_LOOKAHEAD);
+        let chars = line_chars_between(buffer, line, base, to);
+        let origin = range.origin.unwrap_or(0);
+        let hints = layout.hints_on(line);
+        Self {
+            base,
+            cols: display_cols_from(&chars, (base, origin), layout.tab_width, hints),
+        }
+    }
+
+    /// The last column measured, past which there is nothing to show.
+    fn end(&self) -> u32 {
+        self.base
+            .saturating_add(u32::try_from(self.cols.len().saturating_sub(1)).unwrap_or(u32::MAX))
+    }
+
+    /// The screen column `col` renders at; past the measured columns, the
+    /// last one's, as [`display_col`] clamps to the line.
+    fn at(&self, col: u32) -> u32 {
+        let index = col.saturating_sub(self.base) as usize;
+        self.cols
+            .get(index)
+            .or(self.cols.last())
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 /// How far an unwrapped line reaches horizontally, in the units of
@@ -781,53 +866,45 @@ pub(super) fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
-    let gutter = gutter_width(line_count, state.last_line_numbers, state.last_change_lane);
+    let frame = &state.frame;
+    let gutter = gutter_width(line_count, frame.line_numbers, frame.change_lane);
     let content_x = area.x.saturating_add(gutter);
-    let content_y = area.y.saturating_add(state.sticky_height);
-    let content_height = area.height.saturating_sub(state.sticky_height);
+    let content_y = area.y.saturating_add(frame.sticky_height);
+    let content_height = area.height.saturating_sub(frame.sticky_height);
     if content_x >= area.right() || content_height == 0 {
         return None;
     }
     let content_width = area.right().saturating_sub(content_x);
-    let wrap = state.last_word_wrap;
-    let chars = line_chars(buffer, at.line);
+    let wrap = frame.word_wrap;
     // Off the buffer, past the line's end, or (unwrapped) scrolled off to
     // the left: not on screen. Drawing it pinned to an edge would show it
     // over text it is not on.
-    if at.line >= line_count || at.col > chars.len() as u32 || (!wrap && at.col < state.scroll_col)
+    if at.line >= line_count
+        || at.col > line_len(buffer, at.line)
+        || (!wrap && at.col < state.scroll_col())
     {
         return None;
     }
     let layout = state.row_layout(u32::from(content_width.max(1)), wrap);
     let target = visual_anchor_for_position(buffer, layout, at, state.upstream.contains(&at));
-    let mut anchor = normalize_visual_anchor(
-        buffer,
-        folds,
-        layout,
-        VisualAnchor {
-            line: state.scroll_line,
-            subrow: state.scroll_subrow,
-        },
-    );
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, state.top_anchor());
     // Walked row by row, virtual lines included: a line hidden in a
     // collapsed fold is never reached, so its caret is never drawn.
     for row in 0..content_height {
         if anchor == target {
-            let ranges = layout.text_rows(buffer, at.line, state.scroll_col);
+            let ranges = layout.text_rows(buffer, at.line, state.scroll_col());
             let index = target.subrow.saturating_sub(layout.above(at.line)) as usize;
             let range = ranges
                 .get(index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
-            // A continuation row paints its indent before its first column.
-            let rel = offset_within_row(
-                &chars,
-                range.start,
-                at.col,
-                state.last_tab_width,
-                layout.hints_on(at.line),
-            )
-            .saturating_add(range.indent);
+            // Only the row's columns up to the caret decide its cell. A
+            // continuation row paints its indent before its first column.
+            let cols = RowCols::new(buffer, at.line, range, at.col, layout);
+            let rel = cols
+                .at(at.col)
+                .saturating_sub(cols.at(range.start))
+                .saturating_add(range.indent);
             let rel = if wrap {
                 rel.min(u32::from(content_width.saturating_sub(1)))
             } else if rel >= u32::from(content_width) {
@@ -845,6 +922,67 @@ pub(super) fn caret_cell(
         anchor = next;
     }
     None
+}
+
+/// Every character of `line` drawn within `area` as `(column, x, y)`, in
+/// column order: [`caret_cell`] for each, from one measurement of the line
+/// and one walk of the viewport.
+pub(super) fn line_cells(
+    area: Rect,
+    buffer: &TextBuffer,
+    folds: &[Fold],
+    state: &EditorState,
+    line: u32,
+) -> Vec<(u32, u16, u16)> {
+    let line_count = buffer.line_count() as u32;
+    let frame = &state.frame;
+    let gutter = gutter_width(line_count, frame.line_numbers, frame.change_lane);
+    let content_x = area.x.saturating_add(gutter);
+    let content_y = area.y.saturating_add(frame.sticky_height);
+    let content_height = area.height.saturating_sub(frame.sticky_height);
+    if line >= line_count || content_x >= area.right() || content_height == 0 {
+        return Vec::new();
+    }
+    let content_width = area.right().saturating_sub(content_x);
+    let layout = state.row_layout(u32::from(content_width.max(1)), frame.word_wrap);
+    let mut ranges: Option<Arc<[VisualRange]>> = None;
+    let mut cells = Vec::new();
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, state.top_anchor());
+    for row in 0..content_height {
+        if anchor.line > line {
+            break;
+        }
+        if anchor.line == line {
+            let ranges =
+                ranges.get_or_insert_with(|| layout.text_rows(buffer, line, state.scroll_col()));
+            let range = anchor
+                .subrow
+                .checked_sub(layout.above(line))
+                .and_then(|index| ranges.get(index as usize));
+            if let Some(&range) = range {
+                // `display_col` of each of the row's columns at once: what
+                // `offset_within_row` computes per call.
+                let cols = RowCols::new(buffer, line, range, range.end, layout);
+                let origin = cols.at(range.start);
+                let y = content_y.saturating_add(row);
+                for col in range.start..range.end.min(cols.end()) {
+                    let at = cols.at(col);
+                    let rel = at.saturating_sub(origin).saturating_add(range.indent);
+                    if rel >= u32::from(content_width) {
+                        break;
+                    }
+                    let x = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
+                    cells.push((col, x, y));
+                }
+            }
+        }
+        let next = next_visual_anchor(buffer, folds, layout, anchor);
+        if next == anchor {
+            break;
+        }
+        anchor = next;
+    }
+    cells
 }
 
 /// The last line of the collapsed fold interior that hides `line`, when one

@@ -30,11 +30,11 @@ const XML: &str = r#"
 
 pub(super) fn query(_lang: LanguageId) -> Option<Cow<'static, str>> {
     #[cfg(feature = "lang-ini")]
-    if _lang == super::super::structured::INI {
+    if _lang == crate::languages::ids::INI {
         return Some(Cow::Borrowed(INI));
     }
     #[cfg(feature = "lang-properties")]
-    if _lang == super::super::structured::PROPERTIES {
+    if _lang == crate::languages::ids::PROPERTIES {
         return Some(Cow::Borrowed(PROPERTIES));
     }
     #[cfg(feature = "lang-xml")]

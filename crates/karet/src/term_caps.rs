@@ -51,6 +51,11 @@ pub(crate) struct TerminalCapabilities {
     pub undercurl: bool,
     /// How many colours the terminal shows (see [`probe_color_depth`]).
     pub color_depth: ColorDepth,
+    /// Whether the environment leaves Kitty unicode placeholders drawable (see
+    /// [`probe_placeholders`]). Only meaningful together with Kitty graphics:
+    /// read [`kitty_placeholders`](Self::kitty_placeholders) for the combined
+    /// answer.
+    pub placeholders: bool,
 }
 
 impl TerminalCapabilities {
@@ -74,8 +79,15 @@ impl TerminalCapabilities {
         self.effective_graphics() == GraphicsProtocol::Kitty
     }
 
+    /// Whether Kitty images placed through unicode placeholders (the markdown
+    /// preview's images) are drawn: the terminal speaks Kitty graphics and the
+    /// environment does not name one that drops the placeholders.
+    #[must_use]
+    pub(crate) fn kitty_placeholders(&self) -> bool {
+        self.kitty_graphics_supported() && self.placeholders
+    }
+
     /// Whether OSC 22 pointer-shape hints were confirmed supported.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn pointer_shapes_supported(&self) -> bool {
         self.osc22_pointer_shape == Some(true)
@@ -98,14 +110,54 @@ pub(crate) fn supports_kitty_keyboard() -> bool {
 /// any input reader thread starts, or the replies leak into the UI as keystrokes.
 #[must_use]
 pub(crate) fn probe_all() -> TerminalCapabilities {
+    probe_with_keyboard(supports_kitty_keyboard())
+}
+
+/// [`probe_all`] for a caller that already asked for kitty keyboard support
+/// (the app gates on it before entering raw mode), so the query is not sent
+/// twice. Same raw-mode and before-input-thread constraint as [`probe_all`].
+#[must_use]
+pub(crate) fn probe_with_keyboard(keyboard_enhancement: bool) -> TerminalCapabilities {
     TerminalCapabilities {
-        keyboard_enhancement: supports_kitty_keyboard(),
-        graphics_env: image::detect_protocol(),
+        keyboard_enhancement,
         kitty_graphics: probe_kitty_graphics(PROBE_TIMEOUT),
         osc22_pointer_shape: probe_osc22_pointer_shape(PROBE_TIMEOUT),
+        ..probe_env()
+    }
+}
+
+/// The capabilities the environment alone answers, without a handshake: the
+/// graphics heuristic, undercurl, colour depth, and placeholders. The keyboard
+/// is unconfirmed and both handshakes unanswered. Needs no raw mode, so a
+/// headless app starts from it.
+#[must_use]
+pub(crate) fn probe_env() -> TerminalCapabilities {
+    TerminalCapabilities {
+        keyboard_enhancement: false,
+        graphics_env: image::detect_protocol(),
+        kitty_graphics: None,
+        osc22_pointer_shape: None,
         undercurl: probe_undercurl(),
         color_depth: probe_color_depth(),
+        placeholders: probe_placeholders(),
     }
+}
+
+/// Whether a terminal speaking the Kitty graphics protocol draws its unicode
+/// placeholders too. WezTerm and Konsole transmit and place Kitty images but draw no
+/// placeholders, and tmux drops the transmissions (its passthrough is off by default)
+/// while forwarding the placeholder cells — either way the image would be blank, so
+/// they keep halfblocks.
+#[must_use]
+pub(crate) fn probe_placeholders() -> bool {
+    placeholders_in(|key| std::env::var(key).ok())
+}
+
+/// [`probe_placeholders`], reading the environment through `var`.
+pub(crate) fn placeholders_in(var: impl Fn(&str) -> Option<String>) -> bool {
+    let wezterm =
+        var("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"));
+    !wezterm && var("TMUX").is_none() && var("KONSOLE_VERSION").is_none()
 }
 
 /// Whether the terminal draws a curly underline (SGR `4:3`), which diagnostics
@@ -326,6 +378,44 @@ mod tests {
             osc22_pointer_shape,
             undercurl: false,
             color_depth: ColorDepth::TrueColor,
+            placeholders: true,
+        }
+    }
+
+    /// Placeholders are drawn only where Kitty graphics are spoken (by the
+    /// heuristic or a confirmed handshake) and the environment allows them.
+    #[test]
+    fn kitty_placeholders_need_kitty_graphics_and_a_drawing_terminal() {
+        let rows = [
+            ("env kitty", GraphicsProtocol::Kitty, None, true, true),
+            (
+                "handshake kitty",
+                GraphicsProtocol::Halfblocks,
+                Some(true),
+                true,
+                true,
+            ),
+            (
+                "kitty, dropped",
+                GraphicsProtocol::Kitty,
+                Some(true),
+                false,
+                false,
+            ),
+            (
+                "no kitty",
+                GraphicsProtocol::Halfblocks,
+                Some(false),
+                true,
+                false,
+            ),
+        ];
+        for (name, env, handshake, allowed, expect) in rows {
+            let c = TerminalCapabilities {
+                placeholders: allowed,
+                ..caps(true, env, handshake, None)
+            };
+            assert_eq!(c.kitty_placeholders(), expect, "{name}");
         }
     }
 

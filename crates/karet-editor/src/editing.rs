@@ -228,7 +228,7 @@ pub fn delete_word_backward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let start = crate::previous_word_boundary(buffer, caret);
+    let start = karet_text::words::previous_word_boundary(buffer, caret);
     (start != caret).then(|| delete_between(start, caret, base))
 }
 
@@ -244,7 +244,7 @@ pub fn delete_word_forward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let end = crate::next_word_boundary(buffer, caret);
+    let end = karet_text::words::next_word_boundary(buffer, caret);
     (end != caret).then(|| delete_between(caret, end, base))
 }
 

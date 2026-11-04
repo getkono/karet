@@ -197,6 +197,66 @@ mod tests {
         assert!(new_changed.contains("xxx") && new_changed.contains("yyy"));
     }
 
+    /// Every sequence of up to `len` tokens drawn from `alphabet`.
+    fn sequences<'a>(alphabet: &[&'a str], len: usize) -> Vec<Vec<&'a str>> {
+        let mut all = vec![Vec::new()];
+        let mut frontier = vec![Vec::new()];
+        for _ in 0..len {
+            let mut next = Vec::new();
+            for seq in &frontier {
+                for token in alphabet {
+                    let mut longer: Vec<&str> = seq.clone();
+                    longer.push(token);
+                    next.push(longer);
+                }
+            }
+            all.extend(next.iter().cloned());
+            frontier = next;
+        }
+        all
+    }
+
+    /// LCS length by plain recursion, independent of the DP under test.
+    fn reference_lcs_len(old: &[&str], new: &[&str]) -> usize {
+        match (old.split_first(), new.split_first()) {
+            (Some((a, old_rest)), Some((b, new_rest))) => {
+                if a == b {
+                    1 + reference_lcs_len(old_rest, new_rest)
+                } else {
+                    reference_lcs_len(old_rest, new).max(reference_lcs_len(old, new_rest))
+                }
+            },
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn lcs_tokens_returns_a_longest_common_subsequence_for_every_small_input() {
+        // Exhaustive over short sequences of a three-token alphabet: each result
+        // must be a common subsequence (strictly increasing on both sides, equal
+        // tokens) and as long as the reference LCS.
+        let all = sequences(&["a", "b", "c"], 4);
+        for old in &all {
+            for new in &all {
+                let pairs = lcs_tokens(old, new);
+                assert_eq!(
+                    pairs.len(),
+                    reference_lcs_len(old, new),
+                    "{old:?} vs {new:?}: {pairs:?}"
+                );
+                for window in pairs.windows(2) {
+                    assert!(
+                        window[0].0 < window[1].0 && window[0].1 < window[1].1,
+                        "{old:?} vs {new:?}: {pairs:?}"
+                    );
+                }
+                for &(i, j) in &pairs {
+                    assert_eq!(old[i], new[j], "{old:?} vs {new:?}: {pairs:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn tokenize_preserves_content() {
         let s = "  hello world  ";

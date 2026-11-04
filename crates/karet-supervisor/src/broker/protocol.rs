@@ -7,7 +7,6 @@
 //! what state the broker must keep on the protocol's behalf.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use karet_jsonrpc::Framing;
 use serde_json::Value;
@@ -15,12 +14,12 @@ use serde_json::Value;
 use crate::broker::serve::Core;
 
 /// Identifier the skeleton assigns to each connected client.
-pub type ClientId = u64;
+pub(crate) type ClientId = u64;
 
 /// What the skeleton does with a message a client just sent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum ClientFlow<T> {
+pub(crate) enum ClientFlow<T> {
     /// Rewrite the request id, record this client as its owner, send upstream.
     Proxy(T),
     /// Send upstream unchanged (a notification, or a reply to the server).
@@ -34,13 +33,11 @@ pub enum ClientFlow<T> {
 /// Where a server-originated message goes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum ServerRoute {
+pub(crate) enum ServerRoute {
     /// Deliver to one client only — the first still connected.
     SingleClient,
     /// Deliver a copy to every connected client.
     AllClients,
-    /// Deliver to nobody.
-    Discard,
 }
 
 /// The message semantics a broker skeleton is parameterised with.
@@ -49,7 +46,7 @@ pub enum ServerRoute {
 /// so the skeleton dispatches statically and never stores a protocol value.
 /// Hook futures are spelled `impl Future<Output = _> + Send` because the
 /// skeleton `tokio::spawn`s the tasks that await them.
-pub trait BrokerProtocol: Sized + Send + Sync + 'static {
+pub(crate) trait BrokerProtocol: Sized + Send + Sync + 'static {
     /// Broker-wide state the protocol keeps; the skeleton owns its lifetime.
     type State: Default + Send + Sync + 'static;
     /// Per-request payload the skeleton parks in the pending map.
@@ -119,7 +116,7 @@ pub trait BrokerProtocol: Sized + Send + Sync + 'static {
 ///
 /// Handed to hooks that have no originating client — a server reply, or
 /// retirement.
-pub struct ServerLink<'a, P: BrokerProtocol> {
+pub(crate) struct ServerLink<'a, P: BrokerProtocol> {
     core: &'a Arc<Core<P>>,
 }
 
@@ -131,23 +128,23 @@ impl<'a, P: BrokerProtocol> ServerLink<'a, P> {
     /// The protocol's broker-wide state.
     #[must_use]
     pub fn state(&self) -> &Arc<P::State> {
-        &self.core.state
+        self.core.state()
     }
 
     /// Queue a message for the server, dropping it if the queue is gone.
     pub async fn send_upstream(&self, message: Value) {
-        let _ = self.core.upstream.send(message).await;
+        self.core.send_upstream(message).await;
     }
 
     /// Reserve a request id nobody else will use on this broker.
     #[must_use]
     pub fn next_request_id(&self) -> u64 {
-        self.core.next_request.fetch_add(1, Ordering::Relaxed)
+        self.core.next_request_id()
     }
 }
 
 /// A hook's handle on the one client it is serving.
-pub struct ClientLink<'a, P: BrokerProtocol> {
+pub(crate) struct ClientLink<'a, P: BrokerProtocol> {
     core: &'a Arc<Core<P>>,
     client: ClientId,
     sender: &'a tokio::sync::mpsc::Sender<Value>,
@@ -175,7 +172,7 @@ impl<'a, P: BrokerProtocol> ClientLink<'a, P> {
     /// The protocol's broker-wide state.
     #[must_use]
     pub fn state(&self) -> &Arc<P::State> {
-        &self.core.state
+        self.core.state()
     }
 
     /// Answer this client directly, bypassing the server.
@@ -185,12 +182,6 @@ impl<'a, P: BrokerProtocol> ClientLink<'a, P> {
 
     /// Queue a message for the server, dropping it if the queue is gone.
     pub async fn send_upstream(&self, message: Value) {
-        let _ = self.core.upstream.send(message).await;
-    }
-
-    /// Reserve a request id nobody else will use on this broker.
-    #[must_use]
-    pub fn next_request_id(&self) -> u64 {
-        self.core.next_request.fetch_add(1, Ordering::Relaxed)
+        self.core.send_upstream(message).await;
     }
 }

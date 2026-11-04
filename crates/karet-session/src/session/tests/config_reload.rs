@@ -6,7 +6,7 @@
     fn open_for_reload(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },
@@ -46,7 +46,6 @@
             Some(settings_path.clone()),
         ));
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings: loaded.settings.clone(),
             loaded_config: loaded,
             ..SessionConfig::default()
         });
@@ -87,7 +86,6 @@
             Some(settings_path.clone()),
         ));
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings: loaded.settings.clone(),
             loaded_config: loaded,
             ..SessionConfig::default()
         });
@@ -134,5 +132,278 @@
             Some((false, 3)),
             "{emitted:?}"
         );
+        Ok(())
+    }
+
+    /// The paths of every `KeymapChanged` in `events`, in order.
+    fn keymap_changes(events: &[Event]) -> Vec<Vec<PathBuf>> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::KeymapChanged { paths } => Some(paths.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Keymap paths alone start the config watch: with no roots and no settings
+    /// layers, a session given only keymap files still watches them. Falsified
+    /// by not adding `keymap_paths` to the watched paths in `Session::new`.
+    #[test]
+    fn keymap_paths_alone_start_the_watch() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (unwatched, _events, _snaps) = Session::new(SessionConfig::default());
+        assert!(unwatched.watcher.is_none(), "nothing to watch, so no watcher");
+        let (watched, _events, _snaps) = Session::new(SessionConfig {
+            keymap_paths: vec![dir.path().join("keymap.jsonc")],
+            ..SessionConfig::default()
+        });
+        assert!(watched.watcher.is_some(), "the keymap file must be watched");
+        Ok(())
+    }
+
+    /// The user's keymap lives outside every root: its change reaches the client
+    /// as `KeymapChanged` and, being configuration, raises no `FsChanged`.
+    /// Falsified by dropping the keymap filter in `handle_fs_event`.
+    #[test]
+    fn a_user_keymap_change_emits_keymap_changed_without_fs_changed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let user = tempfile::tempdir()?;
+        let keymap = user.path().join("keymap.jsonc");
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![keymap.clone()],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Created,
+            paths: vec![keymap.clone()],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert_eq!(keymap_changes(&emitted), vec![vec![keymap]], "{emitted:?}");
+        assert!(
+            !emitted.iter().any(|event| matches!(event, Event::FsChanged { .. })),
+            "a keymap outside every root is not workspace content: {emitted:?}"
+        );
+        Ok(())
+    }
+
+    /// The project's keymap sits inside the root, so it is both configuration
+    /// (`KeymapChanged`) and workspace content (`FsChanged`, for search and
+    /// status), and only the keymap path is named in `KeymapChanged`.
+    #[test]
+    fn a_project_keymap_change_is_also_workspace_content() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let keymap = root.path().join(".karet").join("keymap.jsonc");
+        let other = root.path().join("a.txt");
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![keymap.clone()],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![keymap.clone(), other.clone()],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert_eq!(keymap_changes(&emitted), vec![vec![keymap.clone()]], "{emitted:?}");
+        let fs_changed = emitted.iter().find_map(|event| match event {
+            Event::FsChanged { paths } => Some(paths.clone()),
+            _ => None,
+        });
+        assert_eq!(fs_changed, Some(vec![keymap, other]), "{emitted:?}");
+        Ok(())
+    }
+
+    /// A workspace change that touches no keymap file emits no `KeymapChanged`,
+    /// so an ordinary save never costs the client a keymap reload.
+    #[test]
+    fn a_non_keymap_change_emits_no_keymap_changed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.path().to_path_buf()],
+            keymap_paths: vec![root.path().join(".karet").join("keymap.jsonc")],
+            ..SessionConfig::default()
+        });
+        drain_events(&mut events);
+
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![root.path().join("keymap.jsonc")],
+        });
+
+        let emitted = drain_events(&mut events);
+        assert!(keymap_changes(&emitted).is_empty(), "{emitted:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn files_encoding_decides_the_byte_order_mark_on_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "\u{feff}x\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.files.encoding = crate::config::schema::Encoding::Utf8;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Save {
+                doc,
+                cause: SaveCause::Manual,
+            },
+        );
+
+        assert_eq!(std::fs::read(&file)?, b"x\n", "`utf-8` drops the file's BOM");
+        Ok(())
+    }
+
+    /// A `Cargo.lock` document resolves its settings under the `[toml]` override,
+    /// the selector its file type carries, not its display name. Falsified by
+    /// resolving the document's settings against `"Cargo lockfile"` (#617).
+    #[test]
+    fn a_cargo_lock_document_takes_the_toml_override() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("Cargo.lock");
+        std::fs::write(&file, "version = 4\n")?;
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 4;
+        let selector = crate::config::schema::LanguageSelector::from_language("toml")
+            .ok_or("no toml selector")?;
+        settings.editor.language_overrides.insert(
+            selector,
+            crate::config::schema::EditorOverride {
+                tab_size: Some(2),
+                ..crate::config::schema::EditorOverride::default()
+            },
+        );
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let doc = session.store.docs.get(&doc).ok_or("opened document not stored")?;
+        assert_eq!(doc.file_type.name(), "Cargo lockfile");
+        assert_eq!(doc.language_selector, Some("toml"));
+        assert_eq!(doc.settings.indent_size, 2);
+        assert_eq!(doc.settings.tab_width, 2);
+        Ok(())
+    }
+
+    /// Global `tabSize` 4 with a `[selector]` patch setting it to `tab_size`.
+    fn tab_size_override(selector: &str, tab_size: u8) -> Option<crate::config::Settings> {
+        let mut settings = crate::config::Settings::default();
+        settings.editor.tab_size = 4;
+        settings.editor.language_overrides.insert(
+            crate::config::schema::LanguageSelector::from_language(selector)?,
+            crate::config::schema::EditorOverride {
+                tab_size: Some(tab_size),
+                ..crate::config::schema::EditorOverride::default()
+            },
+        );
+        Some(settings)
+    }
+
+    /// A rename re-types the document, so the new language's override applies to
+    /// the settings and syntax work that read `file_type`. Falsified by a
+    /// `retarget` that leaves the file type stale, keeping the old language's
+    /// override (or none).
+    #[test]
+    fn a_rename_retypes_the_document_for_its_settings() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "x = 1\n")?;
+        let settings = tab_size_override("python", 2).ok_or("no python selector")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let renamed = dir.path().join("main.py");
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: renamed,
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.file_type.config_selector(), Some("python"));
+        assert_eq!(stored.language_selector, Some("python"));
+        assert_eq!(stored.settings.indent_size, 2);
+        let resolved = session.config.settings().editor.for_language(Some(stored.file_type));
+        assert_eq!(resolved.tab_size(), 2);
+        Ok(())
+    }
+
+    /// A CBOR document recognized by content alone (the self-describe tag, no
+    /// `.cbor` extension) is typed CBOR, as the client's tab is, so `[cbor]`
+    /// reaches its session-side settings; a rename keeps it CBOR. Falsified by
+    /// typing it from the path, which finds no language at all.
+    #[cfg(feature = "cbor")]
+    #[test]
+    fn a_cbor_document_recognized_by_content_takes_the_cbor_override() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join(".editorconfig"), "root = true\n")?;
+        let file = dir.path().join("payload");
+        // The self-describe tag 55799 (0xd9d9f7), then the array [1, 2].
+        std::fs::write(&file, [0xd9u8, 0xd9, 0xf7, 0x82, 0x01, 0x02])?;
+        let settings = tab_size_override("cbor", 2).ok_or("no cbor selector")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
+            ..SessionConfig::default()
+        });
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("cbor"));
+        assert_eq!(stored.settings.indent_size, 2);
+
+        let renamed = dir.path().join("payload.json");
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: renamed,
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("cbor"), "a rename keeps it CBOR");
+        assert_eq!(stored.settings.indent_size, 2);
+        Ok(())
+    }
+
+    /// A text document renamed to a `.cbor` path is still text (the session saves
+    /// it as text), so it keeps the language it had, as the client's tab does.
+    /// Falsified by re-typing it from the new path alone.
+    #[test]
+    fn a_text_document_renamed_to_cbor_keeps_its_language() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("notes.toml");
+        std::fs::write(&file, "a = 1\n")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
+        session.handle(
+            RequestId(2),
+            DocumentCommand::Retarget {
+                doc,
+                path: dir.path().join("notes.cbor"),
+            },
+        );
+        let stored = session.store.docs.get(&doc).ok_or("document not stored")?;
+        assert_eq!(stored.language_selector, Some("toml"));
+        assert_eq!(stored.file_type.config_selector(), Some("toml"));
         Ok(())
     }

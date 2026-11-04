@@ -97,6 +97,11 @@ serde_json = "1.0.150"
 sha2       = "0.10.9"
 hmac       = "0.12.1"                  # jupyter wire signing (with the sha2 pin)
 getrandom  = "0.4.3"                   # OS entropy for the jupyter signing key (already in the zeromq tree)
+# The OS's own syscall shims (no third-party C library), for karet-dap's
+# listener-owner lookup: macOS `proc_pidinfo`, Windows `GetExtendedTcpTable`.
+# Both are already in the tree beneath tokio/mio on those targets.
+libc        = "0.2.189"
+windows-sys = { version = "0.61.2", default-features = false }  # crates opt into API features
 zeromq     = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport"] }  # pure-Rust ZMTP sockets (jupyter wire)
 jupyter-protocol = "2.0.0"
 flate2     = "1.1.9"
@@ -246,7 +251,6 @@ memchr        = "2.8.2"
 # Fuzzy / misc
 nucleo      = "0.5.0"
 base64      = "0.22.1"
-palette     = "0.7.6"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"

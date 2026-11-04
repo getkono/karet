@@ -115,6 +115,9 @@ pub enum Command {
     TerminalScrollToTop,
     /// Scroll the active terminal back to the live screen.
     TerminalScrollToBottom,
+    /// Pick one of the configured `tasks` and run it in a new integrated
+    /// terminal, its problem matchers feeding the Problems panel.
+    RunTask,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -327,6 +330,16 @@ pub enum Command {
     UnstageHunk,
     /// Ask the language server for completions at the caret (Ctrl+Space).
     TriggerCompletion,
+    /// Show the next ghost-text proposal, or ask for some when none is on
+    /// show (Alt+]).
+    NextInlineCompletion,
+    /// Show the previous ghost-text proposal, or ask for some when none is
+    /// on show (Alt+[).
+    PrevInlineCompletion,
+    /// Sign in to GitHub through `copilot-language-server` (palette).
+    CopilotSignIn,
+    /// Sign out of GitHub through `copilot-language-server` (palette).
+    CopilotSignOut,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
     /// Show the parameter hints of the call around the caret
@@ -421,6 +434,9 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Open the link written in the source under the primary caret: the
+    /// keyboard path for Ctrl/Cmd+click on a link (Ctrl+K Enter).
+    OpenLinkAtCaret,
     /// Jump to the declaration of the symbol at the caret.
     GoToDeclaration,
     /// Jump to the definition of the type of the symbol at the caret.
@@ -441,6 +457,9 @@ pub enum Command {
     /// Open the type hierarchy of the type at the caret, growing toward what
     /// derives from or implements it.
     ShowSubtypes,
+    /// Expand the selected node of the Hierarchy panel, asking the language
+    /// server for its children the first time.
+    HierarchyExpand,
     /// Rename the symbol at the caret across the workspace (F2).
     RenameSymbol,
     /// Apply the name typed into the rename prompt.
@@ -836,6 +855,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
             Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "View: Show Hierarchy",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
@@ -872,6 +892,7 @@ impl Command {
             Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
             Self::TerminalScrollToTop => "Terminal: Scroll to Top",
             Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
+            Self::RunTask => "Tasks: Run Task",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",
@@ -979,6 +1000,10 @@ impl Command {
             Self::UnstageHunk => "Diff: Unstage Hunk",
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
+            Self::NextInlineCompletion => "Show Next Inline Suggestion",
+            Self::PrevInlineCompletion => "Show Previous Inline Suggestion",
+            Self::CopilotSignIn => "Copilot: Sign In",
+            Self::CopilotSignOut => "Copilot: Sign Out",
             Self::Hover => "Show Hover",
             Self::SignatureHelp => "Trigger Parameter Hints",
             Self::ToggleInlayHints => "Toggle Inlay Hints",
@@ -1024,6 +1049,7 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::OpenLinkAtCaret => "Open Link at Caret",
             Self::GoToDeclaration => "Go to Declaration",
             Self::GoToTypeDefinition => "Go to Type Definition",
             Self::GoToImplementation => "Go to Implementation",
@@ -1032,6 +1058,7 @@ impl Command {
             Self::ShowOutgoingCalls => "Show Outgoing Calls",
             Self::ShowSupertypes => "Show Supertypes",
             Self::ShowSubtypes => "Show Subtypes",
+            Self::HierarchyExpand => "Hierarchy: Expand Node",
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",

@@ -56,6 +56,52 @@ fn later_layers_override_earlier_and_merge_deeply() -> TestResult {
 }
 
 #[test]
+fn a_project_task_overrides_a_user_task_by_label_and_keeps_the_rest() -> TestResult {
+    let (dir, user) = scratch(
+        "user.jsonc",
+        r#"{ "tasks": {
+            "build": { "command": "make", "env": { "CC": "gcc" } },
+            "test": { "command": "make test" }
+        } }"#,
+    )?;
+    let project = dir.path().join("project.jsonc");
+    std::fs::write(
+        &project,
+        r#"{ "tasks": { "build": { "command": "cargo build" } } }"#,
+    )?;
+    let (settings, diags) = load_layers([user, project]);
+    assert!(diags.is_empty(), "{diags:?}");
+    let build = settings.tasks.get("build").ok_or("no build task")?;
+    assert_eq!(build.command, "cargo build");
+    assert_eq!(
+        build.env.get("CC").map(String::as_str),
+        Some("gcc"),
+        "a task's own keys merge too"
+    );
+    assert!(
+        settings.tasks.contains_key("test"),
+        "the user's other task survives"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_bad_matcher_resets_the_tasks_section_and_warns() -> TestResult {
+    let (_dir, path) = scratch(
+        "setting.jsonc",
+        r#"{ "tasks": { "build": { "command": "make", "problemMatcher": ["$nope"] } } }"#,
+    )?;
+    let (settings, diags) = load_layers([path]);
+    assert!(settings.tasks.is_empty());
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("invalid `tasks` settings"),
+        "{diags:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn ordered_layers_lists_system_then_user_then_project_skipping_absent_tiers() {
     let (system, user, project) = (
         PathBuf::from("/s.jsonc"),
@@ -172,8 +218,14 @@ fn language_specificity_wins_after_layer_merging() -> TestResult {
         (ConfigLayer::Project, project),
     ]);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let rust = report.settings.editor.for_language(Some("Rust"));
-    let python = report.settings.editor.for_language(Some("python"));
+    let rust = report
+        .settings
+        .editor
+        .for_language(karet_filetype::file_type_for_language("rust"));
+    let python = report
+        .settings
+        .editor
+        .for_language(karet_filetype::file_type_for_language("python"));
     assert_eq!(rust.tab_size(), 6, "selector specificity wins");
     assert!(!rust.completion().enabled());
     assert!(!rust.completion().auto_trigger(), "nested patches merge");
@@ -291,6 +343,71 @@ fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() -> TestResu
         recovered.layers[0].status,
         ConfigLayerStatus::Loaded
     ));
+    Ok(())
+}
+
+#[test]
+fn a_section_that_fails_to_deserialize_is_named_failed_and_no_other() -> TestResult {
+    let (_dir, path) = scratch(
+        "setting.jsonc",
+        r#"{ "tasks": { "build": { "command": 5 } }, "editor": { "tabSize": 3 } }"#,
+    )?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    assert!(report.settings.tasks.is_empty());
+    assert_eq!(report.failed_sections, BTreeSet::from(["tasks".to_owned()]));
+
+    std::fs::write(&path, r#"{ "tasks": { "build": { "command": "make" } } }"#)?;
+    let valid = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert!(valid.failed_sections.is_empty(), "{valid:?}");
+    Ok(())
+}
+
+#[test]
+fn a_layer_that_does_not_parse_fails_every_section() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "tasks": { "#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert!(matches!(
+        report.layers[0].status,
+        ConfigLayerStatus::Invalid(_)
+    ));
+    let all: BTreeSet<String> = SECTIONS.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(report.failed_sections, all);
+    assert!(
+        LoadedConfig::from_settings(Settings::default())
+            .failed_sections
+            .is_empty(),
+        "a report without provenance claims no failure"
+    );
+    Ok(())
+}
+
+/// A live edit that breaks `tasks` keeps the last valid tasks and flags the
+/// section failed until a valid edit lands.
+#[test]
+fn a_malformed_tasks_reload_keeps_the_tasks_and_flags_the_section() -> TestResult {
+    let valid = r#"{ "tasks": { "build": { "command": "make" } } }"#;
+    let (_dir, path) = scratch("setting.jsonc", valid)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
+
+    for broken in [
+        r#"{ "tasks": { "build": { "command": 5 } } }"#,
+        r#"{ "tasks": { "build": "#,
+    ] {
+        std::fs::write(&path, broken)?;
+        let reloaded = manager
+            .reload(std::slice::from_ref(&path))
+            .ok_or("reload of the changed layer reported no update")?;
+        assert!(reloaded.settings.tasks.contains_key("build"), "{broken}");
+        assert!(reloaded.failed_sections.contains("tasks"), "{broken}");
+
+        std::fs::write(&path, valid)?;
+        let recovered = manager
+            .reload(std::slice::from_ref(&path))
+            .ok_or("reload of the recovered layer reported no update")?;
+        assert!(recovered.failed_sections.is_empty(), "{broken}");
+    }
     Ok(())
 }
 
@@ -418,6 +535,9 @@ fn every_section_round_trips_a_value() -> TestResult {
         ("notebook", r#"{"kernel": {"autoStart": true}}"#, |s| {
             s.notebook.kernel.auto_start
         }),
+        ("tasks", r#"{"build": {"command": "make"}}"#, |s| {
+            s.tasks.get("build").is_some_and(|t| t.command == "make")
+        }),
     ];
     assert_eq!(
         probes.len(),
@@ -454,5 +574,127 @@ fn git_root_is_found_by_ascending() -> TestResult {
     std::fs::create_dir_all(&nested)?;
     std::fs::create_dir_all(root.join(".git"))?;
     assert_eq!(git_root(&nested).as_deref(), Some(root.as_path()));
+    Ok(())
+}
+
+#[test]
+fn load_reads_the_project_layer_of_a_workspace() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("repo");
+    std::fs::create_dir_all(root.join(".git"))?;
+    std::fs::create_dir_all(root.join(".karet"))?;
+    std::fs::write(
+        root.join(".karet").join("setting.jsonc"),
+        r#"{ "editor": { "tabSize": 7 } }"#,
+    )?;
+    // The project layer outranks whatever user or system file this machine has.
+    let report = load_report(std::slice::from_ref(&root));
+    assert_eq!(report.settings.editor.tab_size, 7);
+    assert_eq!(
+        report.explicit.get("editor.tabSize"),
+        Some(&ConfigLayer::Project)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_explicitly_empty_object_is_an_explicit_setting() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "lsp": { "servers": {} } }"#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert_eq!(
+        report.explicit.get("lsp.servers"),
+        Some(&ConfigLayer::Project)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn the_system_layer_is_a_karet_file_under_a_config_dir() {
+    // `$XDG_CONFIG_DIRS`' first entry, else `/etc/xdg`: either way the file
+    // name and its directory are karet's.
+    assert!(system_config_path().is_some_and(|path| path.ends_with("karet/setting.jsonc")));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_system_layer_follows_the_first_xdg_config_dir() {
+    let path = |dirs: Option<&str>| system_config_path_in(dirs.map(Into::into));
+    assert_eq!(
+        path(Some("/opt/conf:/etc/xdg")),
+        Some(PathBuf::from("/opt/conf/karet/setting.jsonc"))
+    );
+    // Unset, or an empty first entry, falls back to `/etc/xdg`.
+    let fallback = Some(PathBuf::from("/etc/xdg/karet/setting.jsonc"));
+    assert_eq!(path(None), fallback);
+    assert_eq!(path(Some(":/opt/conf")), fallback);
+}
+
+#[test]
+fn layers_have_stable_labels() {
+    assert_eq!(ConfigLayer::System.label(), "system");
+    assert_eq!(ConfigLayer::User.label(), "user");
+    assert_eq!(ConfigLayer::Project.label(), "project");
+}
+
+#[test]
+fn the_user_layer_lives_in_the_karet_config_dir() {
+    let dir = user_config_dir();
+    assert!(dir.as_ref().is_some_and(|dir| dir.ends_with("karet")));
+    assert_eq!(user_config_path(), dir.map(|dir| dir.join("setting.jsonc")));
+}
+
+#[test]
+fn a_manager_knows_its_files_and_rereads_only_the_ones_named() -> TestResult {
+    let (dir, system) = scratch("system.jsonc", r#"{ "editor": { "tabSize": 8 } }"#)?;
+    let project = dir.path().join("project.jsonc");
+    std::fs::write(&project, r#"{ "editor": { "insertSpaces": true } }"#)?;
+    let report = load_layer_reports([
+        (ConfigLayer::System, system.clone()),
+        (ConfigLayer::Project, project.clone()),
+    ]);
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
+    assert_eq!(manager.paths(), [system.clone(), project.clone()]);
+    assert!(manager.is_config_path(&project));
+    assert!(!manager.is_config_path(&dir.path().join("other.jsonc")));
+
+    // Both files change, but only the system one is named.
+    std::fs::write(&system, r#"{ "editor": { "tabSize": 6 } }"#)?;
+    std::fs::write(&project, r#"{ "editor": { "insertSpaces": false } }"#)?;
+    let updated = manager
+        .reload(std::slice::from_ref(&system))
+        .ok_or("reload of the changed layer reported no update")?;
+    assert_eq!(updated.settings.editor.tab_size, 6);
+    assert!(
+        updated.settings.editor.insert_spaces,
+        "the project layer was not named, so its edit is not read yet"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_report_without_layers_seeds_no_live_reload() {
+    // `from_settings` records no files, so there is nothing to watch.
+    assert!(ConfigManager::from_loaded(&LoadedConfig::default()).is_none());
+}
+
+#[test]
+fn the_manager_seeds_from_the_report_layers_not_a_hidden_cache() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
+    // A report that crossed the seam (serialized and back) still seeds live
+    // reload: all the manager needs is the report's own `layers`.
+    let crossed: LoadedConfig = serde_json::from_value(serde_json::to_value(&report)?)?;
+    assert_eq!(crossed, report);
+    let mut manager =
+        ConfigManager::from_loaded(&crossed).ok_or("a report with layers seeds a manager")?;
+    assert_eq!(manager.paths(), vec![path.clone()]);
+
+    std::fs::write(&path, r#"{ "editor": { "tabSize": 5 } }"#)?;
+    let updated = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("the changed layer reported no update")?;
+    assert_eq!(updated.settings.editor.tab_size, 5);
     Ok(())
 }

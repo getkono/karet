@@ -1,8 +1,7 @@
 //! Selection painting: a selected line break shows as one cell past the line
 //! end, so blank lines and line ends inside a selection are visible.
 
-use crate::text::*;
-use crate::*;
+use super::*;
 
 /// The gutter width for a buffer of fewer than ten lines: marker, digit, space.
 const GUTTER: u16 = 3;
@@ -180,15 +179,13 @@ fn a_break_scrolled_off_to_the_left_is_not_painted_at_the_margin() {
         Rect::new(0, 0, 8, 10),
         false,
     );
-    assert!(state.scroll_col > 2, "line 0's end is off to the left");
+    assert!(state.scroll_col() > 2, "line 0's end is off to the left");
     assert!((GUTTER..8).all(|x| !selected(&buf, x, 0)));
 }
 
 #[test]
 fn newline_in_any_covers_the_slot_past_the_last_character() {
-    let Ok(range) = Range::new(LineCol::new(0, 1), LineCol::new(2, 0)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(0, 1), LineCol::new(2, 0));
     let selections = [range];
     assert!(newline_in_any(&selections, 0, 3), "start line");
     assert!(newline_in_any(&selections, 1, 0), "blank interior line");

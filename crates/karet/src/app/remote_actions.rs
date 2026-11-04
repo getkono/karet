@@ -1,99 +1,22 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::PendingRemoteAction;
+use crate::app::state::RemoteFacts;
+use crate::overlay::DiffTarget;
+use crate::overlay::Overlay;
+use crate::remote;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::ui;
 
 impl App {
-    /// Copy `text` to the clipboard, reporting the outcome either way.
-    pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
-        let result = self.clipboard.set(&text);
-        self.report_copy(result, what);
-    }
-
-    /// Report a clipboard write of `what`.
-    pub(super) fn report_copy(
-        &mut self,
-        result: Result<(), crate::clipboard::ClipboardError>,
-        what: &str,
-    ) {
-        // Tagged: copying is a reflex, and a second Ctrl+C should update the one
-        // card rather than stack another beneath it.
-        match result {
-            Ok(()) => self.notify_tagged(
-                Report::Outcome,
-                NotificationKind::System,
-                format!("copied {what}"),
-                Some(Self::CLIPBOARD_TAG.to_string()),
-            ),
-            Err(e) => self.notify_tagged(
-                Report::Failure,
-                NotificationKind::System,
-                format!("copy failed: {e}"),
-                Some(Self::CLIPBOARD_TAG.to_string()),
-            ),
-        }
-    }
-
-    /// Copy the active code tab's selections, or every caret's line when nothing
-    /// is selected (VS Code behavior).
-    pub(super) fn copy_selection(&mut self) {
-        if matches!(
-            self.input_context().modal,
-            Some(
-                Modal::SearchInput
-                    | Modal::CommitInput
-                    | Modal::Find
-                    | Modal::ExplorerEdit
-                    | Modal::Rename
-            )
-        ) {
-            if let Some(text) = self.modal_selection_text() {
-                self.copy_to_clipboard(text, "selection");
-            } else {
-                self.notify(
-                    Report::Refusal,
-                    NotificationKind::System,
-                    "copy: no text selected",
-                );
-            }
-            return;
-        }
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_copy_files();
-            return;
-        }
-        // A live selection on a read-only surface (a diff, a viewer) wins: those
-        // tabs are not `Code`, so they would otherwise fall through to the
-        // "open a text file" message below.
-        if let Some(text) = self.surface_selection_text() {
-            self.copy_to_clipboard(text, "selection");
-            return;
-        }
-        if !self.copy_code_selection() {
-            self.notify(
-                Report::Refusal,
-                NotificationKind::System,
-                "copy: open a text file",
-            );
-        }
-    }
-
-    /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
-    pub(super) fn copy_path(&mut self, relative: bool) {
-        let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
-            self.notify(
-                Report::Refusal,
-                NotificationKind::System,
-                "copy path: no file",
-            );
-            return;
-        };
-        let path = if relative {
-            path.strip_prefix(&self.root).unwrap_or(path)
-        } else {
-            path
-        };
-        let text = path.to_string_lossy().into_owned();
-        self.copy_to_clipboard(text, "path");
-    }
-
     /// Reveal the active tab's file in the explorer.
     pub(super) fn reveal_active_in_explorer(&mut self) {
         let Some(path) = self
@@ -131,7 +54,7 @@ impl App {
             return;
         }
         self.remote_facts_pending.insert(abs.to_path_buf());
-        self.send_command(SessionCommand::RemoteFacts {
+        self.send_command(VcsCommand::RemoteFacts {
             path: abs.to_path_buf(),
         });
     }
@@ -320,7 +243,7 @@ impl App {
             self.diff_layout,
         ));
         let view = self.tabs[self.active].view;
-        match self.send(SessionCommand::DiffWithRev {
+        match self.send(VcsCommand::DiffWithRev {
             path: abs,
             rev: rev.to_string(),
             live,
@@ -348,7 +271,7 @@ impl App {
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-        self.pending_history_picker = self.send(SessionCommand::FileHistory {
+        self.pending_history_picker = self.send(VcsCommand::FileHistory {
             path: abs,
             skip: 0,
             limit: Self::OPEN_CHANGES_HISTORY_CAP,
@@ -377,18 +300,18 @@ impl App {
             .map(|c| {
                 let display = format!(
                     "{} {} \u{2014} {}",
-                    c.short_hash,
+                    c.short_hash(),
                     c.summary,
                     ui::relative_time(c.time)
                 );
                 let target = DiffTarget {
+                    label: c.short_hash().to_string(),
                     rev: c.hash,
-                    label: c.short_hash,
                 };
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
     /// Open the diff-target picker over the workspace repository's local
@@ -429,6 +352,6 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Branch", items));
     }
 }

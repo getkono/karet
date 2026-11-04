@@ -1,4 +1,31 @@
-use super::*;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_session::Command as SessionCommand;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
+use karet_session::RequestId;
+use karet_session::SaveCause;
+use karet_session::ViewId;
+use karet_session::config::schema::AutoSave;
+
+use crate::app::App;
+use crate::app::OPERATION_SHUTDOWN_TIMEOUT;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::OperationBlocker;
+use crate::app::state::PendingAutoSave;
+use crate::app::state::PendingSave;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::tab::FindState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// The most tab titles the close confirmation spells out before summarizing.
 const NAMED_TABS: usize = 6;
@@ -37,9 +64,9 @@ impl App {
             self.docs.history_view.insert(doc, tab.view);
         }
         let _ = self.send(if undo {
-            SessionCommand::Undo { doc }
+            DocumentCommand::Undo { doc }
         } else {
-            SessionCommand::Redo { doc }
+            DocumentCommand::Redo { doc }
         });
     }
 
@@ -279,6 +306,9 @@ impl App {
             &mut requests,
             |view| *view,
         );
+        drain_view_requests(&mut self.pending_compare, views, &mut requests, |view| {
+            *view
+        });
         drain_view_requests(&mut self.latex_previews, views, &mut requests, |view| *view);
         drain_view_requests(
             &mut self.pending_prepared_diffs,
@@ -438,15 +468,16 @@ impl App {
             let cursors = tab.editor.cursors().clone();
             let _ = backend.send(
                 backend.next_id(),
-                SessionCommand::SetCursor {
+                DocumentCommand::SetCursor {
                     doc,
                     view: tab.view,
                     cursors,
-                },
+                }
+                .into(),
             );
         }
         let id = backend.next_id();
-        match backend.send(id, SessionCommand::Save { doc, cause }) {
+        match backend.send(id, DocumentCommand::Save { doc, cause }.into()) {
             Ok(()) => {
                 self.pending_saves.insert(id, PendingSave { doc });
                 if self
@@ -531,7 +562,7 @@ impl App {
         }
         self.auto_save_pending
             .insert(doc, PendingAutoSave { version, deadline });
-        let focused = (self.focus == Focus::Editor)
+        let focused = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if mode == AutoSave::OnFocusChange && focused != Some(doc) {
@@ -563,7 +594,7 @@ impl App {
         if self.settings.files.auto_save != AutoSave::OnFocusChange {
             return;
         }
-        let current = (self.focus == Focus::Editor)
+        let current = (self.keyboard.focus() == Focus::Editor)
             .then(|| self.active_code_doc())
             .flatten();
         if previous != current
@@ -577,7 +608,7 @@ impl App {
     /// Save the active editor document when the terminal window itself loses focus.
     pub(super) fn auto_save_focus_lost(&mut self) {
         if self.settings.files.auto_save == AutoSave::OnFocusChange
-            && self.focus == Focus::Editor
+            && self.keyboard.focus() == Focus::Editor
             && let Some(doc) = self.active_code_doc()
             && self.auto_save_pending.contains_key(&doc)
         {
@@ -614,68 +645,27 @@ impl App {
             self.schedule_auto_save(doc, version, now);
         }
     }
+}
 
-    /// Cut every selection (copy then delete), or every caret's whole line when
-    /// nothing is selected.
-    pub(super) fn cut(&mut self) {
-        if matches!(
-            self.input_context().modal,
-            Some(
-                Modal::SearchInput
-                    | Modal::CommitInput
-                    | Modal::Find
-                    | Modal::ExplorerEdit
-                    | Modal::Rename
-            )
-        ) {
-            let Some(text) = self.cut_modal_selection() else {
-                return;
-            };
-            self.copy_to_clipboard(text, "selection");
-            return;
-        }
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_cut_files();
-            return;
-        }
-        self.cut_code_selection();
-    }
-
-    /// Paste the system clipboard at the caret (or the active modal's text field).
-    pub(super) fn paste_from_clipboard(&mut self) {
-        if self.focus_target() == FocusTarget::Explorer {
-            self.explorer_paste_files();
-            return;
-        }
-        match self.clipboard.get() {
-            Ok(text) => self.handle_paste(text),
-            Err(_) => self.notify(
-                Report::Failure,
-                NotificationKind::System,
-                "paste: clipboard unavailable",
-            ),
-        }
-    }
-
-    /// Route pasted text (from the paste command or bracketed paste) to whatever
-    /// actually owns text input right now: the active modal's field if one is
-    /// open, else the editor buffer. Shared by both paste sources, so pasted text
-    /// is never interpreted as keys and never lands in the wrong place.
-    pub(super) fn handle_paste(&mut self, text: String) {
-        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        if normalized.is_empty() {
-            return;
-        }
-        if let Some(modal) = self.input_context().modal {
-            self.modal_paste(modal, &normalized);
-            return;
-        }
-        #[cfg(feature = "terminal")]
-        if self.terminal_owns_keyboard() {
-            self.terminal_paste(&normalized);
-            return;
-        }
-        self.paste_into_editor(&normalized);
+/// The unsaved-changes confirmation's title and its two action verbs, phrased for
+/// the scope `request` closes and its `count` at-risk files.
+fn close_prompt_choices(
+    request: CloseRequest,
+    count: usize,
+) -> (String, &'static str, &'static str) {
+    let files = if count == 1 { "file" } else { "files" };
+    if matches!(request, CloseRequest::Quit) {
+        (
+            format!("Quit with {count} unsaved {files}?"),
+            "Save all and quit",
+            "Discard and quit",
+        )
+    } else {
+        (
+            format!("Close with {count} unsaved {files}?"),
+            "Save and close",
+            "Discard and close",
+        )
     }
 }
 
@@ -697,41 +687,5 @@ fn drain_view_requests<T>(
     for request in matching {
         pending.remove(&request);
         cancelled.push(request);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::app::tests::harness::*;
-    use crate::app::*;
-
-    /// A line copy that comes back with CRLF endings (as a Windows or terminal
-    /// clipboard hands it over) is still recognised as karet's own copy, so it
-    /// pastes above the caret's line rather than at the caret.
-    #[test]
-    fn a_crlf_line_copy_still_pastes_as_a_line() {
-        let mut rig = Rig::new("a|b\ncd");
-        rig.step(Step::Key(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        rig.step(key(KeyCode::Down));
-        rig.app.handle_paste("ab\r\n".to_owned());
-        assert_eq!(rig.marked(), "ab\nab\nc|d");
-    }
-
-    /// Every CRLF and lone CR becomes LF before the text lands; text that
-    /// normalises to nothing changes nothing.
-    #[test]
-    fn pasted_line_endings_become_lf() {
-        let rows = [
-            ("a lone CR", "a\rb", "a\nb|"),
-            ("a CRLF", "a\r\nb", "a\nb|"),
-            ("mixed endings", "a\r\nb\rc\nd", "a\nb\nc\nd|"),
-            ("CR CR stays two breaks", "a\r\rb", "a\n\nb|"),
-            ("nothing", "", "|"),
-        ];
-        for (name, pasted, expect) in rows {
-            let mut rig = Rig::new("|");
-            rig.app.handle_paste(pasted.to_owned());
-            assert_eq!(rig.marked(), expect, "{name}");
-        }
     }
 }

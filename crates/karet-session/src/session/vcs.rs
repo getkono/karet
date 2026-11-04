@@ -1,6 +1,177 @@
+//! The actor's source-control surface: serving [`VcsCommand`]s.
+//!
+//! Index writes run inline here through `vcs_write`. Status, history pages,
+//! commit details, diffs, blame and line changes are sent as jobs to the VCS
+//! worker (`crate::vcs_worker`), which performs those reads off the actor. Not
+//! every read goes there: the log events `emit_vcs_log` emits and the open log
+//! `reconcile_vcs_log` keeps in step with the repository are read on the actor
+//! itself, and `generate_commit_message` reads the staged diff on a blocking
+//! task of its own before asking the agent for an AI commit message.
+
 use super::*;
+use crate::api::VcsCommand;
+use crate::vcs_worker::VcsJob;
 
 impl Session {
+    /// Serve one [`VcsCommand`]. Index writes run inline; everything that reads
+    /// history or prepares a diff goes to the VCS worker.
+    pub(super) fn handle_vcs(&mut self, id: RequestId, command: VcsCommand) {
+        let syntax = self.diff_syntax;
+        match command {
+            VcsCommand::Refresh => self.emit_vcs_status(Some(id)),
+            VcsCommand::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            VcsCommand::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
+            VcsCommand::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
+            VcsCommand::ApplyIndexPatch { patch, reverse } => {
+                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
+            },
+            VcsCommand::StageAll => self.vcs_write(id, Repository::stage_all),
+            VcsCommand::UnstageAll => self.vcs_write(id, Repository::unstage_all),
+            VcsCommand::Commit { message } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Commit {
+                    id,
+                    message,
+                    cancel,
+                });
+            },
+            VcsCommand::GenerateCommitMessage => self.generate_commit_message(id),
+            VcsCommand::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
+            VcsCommand::SetAiCommitOptions { options } => {
+                self.set_ai_commit_options(id, *options);
+            },
+            VcsCommand::MergeConflict { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::MergeConflict { id, path, cancel });
+            },
+            VcsCommand::RepositorySnapshot => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Snapshot { id, cancel });
+            },
+            VcsCommand::NestedRepositoryStatus { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::NestedRepositoryStatus {
+                    id,
+                    path,
+                    cancel,
+                });
+            },
+            VcsCommand::Action { action } => {
+                self.emit(
+                    Some(id),
+                    Event::VcsOperationStarted {
+                        action: action.clone(),
+                    },
+                );
+                let _ = self.vcs_worker.send(VcsJob::Action { id, action });
+            },
+            VcsCommand::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
+            VcsCommand::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
+            VcsCommand::LineChanges { doc } => self.request_line_changes(id, doc),
+            VcsCommand::Log { skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Log {
+                    id,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::CommitDetail { rev } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::CommitDetail {
+                    id,
+                    rev,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::RangeChanges { spec } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RangeChanges {
+                    id,
+                    spec,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::FileHistory { path, skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::FileHistory {
+                    id,
+                    path,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::FetchCommitVerification { hash } => {
+                self.fetch_commit_verification(id, hash);
+            },
+            VcsCommand::RemoteFacts { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RemoteFacts { id, path, cancel });
+            },
+            VcsCommand::PrepareChange { path, staged } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareChange {
+                    id,
+                    path,
+                    staged,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::PrepareDiff { path, old, new } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareTexts {
+                    id,
+                    path,
+                    old,
+                    new,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::DiffWithRev { path, rev, live } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::DiffWithRev {
+                    id,
+                    path,
+                    rev,
+                    live,
+                    syntax,
+                    cancel,
+                });
+            },
+        }
+    }
+
+    /// Register a cancellation for `id` and hand the worker a job built from it —
+    /// the single submission shape for every cancellable VCS request.
+    pub(super) fn submit_vcs(
+        &self,
+        id: RequestId,
+        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
+    ) {
+        let cancel = self.cancellations.register(id);
+        let _ = self.vcs_worker.send(make(id, cancel));
+    }
+
+    pub(super) fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::Vcs,
+                    message: "blame: unknown document".to_string(),
+                },
+            );
+            return;
+        };
+        if document.buffer.version() != version {
+            return;
+        }
+        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
+            id,
+            doc,
+            version,
+            path: document.path.clone(),
+            text: document.buffer.text(),
+            line,
+            cancel: self.cancellations.register(id),
+        });
+    }
+
     /// Fetch a page of the commit log and emit it. Requests one extra commit to
     /// detect whether more remain, then trims to `limit`. A no-op without a repo.
     /// A requested page tags the answering event with `id`; a spontaneous reload
@@ -186,8 +357,9 @@ impl Session {
     ///
     /// The user and system layers keep the override: those are the machine
     /// owner's own files.
+    #[cfg(feature = "aicommit")]
     pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
-        let mut options = self.config.settings.git.ai_commit.clone();
+        let mut options = self.config.settings().git.ai_commit.clone();
         let from_project = self
             .config
             .loaded_config
@@ -261,21 +433,28 @@ impl Session {
             let diff = match diff {
                 Ok(Ok(diff)) => diff,
                 Ok(Err(message)) => {
-                    fail(&events, id, &cancel, message);
+                    events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message });
                     return;
                 },
                 Err(error) => {
-                    fail(
-                        &events,
-                        id,
+                    events.emit_if_live(
+                        Some(id),
                         &cancel,
-                        format!("reading the staged diff: {error}"),
+                        Event::CommitMessageFailed {
+                            message: format!("reading the staged diff: {error}"),
+                        },
                     );
                     return;
                 },
             };
             if diff.file_count == 0 || diff.patch.trim().is_empty() {
-                fail(&events, id, &cancel, "stage changes first".to_string());
+                events.emit_if_live(
+                    Some(id),
+                    &cancel,
+                    Event::CommitMessageFailed {
+                        message: "stage changes first".to_string(),
+                    },
+                );
                 return;
             }
             // Reading the diff shells out to `git`, which is long enough to be
@@ -291,11 +470,9 @@ impl Session {
                 () = cancel.cancelled() => {},
                 result = crate::aicommit::generate(&diff, &cfg) => match result {
                     Ok(message) => {
-                        if !cancel.is_cancelled() {
-                            let _ = events.send((Some(id), Event::CommitMessageGenerated { message }));
-                        }
+                        events.emit_if_live(Some(id), &cancel, Event::CommitMessageGenerated { message });
                     },
-                    Err(message) => fail(&events, id, &cancel, message),
+                    Err(message) => events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message }),
                 },
             }
         });
@@ -371,12 +548,12 @@ impl Session {
                 agents,
                 effort_conflict,
             };
-            let _ = events.send((
+            events.emit(
                 id,
                 Event::AiCommitAvailability {
                     status: Box::new(status),
                 },
-            ));
+            );
         });
     }
 
@@ -395,7 +572,7 @@ impl Session {
     /// [`crate::api::AiCommitAvailability::ready`] report not-ready rather than
     /// implying an agent was found.
     pub(super) fn emit_unprobed_ai_commit_availability(&mut self, id: Option<RequestId>) {
-        let options = self.config.settings.git.ai_commit.clone();
+        let options = self.config.settings().git.ai_commit.clone();
         let status = crate::api::AiCommitAvailability {
             supported: cfg!(feature = "aicommit"),
             enabled: options.enabled,
@@ -421,7 +598,7 @@ impl Session {
             Ok(path) => {
                 // Apply in memory too: the settings watcher will reload the file,
                 // but the client must not see its own change bounce back stale.
-                self.config.settings.git.ai_commit = options;
+                self.adopt_settings(|settings| settings.git.ai_commit = options);
                 self.emit(
                     Some(id),
                     Event::Notification {
@@ -447,21 +624,19 @@ impl Session {
             },
         );
     }
-}
 
-/// Report a generation failure, unless the request was cancelled.
-///
-/// A cancelled request answers with nothing: the client already moved on, and a
-/// late "failed" would contradict the state it is showing.
-#[cfg(feature = "aicommit")]
-fn fail(
-    events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    cancel: &crate::cancellation::Cancellation,
-    message: String,
-) {
-    if cancel.is_cancelled() {
-        return;
+    /// Persist the inline-blame toggle and adopt it into the live settings.
+    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
+        self.adopt_settings(|settings| settings.git.blame = enabled);
+        if let Err(error) = crate::config::set_user_blame(enabled) {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("settings: {error}"),
+                },
+            );
+        }
     }
-    let _ = events.send((Some(id), Event::CommitMessageFailed { message }));
 }

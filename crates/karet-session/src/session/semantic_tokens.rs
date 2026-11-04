@@ -54,10 +54,10 @@ impl Document {
     pub(super) fn display_highlights(&self) -> Arc<Highlights> {
         match &self.semantic_tokens {
             Some(layer) => Arc::new(crate::highlight::overlay_semantic(
-                &self.highlights,
+                self.syntax.highlights(),
                 &layer.spans,
             )),
-            None => Arc::clone(&self.highlights),
+            None => Arc::clone(self.syntax.highlights()),
         }
     }
 }
@@ -81,7 +81,7 @@ impl Session {
         else {
             return;
         };
-        if !self.config.settings.editor.semantic_highlighting.enabled {
+        if !self.config.settings().editor.semantic_highlighting.enabled {
             return;
         }
         let Some(&doc_id) = self.store.by_path.get(&path) else {
@@ -211,7 +211,7 @@ mod tests {
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -278,7 +278,7 @@ mod tests {
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -331,7 +331,7 @@ mod tests {
         lay(&mut session, doc, 3, 5).ok_or("no document")?;
         session.handle(
             RequestId(2),
-            Command::RetargetDocument {
+            DocumentCommand::Retarget {
                 doc,
                 path: dir.path().join("b.rs"),
             },
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(laid(&session, doc), Some(vec![(3, 5)]));
         session.handle(
             RequestId(3),
-            Command::RetargetDocument {
+            DocumentCommand::Retarget {
                 doc,
                 path: dir.path().join("b.txt"),
             },

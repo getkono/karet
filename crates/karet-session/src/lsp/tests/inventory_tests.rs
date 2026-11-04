@@ -60,6 +60,7 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
         "buf",
         "clangd",
         "clojure-lsp",
+        "copilot-language-server",
         "docker-langserver",
         "graphql-lsp",
         "lemminx",

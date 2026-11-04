@@ -33,7 +33,7 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
         panic!("a file-backed tab opens a pane menu");
     };
     let commands: Vec<Command> = menu
-        .entries
+        .entries()
         .iter()
         .filter_map(ContextMenuEntry::command)
         .collect();
@@ -54,8 +54,8 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
             Command::CopyGithubHeadLink,
         ]
     );
-    assert!(menu.entries[..6].iter().all(|e| e.enabled));
-    for entry in &menu.entries[6..] {
+    assert!(menu.entries()[..6].iter().all(|e| e.enabled));
+    for entry in &menu.entries()[6..] {
         assert!(
             !entry.enabled,
             "{:?} is disabled outside a repo",
@@ -91,7 +91,7 @@ fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
         end: 12,
         close: 11,
     }];
-    app.pane_frames = vec![frame];
+    app.last_frame.panes = vec![frame];
     let right = |col, row| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
         column: col,
@@ -102,7 +102,7 @@ fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
     let first = |app: &App| {
         app.context_menu
             .as_ref()
-            .and_then(|menu| menu.entries.first())
+            .and_then(|menu| menu.entries().first())
             .and_then(ContextMenuEntry::command)
     };
 
@@ -140,10 +140,10 @@ fn facts_app(root: PathBuf) -> (App, EventRx) {
 
 /// Reconstruct the `(old, new)` texts from a prepared diff's hunk lines
 /// (complete for these small single-hunk fixtures).
-fn diff_sides(file: &FileView) -> (String, String) {
+fn diff_sides(file: &ChangedFile) -> (String, String) {
     let mut old = String::new();
     let mut new = String::new();
-    for hunk in &file.change.diff.diff.hunks {
+    for hunk in &file.change.diff.diff().hunks {
         for line in &hunk.lines {
             match line.kind {
                 karet_diff::LineKind::Context => {
@@ -302,7 +302,7 @@ fn filled_diff_tab(app: &App) -> bool {
 
 /// A code tab over `path` whose live buffer holds `text`.
 fn code_tab_with_text(path: &Path, text: &str) -> Tab {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
     Tab::new(
         path.file_name()
@@ -311,13 +311,13 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             .to_string(),
         TabKind::Code {
             path: path.to_path_buf(),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(path),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text).into(),
             text: text.into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -370,8 +370,11 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     app.push_tab(code_tab_with_text(&path, "working\n"));
 
     app.dispatch(Command::OpenChangesWithRevision);
-    pump_until(&mut app, &mut events, |app| app.overlay.is_some()).await;
-    let Some(overlay) = app.overlay.as_ref() else {
+    pump_until(&mut app, &mut events, |app| {
+        app.keyboard.overlay().is_some()
+    })
+    .await;
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("the revision picker opens");
     };
     assert_eq!(overlay.title(), "Open Changes: With Revision");
@@ -384,7 +387,7 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     app.dispatch(Command::OverlayAccept);
     pump_until(&mut app, &mut events, filled_diff_tab).await;
 
-    assert!(app.overlay.is_none(), "accept closes the picker");
+    assert!(app.keyboard.overlay().is_none(), "accept closes the picker");
     let Some(Tab {
         title,
         kind: TabKind::Diff {
@@ -426,7 +429,7 @@ async fn open_changes_with_branch_diffs_against_the_branch_tip() {
     app.dispatch(Command::OpenChangesWithBranch);
     pump_until(&mut app, &mut events, |app| app.scm.repository.is_some()).await;
     app.dispatch(Command::OpenChangesWithBranch);
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("the branch picker opens");
     };
     assert_eq!(overlay.title(), "Open Changes: With Branch");
@@ -509,13 +512,15 @@ fn context_menu_refuses_a_disabled_entry_and_surfaces_its_note() {
         2,
         vec![
             ContextMenuEntry::disabled(Command::ExplorerNewFile, "not available here"),
-            ContextMenuEntry::enabled(Command::ExplorerRefresh),
+            ContextMenuEntry::disabled(Command::ExplorerRefresh, "nor this"),
         ],
     ));
-    // Force the selection onto the disabled row (as a mouse click would).
-    if let Some(menu) = app.context_menu.as_mut() {
-        menu.selected = 0;
-    }
+    // With no activatable row the cursor rests on the first, disabled one —
+    // the only way a selection can sit on a refused row.
+    assert_eq!(
+        app.context_menu.as_ref().map(ContextMenu::selected),
+        Some(0)
+    );
     app.dispatch(Command::ContextMenuAccept);
     // The command did not run, the menu stays open, and the note is surfaced.
     assert!(!app.explorer.is_editing(), "disabled command must not run");

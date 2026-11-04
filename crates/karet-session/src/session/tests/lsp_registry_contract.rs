@@ -130,23 +130,23 @@
         let dir = tempfile::tempdir()?;
         let (mut session, mut events) = registry_session(dir.path());
         let declined =
-            || crate::lsp_registry::read_declined(Some(dir.path()), &LanguageServerId::Pyright);
+            || crate::lsp_registry::store::read_declined(Some(dir.path()), &LanguageServerId::Pyright);
 
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
         assert!(declined().is_some(), "the refusal is on disk");
         assert!(
-            crate::lsp_registry::read_declined(Some(dir.path()), &LanguageServerId::Ruff).is_none(),
+            crate::lsp_registry::store::read_declined(Some(dir.path()), &LanguageServerId::Ruff).is_none(),
             "and scoped to the provider declined"
         );
 
         session.handle(
             RequestId(2),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -155,7 +155,7 @@
         // Clearing a refusal that is not there is the state asked for already.
         session.handle(
             RequestId(3),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -173,7 +173,7 @@
 
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
@@ -198,13 +198,13 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::DeclineLanguageServer {
+            LanguageServerCommand::Decline {
                 server: LanguageServerId::Pyright,
             },
         );
         session.handle(
             RequestId(2),
-            Command::UndeclineLanguageServer {
+            LanguageServerCommand::Undecline {
                 server: LanguageServerId::Pyright,
             },
         );

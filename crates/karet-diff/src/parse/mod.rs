@@ -242,6 +242,18 @@ index aaa..bbb 100644
     }
 
     #[test]
+    fn typechange_pairs_are_relabelled_when_the_addition_comes_first() -> Result<(), DiffError> {
+        // The added side listed before the removed one: the old mode still comes
+        // from the removal and the new mode from the addition.
+        let raw = "diff --git a/t b/t\nnew file mode 100644\nindex 0000000..bbb\n--- /dev/null\n+++ b/t\n@@ -0,0 +1 @@\n+a\ndiff --git a/t b/t\ndeleted file mode 120000\nindex aaa..0000000\n--- a/t\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n";
+        let diff = parse(raw)?;
+        assert_eq!(diff.files.len(), 2);
+        assert_eq!(diff.files[0].status, FileStatus::TypeChanged);
+        assert_eq!(diff.files[1].status, FileStatus::TypeChanged);
+        Ok(())
+    }
+
+    #[test]
     fn a_delete_and_add_of_the_same_type_is_not_a_typechange() -> Result<(), DiffError> {
         // Same path, same file type, differing only in permissions: not a type
         // change, and in practice not something git emits as a pair at all.

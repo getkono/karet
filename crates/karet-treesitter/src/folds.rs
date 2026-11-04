@@ -12,63 +12,11 @@
 //! consumer joins a run of them on adjacent lines into one region.
 
 use crate::LanguageId;
-#[cfg(any(
-    feature = "lang-rust",
-    feature = "lang-python",
-    feature = "lang-javascript",
-    feature = "lang-typescript",
-    feature = "lang-json",
-    feature = "lang-go",
-    feature = "lang-c",
-    feature = "lang-cpp",
-    feature = "lang-yaml",
-    feature = "lang-lua"
-))]
 use crate::registry;
 
 /// The karet-authored fold query for `lang`, if one ships for its grammar.
-pub(crate) fn query_source(_lang: LanguageId) -> Option<&'static str> {
-    #[cfg(feature = "lang-rust")]
-    if _lang == registry::RUST {
-        return Some(include_str!("../queries/folds/rust.scm"));
-    }
-    #[cfg(feature = "lang-python")]
-    if _lang == registry::PYTHON {
-        return Some(include_str!("../queries/folds/python.scm"));
-    }
-    #[cfg(feature = "lang-javascript")]
-    if _lang == registry::JAVASCRIPT {
-        return Some(include_str!("../queries/folds/javascript.scm"));
-    }
-    #[cfg(feature = "lang-typescript")]
-    if _lang == registry::TYPESCRIPT || _lang == registry::TSX {
-        return Some(include_str!("../queries/folds/typescript.scm"));
-    }
-    #[cfg(feature = "lang-json")]
-    if _lang == registry::JSON {
-        return Some(include_str!("../queries/folds/json.scm"));
-    }
-    #[cfg(feature = "lang-go")]
-    if _lang == registry::GO {
-        return Some(include_str!("../queries/folds/go.scm"));
-    }
-    #[cfg(feature = "lang-c")]
-    if _lang == registry::C {
-        return Some(include_str!("../queries/folds/c.scm"));
-    }
-    #[cfg(feature = "lang-cpp")]
-    if _lang == registry::CPP {
-        return Some(include_str!("../queries/folds/cpp.scm"));
-    }
-    #[cfg(feature = "lang-yaml")]
-    if _lang == registry::YAML {
-        return Some(include_str!("../queries/folds/yaml.scm"));
-    }
-    #[cfg(feature = "lang-lua")]
-    if _lang == registry::programming::LUA {
-        return Some(include_str!("../queries/folds/lua.scm"));
-    }
-    None
+pub(crate) fn query_source(lang: LanguageId) -> Option<&'static str> {
+    registry::grammar(lang).and_then(|g| g.folds)
 }
 
 // Needs every grammar it names: without one, the lookup has nothing to find.

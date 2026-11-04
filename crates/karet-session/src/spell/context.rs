@@ -1,8 +1,8 @@
 //! Language-aware exclusions for structural string literals.
 
+use karet_core::Highlights;
 use karet_core::StandardToken;
 use karet_core::TokenId;
-use karet_syntax::Highlights;
 
 // First-pass inline call/macro vocabulary. Keep this deliberately narrow: ordinary
 // formatting and logging macros carry user-facing prose and must remain checked.

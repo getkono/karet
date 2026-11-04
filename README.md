@@ -117,7 +117,7 @@ VS Code where VS Code has an answer.
 | `Ctrl+G` | Go to a line (`LINE[:COL]`) in the active file (quick open's `:` mode) |
 | `Ctrl+R` | Open a recent workspace |
 | `Ctrl+B` / `Ctrl+K O` | Toggle the sidebar / the outline |
-| `Ctrl+1`…`Ctrl+7` | Explorer, Search, Source Control, Spelling, Todos, Debug, Problems |
+| `Ctrl+1`…`Ctrl+8` | Explorer, Search, Source Control, Spelling, Todos, Debug, Problems, Hierarchy (the last call or type hierarchy, while there is one) |
 | `F8` / `Shift+F8` | Next / previous problem in the file |
 | `Ctrl+F` / `Ctrl+Shift+F` | Find in file / search the workspace |
 | `Ctrl+\` / `Ctrl+K Ctrl+\` | Split right / split down |

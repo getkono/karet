@@ -16,13 +16,12 @@ use dependable_fetch::Checker;
 use dependable_fetch::core::CheckResult;
 use dependable_fetch::core::DependencyStatus;
 use dependable_fetch::core::ManifestKind;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::DocumentId;
 use crate::api::Event;
 use crate::api::ManifestHint;
 use crate::api::ManifestHintState;
-use crate::api::RequestId;
+use crate::event_tx::EventTx;
 
 mod lockfile;
 
@@ -42,9 +41,7 @@ pub(crate) struct HintJob {
 }
 
 /// Start the worker; answers arrive as [`Event::ManifestHints`].
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<HintJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<HintJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-manifest-hints".to_owned())
@@ -52,7 +49,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
+fn run(jobs: &Receiver<HintJob>, events: &EventTx) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -80,15 +77,15 @@ fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
         for job in pending.into_values() {
             let hints = runtime.block_on(check(&checker, &job));
             if events
-                .send((
+                .try_emit(
                     None,
                     Event::ManifestHints {
                         doc: job.doc,
                         version: job.version,
                         hints,
                     },
-                ))
-                .is_err()
+                )
+                .is_break()
             {
                 return;
             }

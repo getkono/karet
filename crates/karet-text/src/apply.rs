@@ -698,7 +698,7 @@ mod tests {
             let col = i as u32;
             let ctx = EditContext {
                 tick_ms: tick,
-                cause: crate::EditCause::Type,
+                cause: karet_core::EditCause::Type,
                 cursor_before: CursorState::single(karet_core::Selection::caret(LineCol::new(
                     0, col,
                 ))),

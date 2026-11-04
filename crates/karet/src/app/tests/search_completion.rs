@@ -4,7 +4,7 @@ use crate::app::*;
 /// Push a minimal empty code tab and open Find over it, for tests that only
 /// exercise the find-bar state machine (not real match content).
 fn app_with_find_open() -> App {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
 
     let mut app = app();
@@ -12,13 +12,13 @@ fn app_with_find_open() -> App {
         "t.rs",
         TabKind::Code {
             path: PathBuf::from("t.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("").into(),
             text: Default::default(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -107,13 +107,13 @@ fn switching_tabs_does_not_show_a_stale_find_bar() {
         "u.rs",
         TabKind::Code {
             path: PathBuf::from("u.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: karet_text::TextBuffer::from_text("").into(),
             text: Default::default(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -324,7 +324,7 @@ fn a_partial_or_failed_replace_is_reported_as_a_failure() {
 fn search_option_toggle_button_click_dispatches() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Search;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -354,7 +354,7 @@ fn scm_app(root: PathBuf) -> (App, EventRx) {
     let mut app = App::new(root, Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     (app, events)
 }
 
@@ -572,7 +572,7 @@ fn completion_item_labeled(label: &str, insert: &str) -> karet_core::CompletionI
 /// Open the popup over `items` as if asked for at the caret.
 fn open_popup(app: &mut App, items: Vec<karet_core::CompletionItem>, anchor: LineCol) {
     let requested_at = app.completion_target().map_or(anchor, |(_, caret)| caret);
-    app.completion = Some(crate::completion::CompletionUi::new(
+    app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         anchor,
         requested_at,
@@ -600,7 +600,7 @@ fn ctrl_space_requests_completions_at_the_caret() {
     let sent = completion_requests(&backend);
     assert_eq!(sent.len(), 1, "one Completion command");
     assert_eq!(sent[0].1, LineCol::new(0, 2));
-    let pending = app.pending_completion.expect("a pending request");
+    let pending = app.completion.pending.expect("a pending request");
     assert_eq!(pending.id, sent[0].0, "answer correlates by request id");
     assert_eq!(pending.anchor, LineCol::new(0, 0), "anchored at word start");
 }
@@ -619,8 +619,8 @@ fn completion_enablement_resolves_against_the_tab_language() {
     app.trigger_completion(true);
     assert!(completion_requests(&backend).is_empty());
 
-    if let TabKind::Code { language, .. } = &mut app.tabs[app.active].kind {
-        *language = "Python";
+    if let TabKind::Code { file_type, .. } = &mut app.tabs[app.active].kind {
+        *file_type = language_type("Python");
     }
     app.trigger_completion(true);
     assert_eq!(completion_requests(&backend).len(), 1);
@@ -673,7 +673,7 @@ fn trigger_characters_re_request_at_the_boundary() {
     let sent = completion_requests(&backend);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1, LineCol::new(0, 5), "requested after the dot");
-    let pending = app.pending_completion.expect("pending");
+    let pending = app.completion.pending.expect("pending");
     assert_eq!(
         pending.anchor,
         LineCol::new(0, 5),
@@ -721,11 +721,11 @@ fn stale_completions_are_ignored_and_fresh_ones_open_the_popup() {
         completions(vec![completion_item_labeled("stale", "stale")]),
     );
     assert!(
-        app.completion.is_none(),
+        app.completion.popup.is_none(),
         "stale answers never open the popup"
     );
     assert!(
-        app.pending_completion.is_some(),
+        app.completion.pending.is_some(),
         "still awaiting the real one"
     );
 
@@ -734,9 +734,9 @@ fn stale_completions_are_ignored_and_fresh_ones_open_the_popup() {
         Some(id),
         completions(vec![completion_item_labeled("foobar", "foobar")]),
     );
-    let ui = app.completion.as_ref().expect("popup open");
+    let ui = app.completion.popup.as_ref().expect("popup open");
     assert_eq!(ui.items.len(), 1);
-    assert!(app.pending_completion.is_none());
+    assert!(app.completion.pending.is_none());
 }
 
 #[test]
@@ -752,7 +752,7 @@ fn a_moved_caret_drops_late_completions() {
         completions(vec![completion_item_labeled("foobar", "foobar")]),
     );
     assert!(
-        app.completion.is_none(),
+        app.completion.popup.is_none(),
         "late answers for a moved caret drop"
     );
 }
@@ -769,7 +769,7 @@ fn accepting_replaces_the_typed_prefix() {
     assert_eq!(code_tab_text(&app), "foobar\n", "the prefix was replaced");
     let idx = app.active;
     assert_eq!(app.tabs[idx].editor.cursor(), LineCol::new(0, 6));
-    assert!(app.completion.is_none(), "accepting closes the popup");
+    assert!(app.completion.popup.is_none(), "accepting closes the popup");
 }
 
 #[test]
@@ -785,14 +785,17 @@ fn popup_keys_navigate_and_escape_dismisses() {
     );
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
     assert_eq!(
-        app.completion.as_ref().map(|ui| ui.list.selected),
+        app.completion.popup.as_ref().map(|ui| ui.list.selected()),
         Some(1),
         "Down moves the selection"
     );
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()));
-    assert_eq!(app.completion.as_ref().map(|ui| ui.list.selected), Some(0));
+    assert_eq!(
+        app.completion.popup.as_ref().map(|ui| ui.list.selected()),
+        Some(0)
+    );
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
-    assert!(app.completion.is_none(), "Esc dismisses");
+    assert!(app.completion.popup.is_none(), "Esc dismisses");
 }
 
 #[test]
@@ -805,7 +808,10 @@ fn backspacing_past_the_anchor_dismisses_the_popup() {
     );
     // Deleting the char before the anchor moves the caret to (0,0) < anchor.
     app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()));
-    assert!(app.completion.is_none(), "the popup follows its anchor");
+    assert!(
+        app.completion.popup.is_none(),
+        "the popup follows its anchor"
+    );
 }
 
 #[test]
@@ -824,7 +830,7 @@ fn typing_keeps_the_popup_filtering_without_a_new_request() {
         completion_requests(&backend).is_empty(),
         "word chars refilter client-side while open"
     );
-    assert!(app.completion.is_some(), "the popup stays open");
+    assert!(app.completion.popup.is_some(), "the popup stays open");
     let ranked = app.completion_ranked().unwrap_or_default();
     assert_eq!(
         ranked,

@@ -11,6 +11,7 @@ use crate::CellKind;
 use crate::Notebook;
 use crate::Output;
 use crate::Source;
+use crate::StreamName;
 
 /// Render `notebook` as one markdown document.
 #[must_use]
@@ -48,7 +49,7 @@ pub fn to_markdown(notebook: &Notebook) -> String {
 fn push_output(out: &mut String, output: &Output) {
     match output {
         Output::Stream { name, text, .. } => {
-            push_fenced(out, &strip_ansi(&text.text()), name == "stderr");
+            push_fenced(out, &strip_ansi(&text.text()), *name == StreamName::Stderr);
         },
         Output::ExecuteResult { data, .. } | Output::DisplayData { data, .. } => {
             push_mime_bundle(out, data);

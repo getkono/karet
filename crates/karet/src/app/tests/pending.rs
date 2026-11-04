@@ -56,7 +56,7 @@ fn show_sidebar(app: &mut App, panel: SidebarPanel) {
 
 fn github_view(app: &mut App) {
     app.view = View::GitHub;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.apply_github_availability(Some(repository()), anonymous_auth());
 }
 
@@ -561,7 +561,11 @@ fn a_github_error_for_a_superseded_request_leaves_the_dashboard_loading() {
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)));
     let second = dashboard_pending(&app);
 
-    app.apply_github_error(first, "issues".to_string(), "HTTP 502".to_string());
+    app.apply_github_error(
+        first,
+        karet_session::GithubOperation::Issues,
+        "HTTP 502".to_string(),
+    );
     let dashboard = app.github.dashboard();
     assert_eq!(dashboard.and_then(|d| d.error.clone()), None);
     assert_eq!(dashboard.and_then(|d| d.pending), second);

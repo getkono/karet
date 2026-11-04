@@ -2,7 +2,18 @@
 //! reloads, and the notification funnel. Called only from the
 //! [`App::on_backend_event`] router.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::GithubCommand;
+use karet_session::LoadedConfig;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::TabKind;
 
 impl App {
     /// Keep live surfaces current after filesystem changes: nested-repository
@@ -23,7 +34,7 @@ impl App {
                     .and_then(Path::file_name)
                     .is_some_and(|name| name == ".git")
         }) {
-            self.send_command(SessionCommand::GithubRefresh);
+            self.send_command(GithubCommand::Refresh);
         }
     }
 
@@ -62,7 +73,7 @@ impl App {
         let graphical_cursor_requested = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .graphical_cursor()
                 == Some(true)
         });
@@ -76,7 +87,7 @@ impl App {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .completion()
                 .enabled()
         });
@@ -97,15 +108,10 @@ impl App {
     ) {
         let language_server_operation_failed =
             id.is_some_and(|request| self.fail_language_server_operation(request, &message));
-        // A range diff has no failure event of its own — it answers with a backend
-        // notification — so its card is retired here. Clearing it on an unrelated
-        // notification only drops a "computing…" hint early, which is the harmless
-        // way to be wrong; leaving it up forever is the other one.
-        self.notifications.dismiss_tagged(Self::DIFF_COMPUTE_TAG);
-        // Likewise for a discard, the one repository write that answers with a
-        // reason instead of an outcome event: the message below carries it, so the
-        // card has done its job. Every other write ends at
-        // `on_vcs_operation_finished`, which retires its own card.
+        // A discard is the one repository write that answers with a reason instead
+        // of an outcome event: the message below carries it, so the card has done
+        // its job. Every other write ends at `on_vcs_operation_finished`, which
+        // retires its own card.
         self.notifications.dismiss_tagged(Self::VCS_DISCARD_TAG);
         if id.is_some() && id == self.commit_input.pending {
             self.commit_input.pending = None;
@@ -130,13 +136,18 @@ impl App {
             self.pending_blame = None;
             self.failed_blame = Some((pending.1, pending.2, pending.3));
         }
+        let mut tag = None;
         if let Some(req) = id {
             // An open fails with an error notification and nothing else; its
             // warnings (a bad `.editorconfig`) still end in `Opened`.
             if severity == Severity::Error {
-                self.on_open_failed(req, &message);
+                tag = self.on_open_failed(req, &message);
             }
             self.fail_pending_commit_detail(req, &message);
+            self.fail_hierarchy_request(req);
+            // A range diff has no failure event of its own: it answers with this
+            // notification, which carries its request id.
+            self.fail_pending_compare(req, &message);
             if let Some((view, _)) = self.pending_merge_conflicts.remove(&req)
                 && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
                 && let Some(conflict) = tab.merge_conflict.as_mut()
@@ -157,7 +168,7 @@ impl App {
             }
         }
         if !language_server_operation_failed {
-            self.notify(Report::from_severity(severity), kind, message);
+            self.notify_tagged(Report::from_severity(severity), kind, message, tag);
         }
     }
 }
@@ -165,10 +176,19 @@ impl App {
 /// [`App::on_config_changed`]'s side effects beyond applying the settings.
 #[cfg(test)]
 mod tests {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
+    use karet_core::LineCol;
+    use karet_core::Severity;
+    use karet_fileview::image::GraphicsProtocol;
+    use karet_session::Event as SessionEvent;
+
     use crate::app::tests::support::app;
     use crate::app::tests::support::text_tab;
     use crate::app::*;
     use crate::completion::PendingCompletion;
+    use crate::tab::TabKind;
 
     const INCOMPATIBLE: &str = "graphical cursor is not compatible with this terminal";
 
@@ -293,7 +313,7 @@ mod tests {
     fn disabling_completion_closes_a_pending_request() {
         for (enabled, kept) in [(false, false), (true, true)] {
             let mut app = code_app();
-            app.pending_completion = Some(PendingCompletion {
+            app.completion.pending = Some(PendingCompletion {
                 id: RequestId(1),
                 doc: DocumentId(9),
                 anchor: LineCol::new(0, 0),
@@ -302,7 +322,76 @@ mod tests {
             let mut settings = Settings::default();
             settings.editor.completion.enabled = enabled;
             reload(&mut app, settings);
-            assert_eq!(app.pending_completion.is_some(), kept, "enabled={enabled}");
+            assert_eq!(app.completion.pending.is_some(), kept, "enabled={enabled}");
         }
+    }
+
+    /// An app whose only keymap file is `text`, written into `dir`, so a reload
+    /// reads nothing from the developer's own configuration. Either text below
+    /// merges to the compiled-in defaults, so the process-wide keymap other
+    /// tests read never changes.
+    fn keymap_app(dir: &std::path::Path, text: &str) -> std::io::Result<App> {
+        let path = dir.join("keymap.jsonc");
+        std::fs::write(&path, text)?;
+        let mut app = app();
+        app.keymap_files = vec![(crate::keymap::user::Source::Project, path)];
+        app.pending
+            .push(crate::keymap::KeyChord::from_event(KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL,
+            )));
+        Ok(app)
+    }
+
+    /// The session's `KeymapChanged` re-reads the keymap files and installs the
+    /// result: a half-typed chord is dropped and the reload is announced.
+    /// Falsified by not routing `KeymapChanged` to `reload_keymap`.
+    #[test]
+    fn keymap_changed_reloads_the_keymap() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut app = keymap_app(dir.path(), r#"{ "bindings": [] }"#)?;
+        app.on_backend_event(
+            None,
+            SessionEvent::KeymapChanged {
+                paths: vec![dir.path().join("keymap.jsonc")],
+            },
+        );
+        assert!(
+            app.pending.is_empty(),
+            "the old chord was resolved against the old table"
+        );
+        assert_eq!(
+            notes(&app),
+            vec![(Severity::Hint, "keymap reloaded".into())]
+        );
+        Ok(())
+    }
+
+    /// The reload reads the files on disk now, not a cached copy: a file that
+    /// became invalid is reported against its own path.
+    #[test]
+    fn keymap_changed_reports_a_file_that_no_longer_parses() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("keymap.jsonc");
+        let mut app = keymap_app(dir.path(), "{ not a keymap")?;
+        app.on_backend_event(
+            None,
+            SessionEvent::KeymapChanged {
+                paths: vec![path.clone()],
+            },
+        );
+        let notes = notes(&app);
+        assert!(
+            notes
+                .iter()
+                .any(|(severity, title)| *severity == Severity::Warning
+                    && title.starts_with(&format!("config: {}", path.display()))),
+            "{notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|(_, title)| title == "keymap reloaded"),
+            "{notes:?}"
+        );
+        Ok(())
     }
 }

@@ -13,10 +13,11 @@ async fn open(
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error + Send + Sync>> {
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     Ok(await_opened(events).await.ok_or("no Opened")?)
 }
@@ -67,10 +68,11 @@ async fn a_hint_resolves_through_the_seam_in_buffer_columns() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::InlayHints { hints, .. }) = answer_to(&mut events, request).await else {
         return Err("no hints".into());
@@ -90,10 +92,11 @@ async fn a_hint_resolves_through_the_seam_in_buffer_columns() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::ResolveInlayHint {
+        LspCommand::ResolveInlayHint {
             doc,
             hint: held.clone(),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::InlayHintResolved {
         doc: answered,
@@ -147,10 +150,11 @@ async fn hint_list_part_locations_convert_against_open_files_only() -> TestResul
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::InlayHints { hints, .. }) = answer_to(&mut events, request).await else {
         return Err("no hints".into());
@@ -193,10 +197,11 @@ async fn a_hint_no_server_resolves_comes_back_unchanged() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::ResolveInlayHint {
+        LspCommand::ResolveInlayHint {
             doc,
             hint: hint.clone(),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::InlayHintResolved { hint: answered, .. }) =
         answer_to(&mut events, request).await

@@ -284,7 +284,12 @@ fn status_requests(backend: &RecordingBackend) -> usize {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default()

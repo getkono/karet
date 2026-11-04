@@ -1,6 +1,17 @@
 //! Application wiring for parser-backed inline editing macros.
 
-use super::*;
+use std::sync::Arc;
+
+use karet_core::Change;
+use karet_core::EditCause;
+use karet_core::Range;
+use karet_core::TextEdit;
+use karet_editor::editing;
+
+use crate::app::App;
+use crate::app::syntax_select;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Resolve the active tab's configured inline macro for every caret and submit
@@ -37,12 +48,30 @@ impl App {
             },
             _ => return false,
         };
+        // Every caret reads the one parse of this document version that comment
+        // toggling, indentation and Expand Selection share, asked for only once a
+        // caret passes the engine's cheap checks. A cached parse of other text than
+        // the macro reads is refused rather than trusted.
+        let mut tree: Option<Option<SharedTree>> = None;
         let expansions = selections
             .iter()
             .map(|selection| {
-                self.inline_macro_engine
-                    .expand(language, &text, selection.range(), trigger, &indentation)
-                    .map(|expansion| (selection.range(), expansion))
+                karet_syntax::InlineMacroEngine::expand_with_tree(
+                    language,
+                    &text,
+                    selection.range(),
+                    trigger,
+                    &indentation,
+                    || {
+                        tree.get_or_insert_with(|| {
+                            self.layered_tree()
+                                .filter(|parsed| parsed.text == *text)
+                                .map(SharedTree)
+                        })
+                        .clone()
+                    },
+                )
+                .map(|expansion| (selection.range(), expansion))
             })
             .collect::<Option<Vec<_>>>();
         let Some(expansions) = expansions.filter(|expansions| !expansions.is_empty()) else {
@@ -70,5 +99,15 @@ impl App {
             },
         );
         true
+    }
+}
+
+/// A cached layered parse handed to the inline-macro engine as its tree.
+#[derive(Clone)]
+struct SharedTree(Arc<syntax_select::ParsedText>);
+
+impl std::borrow::Borrow<karet_treesitter::LayeredTree> for SharedTree {
+    fn borrow(&self) -> &karet_treesitter::LayeredTree {
+        &self.0.tree
     }
 }

@@ -231,5 +231,5 @@ fn family_of(index: &SeamIndex, file: FileId) -> Option<LanguageId> {
         .file_attribution(file)
         .map(|(_, language)| language)
         .or_else(|| karet_treesitter::language_id_from_path(index.file_path(file)?))?;
-    crate::lang::for_language(language).map(|mapping| mapping.language())
+    crate::lang::for_language(language).and_then(|mapping| mapping.language())
 }

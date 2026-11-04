@@ -5,11 +5,11 @@ use std::time::Duration;
 use karet_core::Change;
 use karet_core::CompletionItem;
 use karet_core::CompletionTrigger;
+use karet_core::EditCause;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Symbol;
 use karet_core::TextEdit;
-use karet_text::EditCause;
 use serde_json::json;
 use server_double::Behavior;
 use server_double::failing_connector;
@@ -22,9 +22,12 @@ use tokio::io::BufReader;
 
 use super::*;
 use crate::api::Command;
+use crate::api::DocumentCommand;
 use crate::api::Event;
+use crate::api::LanguageServerCommand;
 use crate::api::LanguageServerInstanceStatus;
 use crate::api::LanguageServerStatus;
+use crate::api::LspCommand;
 use crate::backend::Backend;
 use crate::backend::local_session;
 use crate::session::EventRx;
@@ -323,20 +326,22 @@ async fn unsupported_language_answers_empty_immediately() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let (rid, cdoc, cversion, items) = await_completions(&mut events).await.ok_or("no answer")?;
     assert_eq!(rid, Some(request));
@@ -352,27 +357,29 @@ async fn disabled_setting_spawns_nothing() -> TestResult {
     let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
     let spawns = Arc::new(AtomicUsize::new(0));
     let mut config = SessionConfig::default();
-    config.settings.lsp.enabled = false;
+    config.loaded_config.settings.lsp.enabled = false;
     let (mut session, mut events, _snaps) = Session::new(config);
     session.set_lsp_connector(test_connector(Behavior::Normal, None, Arc::clone(&spawns)));
     let backend = local_session(session, None);
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let (rid, _, _, items) = await_completions(&mut events).await.ok_or("no answer")?;
     assert_eq!(rid, Some(request));
@@ -394,21 +401,23 @@ async fn missing_binary_warns_once_and_answers_empty() -> TestResult {
     for path in [first, second] {
         backend.send(
             backend.next_id(),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
-            },
+            }
+            .into(),
         )?;
     }
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
 
     // Drain until the completion answer; count LSP warnings seen on the way.
@@ -449,20 +458,22 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 0),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
 
     let mut died_notice = false;
@@ -509,19 +520,21 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     backend.send(
         backend.next_id(),
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let _ = await_completions(&mut events)
         .await
@@ -544,11 +557,12 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
     }
     backend.send(
         backend.next_id(),
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let (_, _, _, items) = await_completions(&mut events)
         .await
@@ -565,14 +579,17 @@ mod disabled_tests;
 mod document_highlight_tests;
 mod editing_tests;
 mod failure_policy_tests;
+mod folding_tests;
 mod format_tests;
 mod hierarchy_tests;
 mod hint_tests;
 mod incremental_sync_tests;
+mod inline_completion_tests;
 mod intelligence_tests;
 mod inventory_tests;
 mod jdtls_tests;
 mod launch_tests;
+mod link_color_tests;
 mod liveness_tests;
 mod manual_provider_tests;
 mod pull_tests;

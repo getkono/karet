@@ -20,7 +20,10 @@ const ROW_PREFIX: usize = 3;
 const INDENT: usize = 2;
 
 /// The rail's heading: how many files changed, and the totals across them.
-pub(in crate::ui) fn file_summary_line(theme: &Theme, files: &[render::FileView]) -> Line<'static> {
+pub(in crate::ui) fn file_summary_line(
+    theme: &Theme,
+    files: &[crate::tab::ChangedFile],
+) -> Line<'static> {
     let label = theme.style(ThemeRole::LineNumberActive);
     let add = theme.style(ThemeRole::DiagnosticHint);
     let remove = theme.style(ThemeRole::DiagnosticError);
@@ -47,7 +50,7 @@ pub(in crate::ui) fn file_summary_line(theme: &Theme, files: &[render::FileView]
 /// Paint one tree row at `width`, whichever kind it is.
 pub(in crate::ui) fn tree_line(
     theme: &Theme,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     row: &ChangedFileRow,
     width: u16,
     icons: IconStyle,
@@ -126,7 +129,7 @@ fn dir_index_line(
 /// A file row: its status glyph, its name, why it is folded by default, and its stats.
 fn file_index_line(
     theme: &Theme,
-    file: &render::FileView,
+    file: &crate::tab::ChangedFile,
     label: &str,
     depth: u16,
     width: u16,
@@ -198,8 +201,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::render::test_file_view;
     use crate::tab::changed_file_rows;
+    use crate::tab::test_changed_file;
 
     fn text(line: &Line<'_>) -> String {
         line.spans
@@ -215,7 +218,7 @@ mod tests {
     #[test]
     fn a_directory_row_indents_and_carries_its_subtree_stats() {
         let theme = Theme::default();
-        let files = [test_file_view("a/b/one.rs", "x\n", "y\n")];
+        let files = [test_changed_file("a/b/one.rs", "x\n", "y\n")];
         let rows = changed_file_rows(&files, &BTreeSet::new());
         let line = tree_line(&theme, &files, &rows[0], RAIL, IconStyle::Ascii, false);
         let painted = text(&line);
@@ -228,7 +231,7 @@ mod tests {
     #[test]
     fn a_collapsed_directory_row_turns_its_chevron() {
         let theme = Theme::default();
-        let files = [test_file_view("a/one.rs", "x\n", "y\n")];
+        let files = [test_changed_file("a/one.rs", "x\n", "y\n")];
         let rows = changed_file_rows(&files, &BTreeSet::from([PathBuf::from("a")]));
         let painted = text(&tree_line(
             &theme,
@@ -245,7 +248,7 @@ mod tests {
     #[test]
     fn a_file_row_prints_its_name_indented_under_its_directory() {
         let theme = Theme::default();
-        let files = [test_file_view(
+        let files = [test_changed_file(
             "crates/karet/src/ui/commit.rs",
             "x\n",
             "y\n",
@@ -268,8 +271,8 @@ mod tests {
     fn rows_never_exceed_the_width_they_are_given() {
         let theme = Theme::default();
         let files = [
-            test_file_view("crates/karet/src/ui/commit/responsive.rs", "x\n", "y\n"),
-            test_file_view("Cargo.lock", "x\n", "y\n"),
+            test_changed_file("crates/karet/src/ui/commit/responsive.rs", "x\n", "y\n"),
+            test_changed_file("Cargo.lock", "x\n", "y\n"),
         ];
         let rows = changed_file_rows(&files, &BTreeSet::new());
         for width in [13, RAIL, 40] {
@@ -294,7 +297,7 @@ mod tests {
     #[test]
     fn a_generated_file_row_names_its_reason() {
         let theme = Theme::default();
-        let files = [test_file_view("Cargo.lock", "x\n", "y\n")];
+        let files = [test_changed_file("Cargo.lock", "x\n", "y\n")];
         let rows = changed_file_rows(&files, &BTreeSet::new());
         let painted = text(&tree_line(
             &theme,
@@ -311,8 +314,8 @@ mod tests {
     fn the_summary_counts_files_and_totals_their_lines() {
         let theme = Theme::default();
         let files = [
-            test_file_view("a.rs", "x\n", "y\n"),
-            test_file_view("b.rs", "x\n", "y\n"),
+            test_changed_file("a.rs", "x\n", "y\n"),
+            test_changed_file("b.rs", "x\n", "y\n"),
         ];
         let painted = text(&file_summary_line(&theme, &files));
         assert!(painted.contains("2 files changed"), "{painted:?}");

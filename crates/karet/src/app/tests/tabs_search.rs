@@ -1,5 +1,7 @@
 use super::support::*;
+use crate::app::scm::parse_rev_range;
 use crate::app::*;
+use crate::paths::canonical_nearest as canonical;
 
 #[test]
 fn toggle_sidebar_and_focus() {
@@ -7,7 +9,7 @@ fn toggle_sidebar_and_focus() {
     app.dispatch(Command::ToggleSidebar);
     assert!(!app.sidebar_visible);
     app.dispatch(Command::ToggleFocus);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -23,7 +25,7 @@ fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
     fill_reserved_tabs(&mut app);
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -38,11 +40,15 @@ fn focus_by_file_line_can_open_without_taking_the_focus() {
     write_file(&dir, "a.rs", b"fn a() {}\nlet x = 1;\nlet y = 2;\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), false);
     fill_reserved_tabs(&mut app);
 
-    assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps the keyboard");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "the sidebar keeps the keyboard"
+    );
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert_eq!(
         app.tabs[app.active].editor.cursor(),
@@ -362,7 +368,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     let a_idx = explorer_row_index(&app, "a.rs");
     let b_idx = explorer_row_index(&app, "b.rs");
@@ -371,7 +377,11 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     // Arrow onto b.rs: it opens in the pane's preview slot, and the sidebar
     // keeps keyboard focus so the user can keep arrowing.
     app.sidebar_step((b_idx as i32 - a_idx as i32).signum());
-    assert_eq!(app.focus, Focus::Sidebar, "arrowing must not steal focus");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "arrowing must not steal focus"
+    );
     assert_eq!(app.tabs.len(), 1);
     assert!(app.tabs[0].is_preview, "the arrowed-to file is a preview");
     assert_eq!(
@@ -391,7 +401,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
         app.tabs[0].path().map(canonical),
         Some(canonical(&dir.join("a.rs")))
     );
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -403,7 +413,7 @@ fn wheel_scrolling_the_explorer_moves_selection_without_previewing() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     let before = app.explorer.cursor();
 
@@ -427,7 +437,7 @@ fn arrowing_onto_a_directory_row_leaves_the_editor_untouched() {
     write_file(&dir, "a.rs", b"fn a() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     // Preview a.rs first, then arrow onto the `sub` directory row.
     let a_idx = explorer_row_index(&app, "a.rs");
@@ -460,12 +470,12 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     // b.rs is open as a permanent tab (not a preview).
     app.open_path(&dir.join("b.rs"));
     assert!(!app.tabs[0].is_preview);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     // Arrow onto b.rs from a.rs: it activates the existing permanent tab
     // rather than opening a preview, and does not steal focus.
@@ -479,14 +489,14 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
         "an already-permanent tab stays permanent"
     );
     assert_eq!(app.active, 0);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn find_highlights_matches_in_a_code_tab() {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
 
     let mut app = app();
@@ -494,13 +504,13 @@ fn find_highlights_matches_in_a_code_tab() {
         "t.rs",
         TabKind::Code {
             path: PathBuf::from("t.rs"),
-            language: "Rust",
+            file_type: karet_filetype::file_type_for_path(std::path::Path::new("t.rs")),
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("foo bar foo").into(),
             text: "foo bar foo".into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -594,7 +604,6 @@ fn commit_graph_browser_opens_fills_and_clamps_navigation() {
     // Backend is None in unit tests, so feed a history page directly.
     let commit = |hash: &str, summary: &str, parents: Vec<String>| Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         author: "Tester".to_string(),
         time: 0,
@@ -656,39 +665,6 @@ fn parse_rev_range_distinguishes_two_and_three_dot() {
 }
 
 #[test]
-fn open_compare_tab_builds_a_compare_tab() {
-    let mut app = app();
-    app.open_compare_tab(
-        "main".to_string(),
-        "HEAD".to_string(),
-        true,
-        vec![prepared_change("a.rs", StatusKind::Modified)],
-    );
-    match &app.tabs[app.active].kind {
-        TabKind::Compare {
-            base_label,
-            head_label,
-            merge_base,
-            files,
-            view,
-        } => {
-            assert_eq!(base_label, "main");
-            assert_eq!(head_label, "HEAD");
-            assert!(*merge_base);
-            assert_eq!(files.files.len(), 1);
-            assert_eq!(view.scroll, 0);
-        },
-        _ => panic!("expected a compare tab"),
-    }
-    // A compare tab scrolls via the shared pager arm.
-    app.scroll_lines(2);
-    assert!(matches!(
-        &app.tabs[app.active].kind,
-        TabKind::Compare { view, .. } if view.scroll == 2
-    ));
-}
-
-#[test]
 fn graph_compare_requires_a_marked_base() {
     let mut app = app();
     app.dispatch(Command::ShowCommitGraph);
@@ -699,7 +675,6 @@ fn graph_compare_requires_a_marked_base() {
         vec![
             Commit {
                 hash: "aaaa".to_string(),
-                short_hash: "aaaa".to_string(),
                 summary: "c1".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -707,7 +682,6 @@ fn graph_compare_requires_a_marked_base() {
             },
             Commit {
                 hash: "bbbb".to_string(),
-                short_hash: "bbbb".to_string(),
                 summary: "c0".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -738,7 +712,6 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
     // Build a standalone commit view with one changed file.
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: karet_vcs::Identity {
@@ -756,7 +729,10 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -795,7 +771,6 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -803,7 +778,10 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     let area = Rect {
         x: 0,
@@ -811,7 +789,7 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         width: 80,
         height: 20,
     };
-    app.pane_frames = vec![content_frame(&app, area)];
+    app.last_frame.panes = vec![content_frame(&app, area)];
     // Pretend the last frame placed the badge here.
     let badge = Rect {
         x: 20,
@@ -819,7 +797,7 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         width: 8,
         height: 1,
     };
-    app.commit_badge_rect = Some(badge);
+    app.focused_frame_mut().commit_badge_rect = Some(badge);
     let click = |col, row| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: col,

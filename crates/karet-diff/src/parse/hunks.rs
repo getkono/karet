@@ -84,7 +84,6 @@ pub(super) fn parse_hunks(lines: &[&str]) -> Result<Vec<Hunk>, DiffError> {
             old_count,
             new_start,
             new_count,
-            header,
             scope,
             new_scope: None,
             lines: diff_lines,
@@ -140,6 +139,28 @@ mod tests {
             parse_hunk_header("@@ -1,2 +1,2 @@ fn main() {")?,
             (1, 2, 1, 2)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn lines_before_the_first_hunk_header_are_skipped() -> Result<(), DiffError> {
+        let hunks = parse_hunks(&["junk", "more junk", "@@ -1 +1 @@", "-a", "+b"])?;
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines.len(), 2);
+        assert_eq!(hunks[0].lines[0].content, "a");
+        Ok(())
+    }
+
+    /// A parsed hunk keeps no copy of its header line: the header is rebuilt
+    /// from the parsed numbers and scope, git's count shorthand spelled out.
+    /// Falsified by echoing the source line back.
+    #[test]
+    fn a_parsed_header_is_rebuilt_from_its_numbers() -> Result<(), DiffError> {
+        let hunks = parse_hunks(&["@@ -3 +4,2 @@   fn main() {  ", "-a", "+b", "+c"])?;
+        assert_eq!(hunks[0].scope.as_deref(), Some("fn main() {"));
+        assert_eq!(hunks[0].header(), "@@ -3,1 +4,2 @@ fn main() {");
+        let hunks = parse_hunks(&["@@ -1 +1 @@", "-a", "+b"])?;
+        assert_eq!(hunks[0].header(), "@@ -1,1 +1,1 @@");
         Ok(())
     }
 

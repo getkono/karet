@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::HashSet;
+use std::time::Instant;
+
+use karet_core::LineCol;
+use karet_session::DocSnapshot;
+use karet_session::DocumentId;
+
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Apply a document snapshot to the matching code tab(s): the snapshot is the
@@ -153,11 +162,13 @@ impl App {
         if let Some((from, edit)) = carried {
             self.shift_inlay_hints(doc, from, snap.version, edit.as_slice());
             self.shift_code_lenses(doc, from, snap.version, edit.as_slice());
+            self.shift_links_and_colors(doc, from, snap.version, edit.as_slice());
             self.shift_navigation(doc, from, snap.version, edit.as_slice());
         }
         if advanced {
             self.note_inlay_edit(doc, Instant::now());
             self.note_code_lens_edit(doc, Instant::now());
+            self.note_link_color_edit(doc, Instant::now());
         }
         // The first snapshot of a document asks for its gutter markers; later
         // ones only when the text moved (a highlight pass republishes it as is).

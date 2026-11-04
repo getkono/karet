@@ -1,16 +1,19 @@
-use karet_core::Symbol;
+//! Folding background results back into the actor's state.
+//!
+//! This module applies what the session's producers report: language-server
+//! updates (converting LSP UTF-16 positions to buffer columns, see `columns`),
+//! highlight and spell results, file-system events, and reloaded configuration.
+//! It also hands the actor loop the producers' receivers, and reopens or
+//! restarts language-server documents. Retiring a provider is settled in
+//! `retirement`.
 
+use super::columns::convert_symbol_columns;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
 
 impl Session {
-    /// The session's configuration (workspace roots, format-on-save, spell-check).
-    #[must_use]
-    pub fn config(&self) -> &SessionConfig {
-        &self.config
-    }
-
     /// Take the file-watcher and its event stream, to be driven by the actor.
     ///
     /// The watcher is returned (rather than kept on the session) so the actor can
@@ -74,6 +77,9 @@ impl Session {
             update @ (LspUpdate::Completions { .. } | LspUpdate::CompletionResolved { .. }) => {
                 self.deliver_completion(update);
             },
+            update @ (LspUpdate::InlineCompletions { .. } | LspUpdate::Account { .. }) => {
+                self.deliver_inline_completions(update);
+            },
             LspUpdate::InlayHints {
                 request,
                 doc,
@@ -124,7 +130,7 @@ impl Session {
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 if symbols.is_empty() {
-                    symbols = document.syntax_symbols.as_ref().clone();
+                    symbols = document.syntax.symbols().as_ref().clone();
                 }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
@@ -205,6 +211,7 @@ impl Session {
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer),
             LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
             // A formatting answer either answers a Format command or finishes a
@@ -305,6 +312,7 @@ impl Session {
             LspUpdate::DiagnosticsCleared { server, .. } => {
                 self.clear_lsp_diagnostic_layer(&server, None);
                 self.clear_semantic_tokens_of(&server);
+                self.clear_server_folds_of(&server);
             },
             // The server is up, but no longer answers pulls for a document
             // it was pulled for: what it last answered would otherwise stay
@@ -313,6 +321,7 @@ impl Session {
                 self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
             },
             update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
+            update @ LspUpdate::FoldingRanges { .. } => self.adopt_server_folds(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {
@@ -395,22 +404,22 @@ impl Session {
             LspUpdate::InstallRequired {
                 server, language, ..
             } => {
-                match self.config.settings.lsp.managed_downloads {
+                match self.config.settings().lsp.managed_downloads {
                     crate::config::schema::ManagedDownloads::Prompt => {
                         // Ask at most once. A provider Karet has installed before
                         // has had this question answered already, and a refusal the
                         // user recorded is an answer too — re-asking either would
                         // spend their bandwidth on a decision they have made.
                         let root = self.config.lsp_registry_dir.as_deref();
-                        if crate::lsp_registry::ever_installed(root, &server) {
+                        if crate::lsp_registry::store::ever_installed(root, &server) {
                             return;
                         }
-                        if crate::lsp_registry::read_declined(root, &server).is_some() {
+                        if crate::lsp_registry::store::read_declined(root, &server).is_some() {
                             return;
                         }
                         let enabled = self
                             .config
-                            .settings
+                            .settings()
                             .lsp
                             .servers
                             .get(&language)
@@ -586,13 +595,10 @@ impl Session {
         if doc.buffer.version() != result.version {
             return;
         }
-        doc.highlights = result.highlights;
-        doc.folds = result.folds;
-        doc.semantic_blocks = result.semantic_blocks;
-        doc.syntax_symbols = result.symbols;
-        (doc.error_lines, doc.table_lines) = (result.error_lines, result.table_lines);
-        self.publish(result.doc, None);
-        self.schedule_spell(result.doc);
+        let doc_id = result.doc;
+        doc.syntax.adopt(result);
+        self.publish(doc_id, None);
+        self.schedule_spell(doc_id);
     }
 
     /// Queue the current token model after highlighting has settled. Disabled or
@@ -618,9 +624,9 @@ impl Session {
             language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
-            highlights: doc.highlights.clone(),
-            syntax_error_lines: doc.error_lines.clone(),
-            settings: self.config.settings.spellcheck.clone(),
+            highlights: doc.syntax.highlights().clone(),
+            syntax_error_lines: doc.syntax.error_lines().clone(),
+            settings: self.config.settings().spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
             self.clear_spell_diagnostics(doc_id);
@@ -747,6 +753,20 @@ impl Session {
         if let Some(report) = changed_config {
             self.apply_config_report(report);
         }
+        let keymap_paths: Vec<PathBuf> = event
+            .paths
+            .iter()
+            .filter(|path| self.config.keymap_paths.contains(path))
+            .cloned()
+            .collect();
+        if !keymap_paths.is_empty() {
+            self.emit(
+                None,
+                Event::KeymapChanged {
+                    paths: keymap_paths.clone(),
+                },
+            );
+        }
 
         if event
             .paths
@@ -757,10 +777,17 @@ impl Session {
             self.refresh_document_settings(&docs);
         }
 
+        // A keymap file inside a root (the project's `.karet/keymap.jsonc`) is
+        // still workspace content -- it can be open, tracked, or searched -- but
+        // the user's own keymap outside every root is not.
+        let roots = &self.config.roots;
         let workspace_paths: Vec<PathBuf> = event
             .paths
             .into_iter()
             .filter(|path| !config_paths.contains(path))
+            .filter(|path| {
+                !keymap_paths.contains(path) || roots.iter().any(|root| path.starts_with(root))
+            })
             .collect();
         for path in &workspace_paths {
             if let Some(&doc_id) = self.store.by_path.get(path) {
@@ -798,15 +825,15 @@ impl Session {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
         self.set_semantic_highlighting(report.settings.editor.semantic_highlighting.enabled);
-        let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
-        self.config.settings = report.settings.clone();
+        let ai_commit_changed =
+            self.config.settings().git.ai_commit != report.settings.git.ai_commit;
         self.config.loaded_config = report.clone();
         let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
         self.refresh_document_settings(&docs);
 
         // Semantic-comment settings can vary by language. Requeue every open
         // document from scratch so both global and selector changes take effect.
-        let settings = &self.config.settings;
+        let settings = self.config.settings();
         let highlight_tx = &self.highlight_tx;
         let mut spell_without_syntax = Vec::new();
         let undo_cap = settings.files.undo_cap();
@@ -862,18 +889,18 @@ impl Session {
 
     /// Re-resolve per-path behavior after an application or EditorConfig change.
     pub(super) fn refresh_document_settings(&mut self, docs: &[DocumentId]) {
-        let settings = self.config.settings.clone();
-        let inputs: Vec<(DocumentId, PathBuf, Option<&'static str>)> = docs
+        let settings = self.config.settings().clone();
+        let inputs: Vec<(DocumentId, PathBuf, karet_filetype::FileType)> = docs
             .iter()
             .filter_map(|doc_id| {
                 self.store
                     .docs
                     .get(doc_id)
-                    .map(|doc| (*doc_id, doc.path.clone(), doc.language_selector))
+                    .map(|doc| (*doc_id, doc.path.clone(), doc.file_type))
             })
             .collect();
-        for (doc_id, path, language) in inputs {
-            let (resolved, error) = resolve_document_settings(&path, language, &settings);
+        for (doc_id, path, file_type) in inputs {
+            let (resolved, error) = resolve_document_settings(&path, Some(file_type), &settings);
             let changed = self.store.docs.get_mut(&doc_id).is_some_and(|doc| {
                 if doc.settings == resolved {
                     return false;
@@ -907,37 +934,21 @@ impl Session {
     }
 }
 
-pub(super) fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
-    for symbol in symbols {
-        let range = symbol.range;
-        symbol.range = Range {
-            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-        };
-        let selection = symbol.selection_range;
-        symbol.selection_range = Range {
-            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
-            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
-        };
-        convert_symbol_columns(buffer, &mut symbol.children);
-    }
-}
-
-pub(super) fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
-    Range {
-        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-    }
-}
-
-/// A caret converted to the server's UTF-16 column encoding — the conversion
-/// every positional LSP forwarder applies (see the karet-lsp crate docs).
-pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
-    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
-}
-
 #[cfg(not(feature = "mdlint"))]
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+
+    /// Without the `mdlint` feature there is no linter to fix with: the
+    /// request is answered with a notice rather than left outstanding.
+    pub(super) fn fix_markdown_lint(&mut self, id: RequestId, _doc: crate::api::DocumentId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::System,
+                message: "markdown lint is not available in this build".to_owned(),
+            },
+        );
+    }
 }

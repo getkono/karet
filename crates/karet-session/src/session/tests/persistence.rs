@@ -21,7 +21,7 @@
         settings.files.backup_interval = 0; // any dirty doc is immediately due
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: Vec::new(),
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             swap_dir: None,
             ..SessionConfig::default()
         });
@@ -30,7 +30,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -38,7 +38,7 @@
         let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: insert_change("x"),
                 cause: EditCause::Replace,
@@ -51,7 +51,7 @@
         assert_eq!(scan(swapdir.path()).len(), 1, "dirty doc backed up");
 
         // A successful save clears the swap.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -90,14 +90,13 @@
     fn loaded_config_command_returns_in_memory_report() -> TestResult {
         let mut settings = crate::config::Settings::default();
         settings.editor.tab_size = 2;
-        let report = crate::config::LoadedConfig::from_settings(settings.clone());
+        let report = crate::config::LoadedConfig::from_settings(settings);
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
             loaded_config: report,
             ..SessionConfig::default()
         });
 
-        session.handle(RequestId(42), Command::LoadedConfig);
+        session.handle(RequestId(42), WorkspaceCommand::LoadedConfig);
         let received = events.try_recv();
         let Some((Some(RequestId(42)), Event::LoadedConfig { report })) = received else {
             return Err(
@@ -117,7 +116,7 @@
 
         session.apply_config_report(report);
 
-        assert_eq!(session.config.settings.editor.tab_size, 7);
+        assert_eq!(session.config.settings().editor.tab_size, 7);
         let received = events.try_recv();
         assert!(
             matches!(
@@ -137,7 +136,6 @@
         // A session pointed at that swap dir scans it on construction and announces.
         let (_session, mut events, _snaps) = Session::new(SessionConfig {
             roots: Vec::new(),
-            settings: crate::config::Settings::default(),
             swap_dir: Some(swapdir.path().to_path_buf()),
             ..SessionConfig::default()
         });

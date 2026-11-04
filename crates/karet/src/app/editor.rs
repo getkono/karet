@@ -1,14 +1,40 @@
 pub(super) mod column;
 mod folding;
 mod gutter;
-mod render;
 
+use std::time::Instant;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use karet_core::Change;
+use karet_core::EditCause;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_editor::EditorState;
 use karet_editor::Motion;
+use karet_editor::editing;
+use karet_editor::resolve_folds;
+use karet_session::DocumentCommand;
+use karet_session::DocumentId;
 use karet_session::FormatRequest;
 use karet_session::FormatScope;
+use karet_session::LspCommand;
+use karet_text::TextBuffer;
+use karet_text::words::class_run_at;
+use karet_text::words::line_span;
+use karet_widgets::PaneId;
 
-use super::*;
+use crate::app::App;
+use crate::app::MULTI_CLICK_INTERVAL;
+use crate::app::drag::DragGranularity;
+use crate::app::drag::EditorDrag;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
 use crate::app::scroll::adjust;
+use crate::app::state::PendingOpen;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// What a left click landed on, for multi-click counting: a press on another
 /// surface than the last one starts a new streak.
@@ -30,7 +56,7 @@ impl App {
         let fallback = u16::from(
             self.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .tab_size(),
         );
         App::tab_doc(tab)
@@ -43,7 +69,7 @@ impl App {
     /// combine hard tabs and spaces when an indent is not divisible by tab width.
     pub(super) fn active_indentation(&self) -> String {
         let tab = self.tabs.get(self.active);
-        let resolved = tab.map(|tab| self.settings.editor.for_language(tab_language(tab)));
+        let resolved = tab.map(|tab| self.settings.editor.for_language(tab.config_file_type()));
         let fallback_size = resolved.map_or(4, |settings| u16::from(settings.tab_size()));
         let fallback_spaces = resolved.is_none_or(|settings| settings.insert_spaces());
         let document = tab
@@ -74,11 +100,10 @@ impl App {
             return;
         }
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
-            effective_word_wrap(
-                tab,
+            tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab_language(tab))
+                    .for_language(tab.config_file_type())
                     .word_wrap(),
             )
         });
@@ -109,17 +134,11 @@ impl App {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, max);
                 *scroll = next as u16;
             },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.scroll, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 adjust(&mut view.scroll, delta);
             },
             TabKind::Hex { bytes, scroll, .. } => {
-                let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
+                let max = karet_fileview::hex::row_count(bytes).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
@@ -140,44 +159,12 @@ impl App {
                 let step = i64::from(delta.signum());
                 *page = (*page as i64 + step).clamp(0, max) as usize;
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    adjust(&mut pager.scroll, delta);
+                }
+            },
         }
-    }
-
-    /// Scroll the active code tab's in-editor Markdown preview and align the
-    /// source editor to the preview's nearest source anchor.
-    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
-        let current = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.markdown_preview.as_ref())
-            .map_or(0, |preview| usize::from(preview.scroll));
-        let next = (current as i64 + i64::from(delta)).max(0) as usize;
-        self.set_markdown_preview_scroll(next);
-    }
-
-    /// Put the in-editor Markdown preview's first visible wrapped line at `position`.
-    ///
-    /// The source pane follows, exactly as it does for the wheel: the two are kept in
-    /// sync through the preview's source anchors, so a dragged preview bar must not
-    /// leave the code beside it behind.
-    pub(super) fn set_markdown_preview_scroll(&mut self, position: usize) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        let TabKind::Code { buffer, .. } = &tab.kind else {
-            return;
-        };
-        let Some(preview) = tab.markdown_preview.as_mut() else {
-            return;
-        };
-        let max = preview.wrapped.lines.len().saturating_sub(1);
-        preview.scroll = u16::try_from(position.min(max)).unwrap_or(u16::MAX);
-        let source = preview
-            .wrapped
-            .source_line_for_wrapped(usize::from(preview.scroll));
-        let last = buffer.line_count().saturating_sub(1);
-        tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
     }
 
     /// Jump to the top or bottom of the active tab.
@@ -187,25 +174,17 @@ impl App {
         };
         match &mut tab.kind {
             TabKind::Code { buffer, .. } => {
-                tab.editor.scroll_line = if top {
+                tab.editor.scroll_to_line(if top {
                     0
                 } else {
                     buffer.line_count().saturating_sub(1) as u32
-                };
+                });
             },
             TabKind::MarkdownPreview {
                 wrapped, scroll, ..
             } => {
                 let last = u16::try_from(wrapped.lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
                 *scroll = if top { 0 } else { last };
-            },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => {
-                pager.scroll = if top { 0 } else { u16::MAX };
             },
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.scroll = if top { 0 } else { u16::MAX };
@@ -214,7 +193,7 @@ impl App {
                 *scroll = if top {
                     0
                 } else {
-                    bytes.len().div_ceil(16).saturating_sub(1)
+                    karet_fileview::hex::row_count(bytes).saturating_sub(1)
                 };
             },
             #[cfg(feature = "pdf")]
@@ -227,7 +206,11 @@ impl App {
                     (*page_count).saturating_sub(1)
                 };
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.scroll = if top { 0 } else { u16::MAX };
+                }
+            },
         }
     }
 
@@ -297,7 +280,7 @@ impl App {
         } else {
             FormatScope::Document
         };
-        let _ = self.send(SessionCommand::Format(FormatRequest { doc, scope }));
+        let _ = self.send(LspCommand::Format(FormatRequest { doc, scope }));
     }
 
     /// Expand every collapsed fold that hides a caret, in every code tab of
@@ -456,7 +439,8 @@ impl App {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
         let Some((pane, area, file_hit, dir_hit, collapse_hit)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
             .map(|f| {
@@ -481,7 +465,7 @@ impl App {
             return;
         };
         self.focus_pane_switch(pane);
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         if self.handle_language_server_click(mouse.column, mouse.row) {
             self.editor_drag = None;
             return;
@@ -524,7 +508,8 @@ impl App {
         // what its "Verified" / "Signed" state means.
         if streak == 2
             && self
-                .commit_badge_rect
+                .last_frame
+                .commit_badge_rect()
                 .is_some_and(|r| rect_contains(r, point))
             && let Some(Tab {
                 kind: TabKind::Commit { explain_since, .. },
@@ -675,7 +660,8 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let Some((pane, area)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.editor_rect, point))
             .map(|frame| (frame.pane, frame.editor_rect))
@@ -689,7 +675,7 @@ impl App {
         ) {
             return;
         }
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         let text = match self.clipboard.get_primary() {
             Ok(text) => text.replace("\r\n", "\n").replace('\r', "\n"),
             Err(_) => {
@@ -780,7 +766,7 @@ impl App {
                 {
                     return; // already requested (attach re-walks every tab)
                 }
-                if let Some(request) = self.send(SessionCommand::ConvertDocument { path }) {
+                if let Some(request) = self.send(DocumentCommand::Convert { path }) {
                     self.pending_conversions.insert(request, view);
                 }
                 return;
@@ -793,10 +779,11 @@ impl App {
         let id = backend.next_id();
         let _ = backend.send(
             id,
-            SessionCommand::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
-            },
+            }
+            .into(),
         );
         self.pending_open.insert(id, PendingOpen { path, view });
     }
@@ -948,23 +935,25 @@ impl App {
                 // The selection set on either side of the edit, each reported
                 // at the version it describes: the one before is what undoing
                 // the edit restores, the one after what redoing it restores.
-                let report = |cursors| SessionCommand::SetCursor { doc, view, cursors };
-                let apply = SessionCommand::ApplyChange {
+                let report = |cursors| DocumentCommand::SetCursor { doc, view, cursors };
+                let apply = DocumentCommand::ApplyChange {
                     doc,
                     change: change.clone(),
                     cause,
                 };
                 for command in [report(before), apply, report(after)] {
-                    let _ = backend.send(backend.next_id(), command);
+                    let _ = backend.send(backend.next_id(), command.into());
                 }
             }
             // The hints on screen move with the text until the server's
             // replacement for this version arrives.
             self.shift_inlay_hints(doc, base, version, &change.edits);
             self.shift_code_lenses(doc, base, version, &change.edits);
+            self.shift_links_and_colors(doc, base, version, &change.edits);
             self.shift_navigation(doc, base, version, &change.edits);
             self.note_inlay_edit(doc, Instant::now());
             self.note_code_lens_edit(doc, Instant::now());
+            self.note_link_color_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }
     }

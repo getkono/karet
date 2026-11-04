@@ -104,7 +104,7 @@ published to crates.io (everything else is `publish = false`).
 | `karet-dap` | engine | — | async DAP client: stdio/spawn-then-TCP transports over `karet-jsonrpc`'s Content-Length framing (`framing::content_length`), capability-gated handshake, run controls, threads→stack→scopes→variables, evaluate; `publish = false`, consumed by `karet-session`'s debugger orchestration |
 | `karet-vcs` | engine | ✓ | git facts engine: status/branches/log/commit detail/stash/staging/remotes — `gix` reads + hardened `git`-CLI writes; headless |
 | `karet-github` | engine | — | headless GitHub REST client (issues, PRs, checks, workflows); generated from a vendored OpenAPI spec at build time; consumed only by `karet-session` |
-| `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); no karet deps |
+| `karet-search` | engine | ✓ | in-file + workspace search/replace, plus the shared gitignore-aware file walk (`walk_text_files`); only karet dep is `karet-filetype` (shared binary sniff) |
 | `karet-seam` | engine | — | a repository's **seams** as a queryable index: package discovery (Cargo, Python, Node, Swift, Gradle, Maven, CMake/Meson/Make) → containment tree with a root per package, regrouped so members sit under the type they belong to whatever syntax declared them, per-lens facets (api/substitution/variation/boundary/hazard), edges, `cfg` configurations, and a predicate query language; a **call tier** (one tree-sitter call query per language → name-resolved `calls` edges tagged with how sure they are → per-function own/inclusive/tree-weighted lines as lower and upper bounds, `reach:`/`callers:` terms); builds in parallel (rayon) and emits a replayable per-file `FileContribution` so a caller can cache it; `lang-rust`/`lang-python`/`lang-typescript`/`lang-swift`/`lang-kotlin` mappings, plus `lang-c`/`lang-cpp`/`lang-java` (containment and `api` only; the other lenses are declared unread) |
 | `karet-watch` | engine | — | debounced cross-platform FS-watch → neutral `FsEvent` Tokio stream; enumerates off-thread (headless) |
 | `karet-fuzzy` | engine | — | fuzzy match + ranking (nucleo-backed, smart case), shared by widgets and completion |
@@ -141,8 +141,9 @@ needed. The individual tasks
 (`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
 requests and runs `mise run feature-subsets`, which `cargo test`s the grammar,
-theme and blameline feature subsets `--all-features` never builds and `cargo
-check`s the headless engines without `view`. It stays out of `verify`, so the
+theme and blameline feature subsets `--all-features` never builds, `cargo
+check`s the headless engines without `view`, and runs `cargo clippy` on
+`karet-session`'s default and `--no-default-features` builds. It stays out of `verify`, so the
 pre-push hook does not run it.
 
 Format Rust with `mise run format`, never with an editor's format-on-save:

@@ -250,18 +250,29 @@ fn a_crlf_banner_in_the_header_is_recognized() {
 }
 
 #[test]
-fn a_crlf_blank_line_does_not_end_the_header_block() {
-    // Pinned current behaviour: the header block ends only at `\n\n`, and a CRLF
-    // blank line is `\r\n\r\n`, so in a CRLF file the whole guarded window counts
-    // as header. The LF twin of this input is rejected by
-    // `a_banner_below_the_header_block_does_not_count`.
+fn a_crlf_blank_line_ends_the_header_block() {
+    // A CRLF blank line (`\r\n\r\n`) ends the header block just as `\n\n` does,
+    // so a banner below it counts in neither line ending.
     let head = "# Title\r\n\r\nSome prose.\r\n\r\nPlease do not edit this section.\r\n";
-    assert_eq!(
-        generated_for_content(Path::new("README.md"), head),
-        Some(Generated::Marker)
-    );
+    assert_eq!(generated_for_content(Path::new("README.md"), head), None);
     let lf = head.replace("\r\n", "\n");
     assert_eq!(generated_for_content(Path::new("README.md"), &lf), None);
+}
+
+#[test]
+fn a_mixed_line_ending_blank_line_ends_the_header_block() {
+    // An LF line followed by a CRLF blank line, and the reverse, both end the
+    // header block at whichever blank line comes first.
+    for head in [
+        "# Title\n\r\nPlease do not edit this section.\r\n",
+        "# Title\r\n\nPlease do not edit this section.\n",
+    ] {
+        assert_eq!(generated_for_content(Path::new("README.md"), head), None);
+    }
+    // The earlier of the two blank-line forms wins: a banner sitting between an
+    // LF blank line and a later CRLF one is below the header block.
+    let head = "# Title\n\nPlease do not edit this section.\r\n\r\nmore\r\n";
+    assert_eq!(generated_for_content(Path::new("README.md"), head), None);
 }
 
 #[test]

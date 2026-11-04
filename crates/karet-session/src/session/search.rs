@@ -25,7 +25,7 @@ impl Session {
         }
         query
             .excludes
-            .extend(self.config.settings.search.exclude.iter().cloned());
+            .extend(self.config.settings().search.exclude.iter().cloned());
         let job = SearchJob::Search {
             id,
             roots,
@@ -64,7 +64,7 @@ impl Session {
         }
         query
             .excludes
-            .extend(self.config.settings.search.exclude.iter().cloned());
+            .extend(self.config.settings().search.exclude.iter().cloned());
         let job = SearchJob::ReplaceAll {
             id,
             roots,

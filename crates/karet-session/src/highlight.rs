@@ -16,18 +16,18 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
-use karet_syntax::FoldRegions;
+use karet_core::AppliedEdit;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_syntax::Folder;
-use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_syntax::OutlineExtractor;
 use karet_syntax::SemanticBlocker;
-use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
 use karet_syntax::TableFinder;
 use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
-use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
 use karet_treesitter::LayeredTree;
@@ -62,7 +62,7 @@ pub(crate) struct HighlightRequest {
     pub semantic: Option<SemanticCommentConfig>,
     /// `Some(edits)` advances the retained tree incrementally; `None` forces a full
     /// parse (a fresh open, a reload, or a language change).
-    pub edits: Option<Vec<Edit>>,
+    pub edits: Option<Vec<AppliedEdit>>,
 }
 
 /// The worker's answer for one document version.
@@ -87,17 +87,17 @@ pub(crate) struct HighlightResult {
 const INDENT_FOLD_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// The fold regions of a document no grammar parses, from its indentation,
-/// with tabs as wide as the tab size `settings` resolve for `language` (see
+/// with tabs as wide as the tab size `settings` resolve for `file_type` (see
 /// [`karet_syntax::fold_by_indent`]).
 pub(crate) fn indent_folds(
     settings: &crate::config::Settings,
-    language: Option<&'static str>,
+    file_type: Option<karet_filetype::FileType>,
     buffer: &TextBuffer,
 ) -> Arc<FoldRegions> {
     if buffer.len_bytes() > INDENT_FOLD_MAX_BYTES {
         return Arc::default();
     }
-    let tab_size = settings.editor.for_language(language).tab_size();
+    let tab_size = settings.editor.for_language(file_type).tab_size();
     let text = buffer.text_snapshot();
     Arc::new(karet_syntax::fold_by_indent(&text, u32::from(tab_size)))
 }
@@ -303,8 +303,8 @@ fn compute(
 mod tests {
     use super::*;
 
-    fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
-        Edit {
+    fn edit(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: old_end,
             new_end_byte: new_end,
@@ -315,11 +315,16 @@ mod tests {
         }
     }
 
-    fn request(version: u64, text: &str, edits: Option<Vec<Edit>>) -> HighlightRequest {
+    fn request(
+        lang: LanguageId,
+        version: u64,
+        text: &str,
+        edits: Option<Vec<AppliedEdit>>,
+    ) -> HighlightRequest {
         HighlightRequest {
             doc: DocumentId(1),
             version,
-            lang: LanguageId(1),
+            lang,
             text: text.into(),
             semantic: None,
             edits,
@@ -328,9 +333,12 @@ mod tests {
 
     #[test]
     fn merge_takes_the_newer_text_and_concatenates_edits() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let merged = merge(
-            request(1, "a", Some(vec![edit(0, 0, 1)])),
-            request(2, "ab", Some(vec![edit(1, 1, 2)])),
+            request(rust, 1, "a", Some(vec![edit(0, 0, 1)])),
+            request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])),
         );
         assert_eq!(merged.version, 2);
         assert_eq!(merged.text.as_str(), "ab");
@@ -342,43 +350,54 @@ mod tests {
 
     #[test]
     fn merge_forces_a_full_parse_when_either_side_demands_one() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         // A reload (edits: None) invalidates the queued incremental edits before it.
         let merged = merge(
-            request(1, "a", Some(vec![edit(0, 0, 1)])),
-            request(2, "xyz", None),
+            request(rust, 1, "a", Some(vec![edit(0, 0, 1)])),
+            request(rust, 2, "xyz", None),
         );
         assert!(merged.edits.is_none());
 
         // ...and an incremental request cannot ride a tree that was never advanced.
         let merged = merge(
-            request(1, "a", None),
-            request(2, "ab", Some(vec![edit(1, 1, 2)])),
+            request(rust, 1, "a", None),
+            request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])),
         );
         assert!(merged.edits.is_none());
     }
 
     #[test]
     fn merge_forces_a_full_parse_when_the_language_changed() {
-        let mut older = request(1, "a", Some(vec![edit(0, 0, 1)]));
-        older.lang = LanguageId(2);
-        let merged = merge(older, request(2, "ab", Some(vec![edit(1, 1, 2)])));
+        let (Some(rust), Some(markdown)) = (
+            karet_treesitter::languages::RUST,
+            karet_treesitter::languages::MARKDOWN,
+        ) else {
+            return; // grammars not compiled in; nothing to test
+        };
+        let older = request(markdown, 1, "a", Some(vec![edit(0, 0, 1)]));
+        let merged = merge(older, request(rust, 2, "ab", Some(vec![edit(1, 1, 2)])));
         assert!(merged.edits.is_none());
-        assert_eq!(merged.lang, LanguageId(1), "the newer language wins");
+        assert_eq!(merged.lang, rust, "the newer language wins");
     }
 
     #[test]
     fn absorb_collapses_repeat_updates_for_one_document() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let mut pending = HashMap::new();
         let mut trees = HashMap::new();
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(1, "a", Some(vec![edit(0, 0, 1)]))),
+            HighlightJob::Update(request(rust, 1, "a", Some(vec![edit(0, 0, 1)]))),
         );
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(2, "ab", Some(vec![edit(1, 1, 2)]))),
+            HighlightJob::Update(request(rust, 2, "ab", Some(vec![edit(1, 1, 2)]))),
         );
         assert_eq!(pending.len(), 1, "a burst collapses to one request");
         let request = pending.remove(&DocumentId(1));
@@ -421,7 +440,7 @@ mod tests {
         trees: &mut HashMap<DocumentId, Retained>,
         lang: LanguageId,
         text: &str,
-        edits: Option<Vec<Edit>>,
+        edits: Option<Vec<AppliedEdit>>,
     ) -> Option<Vec<(usize, usize, u16)>> {
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -475,7 +494,7 @@ mod tests {
 
     /// Replace the first `needle` in `text` with `with`, returning the edit that
     /// describes the change in the frame of the text before it.
-    fn replace(text: &mut String, needle: &str, with: &str) -> Edit {
+    fn replace(text: &mut String, needle: &str, with: &str) -> AppliedEdit {
         let start = text.find(needle).unwrap_or_default();
         let end = start + needle.len();
         let old = text.clone();
@@ -486,7 +505,7 @@ mod tests {
             let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
             karet_core::BytePoint::new(row, col)
         };
-        Edit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: end,
             new_end_byte: start + with.len(),
@@ -495,6 +514,30 @@ mod tests {
             new_end_point: point(text, start + with.len()),
             replaced: needle.to_owned(),
         }
+    }
+
+    #[test]
+    fn a_full_parse_or_a_new_language_never_reuses_the_retained_tree() {
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        let mut trees = HashMap::new();
+        assert!(compute_spans(&mut trees, rust, "fn a() { let x = 1; }\n", None).is_some());
+        // A full parse (no edits) of text the retained tree knows nothing about.
+        let rewritten = "/// Doc.\nconst S: &str = \"x\";\n";
+        assert_eq!(
+            compute_spans(&mut trees, rust, rewritten, None),
+            compute_spans(&mut HashMap::new(), rust, rewritten, None),
+        );
+        // Edits against a tree of another language cannot be applied to it.
+        let Some(python) = karet_treesitter::language_id_from_injection_name("python") else {
+            return; // python grammar not compiled in
+        };
+        let script = "def f():\n    return \"s\"  # note\n";
+        assert_eq!(
+            compute_spans(&mut trees, python, script, Some(Vec::new())),
+            compute_spans(&mut HashMap::new(), python, script, None),
+        );
     }
 
     #[test]
@@ -510,15 +553,9 @@ mod tests {
         // The second edit opens a string the first edit's text precedes, so
         // applying only one of them, or both in the wrong frame, changes spans.
         let first = replace(&mut text, "fn a() {}", "// TODO: a\nfn a() {}");
-        let v1 = HighlightRequest {
-            lang: rust,
-            ..request(1, &text, Some(vec![first]))
-        };
+        let v1 = request(rust, 1, &text, Some(vec![first]));
         let second = replace(&mut text, "1;", "\"open");
-        let v2 = HighlightRequest {
-            lang: rust,
-            ..request(2, &text, Some(vec![second]))
-        };
+        let v2 = request(rust, 2, &text, Some(vec![second]));
         let merged = merge(v1, v2);
         assert_eq!(merged.text.as_str(), text, "the newer text wins");
         let edits = merged.edits.unwrap_or_default();
@@ -597,12 +634,15 @@ mod tests {
 
     #[test]
     fn absorb_drop_forgets_pending_work_and_trees() {
+        let Some(rust) = karet_treesitter::languages::RUST else {
+            return; // rust grammar not compiled in; nothing to test
+        };
         let mut pending = HashMap::new();
         let mut trees = HashMap::new();
         absorb(
             &mut pending,
             &mut trees,
-            HighlightJob::Update(request(1, "a", None)),
+            HighlightJob::Update(request(rust, 1, "a", None)),
         );
         absorb(&mut pending, &mut trees, HighlightJob::Drop(DocumentId(1)));
         assert!(pending.is_empty());
@@ -611,7 +651,7 @@ mod tests {
 
     #[test]
     fn compute_publishes_the_fold_query_regions_with_their_kinds() {
-        use karet_syntax::FoldKind;
+        use karet_core::FoldKind;
         let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
             return; // rust grammar not compiled in; nothing to test
         };
@@ -665,5 +705,19 @@ mod tests {
         let huge = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(INDENT_FOLD_MAX_BYTES)));
         let settings = crate::config::Settings::default();
         assert!(indent_folds(&settings, None, &huge).regions().is_empty());
+        // The bound is 4 MiB inclusive: a 2 MiB document, and one of exactly
+        // the bound, still fold.
+        let large = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(2 * 1024 * 1024)));
+        assert!(!indent_folds(&settings, None, &large).regions().is_empty());
+        let at_bound = TextBuffer::from_text(&format!(
+            "a\n  b\n{}",
+            " ".repeat(INDENT_FOLD_MAX_BYTES - "a\n  b\n".len())
+        ));
+        assert_eq!(at_bound.len_bytes(), INDENT_FOLD_MAX_BYTES);
+        assert!(
+            !indent_folds(&settings, None, &at_bound)
+                .regions()
+                .is_empty()
+        );
     }
 }

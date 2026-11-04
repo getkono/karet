@@ -1,14 +1,14 @@
 //! Code navigation beyond Go to Definition, asked with
-//! [`Command::FindLocations`](super::Command::FindLocations) and answered by
+//! [`LspCommand::FindLocations`](super::LspCommand::FindLocations) and answered by
 //! [`Event::Locations`](super::Event::Locations).
 
 use karet_core::ServerFeature;
 
-/// What a [`Command::FindLocations`](super::Command::FindLocations) asks the
+/// What a [`LspCommand::FindLocations`](super::LspCommand::FindLocations) asks the
 /// language server for: every one is a position in, file locations out.
 ///
 /// Go to Definition is not among them: it keeps its own
-/// [`Command::Definition`](super::Command::Definition) /
+/// [`LspCommand::Definition`](super::LspCommand::Definition) /
 /// [`Event::Definitions`](super::Event::Definitions) pair, which predates these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]

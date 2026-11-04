@@ -2,11 +2,9 @@
 //!
 //! A [`SlotKey`] is the identity of three things at once -- the manager's slot,
 //! the task serving it, and the diagnostic layer that task publishes under. They
-//! are one value here so they cannot drift apart. Before this the same identity
-//! was spelled two ways: a `"{provider}@{root}"` string on the slot and the
-//! layer, and a `(LanguageServerId, PathBuf)` tuple on the runtime-state cache.
-//! Two spellings meant two lookups, and the fences that tried to reconcile them
-//! are what issue #278 was filed to remove.
+//! are one value here so they cannot drift apart: there is one spelling of the
+//! identity and one lookup, with no fence needed to reconcile two. The
+//! provider's runtime state lives on the slot itself (see [`ServerSlot`]).
 
 use std::collections::HashSet;
 use std::fmt;

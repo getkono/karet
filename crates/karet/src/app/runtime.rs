@@ -1,4 +1,41 @@
-use super::*;
+use std::io;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+
+use color_eyre::eyre::eyre;
+use crossterm::event;
+use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
+use crossterm::event::EnableMouseCapture;
+use crossterm::event::Event;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyboardEnhancementFlags;
+use crossterm::event::PushKeyboardEnhancementFlags;
+use crossterm::terminal::SetTitle;
+use karet_core::NotificationKind;
+use karet_fileview::image;
+use karet_session::Backend;
+use karet_session::EventRx;
+use karet_session::SessionConfig;
+use karet_session::SnapshotRx;
+use karet_session::local;
+use ratatui::layout::Rect;
+use tokio::sync::mpsc;
+
+use crate::app::App;
+use crate::app::SIDEBAR_MIN_WIDTH;
+use crate::app::notifications::Report;
+use crate::app::state::TerminalCaps;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::ui;
+use crate::view::View;
+use crate::workspace;
 
 /// The session configuration for `app` — shared by the interactive runtime and
 /// the capture harness so the two attach identically. `swap_dir` differs: the
@@ -7,17 +44,23 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
     SessionConfig {
         roots: vec![app.root.clone()],
         diff_syntax: app.syntax,
-        settings: app.settings.clone(),
         loaded_config: app.loaded_config.clone(),
         swap_dir,
         // Every external process is owned by a hidden copy of this executable.
         process_supervisor: std::env::current_exe().ok(),
         // Immutable installations are shared by every local karet instance.
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
+        lsp_registry_dir: karet_session::dirs::data_local_dir()
+            .map(|dir| dir.join("language-servers")),
         // The stored seam index, so opening the view a second time does not re-parse a
         // repository that has not changed. Losing it costs a rebuild and nothing else.
-        seam_cache_dir: karet_session::seam_cache::default_cache_dir(),
+        seam_cache_dir: karet_session::default_seam_cache_dir(),
+        // Saving a `keymap.jsonc` rebinds live: the session watches the files and
+        // reports `KeymapChanged`, so the app runs no watcher of its own.
+        keymap_paths: app
+            .keymap_files
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect(),
     }
 }
 
@@ -60,6 +103,50 @@ pub(super) fn attach_backend(
     Ok((events, snaps))
 }
 
+/// The sidebar width a body `body_width` columns wide shows for a user-chosen
+/// `width`: it can grow to nearly the full width, but always leaves one column
+/// for the drag divider, and never narrows below [`SIDEBAR_MIN_WIDTH`] while the
+/// body has room for it.
+pub(crate) fn clamp_sidebar_width(width: u16, body_width: u16) -> u16 {
+    let max = body_width.saturating_sub(1).max(1);
+    width.clamp(SIDEBAR_MIN_WIDTH.min(max), max)
+}
+
+impl App {
+    /// Bring the model in line with the frame about to be painted into `area`.
+    ///
+    /// Everything a frame needs that is not painting runs here, so
+    /// [`ui::draw`] can only paint and record geometry: opening the folds that
+    /// hide a caret, asking the backend for the symbols the breadcrumb and
+    /// outline read and for the explorer's nested-repository badges, clamping
+    /// the stored sidebar width to the terminal (so a later drag starts from
+    /// what is shown after a resize), keeping the outline selection within its
+    /// rows, and dropping a maximised pane that lost focus. The interactive loop
+    /// and `--capture` both call it before every draw. Every request it makes is
+    /// asked once per document version or path, so a repaint asks nothing new.
+    pub(crate) fn prepare_frame(&mut self, area: Rect) {
+        self.unfold_around_carets();
+        // The breadcrumb names the symbols around the caret, so the active
+        // document's symbols are kept current whether or not the outline is open.
+        self.request_active_symbols();
+        if self.sidebar_visible && self.view.shows_sidebar() {
+            self.sidebar_width = clamp_sidebar_width(self.sidebar_width, area.width);
+            if self.sidebar_panel == SidebarPanel::Explorer {
+                self.request_nested_repository_statuses();
+            }
+        }
+        if self.view == View::Editor {
+            if self.outline.visible {
+                self.request_active_outline();
+                self.sync_outline_selection();
+            }
+            // A maximised pane that lost focus since it was maximised is dropped,
+            // so returning focus to it later does not maximise it again.
+            self.modes.maximized = self.maximized_pane();
+        }
+    }
+}
+
 pub fn run(mut app: App) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
@@ -73,9 +160,16 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
+    // Before any cache opens: bring the caches earlier releases kept under a second
+    // root (macOS/Windows only) onto the one root every store now shares.
+    match karet_session::dirs::migrate_legacy_cache() {
+        Ok(0) => {},
+        Ok(moved) => tracing::info!(moved, "moved legacy cache entries to the karet cache root"),
+        Err(error) => tracing::warn!(%error, "could not migrate the legacy karet cache"),
+    }
     // The real app persists crash-recovery swaps to the user data directory;
     // headless/test sessions leave this unset and keep no backups.
-    let config = session_config(&app, karet_session::backup::default_swap_dir());
+    let config = session_config(&app, karet_session::default_swap_dir());
     // Only the live editor remembers what was opened: tests and `--capture`
     // keep the in-memory store and never write the user's state directory.
     if let Some(path) = workspace::RecentStore::default_path() {
@@ -89,7 +183,10 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
         io::stdout(),
-        SetTitle(format!("karet - {}", crate::window_title_path(&app.root)))
+        SetTitle(format!(
+            "karet - {}",
+            crate::paths::window_title_path(&app.root)
+        ))
     );
     let _keyboard = {
         let _ = crossterm::execute!(
@@ -110,27 +207,24 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         EnableFocusChange
     );
 
-    // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
-    // the input reader thread has not started yet, so we can read the reply here).
-    // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
-    // the heuristic already trusts.
-    if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.graphics = GraphicsProtocol::Kitty;
-        app.caps.kitty_graphics = true;
-        app.caps.placeholders = super::state::unicode_placeholders();
-    }
-    // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
-    // the sidebar/SCM dividers) — confirmed support only, never assumed.
-    if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.pointer_shapes = true;
-    }
+    // Refine the environment's answers with the real handshakes (raw mode is on and
+    // the input reader thread has not started yet, so the replies are read here).
+    // This is the probe `--doctor` reports: Kitty graphics are upgraded when the
+    // terminal answers and never downgraded from a trusted heuristic, and OSC 22
+    // pointer-shape hints (col-resize/row-resize over the sidebar/SCM dividers)
+    // are confirmed support only, never assumed. The keyboard answer is the one
+    // the gate above already got.
+    let probed = crate::term_caps::probe_with_keyboard(kitty_keyboard_supported);
+    let cell_px = app.caps.cell_px;
+    app.caps = TerminalCaps::from_capabilities(&probed);
+    app.caps.cell_px = cell_px;
     // Themes are RGB; a terminal without 24-bit colour gets every frame
     // quantised to the 256-colour palette instead.
-    let color_depth = crate::term_caps::probe_color_depth();
+    let color_depth = probed.color_depth;
 
     // The saved workspace layout lives beside the swaps. Only the live editor
     // reads or writes it: `--capture` and tests never touch the user's state.
-    let layout_dir = karet_session::backup::default_swap_dir();
+    let layout_dir = karet_session::default_swap_dir();
 
     let result = runtime.block_on(async {
         // Restored before the backend attaches, so attaching registers every
@@ -142,7 +236,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
-                .for_language(tab_language(tab))
+                .for_language(tab.config_file_type())
                 .graphical_cursor()
                 == Some(true)
         });
@@ -256,17 +350,8 @@ async fn event_loop(
 
     let mut decoded_images = preview_image_results(app);
     let mut file_scans = app.file_index.take_receiver();
+    let mut seam_discoveries = app.seam_discovery.take_receiver();
     let mut terminal_events = terminal_events(app);
-    // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
-    let keymap_paths: Vec<std::path::PathBuf> =
-        crate::keymap::user::paths(std::slice::from_ref(&app.root))
-            .into_iter()
-            .map(|(_, path)| path)
-            .collect();
-    let (_keymap_watcher, mut keymap_changes) = match crate::keymap::user::watch(&keymap_paths) {
-        Some((watcher, rx)) => (Some(watcher), Some(rx)),
-        None => (None, None),
-    };
 
     // Every wake-up repaints, except one that brought only integrated-terminal
     // output arriving faster than its frame cap: that output waits for the
@@ -278,6 +363,7 @@ async fn event_loop(
         app.observe_navigation();
         if redraw {
             app.sync_preview_graphics();
+            app.prepare_frame(terminal.size()?.into());
             terminal.draw(|f| {
                 ui::draw(f, app);
                 crate::color_depth::fit_buffer(f.buffer_mut(), color_depth);
@@ -295,8 +381,11 @@ async fn event_loop(
         // how much of the document is on screen.
         app.request_inlay_hints();
         app.request_code_lenses();
+        app.request_links_and_colors();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
+        // And the ghost-text ask, once typing has paused.
+        app.probe_inline_completion(Instant::now());
         // So does the occurrence highlight.
         app.probe_occurrences(Instant::now());
         // A workspace-symbol query goes out once typing has paused.
@@ -322,12 +411,10 @@ async fn event_loop(
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
             },
-            terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
-            change = recv_decoded(&mut keymap_changes) => if change.is_some() {
-                // One reload covers a burst of events (an atomic-rename save).
-                while keymap_changes.as_mut().is_some_and(|rx| rx.try_recv().is_ok()) {}
-                app.reload_keymap();
+            discovery = recv_decoded(&mut seam_discoveries) => if let Some(discovery) = discovery {
+                app.on_seam_discovery(discovery);
             },
+            terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -339,6 +426,13 @@ async fn event_loop(
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
         app.fire_auto_save(Instant::now());
+        // A due scan that changed problems repaints even when the terminal arm
+        // just set `redraw = false` (the biased select can take it over the
+        // expired sleep).
+        #[cfg(feature = "terminal")]
+        {
+            redraw |= app.fire_task_scans(Instant::now());
+        }
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
@@ -363,6 +457,10 @@ async fn event_loop(
         while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw = true;
             app.on_file_index(scan);
+        }
+        while let Some(discovery) = seam_discoveries.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            redraw = true;
+            app.on_seam_discovery(discovery);
         }
         while let Some(event) = terminal_events.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw |= accept_terminal(app, Some(event));
@@ -448,7 +546,7 @@ fn note_frame(_app: &mut App) {}
 /// Dispatch one terminal event to the app.
 pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
     app.reset_graphics_caret_blink();
-    let previous = (app.focus == Focus::Editor)
+    let previous = (app.keyboard.focus() == Focus::Editor)
         .then(|| app.active_code_doc())
         .flatten();
     match event {
@@ -473,9 +571,43 @@ pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
     app.observe_navigation();
 }
 
+/// Pops the kitty keyboard-enhancement flags on drop, so they are cleared even if
+/// the event loop panics (ratatui's panic hook restores the rest of the terminal).
+struct KeyboardEnhancementGuard;
+
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::farewell_line;
+    use super::session_config;
+    use crate::app::tests::support::app;
+    use crate::keymap::user::Source;
+
+    /// The session watches exactly the keymap files the app re-reads, in order;
+    /// without them it never reports `KeymapChanged` and a saved
+    /// `keymap.jsonc` stops rebinding live.
+    #[test]
+    fn session_config_hands_the_keymap_files_to_the_session_watch() {
+        let mut app = app();
+        app.keymap_files = vec![
+            (Source::User, PathBuf::from("/u/karet/keymap.jsonc")),
+            (Source::Project, PathBuf::from("/p/.karet/keymap.jsonc")),
+        ];
+        assert_eq!(
+            session_config(&app, None).keymap_paths,
+            vec![
+                PathBuf::from("/u/karet/keymap.jsonc"),
+                PathBuf::from("/p/.karet/keymap.jsonc"),
+            ]
+        );
+    }
 
     #[test]
     fn a_farewell_line_escapes_control_characters_and_keeps_the_rest() {
@@ -489,5 +621,127 @@ mod tests {
             "quit: 1 save(s) abandoned — /home/zoë/t.rs",
             "printable non-ASCII passes through untouched"
         );
+    }
+}
+
+/// [`App::prepare_frame`] owns a frame's requests and clamps, so painting a frame
+/// without it changes nothing a backend or the model can observe.
+#[cfg(test)]
+mod prepare_frame_tests {
+    use std::collections::BTreeSet;
+
+    use karet_core::FoldRegion;
+    use karet_core::FoldRegions;
+    use karet_session::Command as SessionCommand;
+    use karet_session::VcsCommand;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::app::tests::harness::Rig;
+    use crate::app::tests::support::RecordingBackend;
+    use crate::app::tests::support::test_dir;
+    use crate::app::tests::support::write_file;
+    use crate::tab::TabKind;
+
+    /// Paint one frame of `app` without preparing it first.
+    fn paint_only(app: &mut App, width: u16, height: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal.draw(|f| ui::draw(f, app)).expect("draw the shell");
+    }
+
+    /// Every command `backend` has been sent, oldest first.
+    fn sent(backend: &RecordingBackend) -> Vec<SessionCommand> {
+        backend
+            .sent
+            .lock()
+            .map(|sent| sent.iter().map(|(_, command)| command.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_sidebar_clamp_leaves_a_divider_column_and_keeps_the_minimum_while_it_fits() {
+        // (stored width, body width) -> shown width
+        let cases = [
+            (30, 80, 30),
+            (200, 80, 79),
+            (4, 80, SIDEBAR_MIN_WIDTH),
+            (30, 10, 9),
+            (30, 1, 1),
+            (30, 0, 1),
+        ];
+        for (width, body, shown) in cases {
+            assert_eq!(
+                clamp_sidebar_width(width, body),
+                shown,
+                "width {width} in a {body}-column body"
+            );
+        }
+    }
+
+    #[test]
+    fn painting_sends_nothing_and_preparing_asks_for_the_explorers_nested_repositories() {
+        let dir = test_dir("prepare-frame-nested-status");
+        write_file(&dir, "nested/.git/config", b"[core]\n");
+        write_file(&dir, "nested/src/lib.rs", b"pub fn example() {}\n");
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+        app.backend = Some(backend.clone());
+        app.sidebar_visible = true;
+        app.sidebar_panel = SidebarPanel::Explorer;
+
+        paint_only(&mut app, 80, 24);
+        assert!(
+            sent(&backend).is_empty(),
+            "a paint sends the backend nothing"
+        );
+
+        app.prepare_frame(Rect::new(0, 0, 80, 24));
+        let nested: Vec<_> = sent(&backend)
+            .into_iter()
+            .filter_map(|command| match command {
+                SessionCommand::Vcs(VcsCommand::NestedRepositoryStatus { path }) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nested, vec![dir.join("nested")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stored_sidebar_width_is_clamped_by_preparing_not_by_painting() {
+        let mut app = crate::app::tests::support::app();
+        app.sidebar_visible = true;
+        app.sidebar_width = 200;
+
+        paint_only(&mut app, 80, 24);
+        assert_eq!(app.sidebar_width, 200, "a paint leaves the model alone");
+        assert_eq!(
+            app.last_frame.sidebar_rect.width, 79,
+            "but shows the clamped width"
+        );
+
+        app.prepare_frame(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.sidebar_width, 79);
+    }
+
+    #[test]
+    fn a_fold_hiding_the_caret_is_opened_by_preparing_not_by_painting() {
+        let mut rig = Rig::new("top\nfn a() {\n    x\n|}\ntail");
+        let active = rig.app.active;
+        if let TabKind::Code { folds, folded, .. } = &mut rig.app.tabs[active].kind {
+            *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(1, 3)]);
+            folded.insert(1);
+        }
+        let folded = |app: &App| match &app.tabs[app.active].kind {
+            TabKind::Code { folded, .. } => folded.clone(),
+            _ => BTreeSet::new(),
+        };
+
+        paint_only(&mut rig.app, 80, 24);
+        assert_eq!(folded(&rig.app), BTreeSet::from([1]));
+
+        rig.app.prepare_frame(Rect::new(0, 0, 80, 24));
+        assert_eq!(folded(&rig.app), BTreeSet::new());
     }
 }

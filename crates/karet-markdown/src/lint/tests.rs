@@ -66,6 +66,23 @@ fn bare_urls_flag_and_wrap_in_angle_brackets() {
     assert!(ids("`https://example.com`\n").is_empty());
 }
 
+/// A URL ends where adjacent HTML begins, so the fix wraps only the URL and
+/// leaves the markup intact. Falsified by `bare_urls` reading `<` as part of
+/// the URL, which turned `<!-- c -->` into `<!-->` and swallowed `<br>`.
+#[test]
+fn bare_url_stops_before_adjacent_html() {
+    assert_eq!(
+        fixed("# T\n\nhttps://example.com<!-- c -->\n"),
+        "# T\n\n<https://example.com><!-- c -->\n"
+    );
+    assert_eq!(
+        fixed("https://example.com<br>\n"),
+        "<https://example.com><br>\n"
+    );
+    // The fixed text is stable: the wrapped URL is an autolink now.
+    assert!(ids("<https://example.com><br>\n").is_empty());
+}
+
 // --- heading rules ---
 
 #[test]
@@ -449,6 +466,14 @@ fn lint_and_fix_never_panic_on_generated_markdown() {
             text.push_str(PIECES.get(rng.below(PIECES.len())).unwrap_or(&"x"));
         }
         let out = apply_fixes(&text, &checked_lint(&text, seed));
+        // An MD034 wrap never runs into adjacent HTML (seed 27 once fixed
+        // `https://example.com<br>` to `<https://example.com<br>>`); the
+        // pattern may already sit in the input, so only new ones count.
+        let runs = |s: &str| s.matches("<https://example.com<").count();
+        assert!(
+            runs(&out) <= runs(&text),
+            "seed {seed}: {text:?} -> {out:?}"
+        );
         // The fixed text must lint and fix again, too.
         let twice = apply_fixes(&out, &checked_lint(&out, seed));
         // Fixes may add a final newline, never strip one.
@@ -490,4 +515,57 @@ fn md037_still_reports_padded_emphasis() {
     let issues = lint(text, &Config::default());
     assert!(issues.iter().any(|i| i.rule == "MD037"), "{issues:?}");
     assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
+}
+
+/// A blank inserted before a line and a fix of that same line both land
+/// (#649). Falsified by applying the insert first: the line shifts down, the
+/// fix overwrites the new blank, and the unfixed original survives beside a
+/// fixed copy.
+#[test]
+fn a_blank_insert_and_a_line_fix_on_one_line_both_apply() {
+    // MD022 blank below the heading + MD009 on line 1.
+    assert_eq!(fixed("## h\nx \n"), "## h\n\nx\n");
+    // MD032 blank above the list + MD009 on line 2.
+    assert_eq!(fixed("# T\ntext\n- a \n"), "# T\n\ntext\n\n- a\n");
+}
+
+/// A `Delete` and a blank insert on one line leave the blank where the line
+/// was, whichever order the issues arrive in. Falsified by inserting first:
+/// the delete then removes the new blank and the line it named survives.
+#[test]
+fn a_delete_and_a_blank_insert_on_one_line_both_apply() {
+    let issue = |fix: Fix| Issue {
+        line: 1,
+        col: 0,
+        len: 1,
+        rule: "TEST",
+        alias: "test",
+        message: String::new(),
+        severity: LintSeverity::Error,
+        fix: Some(fix),
+    };
+    let insert = issue(Fix::InsertBlankBefore { line: 1 });
+    let delete = issue(Fix::Delete { line: 1 });
+    let text = "a\nb\nc\n";
+    let both = [insert.clone(), delete.clone()];
+    assert_eq!(apply_fixes(text, &both), "a\n\nc\n");
+    assert_eq!(apply_fixes(text, &[delete, insert]), "a\n\nc\n");
+}
+
+/// Fence delimiters are never interior; a delimiter of the other character,
+/// or one shorter than the opener, is interior rather than a closer.
+#[test]
+fn the_context_marks_fence_delimiters_apart_from_their_interior() {
+    let text = "a\n```\n~~~\n````\nb\n~~~~\n~~~\n~~~~~\n";
+    let lines: Vec<&str> = text.lines().collect();
+    let config = Config::default();
+    let cx = rules::Context::new(text, &lines, &config);
+    assert_eq!(
+        cx.in_fence,
+        [false, false, true, false, false, false, true, false]
+    );
+    assert_eq!(
+        cx.is_fence_line,
+        [false, true, false, true, false, true, false, true]
+    );
 }

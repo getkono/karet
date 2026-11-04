@@ -1,17 +1,18 @@
 //! The workspace spelling scan's session half: seed the open documents from
-//! their live buffers, then hand the rest of the tree to the scan worker.
+//! their live buffers, then hand the rest of the tree to the scan worker. Also
+//! the dictionary-word write that teaches the spell-checker a new word.
 
 use std::collections::HashSet;
 
 use super::*;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
+use crate::scan_walk::resolve_path;
 use crate::spell::check::word_in_line;
-use crate::spell_scan::resolve_path;
 
 impl Session {
     /// Spell-check the whole workspace on the scan worker, answering
-    /// [`Command::ScanWorkspaceSpelling`].
+    /// [`WorkspaceCommand::ScanSpelling`].
     ///
     /// Open documents are answered here, from their live buffers, and their paths are
     /// handed to the worker as a skip list — the scan reads from disk, which is stale
@@ -19,10 +20,10 @@ impl Session {
     pub(crate) fn scan_workspace_spelling(&mut self, id: RequestId, limit: usize) {
         let spelling_language = self
             .config
-            .settings
+            .settings()
             .spellcheck
             .enabled
-            .then(|| SpellingLanguage::parse(&self.config.settings.spellcheck.language))
+            .then(|| SpellingLanguage::parse(&self.config.settings().spellcheck.language))
             .flatten();
         let roots = self.config.roots.clone();
         let (false, Some(spelling_language)) = (roots.is_empty(), spelling_language) else {
@@ -80,7 +81,7 @@ impl Session {
             id,
             roots,
             spelling_language,
-            settings: self.config.settings.clone(),
+            settings: self.config.settings().clone(),
             open,
             limit: limit - seeded,
             cancel: self.cancellations.register(id),
@@ -139,7 +140,7 @@ impl Session {
     /// immediately.
     pub(crate) fn scan_workspace_todos(&mut self, id: RequestId, limit: usize) {
         let roots = self.config.roots.clone();
-        let semantic = &self.config.settings.editor.semantic_comments;
+        let semantic = &self.config.settings().editor.semantic_comments;
         if roots.is_empty() || !semantic.enabled || semantic.tags.is_empty() {
             self.emit(
                 Some(id),
@@ -157,7 +158,7 @@ impl Session {
             config: karet_syntax::SemanticCommentConfig {
                 tags: semantic.tags.clone(),
             },
-            excludes: self.config.settings.search.exclude.clone(),
+            excludes: self.config.settings().search.exclude.clone(),
             open: self
                 .store
                 .docs
@@ -176,6 +177,60 @@ impl Session {
                     cancelled: false,
                 },
             );
+        }
+    }
+}
+
+impl Session {
+    /// Persist a dictionary word to the requested settings layer and adopt it
+    /// into the live settings so the spell-checker accepts it immediately.
+    pub(super) fn add_dictionary_word(
+        &mut self,
+        id: RequestId,
+        word: String,
+        scope: crate::api::DictionaryScope,
+        create_project: bool,
+    ) {
+        let result = match scope {
+            crate::api::DictionaryScope::User => crate::config::add_user_dictionary_word(&word),
+            crate::api::DictionaryScope::Project => crate::config::add_project_dictionary_word(
+                &self.config.roots,
+                &word,
+                create_project,
+            ),
+        };
+        match result {
+            Ok(path) => {
+                self.adopt_settings(|settings| {
+                    let words = &mut settings.spellcheck.words;
+                    if !words.iter().any(|existing| existing == &word) {
+                        words.push(word.clone());
+                    }
+                });
+                // Re-check now rather than waiting for the settings write to
+                // round-trip through the file watcher: the user just told us the
+                // word is fine, so the squiggle should go on that keystroke — and
+                // a session with no config watcher would never be told at all.
+                let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
+                for doc_id in docs {
+                    self.schedule_spell(doc_id);
+                }
+                self.emit(Some(id), Event::DictionaryWordAdded { word, path });
+            },
+            Err(crate::config::ConfigWriteError::ProjectCreationRequiresConfirmation(path)) => {
+                self.emit(
+                    Some(id),
+                    Event::ProjectSettingsCreationRequired { word, path },
+                );
+            },
+            Err(error) => self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("dictionary: {error}"),
+                },
+            ),
         }
     }
 }

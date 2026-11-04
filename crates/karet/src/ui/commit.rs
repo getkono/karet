@@ -12,7 +12,6 @@ pub(in crate::ui) use graph::CommitGraphScroll;
 pub(in crate::ui) use graph::draw_commit_graph;
 pub(in crate::ui) use list::CommitListEntry;
 pub(in crate::ui) use list::commit_list_items;
-pub(crate) use list::relative_time;
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;
 
@@ -310,14 +309,16 @@ pub(super) const FILE_CARD_MIN_WIDTH: u16 = 13;
 /// the card starts collapsed and names the reason. The classification is
 /// `karet-filetype`'s, so the commit view, the file rail, and any future consumer
 /// agree on what counts as generated.
-pub(super) fn auto_collapse_reason(file: &render::FileView) -> Option<karet_filetype::Generated> {
+pub(super) fn auto_collapse_reason(
+    file: &crate::tab::ChangedFile,
+) -> Option<karet_filetype::Generated> {
     karet_filetype::generated_for_path(&file.change.path)
 }
 
 /// The parenthesized label shown beside a machine-maintained file, e.g.
 /// `"(lockfile)"`. Matches the lowercase, parenthesized phrasing `karet-diff`
 /// already uses for its own placeholders.
-pub(super) fn auto_collapse_label(file: &render::FileView) -> Option<String> {
+pub(super) fn auto_collapse_label(file: &crate::tab::ChangedFile) -> Option<String> {
     auto_collapse_reason(file).map(|kind| format!("({})", kind.reason()))
 }
 
@@ -328,7 +329,7 @@ const REASON_MIN_PATH: usize = 12;
 
 pub(super) fn file_card_header(
     theme: &Theme,
-    file: &render::FileView,
+    file: &crate::tab::ChangedFile,
     width: u16,
     collapsed: bool,
 ) -> Line<'static> {
@@ -432,14 +433,14 @@ pub(super) fn file_card_header(
 
 pub(super) fn file_card_body(
     theme: &Theme,
-    file: &render::FileView,
+    file: &crate::tab::ChangedFile,
     start: usize,
     count: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
     let border = theme.style(ThemeRole::LineNumber);
     let mut out = Vec::new();
-    for line in render::unified_lines_window(file, theme, start, count) {
+    for line in diff_paint::unified_lines_window(file, theme, start, count) {
         let style = line.style;
         let mut spans = vec![Span::styled("\u{2502} ", border)];
         spans.extend(line.spans);
@@ -447,7 +448,7 @@ pub(super) fn file_card_body(
         line.style = style;
         out.push(line);
     }
-    render::pad_diff_lines(&mut out, width);
+    karet_diff::view::pad_diff_lines(&mut out, width);
     out
 }
 

@@ -375,7 +375,7 @@ fn closes(
             if pair.0 != pair.1 {
                 return before_ok;
             }
-            let after_word = prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let after_word = prev.is_some_and(karet_core::is_word_char);
             before_ok && !after_word && !in_string_or_comment(buffer, rules.highlights, caret)
         },
     }

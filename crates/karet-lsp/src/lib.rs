@@ -28,10 +28,11 @@
 //! Three protocol choices are deliberate and documented here once:
 //!
 //! - **Positions cross this API in UTF-16.** The client offers the LSP-default
-//!   `utf-16` as its only position encoding and stays faithful to it; a server's
-//!   `positionEncoding` reply is recorded in [`Capabilities`] but not yet acted
-//!   on. Every [`LineCol`] and [`Range`] passed to or returned from this crate
-//!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
+//!   `utf-16` as its only position encoding and stays faithful to it, so a
+//!   server's `positionEncoding` reply is not read: offered nothing else, a
+//!   conforming server has no other choice. Every [`LineCol`] and [`Range`]
+//!   passed to or returned from this crate counts columns in UTF-16 code
+//!   units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
 //! - **Document sync is the consumer's choice of two.** [`LspClient::did_change`]
@@ -49,9 +50,12 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, document highlights, inlay hints, semantic tokens (whole and delta,
+//! symbols, document highlights, inlay hints, inline completions (LSP 3.18
+//! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), document/range
+//! `codeAction/resolve` and `workspace/executeCommand`), document links (with
+//! `documentLink/resolve`), document colours, folding ranges (see
+//! [`LspClient::folding_ranges`]), document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
 //! are implemented as typed, non-panicking operations.
 
@@ -60,8 +64,6 @@ pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
 pub use editing::LinkedEditingRanges;
 pub use editing::SaveReason;
-pub use highlight::DocumentHighlight;
-pub use highlight::HighlightKind;
 /// `Content-Length` message framing (the LSP base protocol).
 ///
 /// Deprecated: a second public path to [`karet_jsonrpc::framing::content_length`],
@@ -152,6 +154,7 @@ pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 pub use pull::PulledDiagnostics;
 pub use semantic_tokens::SemanticTokens;
+pub use semantic_tokens::SemanticTokensLegend;
 pub use watch::FileChange;
 pub use watch::FileChangeKind;
 pub use window::MessageLevel;
@@ -171,12 +174,15 @@ mod config;
 mod conn;
 mod convert;
 mod editing;
+mod folding;
 mod gate;
 mod handshake;
 mod hierarchy;
 mod highlight;
 mod inlay;
+mod inline_completion;
 mod launch;
+mod link_color;
 mod navigation;
 mod pull;
 mod selection;
@@ -636,15 +642,14 @@ impl LspClient {
         // apart from the advertised set, so one that arrives between here and
         // the first request survives the seeding.
         let gate = conn.gate();
-        let parsed = capability::parse(&result);
+        let (parsed, negotiated) = capability::parse(&result);
         tracing::debug!(
             features = parsed.len(),
-            encoding = ?parsed.position_encoding,
-            sync = ?parsed.text_sync,
+            sync = ?negotiated.text_sync,
             "language server advertised its capabilities"
         );
         if let Ok(mut live) = gate.write() {
-            live.advertise(parsed);
+            live.advertise(parsed, negotiated);
         }
         conn.notify("initialized", lsp_types::InitializedParams {})?;
         if let Some(settings) = options.settings {
@@ -671,6 +676,15 @@ impl LspClient {
         self.gate
             .read()
             .map(|gate| gate.capabilities())
+            .unwrap_or_default()
+    }
+
+    /// What the handshake negotiated beyond the feature set: a snapshot, as
+    /// [`Self::capabilities`] is.
+    pub(crate) fn server_options(&self) -> capability::ServerOptions {
+        self.gate
+            .read()
+            .map(|gate| gate.options().clone())
             .unwrap_or_default()
     }
 
@@ -870,7 +884,11 @@ impl LspClient {
         version: i32,
         edits: &[TextEdit],
     ) -> Result<(), LspError> {
-        if self.capabilities().text_sync != karet_core::TextSyncKind::Incremental {
+        let incremental = self
+            .gate
+            .read()
+            .is_ok_and(|gate| gate.options().text_sync == capability::TextSyncKind::Incremental);
+        if !incremental {
             return Err(LspError::Unsupported {
                 method: "incremental textDocument/didChange",
             });
@@ -1277,6 +1295,28 @@ impl LspClient {
         T: serde::de::DeserializeOwned,
     {
         self.conn.request(method, params).await
+    }
+
+    /// [`custom_request`](Self::custom_request), bounded by `timeout` instead
+    /// of the standard request timeout: for a request the server answers only
+    /// once something slower than a round trip has happened, such as a user
+    /// confirming a device code in their browser.
+    ///
+    /// # Errors
+    ///
+    /// As [`custom_request`](Self::custom_request), with
+    /// [`LspError::Timeout`] once `timeout` has passed unanswered.
+    pub async fn custom_request_with<P, T>(
+        &self,
+        method: &str,
+        params: P,
+        timeout: std::time::Duration,
+    ) -> Result<T, LspError>
+    where
+        P: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        self.conn.request_with(method, params, timeout).await
     }
 
     /// Send an arbitrary notification (fire-and-forget), `method` verbatim.

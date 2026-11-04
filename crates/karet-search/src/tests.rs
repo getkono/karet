@@ -218,7 +218,13 @@ fn zero_width_pattern_terminates() {
     assert_eq!(spans, [(0, 0), (1, 1), (2, 2), (3, 3)]);
 }
 
+use std::ops::ControlFlow;
+use std::path::Path;
+
+use karet_filetype::BINARY_SNIFF_LEN;
 use tempfile::TempDir;
+
+use crate::walk::MAX_FILE_BYTES;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -239,7 +245,7 @@ fn write(dir: &Path, rel: &str, contents: &[u8]) -> std::io::Result<()> {
 /// Collect every hit from a workspace search into a path-sorted vector.
 fn collect(root: &Path, query: &SearchQuery) -> Vec<FileHit> {
     let mut hits = Vec::new();
-    let _ = WorkspaceSearch::new().run(root, query, |hit| hits.push(hit));
+    let _ = search_workspace(root, query, |hit| hits.push(hit));
     hits.sort_by(|a, b| a.path.cmp(&b.path));
     hits
 }
@@ -409,7 +415,7 @@ fn workspace_replace_writes_matching_files_only() -> TestResult {
     write(dir.path(), ".gitignore", b"ignored.txt\n")?;
     write(dir.path(), "ignored.txt", b"needle\n")?;
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!(summary.files_changed, 1);
     assert_eq!(summary.replacements, 2);
     assert_eq!(
@@ -422,6 +428,25 @@ fn workspace_replace_writes_matching_files_only() -> TestResult {
         "needle\n"
     );
     assert!(summary.failures.is_empty());
+    Ok(())
+}
+
+/// The deprecated namespace still answers exactly as the free functions do, so
+/// a caller can migrate without a behaviour change.
+#[test]
+#[allow(deprecated, reason = "pins the deprecated forwarders")]
+fn deprecated_workspace_search_forwards_to_the_free_functions() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "a.txt", b"needle\n")?;
+
+    let mut hits = Vec::new();
+    WorkspaceSearch::new().run(dir.path(), &literal("needle"), |hit| hits.push(hit))?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits.first().map(|hit| hit.matches.len()), Some(1));
+
+    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    assert_eq!((summary.files_changed, summary.replacements), (1, 1));
+    assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "pin\n");
     Ok(())
 }
 
@@ -446,7 +471,7 @@ fn workspace_replace_reports_a_file_it_could_not_write() -> TestResult {
         return Ok(());
     }
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!((summary.files_changed, summary.replacements), (1, 1));
     let failed: Vec<&Path> = summary.failures.iter().map(|f| f.path.as_path()).collect();
     assert_eq!(failed, [locked.as_path()]);
@@ -473,7 +498,7 @@ fn workspace_replace_never_leaves_a_failed_file_truncated() -> TestResult {
     // create files there, so the failure this test needs cannot be provoked.
     let sealed = std::fs::File::create(sub.join("probe")).is_err();
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin");
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin");
     let text = std::fs::read_to_string(sub.join("a.txt"));
     std::fs::set_permissions(&sub, original)?;
     if !sealed {
@@ -497,7 +522,7 @@ fn workspace_replace_keeps_file_permissions() -> TestResult {
     let path = dir.path().join("run.sh");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751))?;
 
-    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    let summary = replace_in_workspace(dir.path(), &literal("needle"), "pin")?;
     assert_eq!(summary.files_changed, 1);
     assert_eq!(std::fs::read_to_string(&path)?, "pin\n");
     assert_eq!(
@@ -566,6 +591,21 @@ fn walked_names(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Search sniffs with the shared window, so it agrees with diff and the
+/// explorer: a NUL on the window's last byte is binary, one just past it is text.
+#[test]
+fn walk_sniffs_nul_only_inside_the_shared_window() -> TestResult {
+    let dir = temp_dir()?;
+    let mut inside = vec![b'a'; BINARY_SNIFF_LEN + 1];
+    inside[BINARY_SNIFF_LEN - 1] = 0;
+    write(dir.path(), "inside.txt", &inside)?;
+    let mut past = vec![b'a'; BINARY_SNIFF_LEN + 1];
+    past[BINARY_SNIFF_LEN] = 0;
+    write(dir.path(), "past.txt", &past)?;
+    assert_eq!(walked_names(dir.path()), ["past.txt"]);
+    Ok(())
+}
+
 #[test]
 fn walk_skips_non_utf8_files_without_a_nul() -> TestResult {
     let dir = temp_dir()?;
@@ -586,7 +626,7 @@ fn walk_reads_a_file_at_the_size_cap_and_skips_one_past_it() -> TestResult {
         ("at_cap.txt", MAX_FILE_BYTES),
         ("over_cap.txt", MAX_FILE_BYTES + 1),
     ] {
-        write(dir.path(), name, &[b'a'; BINARY_SNIFF_BYTES])?;
+        write(dir.path(), name, &[b'a'; BINARY_SNIFF_LEN])?;
         std::fs::OpenOptions::new()
             .write(true)
             .open(dir.path().join(name))?
@@ -651,7 +691,85 @@ fn workspace_search_surfaces_invalid_pattern() -> TestResult {
         regex: true,
         ..Default::default()
     };
-    let result = WorkspaceSearch::new().run(dir.path(), &query, |_| {});
+    let result = search_workspace(dir.path(), &query, |_| {});
     assert_eq!(result, Err(SearchError::InvalidPattern));
+    Ok(())
+}
+
+/// The root-relative paths [`walk_files`] yields, sorted.
+fn listed(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = walk_files(root)
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn walk_files_honors_gitignore_and_prunes_ignored_dirs() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "a.txt", b"alpha\n")?;
+    write(dir.path(), "sub/b.rs", b"beta\n")?;
+    write(dir.path(), ".gitignore", b"ignored.txt\n")?;
+    write(dir.path(), "ignored.txt", b"gamma\n")?;
+    write(dir.path(), ".hidden", b"delta\n")?;
+    // Pruned by IGNORED_DIRS even though no ignore file names them.
+    write(dir.path(), "target/debug/out", b"x\n")?;
+    write(dir.path(), "node_modules/pkg/index.js", b"x\n")?;
+
+    assert_eq!(listed(dir.path()), ["a.txt", "sub/b.rs"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_lists_files_the_text_walk_skips() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "blob.bin", b"x\x00y")?;
+    write(dir.path(), "latin1.txt", b"caf\xe9\n")?;
+    write(dir.path(), "empty.txt", b"")?;
+
+    // A file picker lists every openable file; contents are never read.
+    assert_eq!(listed(dir.path()), ["blob.bin", "empty.txt", "latin1.txt"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_honors_an_ignore_file_above_the_root() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), ".gitignore", b"*.log\n")?;
+    write(dir.path(), "sub/keep.rs", b"x\n")?;
+    write(dir.path(), "sub/drop.log", b"x\n")?;
+
+    assert_eq!(listed(&dir.path().join("sub")), ["keep.rs"]);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn walk_files_never_follows_or_lists_symlinks() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let dir = temp_dir()?;
+    write(dir.path(), "real/file.txt", b"x\n")?;
+    symlink(dir.path().join("real"), dir.path().join("dir_link"))?;
+    symlink(
+        dir.path().join("real/file.txt"),
+        dir.path().join("file_link"),
+    )?;
+    // A link back to the root would loop forever if followed.
+    symlink(dir.path(), dir.path().join("real/cycle"))?;
+
+    assert_eq!(listed(dir.path()), ["real/file.txt"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_of_a_missing_root_is_empty() -> TestResult {
+    let dir = temp_dir()?;
+    assert!(listed(&dir.path().join("absent")).is_empty());
     Ok(())
 }

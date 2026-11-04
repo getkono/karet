@@ -16,8 +16,11 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+use karet_core::DebugOutputCategory;
+use karet_core::FrameId;
 use karet_core::NotificationKind;
 use karet_core::Severity;
+use karet_core::VariablesRef;
 use karet_dap::DapClient;
 use karet_dap::DapError;
 use karet_dap::DapSpec;
@@ -25,7 +28,6 @@ use karet_dap::DapTransport;
 use karet_dap::DebugEvent as AdapterEvent;
 use karet_dap::FileBreakpoints;
 use karet_dap::StartConfig;
-use tokio::sync::mpsc;
 
 use crate::api::DebugBreakpoint;
 use crate::api::DebugSessionState;
@@ -33,6 +35,7 @@ use crate::api::Event;
 use crate::api::RequestId;
 use crate::config::schema::DebugConfiguration;
 use crate::config::schema::Debugger;
+use crate::event_tx::EventTx;
 
 /// How the manager establishes a client — supervisor-wrapped spawn in
 /// production; tests inject an in-memory duplex connection instead.
@@ -51,9 +54,6 @@ pub(crate) struct AdapterLaunch {
     /// The working directory (the workspace root).
     pub root: PathBuf,
 }
-
-/// The sender the manager answers on.
-type Events = mpsc::UnboundedSender<(Option<RequestId>, Event)>;
 
 /// The state shared between the actor-owned manager and its detached tasks.
 #[derive(Default)]
@@ -83,7 +83,7 @@ pub(crate) struct DebugManager {
     /// The durable per-file breakpoint sets, replayed at session start.
     breakpoints: HashMap<PathBuf, Vec<u32>>,
     shared: Arc<Shared>,
-    events: Events,
+    events: EventTx,
 }
 
 impl DebugManager {
@@ -92,7 +92,7 @@ impl DebugManager {
         settings: Debugger,
         root: Option<PathBuf>,
         supervisor: Option<PathBuf>,
-        events: Events,
+        events: EventTx,
     ) -> Self {
         Self {
             connector: production_connector(),
@@ -187,14 +187,14 @@ impl DebugManager {
             };
             match client.start(start, &breakpoints).await {
                 Ok(()) => {
-                    let _ = events.send((
+                    events.emit(
                         None,
                         Event::DebugState {
                             state: DebugSessionState::Running,
                             severity: Severity::Hint,
                             detail: config.name.clone(),
                         },
-                    ));
+                    );
                 },
                 Err(error) => {
                     if let Some(client) = shared.take_client() {
@@ -216,14 +216,14 @@ impl DebugManager {
         let events = self.events.clone();
         tokio::spawn(async move {
             let _ = client.disconnect(true).await;
-            let _ = events.send((
+            events.emit(
                 None,
                 Event::DebugState {
                     state: DebugSessionState::Idle,
                     severity: Severity::Hint,
                     detail: "stopped".to_owned(),
                 },
-            ));
+            );
         });
     }
 
@@ -250,14 +250,12 @@ impl DebugManager {
                 RunControl::Pause => client.pause(thread).await,
             };
             if let Err(error) = outcome {
-                let _ = events.send((
+                events.notify(
                     None,
-                    Event::Notification {
-                        severity: Severity::Warning,
-                        kind: NotificationKind::System,
-                        message: format!("debugger: {error}"),
-                    },
-                ));
+                    Severity::Warning,
+                    NotificationKind::System,
+                    format!("debugger: {error}"),
+                );
             }
         });
     }
@@ -280,9 +278,8 @@ impl DebugManager {
                     verified: false,
                 })
                 .collect();
-            let _ = self
-                .events
-                .send((None, Event::DebugBreakpoints { path, breakpoints }));
+            self.events
+                .emit(None, Event::DebugBreakpoints { path, breakpoints });
             return;
         };
         let events = self.events.clone();
@@ -297,17 +294,15 @@ impl DebugManager {
                             verified: bp.verified,
                         })
                         .collect();
-                    let _ = events.send((None, Event::DebugBreakpoints { path, breakpoints }));
+                    events.emit(None, Event::DebugBreakpoints { path, breakpoints });
                 },
                 Err(error) => {
-                    let _ = events.send((
+                    events.notify(
                         None,
-                        Event::Notification {
-                            severity: Severity::Warning,
-                            kind: NotificationKind::System,
-                            message: format!("debugger: {error}"),
-                        },
-                    ));
+                        Severity::Warning,
+                        NotificationKind::System,
+                        format!("debugger: {error}"),
+                    );
                 },
             }
         });
@@ -317,138 +312,98 @@ impl DebugManager {
     pub(crate) fn stack_trace(&self, id: RequestId) {
         let thread = self.shared.thread.load(Ordering::SeqCst);
         let Some(client) = self.shared.client().filter(|_| thread >= 0) else {
-            let _ = self
-                .events
-                .send((Some(id), Event::DebugStack { frames: Vec::new() }));
+            self.events
+                .emit(Some(id), Event::DebugStack { frames: Vec::new() });
             return;
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let frames = client
-                .stack_trace(thread)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|frame| crate::api::DebugFrame {
-                    id: frame.id,
-                    name: frame.name,
-                    line: frame.line,
-                    column: frame.column,
-                    path: frame.source_path,
-                })
-                .collect();
-            let _ = events.send((Some(id), Event::DebugStack { frames }));
+            let frames = client.stack_trace(thread).await.unwrap_or_default();
+            events.emit(Some(id), Event::DebugStack { frames });
         });
     }
 
     /// One frame's scopes, answered on `id`.
-    pub(crate) fn scopes(&self, id: RequestId, frame: i64) {
+    pub(crate) fn scopes(&self, id: RequestId, frame: FrameId) {
         let Some(client) = self.shared.client() else {
-            let _ = self.events.send((
+            self.events.emit(
                 Some(id),
                 Event::DebugScopes {
                     frame,
                     scopes: Vec::new(),
                 },
-            ));
+            );
             return;
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let scopes = client
-                .scopes(frame)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|scope| crate::api::DebugScope {
-                    name: scope.name,
-                    reference: scope.variables_reference,
-                    expensive: scope.expensive,
-                })
-                .collect();
-            let _ = events.send((Some(id), Event::DebugScopes { frame, scopes }));
+            let scopes = client.scopes(frame).await.unwrap_or_default();
+            events.emit(Some(id), Event::DebugScopes { frame, scopes });
         });
     }
 
     /// One reference's children, answered on `id`.
-    pub(crate) fn variables(&self, id: RequestId, reference: i64) {
+    pub(crate) fn variables(&self, id: RequestId, reference: VariablesRef) {
         let Some(client) = self.shared.client() else {
-            let _ = self.events.send((
+            self.events.emit(
                 Some(id),
                 Event::DebugVariables {
                     reference,
                     variables: Vec::new(),
                 },
-            ));
+            );
             return;
         };
         let events = self.events.clone();
         tokio::spawn(async move {
-            let variables = client
-                .variables(reference)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|variable| crate::api::DebugVariable {
-                    name: variable.name,
-                    value: variable.value,
-                    ty: variable.ty,
-                    reference: variable.variables_reference,
-                })
-                .collect();
-            let _ = events.send((
+            let variables = client.variables(reference).await.unwrap_or_default();
+            events.emit(
                 Some(id),
                 Event::DebugVariables {
                     reference,
                     variables,
                 },
-            ));
+            );
         });
     }
 
     /// Evaluate `expression`, answered on `id`; a rejected expression answers
     /// with the adapter's error text (the REPL shows it inline).
-    pub(crate) fn evaluate(&self, id: RequestId, expression: String, frame: Option<i64>) {
+    pub(crate) fn evaluate(&self, id: RequestId, expression: String, frame: Option<FrameId>) {
         let Some(client) = self.shared.client() else {
-            let _ = self.events.send((
+            self.events.emit(
                 Some(id),
                 Event::DebugEvaluated {
                     result: "no debug session".to_owned(),
-                    reference: 0,
+                    reference: VariablesRef::NONE,
                 },
-            ));
+            );
             return;
         };
         let events = self.events.clone();
         tokio::spawn(async move {
             let (result, reference) = match client.evaluate(&expression, frame).await {
                 Ok(evaluation) => (evaluation.result, evaluation.variables_reference),
-                Err(error) => (error.to_string(), 0),
+                Err(error) => (error.to_string(), VariablesRef::NONE),
             };
-            let _ = events.send((Some(id), Event::DebugEvaluated { result, reference }));
+            events.emit(Some(id), Event::DebugEvaluated { result, reference });
         });
     }
 
     fn emit_state(&self, state: DebugSessionState, severity: Severity, detail: &str) {
-        let _ = self.events.send((
+        self.events.emit(
             None,
             Event::DebugState {
                 state,
                 severity,
                 detail: detail.to_owned(),
             },
-        ));
+        );
     }
 
     fn notify(&self, severity: Severity, message: &str) {
-        let _ = self.events.send((
-            None,
-            Event::Notification {
-                severity,
-                kind: NotificationKind::System,
-                message: message.to_owned(),
-            },
-        ));
+        self.events
+            .notify(None, severity, NotificationKind::System, message);
     }
 }
 
@@ -472,15 +427,15 @@ pub(crate) enum RunControl {
 /// The one debug transition that is a failure. Every other route to `Idle` is an
 /// ordinary end, which is why the severity travels with the event rather than
 /// being inferred downstream from how the detail happens to read.
-fn fail_start(events: &Events, error: &DapError) {
-    let _ = events.send((
+fn fail_start(events: &EventTx, error: &DapError) {
+    events.emit(
         None,
         Event::DebugState {
             state: DebugSessionState::Idle,
             severity: Severity::Error,
             detail: error.to_string(),
         },
-    ));
+    );
 }
 
 /// The configuration `name` names, or the first one.
@@ -523,7 +478,7 @@ fn resolve_adapter(settings: &Debugger, name: &str) -> Option<DapSpec> {
 }
 
 /// Forward adapter events onto the session stream until the session ends.
-async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Events) {
+async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: EventTx) {
     let mut rx = client.events();
     loop {
         match rx.recv().await {
@@ -539,7 +494,7 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                     .await
                     .ok()
                     .and_then(|frames| frames.into_iter().next());
-                let _ = events.send((
+                events.emit(
                     None,
                     Event::DebugStopped {
                         reason: reason.clone(),
@@ -547,42 +502,42 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                         path: top.as_ref().and_then(|f| f.source_path.clone()),
                         line: top.as_ref().map(|f| f.line),
                     },
-                ));
-                let _ = events.send((
+                );
+                events.emit(
                     None,
                     Event::DebugState {
                         state: DebugSessionState::Stopped,
                         severity: Severity::Information,
                         detail: reason,
                     },
-                ));
+                );
             },
             Ok(AdapterEvent::Continued { .. }) => {
                 shared.thread.store(-1, Ordering::SeqCst);
-                let _ = events.send((None, Event::DebugContinued));
-                let _ = events.send((
+                events.emit(None, Event::DebugContinued);
+                events.emit(
                     None,
                     Event::DebugState {
                         state: DebugSessionState::Running,
                         severity: Severity::Information,
                         detail: String::new(),
                     },
-                ));
+                );
             },
             Ok(AdapterEvent::Output { category, output }) => {
-                let _ = events.send((
+                events.emit(
                     None,
                     Event::DebugOutput {
                         category,
                         text: output,
                     },
-                ));
+                );
             },
             Ok(AdapterEvent::BreakpointChanged(bp)) => {
                 // Late verification: only mappable when the adapter names the
                 // file; the app merges the single entry by line.
                 if let (Some(path), Some(line)) = (bp.source_path.clone(), bp.line) {
-                    let _ = events.send((
+                    events.emit(
                         None,
                         Event::DebugBreakpoints {
                             path,
@@ -591,31 +546,31 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                                 verified: bp.verified,
                             }],
                         },
-                    ));
+                    );
                 }
             },
             Ok(AdapterEvent::Exited { exit_code }) => {
-                let _ = events.send((
+                events.emit(
                     None,
                     Event::DebugOutput {
-                        category: "console".to_owned(),
+                        category: DebugOutputCategory::Console,
                         text: format!("debuggee exited with code {exit_code}\n"),
                     },
-                ));
+                );
             },
             Ok(AdapterEvent::Terminated) => {
                 shared.thread.store(-1, Ordering::SeqCst);
                 // Stop() already emitted Idle if it took the client first;
                 // the take guard keeps this to one Idle per session.
                 if shared.take_client().is_some() {
-                    let _ = events.send((
+                    events.emit(
                         None,
                         Event::DebugState {
                             state: DebugSessionState::Idle,
                             severity: Severity::Hint,
                             detail: "session ended".to_owned(),
                         },
-                    ));
+                    );
                 }
                 return;
             },
@@ -634,33 +589,18 @@ fn production_connector() -> Connector {
             let Some(supervisor) = launch.supervisor else {
                 return Err(DapError::Launch("no process supervisor".to_owned()));
             };
-            match launch.spec.transport {
-                DapTransport::Tcp => {
-                    let port = karet_dap::free_port()
-                        .map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
-                    let args = karet_dap::substitute_port(&launch.spec.args, port);
-                    let command = karet_supervisor::supervisor::command(
-                        &supervisor,
-                        launch.spec.command.clone(),
-                        args,
-                        &launch.root,
-                    )
-                    .map_err(|e| DapError::Launch(e.to_string()))?;
-                    DapClient::spawn_command_tcp(command, port).await
-                },
-                // Stdio, and (non-exhaustive) any future transport this build
-                // does not know: launch over pipes, the protocol's default.
-                _ => {
-                    let command = karet_supervisor::supervisor::command(
-                        &supervisor,
-                        launch.spec.command.clone(),
-                        launch.spec.args.clone(),
-                        &launch.root,
-                    )
-                    .map_err(|e| DapError::Launch(e.to_string()))?;
-                    DapClient::spawn_command(command)
-                },
-            }
+            // karet-dap owns transport dispatch and stdio; this only wraps the
+            // (port-substituted) adapter command in the supervisor.
+            DapClient::spawn_with(&launch.spec, |spec| {
+                karet_supervisor::supervisor::command(
+                    &supervisor,
+                    spec.command.clone(),
+                    spec.args.clone(),
+                    &launch.root,
+                )
+                .map_err(|e| DapError::Launch(e.to_string()))
+            })
+            .await
         })
     })
 }

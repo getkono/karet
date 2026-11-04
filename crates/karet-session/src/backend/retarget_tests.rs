@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::api::DocumentCommand;
 use crate::api::DocumentId;
 use crate::local::DocSnapshot;
 use crate::local::SnapshotRx;
@@ -35,21 +36,21 @@ async fn retargeting_to_a_plaintext_path_clears_markdown_table_lines()
 
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
-    let open = Command::OpenDocument {
+    let open = DocumentCommand::Open {
         path,
         language: None,
     };
-    backend.send(backend.next_id(), open)?;
+    backend.send(backend.next_id(), open.into())?;
 
     let doc = next_snapshot(&mut snaps, |snap| !snap.table_lines.is_empty())
         .await
         .ok_or("the Markdown file never published table ranges")?;
 
-    let retarget = Command::RetargetDocument {
+    let retarget = DocumentCommand::Retarget {
         doc,
         path: dir.path().join("notes.txt"),
     };
-    backend.send(backend.next_id(), retarget)?;
+    backend.send(backend.next_id(), retarget.into())?;
     let cleared = next_snapshot(&mut snaps, |snap| snap.table_lines.is_empty()).await;
     assert!(
         cleared.is_some(),

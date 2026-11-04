@@ -163,6 +163,41 @@ mod tests {
     }
 
     #[test]
+    fn decode_path_short_escapes_each_consume_two_bytes() {
+        // Each escape sits mid-string and is followed by more text, so an escape
+        // that consumed the wrong width would leave a stray byte behind.
+        assert_eq!(decode_path("a\\nb\\rc\\td\\\"e\\\\f"), "a\nb\rc\td\"e\\f");
+    }
+
+    #[test]
+    fn decode_path_takes_octal_only_with_three_octal_digits() {
+        // Fewer than three digits, or a non-octal digit, is no octal escape: the
+        // backslash stays literal and the digits are copied through.
+        assert_eq!(decode_path("a\\1b"), "a\\1b");
+        assert_eq!(decode_path("a\\12b"), "a\\12b");
+        assert_eq!(decode_path("a\\12"), "a\\12");
+        assert_eq!(decode_path("a\\189"), "a\\189");
+        assert_eq!(decode_path("a\\981"), "a\\981");
+        assert_eq!(decode_path("a\\101b"), "aAb");
+    }
+
+    #[test]
+    fn quoted_header_honours_an_escaped_quote_inside_the_path() -> Result<(), DiffError> {
+        assert_eq!(
+            split_ab_paths("\"a/x\\\"y\" \"b/x\\\"y\"")?,
+            ("x\"y".to_string(), "x\"y".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unterminated_quote_finds_no_closing_quote() {
+        assert_eq!(find_closing_quote("\"a/open", 1), None);
+        // A trailing backslash skips past the end rather than reading beyond it.
+        assert_eq!(find_closing_quote("\"a/open\\", 1), None);
+    }
+
+    #[test]
     fn split_bare_paths() -> Result<(), DiffError> {
         assert_eq!(
             split_ab_paths("a/src/main.rs b/src/main.rs")?,
@@ -172,6 +207,11 @@ mod tests {
         assert_eq!(
             split_ab_paths("a/foo.rs b/bar.rs")?,
             ("foo.rs".to_string(), "bar.rs".to_string())
+        );
+        // A `b/` not preceded by a space is part of a name, not the boundary.
+        assert_eq!(
+            split_ab_paths("a/foo b/barb/baz")?,
+            ("foo".to_string(), "barb/baz".to_string())
         );
         // No space at all: the whole string stands for both sides.
         assert_eq!(

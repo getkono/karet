@@ -4,6 +4,7 @@ use super::*;
 fn language_ids_compare() {
     assert_eq!(LanguageId(1), LanguageId(1));
     assert_ne!(LanguageId(1), LanguageId(2));
+    assert_eq!(LanguageId(7).get(), 7);
 }
 
 #[test]
@@ -184,7 +185,7 @@ fn incremental_reparse_matches_full() -> Result<(), TsError> {
     let mut pool = ParserPool::new();
     let mut tree = SyntaxTree::parse(&mut pool, lang, old)?;
     // The insertion happens at byte 11 (before '}'), 8 bytes long, same line.
-    tree.edit(&Edit {
+    tree.edit(&AppliedEdit {
         start_byte: 11,
         old_end_byte: 11,
         new_end_byte: 19,
@@ -227,8 +228,7 @@ fn parses_markdown_and_compiles_block_query() -> Result<(), TsError> {
 }
 
 /// The `(row, byte-column)` of `byte` in `text` — for building test edits.
-#[cfg(feature = "lang-markdown")]
-fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
+pub(crate) fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
     let before = text.get(..byte).unwrap_or("");
     let row = before.matches('\n').count();
     let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
@@ -329,7 +329,7 @@ fn reparse_discovers_a_newly_typed_code_fence() -> Result<(), TsError> {
     assert!(!layer_langs(&tree).contains(&rust), "no fence yet");
 
     // Append the fence — the edit turns a paragraph into an injected rust region.
-    let edit = Edit {
+    let edit = AppliedEdit {
         start_byte: old.len(),
         old_end_byte: old.len(),
         new_end_byte: new.len(),
@@ -368,7 +368,7 @@ fn deleting_a_fence_drops_its_layer() -> Result<(), TsError> {
 
     parser.reparse(
         &mut tree,
-        &[Edit {
+        &[AppliedEdit {
             start_byte: 0,
             old_end_byte: old.len(),
             new_end_byte: 0,
@@ -558,8 +558,9 @@ fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
-    assert!(language_id_from_path(p).is_some());
-    assert_eq!(language_name_from_path(p), Some("Rust"));
+    assert!(languages::RUST.is_some());
+    assert_eq!(language_id_from_path(p), languages::RUST);
+    assert_eq!(language_id_from_injection_name("rust"), languages::RUST);
 }
 
 #[cfg(all(

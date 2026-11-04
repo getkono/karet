@@ -278,7 +278,8 @@ pub fn lint(text: &str, config: &Config) -> Vec<Issue> {
 }
 
 /// Apply every fix carried by `issues` to `text`, bottom-up so earlier lines
-/// keep their coordinates. Overlapping fixes on one line keep the first.
+/// keep their coordinates. Overlapping fixes on one line keep the first, and a
+/// blank inserted before a line goes in after that line's own fix.
 ///
 /// Line endings are preserved: every line keeps its own `\n` or `\r\n`, and a
 /// line a fix inserts (or a newline the trailing-newline fix adds) takes the
@@ -310,7 +311,15 @@ pub fn apply_fixes(text: &str, issues: &[Issue]) -> String {
         Fix::Replace { line, .. } | Fix::InsertBlankBefore { line } | Fix::Delete { line } => *line,
         Fix::EnsureTrailingNewline => usize::MAX,
     };
-    fixes.sort_by_key(|f| std::cmp::Reverse(line_of(f)));
+    // Within one line, the line's own `Replace`/`Delete` lands before the
+    // blank inserted above it: inserting first would shift the line down, so
+    // the line fix would hit the new blank and leave the original unfixed.
+    fixes.sort_by_key(|f| {
+        (
+            std::cmp::Reverse(line_of(f)),
+            matches!(f, Fix::InsertBlankBefore { .. }),
+        )
+    });
     let mut touched: Vec<usize> = Vec::new();
     for fix in fixes {
         match fix {

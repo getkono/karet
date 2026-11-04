@@ -34,11 +34,7 @@ pub(super) fn osc8_id(uri: &str) -> String {
     // security boundary. The URI remains part of OSC 8 and of terminal-side link
     // identity, so a hash collision cannot substitute one validated target for
     // another.
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let hash = uri.as_bytes().iter().fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-    });
+    let hash = karet_text::content_fingerprint(uri.as_bytes());
     format!("karet-{hash:016x}")
 }
 

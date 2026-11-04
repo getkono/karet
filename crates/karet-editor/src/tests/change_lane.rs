@@ -2,7 +2,7 @@
 //! [`DecorationKind::ChangeMarker`], reserved by [`Editor::change_lane`], so a
 //! change marker and a breakpoint on the same line are both drawn.
 
-use crate::*;
+use super::*;
 
 /// A one-line decoration of `kind` on `line`, colored by `role`.
 fn on_line(line: u32, kind: DecorationKind, role: Option<ThemeRole>) -> Decoration {

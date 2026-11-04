@@ -1,12 +1,13 @@
-//! The seam contract for [`Command::DocumentHighlights`]: a server that offers
+//! The seam contract for [`LspCommand::DocumentHighlights`]: a server that offers
 //! document highlights answers with its occurrences in buffer columns, and
 //! every other case -- a server without them, no server at all, a document
 //! that moved on, an answer fenced out by reconfiguration -- still answers,
 //! with `None`, and raises no notice.
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
+
 use super::*;
-use crate::api::DocumentHighlight;
-use crate::api::HighlightKind;
 use crate::lsp::DocumentHighlightsAnswer;
 
 /// Line 0 opens with an emoji: one buffer column, two UTF-16 code units, so
@@ -38,10 +39,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc, version))
@@ -74,7 +76,10 @@ fn ask(
 ) -> Result<RequestId, Box<dyn std::error::Error + Send + Sync>> {
     let request = backend.next_id();
     let position = CARET;
-    backend.send(request, Command::DocumentHighlights { doc, position })?;
+    backend.send(
+        request,
+        LspCommand::DocumentHighlights { doc, position }.into(),
+    )?;
     Ok(request)
 }
 
@@ -147,10 +152,10 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_highlights() -> TestRe
     let (backend, mut events, doc, version) = opened(&dir, "main.rs", Behavior::Normal).await?;
 
     let request = ask(&backend, doc)?;
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 version,
@@ -160,7 +165,8 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_highlights() -> TestRe
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
     let (answered, asked_at, highlights, _) = answer_to(&mut events, request).await?;
 
@@ -179,7 +185,7 @@ fn an_answer_from_a_retired_generation_still_answers_none() -> TestResult {
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -196,9 +202,9 @@ fn an_answer_from_a_retired_generation_still_answers_none() -> TestResult {
             request: RequestId(2),
             doc,
             version,
-            highlights: Some(vec![karet_lsp::DocumentHighlight {
+            highlights: Some(vec![DocumentHighlight {
                 range: range((0, 0), (0, 1)),
-                kind: karet_lsp::HighlightKind::Read,
+                kind: HighlightKind::Read,
             }]),
         },
     });

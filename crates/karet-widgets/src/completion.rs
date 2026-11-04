@@ -56,8 +56,9 @@ pub struct CompletionPopup<'a> {
 /// Selection and scroll state, kept by the caller across frames.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompletionState {
-    /// The selected row, as an index into [`CompletionPopup::ranked`].
-    pub selected: usize,
+    /// The selected row, as an index into [`CompletionPopup::ranked`]. Private
+    /// so every write goes through a method that keeps it inside the list.
+    selected: usize,
     /// The first visible row (maintained by the render).
     scroll: usize,
     /// The scrollbar track the last render painted, so the popup's bar can be
@@ -112,6 +113,22 @@ impl CompletionState {
         let max = len.saturating_sub(visible);
         let position = self.scroll.saturating_add_signed(delta).min(max);
         self.scroll_to(position, visible);
+    }
+
+    /// The selected row, as an index into [`CompletionPopup::ranked`].
+    ///
+    /// It is in range for the list it was last set against; a list that has
+    /// since shrunk (the filter narrowed) may leave it past the end, which the
+    /// next render clamps.
+    #[must_use]
+    pub const fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Select `row` of a `len`-row list, clamped to its last row (`0` for an
+    /// empty list).
+    pub fn select(&mut self, row: usize, len: usize) {
+        self.selected = row.min(len.saturating_sub(1));
     }
 
     /// Move the selection down, wrapping past the end of a `len`-row list.
@@ -760,6 +777,17 @@ mod tests {
         state.selected = 2;
         state.reset();
         assert_eq!(state, CompletionState::default());
+    }
+
+    #[test]
+    fn a_direct_selection_is_clamped_to_the_list() {
+        let mut state = CompletionState::default();
+        state.select(1, 3);
+        assert_eq!(state.selected(), 1);
+        state.select(9, 3);
+        assert_eq!(state.selected(), 2, "past the end lands on the last row");
+        state.select(4, 0);
+        assert_eq!(state.selected(), 0, "an empty list selects row 0");
     }
 
     #[test]

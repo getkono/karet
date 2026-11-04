@@ -15,7 +15,15 @@
 //! moving the cursor into the window the pointer asked for, which is also what their
 //! wheel already does.
 
-use super::*;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_widgets::scroll::TrackHit;
+
+use crate::app::App;
+use crate::app::hit::ScrollDrag;
+use crate::app::hit::ScrollSurface;
+use crate::tab::TabKind;
 
 /// A cursor pulled into the window `[position, position + viewport)`, left alone when
 /// it is already inside it.
@@ -36,11 +44,10 @@ impl App {
     /// Scroll the active non-wrapping view horizontally by `delta` columns.
     pub(super) fn scroll_columns(&mut self, delta: i32) {
         let word_wrap = self.tabs.get(self.active).is_some_and(|tab| {
-            effective_word_wrap(
-                tab,
+            tab.word_wrap(
                 self.settings
                     .editor
-                    .for_language(tab_language(tab))
+                    .for_language(tab.config_file_type())
                     .word_wrap(),
             )
         });
@@ -51,17 +58,15 @@ impl App {
             TabKind::Code { buffer, .. } if !word_wrap => {
                 tab.editor.scroll_columns(buffer, delta);
             },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.column, delta),
             TabKind::CommitGraph { column, .. } => adjust(column, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 adjust(&mut view.column, delta);
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    adjust(&mut pager.column, delta);
+                }
+            },
         }
     }
 
@@ -71,7 +76,7 @@ impl App {
     /// where the gesture does nothing — the column belongs to the bar, and a press
     /// there must never fall through to the view beside it.
     pub(super) fn scrollbar_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(hit) = self.scroll_hits.at(mouse.column, mouse.row) else {
+        let Some(hit) = self.last_frame.scroll.at(mouse.column, mouse.row) else {
             return false;
         };
         let extent = hit.track.extent();
@@ -177,10 +182,16 @@ impl App {
                 let cursor = window_bottom(position, viewport, len);
                 self.problems.selection.move_to(cursor);
             },
+            ScrollSurface::HierarchyResults => {
+                if let Some(tree) = self.hierarchy.tree.as_mut() {
+                    let cursor = window_bottom(position, viewport, tree.row_count());
+                    tree.select(cursor);
+                }
+            },
             ScrollSurface::DebugResults => {
-                let len = self.debug_panel.rows.len();
+                let len = self.debugger.panel.rows.len();
                 let cursor = window_bottom(position, viewport, len);
-                self.debug_panel.selection.move_to(cursor);
+                self.debugger.panel.selection.move_to(cursor);
             },
             ScrollSurface::CommitFileRail => self.commit_rail_scroll_to(position),
             // Routed as a delta so the commit log keeps its lazy-loading trigger.
@@ -194,7 +205,7 @@ impl App {
             ScrollSurface::CommitConsole => self.commit_console_scroll_to(position),
             ScrollSurface::CommitConsoleColumns => self.commit_console_scroll_columns_to(position),
             ScrollSurface::Completion => {
-                if let Some(ui) = self.completion.as_mut() {
+                if let Some(ui) = self.completion.popup.as_mut() {
                     ui.list.scroll_to(position, viewport);
                 }
             },
@@ -229,12 +240,6 @@ impl App {
             // Buffer lines, the unit `visible_lines()` reports the extent in.
             TabKind::Code { .. } => tab.editor.scroll_to_line(clamp_u32(position)),
             TabKind::MarkdownPreview { scroll, .. } => *scroll = clamp_u16(position),
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => pager.scroll = clamp_u16(position),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.scroll = clamp_u16(position);
             },
@@ -267,7 +272,11 @@ impl App {
             TabKind::Document {
                 page, page_count, ..
             } => *page = position.min(page_count.saturating_sub(1)),
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.scroll = clamp_u16(position);
+                }
+            },
         }
     }
 
@@ -298,18 +307,66 @@ impl App {
         };
         match &mut tab.kind {
             TabKind::Code { .. } => tab.editor.scroll_to_column(clamp_u32(position)),
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => pager.column = clamp_u16(position),
             TabKind::CommitGraph { column, .. } => *column = clamp_u16(position),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.column = clamp_u16(position);
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.column = clamp_u16(position);
+                }
+            },
         }
+    }
+
+    /// Scroll the active code tab's in-editor Markdown preview and align the
+    /// source editor to the preview's nearest source anchor.
+    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
+        let current = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.markdown_preview.as_ref())
+            .map_or(0, |preview| usize::from(preview.scroll));
+        let next = (current as i64 + i64::from(delta)).max(0) as usize;
+        self.set_markdown_preview_scroll(next);
+    }
+
+    /// Put the in-editor Markdown preview's first visible wrapped line at `position`.
+    ///
+    /// The source pane follows, exactly as it does for the wheel: the two are kept in
+    /// sync through the preview's source anchors, so a dragged preview bar must not
+    /// leave the code beside it behind.
+    pub(super) fn set_markdown_preview_scroll(&mut self, position: usize) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let Some(preview) = tab.markdown_preview.as_mut() else {
+            return;
+        };
+        let max = preview.wrapped.lines.len().saturating_sub(1);
+        preview.scroll = u16::try_from(position.min(max)).unwrap_or(u16::MAX);
+        let source = preview
+            .wrapped
+            .source_line_for_wrapped(usize::from(preview.scroll));
+        let last = buffer.line_count().saturating_sub(1);
+        tab.editor
+            .scroll_to_line(u32::try_from(source.min(last)).unwrap_or(u32::MAX));
+    }
+}
+
+/// Scroll `offset` the minimum distance that brings row `cursor` inside a viewport of
+/// `height` rows. The three commit lists and the change list all need exactly this.
+#[must_use]
+pub(crate) fn keep_visible(cursor: usize, offset: usize, height: usize) -> usize {
+    if cursor < offset {
+        cursor
+    } else if height > 0 && cursor >= offset + height {
+        cursor + 1 - height
+    } else {
+        offset
     }
 }
 
@@ -350,4 +407,23 @@ fn clamp_u32(position: usize) -> u32 {
 pub(in crate::app) fn adjust(offset: &mut u16, delta: i32) {
     let next = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
     *offset = next as u16;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_visible;
+
+    /// The clamp only moves the viewport when the cursor is actually outside it, and
+    /// then by the minimum distance.
+    #[test]
+    fn keep_visible_scrolls_the_minimum_distance() {
+        // Already inside: unchanged.
+        assert_eq!(keep_visible(5, 3, 10), 3);
+        // Above the viewport: the cursor becomes the top row.
+        assert_eq!(keep_visible(1, 4, 10), 1);
+        // Below the viewport: the cursor becomes the bottom row.
+        assert_eq!(keep_visible(20, 4, 10), 11);
+        // A zero-height viewport can't scroll anywhere.
+        assert_eq!(keep_visible(20, 4, 0), 4);
+    }
 }

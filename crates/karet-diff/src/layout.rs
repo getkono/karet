@@ -44,7 +44,7 @@ fn hunk_spans(
     let hunks: &[Hunk] = if prepared.is_binary() {
         &[]
     } else {
-        &prepared.diff.hunks
+        &prepared.diff().hunks
     };
     let mut next_row = 0usize;
     hunks.iter().enumerate().map(move |(index, hunk)| {
@@ -150,7 +150,7 @@ pub struct RowContent {
 #[must_use]
 pub fn unified_row(prepared: &PreparedDiff, row: usize) -> Option<RowContent> {
     let (hunk, body) = body_row_at(prepared, row, unified_body)?;
-    let line = prepared.diff.hunks.get(hunk)?.lines.get(body)?;
+    let line = prepared.diff().hunks.get(hunk)?.lines.get(body)?;
     Some(RowContent {
         text: line.content.clone(),
         gutter_width: gutter_width(line.old_lineno)
@@ -178,7 +178,7 @@ pub fn side_by_side_row(
     let Some((index, body)) = body_row_at(prepared, row, side_by_side_body) else {
         return (None, None);
     };
-    let Some(hunk) = prepared.diff.hunks.get(index) else {
+    let Some(hunk) = prepared.diff().hunks.get(index) else {
         return (None, None);
     };
     let rows = align_hunk(&hunk.lines);
@@ -216,11 +216,19 @@ pub(crate) mod tests {
     use crate::diff_text;
 
     pub(crate) fn prepared(old: &str, new: &str) -> PreparedDiff {
-        PreparedDiff::new(
-            diff_text(old, new, &DiffOptions::default()),
-            Vec::new(),
-            Vec::new(),
-        )
+        prepared_with(old, new, |_| {})
+    }
+
+    /// Like [`prepared`], with `adjust` applied to the line diff before it is
+    /// prepared (a prepared diff is immutable).
+    pub(crate) fn prepared_with(
+        old: &str,
+        new: &str,
+        adjust: impl FnOnce(&mut crate::FileDiff),
+    ) -> PreparedDiff {
+        let mut diff = diff_text(old, new, &DiffOptions::default());
+        adjust(&mut diff);
+        PreparedDiff::new(diff, Vec::new(), Vec::new())
     }
 
     /// Three hunks, the first rewriting two lines (so the side-by-side body,
@@ -232,11 +240,11 @@ pub(crate) mod tests {
             .replacen("l0\nl1\n", "L0\nL1\n", 1)
             .replacen("l14\n", "L14\n", 1)
             .replacen("l29\n", "", 1);
-        let mut prep = prepared(&old, &new);
-        if let Some(hunk) = prep.diff.hunks.get_mut(1) {
-            hunk.scope = Some("fn middle".to_string());
-        }
-        prep
+        prepared_with(&old, &new, |diff| {
+            if let Some(hunk) = diff.hunks.get_mut(1) {
+                hunk.scope = Some("fn middle".to_string());
+            }
+        })
     }
 
     fn binary() -> PreparedDiff {
@@ -258,12 +266,12 @@ pub(crate) mod tests {
         // Only the scoped hunk carries the extra chrome row.
         let heads: Vec<usize> = spans.iter().map(|span| span.head).collect();
         assert_eq!(heads, [1, 2, 1]);
-        for (span, hunk) in spans.iter().zip(&prep.diff.hunks) {
+        for (span, hunk) in spans.iter().zip(&prep.diff().hunks) {
             assert_eq!(span.body, hunk.lines.len());
         }
         // A binary diff yields no spans even when it still carries hunks.
         let binary = binary();
-        assert!(!binary.diff.hunks.is_empty());
+        assert!(!binary.diff().hunks.is_empty());
         assert_eq!(hunk_spans(&binary, unified_body).count(), 0);
     }
 

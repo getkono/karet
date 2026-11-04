@@ -16,7 +16,9 @@ fn definition_requests(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> 
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::Definition { position, .. } => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::Definition { position, .. }) => {
+                        Some((*id, *position))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -215,7 +217,7 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
         },
     );
 
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("several locations should offer a choice");
     };
     // Paths are shown relative to the workspace and lines 1-based, as everywhere
@@ -466,10 +468,9 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
     let snap = DocSnapshot {
         version: buffer.version(),
         buffer,
-        highlights: Arc::new(karet_syntax::Highlights::default()),
-        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        highlights: Arc::new(karet_core::Highlights::default()),
+        semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),
@@ -502,7 +503,7 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
 #[test]
 fn alt_left_in_the_search_field_is_still_word_motion() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.query = "foo bar".into();
     app.search_focus_field(SearchPanelField::Find);
@@ -530,7 +531,7 @@ fn click(col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
 #[test]
 fn ctrl_click_requests_the_definition_at_the_click_not_the_caret() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     // Screen column 11 is buffer column 8 (a 3-cell gutter), inside "target".
     app.handle_editor_click(click(11, 0, KeyModifiers::CONTROL));
@@ -545,7 +546,7 @@ fn ctrl_click_requests_the_definition_at_the_click_not_the_caret() {
 #[test]
 fn a_plain_click_sends_no_definition_request() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     app.handle_editor_click(click(11, 0, KeyModifiers::NONE));
 
@@ -556,7 +557,7 @@ fn a_plain_click_sends_no_definition_request() {
 #[test]
 fn ctrl_click_off_an_identifier_requests_nothing_and_moves_nothing() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     // A 3-cell gutter: screen column 6 is buffer column 3, and so on.
     for (column, row, what) in [
@@ -579,7 +580,7 @@ fn ctrl_click_off_an_identifier_requests_nothing_and_moves_nothing() {
 #[test]
 fn ctrl_click_on_the_last_character_of_an_identifier_requests_it() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     // Screen column 16 is buffer column 13, the final `t` of "target".
     app.handle_editor_click(click(16, 0, KeyModifiers::CONTROL));
@@ -592,7 +593,7 @@ fn ctrl_click_on_the_last_character_of_an_identifier_requests_it() {
 #[test]
 fn alt_and_shift_clicks_keep_their_own_gestures() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     // Alt+click adds a caret rather than jumping...
     app.handle_editor_click(click(11, 0, KeyModifiers::ALT));
@@ -657,7 +658,7 @@ fn hover_app(name: &str) -> (App, Rect) {
     let root = app.root.clone();
     attach_running_server(&mut app, &root);
     let rect = Rect::new(0, 0, 40, 5);
-    app.pane_frames = vec![content_frame(&app, rect)];
+    app.last_frame.panes = vec![content_frame(&app, rect)];
     (app, rect)
 }
 
@@ -702,7 +703,7 @@ fn ctrl_hover_underlines_nothing_without_a_running_server() {
     // The underline promises only what a click can deliver, and a click needs a
     // server that is already running.
     let (_backend, mut app, _other) = workspace("definition-hover-no-server");
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
     assert!(app.definition_underline_decoration().is_none());
@@ -728,7 +729,7 @@ fn location_requests(backend: &RecordingBackend) -> Vec<(RequestId, LocationKind
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::FindLocations { position, kind, .. } => {
+                    SessionCommand::Lsp(LspCommand::FindLocations { position, kind, .. }) => {
                         Some((*id, *kind, *position))
                     },
                     _ => None,
@@ -775,7 +776,7 @@ fn a_single_reference_still_opens_the_picker() {
 
     // Where the symbol is used is the answer, so one use is listed rather than
     // jumped to; the caret stays put until the user picks it.
-    let Some(overlay) = app.overlay.as_ref() else {
+    let Some(overlay) = app.keyboard.overlay() else {
         panic!("references should be listed");
     };
     assert_eq!(overlay.title(), "References");
@@ -806,7 +807,7 @@ fn a_single_implementation_is_jumped_to() {
     );
     fill_reserved_tabs(&mut app);
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 0));
 }
@@ -842,7 +843,11 @@ fn a_reference_preview_reads_the_open_buffer_over_the_file_on_disk() {
         },
     );
 
-    let rows = app.overlay.as_ref().map(Overlay::rows).unwrap_or_default();
+    let rows = app
+        .keyboard
+        .overlay()
+        .map(Overlay::rows)
+        .unwrap_or_default();
     assert_eq!(
         rows,
         vec![
@@ -869,7 +874,7 @@ fn an_empty_references_answer_names_what_was_not_found() {
         },
     );
 
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(last_message(&app).as_deref(), Some("no references found"));
 }
 

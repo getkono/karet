@@ -172,7 +172,6 @@ fn trim_trailing(lanes: &mut Vec<Option<String>>, colors: &mut Vec<u8>) {
 /// Render one row into a glyph gutter. Uses a cell grid of `2*width - 1` columns —
 /// lanes at even indices, inter-lane connectors at odd indices — then trims trailing
 /// blanks. `lanes`/`colors` are the *post-update* lane picture (what continues below).
-#[allow(clippy::too_many_arguments)] // a self-contained renderer; splitting hurts clarity
 fn render_row(
     node_lane: usize,
     row: &LaneInput,

@@ -173,7 +173,7 @@ where
 
 /// Drain events until `pick` accepts one, bounded by a deadline.
 async fn wait_for<T>(
-    rx: &mut mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
     mut pick: impl FnMut(&Event) -> Option<T>,
 ) -> Option<T> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -187,7 +187,7 @@ async fn wait_for<T>(
 
 #[tokio::test]
 async fn the_command_event_contract_round_trips() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     // Breakpoints set before any session: stored, echoed unverified.
@@ -281,7 +281,7 @@ async fn the_command_event_contract_round_trips() {
 
 #[tokio::test]
 async fn adapter_output_late_breakpoints_and_exit_reach_the_event_stream() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -312,7 +312,7 @@ async fn adapter_output_late_breakpoints_and_exit_reach_the_event_stream() {
         "a debuggee that ends on its own is an ordinary outcome"
     );
 
-    let outputs: Vec<(String, String)> = seen
+    let outputs: Vec<(DebugOutputCategory, String)> = seen
         .iter()
         .filter_map(|event| match event {
             Event::DebugOutput { category, text } => Some((category.clone(), text.clone())),
@@ -322,9 +322,9 @@ async fn adapter_output_late_breakpoints_and_exit_reach_the_event_stream() {
     assert_eq!(
         outputs,
         vec![
-            ("stdout".to_owned(), "hello\n".to_owned()),
+            (DebugOutputCategory::Stdout, "hello\n".to_owned()),
             (
-                "console".to_owned(),
+                DebugOutputCategory::Console,
                 "debuggee exited with code 3\n".to_owned()
             ),
         ]
@@ -358,7 +358,7 @@ fn failing_connector() -> Connector {
 
 #[tokio::test]
 async fn a_start_that_fails_is_the_only_debug_transition_reported_as_an_error() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(failing_connector());
     manager.start(None);
@@ -383,7 +383,7 @@ async fn a_start_that_fails_is_the_only_debug_transition_reported_as_an_error() 
 
 #[tokio::test]
 async fn inspection_answers_ride_the_request_id() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -408,18 +408,28 @@ async fn inspection_answers_ride_the_request_id() {
     let frames = frames.unwrap_or_default();
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].line, 4, "wire 1-based, api 0-based");
+    let frame = frames[0].id;
 
-    manager.scopes(RequestId(42), frames[0].id);
+    manager.scopes(RequestId(42), frame);
     let scopes = wait_for(&mut events_rx, |event| match event {
-        Event::DebugScopes { scopes, .. } => Some(scopes.clone()),
+        Event::DebugScopes {
+            frame: answered,
+            scopes,
+        } => {
+            assert_eq!(
+                *answered, frame,
+                "the answer names the frame it was asked for"
+            );
+            Some(scopes.clone())
+        },
         _ => None,
     })
     .await
     .unwrap_or_default();
     assert_eq!(scopes.len(), 1);
-    assert_eq!(scopes[0].reference, 11);
+    assert_eq!(scopes[0].variables_reference, VariablesRef(11));
 
-    manager.variables(RequestId(43), scopes[0].reference);
+    manager.variables(RequestId(43), scopes[0].variables_reference);
     let variables = wait_for(&mut events_rx, |event| match event {
         Event::DebugVariables { variables, .. } => Some(variables.clone()),
         _ => None,
@@ -429,7 +439,8 @@ async fn inspection_answers_ride_the_request_id() {
     assert_eq!(variables.len(), 2);
     assert_eq!(variables[0].value, "42");
     assert_eq!(
-        variables[1].reference, 12,
+        variables[1].variables_reference,
+        VariablesRef(12),
         "expandable child keeps its handle"
     );
 
@@ -444,7 +455,7 @@ async fn inspection_answers_ride_the_request_id() {
 
 #[tokio::test]
 async fn inspection_without_a_stop_answers_empty() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.stack_trace(RequestId(9));
     let frames = wait_for(&mut events_rx, |event| match event {
@@ -457,7 +468,7 @@ async fn inspection_without_a_stop_answers_empty() {
 
 #[tokio::test]
 async fn start_without_configurations_notifies() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let mut manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.set_connector(fake_connector());
     manager.start(None);
@@ -475,7 +486,7 @@ async fn start_without_configurations_notifies() {
 
 #[tokio::test]
 async fn run_controls_without_a_session_notify() {
-    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
     let manager = DebugManager::new(Debugger::default(), None, None, events_tx);
     manager.run_control(RunControl::StepOver);
     let message = wait_for(&mut events_rx, |event| match event {

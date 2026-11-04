@@ -12,8 +12,6 @@ use crate::repo::to_git;
 pub struct Commit {
     /// The full commit hash (hex).
     pub hash: String,
-    /// The abbreviated hash (first 7 hex characters).
-    pub short_hash: String,
     /// The first line of the commit message.
     pub summary: String,
     /// The author's name.
@@ -23,6 +21,24 @@ pub struct Commit {
     /// The full hex hashes of this commit's parents, first-parent first. Empty for a
     /// root commit; two or more for a merge. Drives the DAG lane layout.
     pub parents: Vec<String>,
+}
+
+impl Commit {
+    /// The abbreviated hash for display: the first 7 characters of
+    /// [`hash`](Self::hash), derived on each call so it cannot disagree with it.
+    #[must_use]
+    pub fn short_hash(&self) -> &str {
+        abbreviate(&self.hash)
+    }
+}
+
+/// The first 7 characters of a hex `hash`, or all of it when shorter.
+///
+/// A `hash` that is not ASCII hex (possible only through a hand-built or
+/// deserialized value) is returned whole when byte 7 does not fall on a
+/// character boundary, rather than panicking.
+pub(crate) fn abbreviate(hash: &str) -> &str {
+    hash.get(..hash.len().min(7)).unwrap_or(hash)
 }
 
 impl Repository {
@@ -178,7 +194,6 @@ impl Repository {
     /// Build a [`Commit`] from a resolved object id and its precomputed hex hash.
     fn build_commit(&self, id: gix::ObjectId, hash: String) -> Result<Commit, VcsError> {
         let commit = self.inner.find_commit(id).map_err(to_git)?;
-        let short_hash = hash.chars().take(7).collect();
         let summary = commit
             .message()
             .map(|m| m.summary().to_string())
@@ -196,7 +211,6 @@ impl Repository {
             .collect();
         Ok(Commit {
             hash,
-            short_hash,
             summary,
             author,
             time,
@@ -236,9 +250,28 @@ mod tests {
         assert_eq!(log[0].summary, "commit 2");
         assert_eq!(log[2].summary, "commit 0");
         assert_eq!(log[0].author, "karet test");
-        assert_eq!(log[0].short_hash.len(), 7);
-        assert!(log[0].hash.starts_with(&log[0].short_hash));
+        assert_eq!(log[0].short_hash().len(), 7);
+        assert!(log[0].hash.starts_with(log[0].short_hash()));
         Ok(())
+    }
+
+    /// The short hash is the hash's first 7 characters, all of a shorter one,
+    /// and never a panic on a hand-built hash that is not ASCII.
+    #[test]
+    fn short_hash_is_derived_from_hash() {
+        let commit = |hash: &str| crate::Commit {
+            hash: hash.to_string(),
+            summary: String::new(),
+            author: String::new(),
+            time: 0,
+            parents: Vec::new(),
+        };
+        assert_eq!(commit("0123456789abcdef").short_hash(), "0123456");
+        assert_eq!(commit("abc").short_hash(), "abc");
+        assert_eq!(commit("").short_hash(), "");
+        // Byte 7 falls inside the two-byte `é`: the whole value comes back.
+        assert_eq!(commit("abcdeféxyz").short_hash(), "abcdeféxyz");
+        assert_eq!(commit("abcdeé").short_hash(), "abcdeé");
     }
 
     #[test]

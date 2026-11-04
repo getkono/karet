@@ -79,11 +79,27 @@ pub enum LoadError {
         offset: usize,
     },
     /// An I/O error while reading the file.
-    #[error("load i/o error: {0}")]
-    Io(String),
+    #[error("load i/o error: {message}")]
+    Io {
+        /// The kind of failure, so a caller can tell a missing file or a
+        /// permission problem from any other error without re-reading the file.
+        kind: std::io::ErrorKind,
+        /// The operating system's description of the failure.
+        message: String,
+    },
 }
 
-const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+impl From<std::io::Error> for LoadError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+}
+
+/// The UTF-8 byte-order mark: stripped on load, re-added on save.
+pub(crate) const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 impl TextBuffer {
     /// Build a buffer from in-memory file bytes: strip a BOM, validate UTF-8
@@ -126,7 +142,7 @@ impl TextBuffer {
     /// Returns [`LoadError::Io`] if the file cannot be read, or
     /// [`LoadError::NotUtf8`] if its contents are not valid UTF-8.
     pub fn load(path: &Path) -> Result<Self, LoadError> {
-        let bytes = std::fs::read(path).map_err(|e| LoadError::Io(e.to_string()))?;
+        let bytes = std::fs::read(path)?;
         let mut buf = Self::from_bytes(&bytes)?;
         buf.record_disk_state(path, &bytes);
         Ok(buf)
@@ -195,6 +211,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eol_bytes_and_labels() {
+        assert_eq!(Eol::Lf.as_bytes(), b"\n");
+        assert_eq!(Eol::Crlf.as_bytes(), b"\r\n");
+        assert_eq!(Eol::Lf.to_string(), "LF");
+        assert_eq!(Eol::Crlf.to_string(), "CRLF");
+    }
+
+    #[test]
+    fn encoding_labels() {
+        assert_eq!(Encoding::Utf8.to_string(), "UTF-8");
+        assert_eq!(Encoding::Utf8Bom.to_string(), "UTF-8 BOM");
+    }
+
+    /// A missing file reports its `io::ErrorKind`, so a caller can tell "does not
+    /// exist" from any other failure without reading the file a second time.
+    #[test]
+    fn loading_a_missing_file_keeps_the_error_kind() -> Result<(), std::io::Error> {
+        let dir = tempfile::tempdir()?;
+        let result = TextBuffer::load(&dir.path().join("absent.txt"));
+        assert!(
+            matches!(
+                &result,
+                Err(LoadError::Io { kind: std::io::ErrorKind::NotFound, message })
+                    if !message.is_empty()
+            ),
+            "{:?}",
+            result.err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn plain_lf_loads_clean() {
         let b = TextBuffer::from_bytes(b"a\nb\n").unwrap_or_default();
         assert_eq!(b.eol(), Eol::Lf);
@@ -219,6 +267,14 @@ mod tests {
         assert!(b.has_mixed_eol());
         assert_eq!(b.eol(), Eol::Crlf); // 2 CRLF vs 1 LF → majority CRLF
         assert_eq!(b.text(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn a_leading_lf_is_an_lf() {
+        // The `\n` at byte 0 has no byte before it to be a `\r`.
+        let b = TextBuffer::from_bytes(b"\na\r\n").unwrap_or_default();
+        assert!(b.has_mixed_eol());
+        assert_eq!(b.text(), "\na\n");
     }
 
     #[test]

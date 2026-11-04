@@ -3,21 +3,21 @@
 Read-only [ratatui] file-view **primitives**: a terminal image renderer (Kitty
 graphics with a truecolor halfblock fallback), a hex dump for binaries, and a
 graceful placeholder for oversized / undecodable files, plus the
-`classify`/`FileKind` re-exports from `karet-filetype` to route a path to the
-right primitive.
+`FileKind`/`classify`/`classify_ignoring_size`/`SIZE_GUARD` re-exports from
+`karet-filetype` (all under `viewer`) to route a path to the right primitive.
 
 It is the crate an external consumer imports to drop a file preview into their
 TUI without pulling the full editor toolkit (fuzzy matching, file tree, LSP
 popups). Composition — which primitive draws which `FileKind`, and how text is
 highlighted — stays with the consumer: pair the `viewer::classify` result with
-your own text/editor widget for code, `HexView` for binaries, and
+your own text/editor widget for code, `hex::HexView` for binaries, and
 `image::ImageWidget` for pictures.
 
 ## Usage
 
 ```rust
 use karet_fileview::viewer::{classify, FileKind, Placeholder};
-use karet_fileview::HexView;
+use karet_fileview::hex::HexView;
 
 let bytes = std::fs::read(path)?;
 match classify(path, &bytes, bytes.len() as u64) {

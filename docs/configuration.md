@@ -71,19 +71,24 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `formatOnSaveTimeout` | number | `10000` | Milliseconds a save waits on the language server's formatter before writing the file unformatted. Accepts `1`–`30000`: the ceiling is the language-server request timeout, past which no answer can arrive. A value outside that range is reported as an invalid `editor` section, like any other malformed editor setting. Global only; not a per-language override. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
+| `inlineCompletion` | object | enabled | Ghost text (`enabled`): what a server offering LSP 3.18 inline completions -- such as `copilot-language-server`, see [language servers](language-servers.md#inline-completions-copilot) -- proposes at the caret, asked for once typing pauses and drawn dimmed after it. `Tab` accepts it, `Ctrl+Right` accepts one word, `Esc` dismisses it, and `Alt+]` / `Alt+[` cycle the proposals (or ask for some when none is shown). Honours the per-language override (`"[markdown]": { "inlineCompletion": { "enabled": false } }`). Nothing is asked where no attached server offers it. |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
 | `inlayHints` | object | enabled | Inferred types and parameter names drawn between characters, from the language's primary server, each kind in its own color. `enabled` takes `true`/`"on"` (default), `false`/`"off"`, or VS Code's `"onUnlessPressed"`/`"offUnlessPressed"`. **Toggle Inlay Hints** (`Ctrl+K Ctrl+T`, or the palette) flips them for the session under `on`/`off`; under the `…UnlessPressed` modes it flips them only until the next key, since a terminal cannot tell a held key. Servers that offer none cost nothing. Turning them off takes effect at once: hints already shown are cleared. |
 | `semanticHighlighting` | object | enabled | `enabled` (default `true`): ask the language's semantic-token server -- its primary, unless `lsp.languages.<id>.semanticTokens` names another -- for semantic tokens and lay them over the tree-sitter colours, recoloured through the theme's `semanticTokenColors` (macros, mutable bindings, unresolved names, deprecated symbols, …). Comments, strings and markup keep their tree-sitter colours. Turning it off takes effect at once, without restarting a server; see [language servers](language-servers.md#capability-ownership-and-overlap). |
 | `codeLens` | bool | `true` | The language server's code lenses ("Run test", "3 references") on a row of their own above the line they describe, indented like it, in the theme's `editorCodeLens.foreground`. Clicking a title runs its command on the server; a lens that only informs runs nothing. Turning them off takes effect at once: lenses already shown are cleared. |
 | `inlineDiagnostics` | object | `{ "mode": "currentLine", "minSeverity": "hint" }` | Which diagnostics show their message at the end of their line, in the severity's color. `mode` is `"off"`, `"currentLine"` (the lines a caret is on) or `"all"` (every line a diagnostic starts on); `minSeverity` is the least severe one shown: `"error"`, `"warning"`, `"info"` or `"hint"`. A short line cuts the least severe message first. The gutter sign and the underline are drawn whatever this says, and misspellings never take the message slot. The underline is curly where the terminal is known to draw one (kitty, Ghostty, WezTerm, foot, Alacritty, iTerm2, VS Code, and VTE-based terminals, outside tmux) and straight elsewhere. |
-| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
+| `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`), and the colours the file's language server reports (`textDocument/documentColor` -- a Tailwind class, a CSS named colour); where both find the same literal, the server's colour is drawn. |
 | `prettyErrors` | bool | `true` | Re-render TypeScript diagnostics as markdown — quoted types become highlighted code blocks — in the hover popup and the diagnostic view (`Ctrl+K Ctrl+M`). |
 
 #### Per-language editor settings
 
 Every `editor` key can be overridden for one language with a `[language]` selector in
 the same object. Selectors are matched case-insensitively against the file type's stable
-configuration identity:
+configuration identity, never its display name: `Cargo.lock` (shown as "Cargo lockfile")
+takes `[toml]`, and `.gitmodules` takes `[gitconfig]`. A diff tab takes its file's selector
+and a rendered Markdown preview takes `[markdown]`; tabs that show no document text (images,
+PDFs, hex, logs, commit and graph views) use the global settings, as does a file with no
+selector (plain text, or a file karet does not recognize). For example:
 
 ```jsonc
 {
@@ -232,7 +237,7 @@ the typing after it in two steps rather than one.
 |---|---|---|---|
 | `autoSave` | `"off"`\|`"afterDelay"`\|`"onFocusChange"` | `"off"` | When dirty buffers auto-save. |
 | `autoSaveDelay` | number | `1000` | Delay (ms) for `afterDelay`. |
-| `encoding` | string | `"utf-8"` | Default encoding label. |
+| `encoding` | `"auto"`\|`"utf-8"`\|`"utf-8-bom"` | `"auto"` | Encoding on save: `auto` keeps the file's own (no BOM for a new file), `utf-8` drops a byte-order mark, `utf-8-bom` writes one. An `.editorconfig` `charset` overrides it. |
 | `eol` | `"auto"`\|`"lf"`\|`"crlf"` | `"auto"` | Line-ending style on save. |
 | `exclude` | string[] | `[]` | Globs hidden from the file explorer. |
 | `watcherExclude` | string[] | `[]` | Globs excluded from the filesystem watcher. |
@@ -466,6 +471,67 @@ whole story. No launch.json compatibility layer — configurations live here.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `kernel.autoStart` | bool | `false` | Start a notebook's Jupyter kernel as soon as its preview opens, instead of on the first `Notebook: Run All Cells`. Off by default — a kernel is an arbitrary-code process. |
+
+### `tasks`
+
+Named shell commands for build and test loops. **Tasks: Run Task** (palette, or
+bind `runTask` in `keymap.jsonc`) lists them by label with the command beside
+it; picking one runs the command in a new [integrated terminal](scope.md#in-scope)
+tab titled `Task: <label>`. `tasks` is an object keyed by label, so a project
+layer overrides a user task of the same name key by key and leaves the user's
+other tasks alone. Each task takes:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `command` | string | `""` | The command line, run by `/bin/sh -c` on Unix and `cmd /C` on Windows (not your login shell, so it behaves the same for everyone sharing the project file). |
+| `cwd` | string | `""` | The working directory: absolute, or relative to the workspace root; empty is the root. |
+| `env` | object | `{}` | Environment variables set for the command, over the editor's own. |
+| `problemMatcher` | array | `[]` | How to read the output for problems: built-in names and patterns of your own, all applied. |
+
+The built-in matchers are `"$rustc"` (cargo and clippy too: the
+`error[E0308]: …` heading and the ` --> file:line:col` under it), `"$gcc"`
+(GCC and Clang), `"$tsc"` (plain and `--pretty`), `"$go"`, and
+`"$eslint-compact"`. A pattern of your own is
+`{ "regexp", "file": 1, "line": 2, "column", "severity", "code", "message", "defaultSeverity": "error" }`:
+`regexp` (Rust `regex` syntax) is tried on every output line, the other numbers
+are capture groups, and an unset `message` takes the whole line; `severity`
+reads `error`, `warning`, `info`, `note` and `hint` in any case and falls back
+to `defaultSeverity` (`"error"`, `"warning"`, `"info"` or `"hint"`).
+
+The matchers read what the terminal shows, history included, after colours
+and cursor movement are interpreted, so coloured compiler output needs no
+`--color=never`. A relative path resolves under the task's `cwd`, or under the
+workspace root when it is not there (cargo prints workspace-relative paths
+from inside a member). What they find replaces that task's entries in the
+**Problems** panel and the status-bar counts — at most twice a second while it
+runs, whether or not its tab is on screen, and always when it exits — with the
+task's label as the source, and stays until the task runs again or settings no
+longer define it; F8 still walks only the language servers'
+diagnostics. When a task ends, a notification gives its exit status and how
+many problems it found.
+
+Running a task whose last run is still going shows that run instead of starting
+a second (close its terminal to stop it); a finished run's tab is closed and
+replaced once the new run has started, so repeated builds do not pile up tabs
+and a run that cannot start leaves the last one's output and problems in place.
+
+```jsonc
+{
+  "tasks": {
+    "check": { "command": "cargo clippy --workspace", "problemMatcher": ["$rustc"] },
+    "web": {
+      "command": "npx tsc --noEmit",
+      "cwd": "web",
+      "env": { "NODE_OPTIONS": "--max-old-space-size=4096" },
+      "problemMatcher": ["$tsc"]
+    },
+    "lint": {
+      "command": "ruff check --output-format concise .",
+      "problemMatcher": [{ "regexp": "^(.+?):(\\d+):(\\d+): (\\S+) (.*)$", "column": 3, "code": 4, "message": 5, "defaultSeverity": "warning" }]
+    }
+  }
+}
+```
 
 ### `wakatime`
 

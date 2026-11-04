@@ -111,7 +111,9 @@ fn resolve_requests(backend: &RecordingBackend) -> Vec<(RequestId, InlayHint)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::ResolveInlayHint { hint, .. } => Some((*id, hint.clone())),
+                    SessionCommand::Lsp(LspCommand::ResolveInlayHint { hint, .. }) => {
+                        Some((*id, hint.clone()))
+                    },
                     _ => None,
                 })
                 .collect()

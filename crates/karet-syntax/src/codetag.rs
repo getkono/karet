@@ -10,12 +10,11 @@
 //! text — so it works with any grammar that captures comments.
 
 use karet_core::BytePos;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
 use karet_core::Span;
 use karet_core::StandardToken;
 use karet_core::TokenId;
-
-use crate::HighlightSpan;
-use crate::Highlights;
 
 /// Configuration for [`mark_semantic_comments`].
 #[derive(Clone, Debug, PartialEq, Eq)]

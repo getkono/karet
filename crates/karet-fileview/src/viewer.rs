@@ -1,7 +1,8 @@
 //! A graceful placeholder for files the code window cannot render inline.
 //!
-//! File-type classification itself lives in [`karet_filetype`]; this module
-//! re-exports [`FileKind`]/[`classify`]/[`SIZE_GUARD`] for callers and supplies the
+//! File-type classification itself lives in [`karet_filetype`]; this module is
+//! this crate's one path to it, re-exporting [`FileKind`], [`classify`],
+//! [`classify_ignoring_size`] and [`SIZE_GUARD`] for callers, and supplies the
 //! ratatui [`Placeholder`] widget. The application opens a file by
 //! [`classify`]ing it and then choosing a renderer: [`FileKind::Text`] /
 //! [`FileKind::Markdown`] → the editor widget, [`FileKind::Image`] → the image
@@ -136,8 +137,13 @@ fn describe(kind: FileKind) -> &'static str {
     }
 }
 
-/// Format `bytes` as a human-readable size (e.g. `12.3 KiB`).
-fn human_size(bytes: u64) -> String {
+/// Format `bytes` as a human-readable base-1024 size (e.g. `12.3 KiB`).
+///
+/// Whole bytes stay whole (`512 B`); every larger unit keeps one decimal place,
+/// the precision at which a size is still weighable. Units run from `B` to
+/// `TiB`; past that the number grows rather than the label going wrong.
+#[must_use]
+pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;
     let mut unit = 0;
@@ -211,8 +217,22 @@ mod tests {
 
     #[test]
     fn human_size_scales_units() {
+        assert_eq!(human_size(0), "0 B");
         assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1024), "1.0 KiB");
+        assert_eq!(human_size(1536), "1.5 KiB");
         assert_eq!(human_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(human_size(14 * 1024 * 1024), "14.0 MiB");
+        assert_eq!(human_size(1024 * 1024 * 1024), "1.0 GiB");
+        assert_eq!(human_size(1024 * 1024 * 1024 * 1024), "1.0 TiB");
+    }
+
+    #[test]
+    fn human_size_saturates_at_the_largest_unit() {
+        // Past tebibytes there is no unit left, so the number grows instead of
+        // the label going wrong.
+        assert_eq!(human_size(4096 * 1024 * 1024 * 1024 * 1024), "4096.0 TiB");
+        assert!(human_size(u64::MAX).ends_with(" TiB"));
     }
 }

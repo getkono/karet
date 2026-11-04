@@ -21,7 +21,7 @@ fn workspace(name: &str) -> (PathBuf, PathBuf) {
 
 fn fresh(root: &Path) -> App {
     let mut app = App::new(root.to_path_buf(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 160, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 160, 40);
     app
 }
 
@@ -35,7 +35,7 @@ fn two_pane_session(root: &Path) -> App {
     let tab = &mut app.tabs[app.active];
     tab.editor
         .set_carets(&[LineCol::new(2, 1), LineCol::new(5, 3)]);
-    tab.editor.scroll_line = 1;
+    tab.editor.scroll_to_line(1);
     app.open_startup_split(&root.join("c.rs"));
     app
 }
@@ -59,7 +59,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     let before = two_pane_session(&root);
     let saved_carets = before.stored.values().next().map(|pane| {
         let tab = &pane.tabs[pane.active];
-        (tab.editor.cursors().clone(), tab.editor.scroll_line)
+        (tab.editor.cursors().clone(), tab.editor.scroll_line())
     });
     assert!(before.save_workspace_layout(&state).is_ok());
 
@@ -78,7 +78,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     );
     assert_eq!(tab_paths(&after.tabs), vec![root.join("c.rs")]);
     assert!(
-        matches!(after.focus, Focus::Editor),
+        matches!(after.keyboard.focus(), Focus::Editor),
         "the keyboard is in the restored editor"
     );
     let left: Vec<&StoredPane> = after.stored.values().collect();
@@ -98,7 +98,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     let left: Vec<&StoredPane> = after.stored.values().collect();
     let front = &left[0].tabs[1];
     assert_eq!(
-        Some((front.editor.cursors().clone(), front.editor.scroll_line)),
+        Some((front.editor.cursors().clone(), front.editor.scroll_line())),
         saved_carets,
         "both carets and the scroll come back"
     );
@@ -151,7 +151,9 @@ fn attaching_registers_the_tabs_of_every_pane() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::OpenDocument { path, .. } => Some(path.clone()),
+                    SessionCommand::Document(DocumentCommand::Open { path, .. }) => {
+                        Some(path.clone())
+                    },
                     _ => None,
                 })
                 .collect()
@@ -195,7 +197,7 @@ fn a_requested_startup_view_or_focus_outlasts_the_restored_layout() {
     sidebar.restore_workspace_layout(&state);
     assert_eq!(sidebar.layout.pane_count(), 2, "the layout is restored");
     assert!(
-        matches!(sidebar.focus, Focus::Sidebar),
+        matches!(sidebar.keyboard.focus(), Focus::Sidebar),
         "the sidebar keeps focus"
     );
     cleanup(&[&root, &state]);
@@ -208,8 +210,8 @@ fn a_tab_still_waiting_for_its_text_saves_where_its_caret_will_go() {
     app.focus_by_file_line(&root.join("a.rs"), LineCol::new(3, 2), true);
     assert!(app.tabs[app.active].fill_caret.is_some(), "no text yet");
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = match karet_session::backup::read_layout(&state, &root).map(|layout| layout.root) {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+    let saved = match karet_session::layout::read_layout(&state, &root).map(|layout| layout.root) {
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => {
             pane.tabs.first().map(|tab| tab.cursors.clone())
         },
         _ => None,
@@ -228,16 +230,16 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
     let mut app = fresh(&root);
     app.open_initial(&root.join("a.rs"));
     fill_reserved_tabs(&mut app);
-    app.tabs[app.active].editor.scroll_line = 8;
+    app.tabs[app.active].editor.scroll_to_line(8);
     app.open_initial(&root.join("b.rs"));
     app.open_initial(&root.join("c.rs"));
     for tab in &mut app.tabs[1..] {
         tab.is_preview = true;
     }
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = karet_session::backup::read_layout(&state, &root).map(|layout| layout.root);
+    let saved = karet_session::layout::read_layout(&state, &root).map(|layout| layout.root);
     let previews = match &saved {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => {
             pane.tabs.iter().filter(|tab| tab.preview).count()
         },
         _ => 0,
@@ -255,7 +257,8 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
         vec![root.join("a.rs"), root.join("b.rs"), root.join("c.rs")]
     );
     assert_eq!(
-        after.tabs[0].editor.scroll_line, 2,
+        after.tabs[0].editor.scroll_line(),
+        2,
         "the scroll is clamped to the shortened file's last line"
     );
     let flags: Vec<bool> = after.tabs.iter().map(|tab| tab.is_preview).collect();
@@ -358,9 +361,9 @@ fn only_file_tabs_are_saved_and_none_forgets_the_layout() {
     app.open_initial(&root.join("a.rs"));
     app.push_tab(Tab::welcome());
     assert!(app.save_workspace_layout(&state).is_ok());
-    let saved = karet_session::backup::read_layout(&state, &root).map(|layout| layout.root);
+    let saved = karet_session::layout::read_layout(&state, &root).map(|layout| layout.root);
     let pane = match saved {
-        Some(karet_session::backup::LayoutNode::Pane(pane)) => Some((pane.tabs.len(), pane.active)),
+        Some(karet_session::layout::LayoutNode::Pane(pane)) => Some((pane.tabs.len(), pane.active)),
         _ => None,
     };
     // The Welcome tab is not saved, and the front one yields to the file
@@ -370,7 +373,7 @@ fn only_file_tabs_are_saved_and_none_forgets_the_layout() {
     // Quitting with no file open leaves nothing to restore next time.
     let welcome = fresh(&root);
     assert!(welcome.save_workspace_layout(&state).is_ok());
-    assert_eq!(karet_session::backup::read_layout(&state, &root), None);
+    assert_eq!(karet_session::layout::read_layout(&state, &root), None);
     cleanup(&[&root, &state]);
 }
 
@@ -392,7 +395,7 @@ fn switching_restore_off_restores_nothing_and_forgets_the_layout() {
     session.settings.workbench.restore_layout = false;
     assert!(session.save_workspace_layout(&state).is_ok());
     assert_eq!(
-        karet_session::backup::read_layout(&state, &root),
+        karet_session::layout::read_layout(&state, &root),
         None,
         "the exit deletes the layout an earlier session saved"
     );

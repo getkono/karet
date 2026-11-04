@@ -1,4 +1,15 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_session::ChangeSummary;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::paths::canonical_nearest as canonical;
+use crate::tab::MergeConflictState;
+use crate::tab::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Open the Source-Control cursor's change as a materialized view and focus it.
@@ -112,7 +123,7 @@ impl App {
             } else {
                 self.root.join(path)
             };
-            let mut tab = workspace::open_file(&absolute);
+            let mut tab = Tab::open(&absolute);
             if matches!(tab.kind, TabKind::Code { .. }) {
                 tab.title = format!("⚠ {}", tab.title);
                 tab.merge_conflict = Some(MergeConflictState::loading());
@@ -130,7 +141,7 @@ impl App {
 
     fn request_merge_conflict(&mut self, path: PathBuf) {
         let view = self.tabs[self.active].view;
-        if let Some(request) = self.send(SessionCommand::MergeConflict { path: path.clone() }) {
+        if let Some(request) = self.send(VcsCommand::MergeConflict { path: path.clone() }) {
             self.pending_merge_conflicts.insert(request, (view, path));
         } else if let Some(conflict) = self.tabs[self.active].merge_conflict.as_mut() {
             conflict.error = Some("merge-conflict backend is unavailable".to_string());

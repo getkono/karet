@@ -87,9 +87,9 @@ impl LspClient {
     /// (the position just after it), indented as `indentation` says.
     ///
     /// A `ch` that is not one of the server's trigger characters
-    /// ([`karet_core::Capabilities::on_type_formatting`]) is answered with no
-    /// edits and no request: a caller may offer every typed character without
-    /// first learning which ones the server formats on.
+    /// ([`Self::on_type_formatting_triggers`]) is answered with no edits and no
+    /// request: a caller may offer every typed character without first
+    /// learning which ones the server formats on.
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
@@ -109,11 +109,7 @@ impl LspClient {
             "textDocument/onTypeFormatting",
             doc,
         )?;
-        let triggers = self.capabilities().on_type_formatting;
-        let triggered = triggers.is_some_and(|options| {
-            options.first_trigger_character == ch || options.more_trigger_characters.contains(&ch)
-        });
-        if !triggered {
+        if !self.on_type_formatting_triggers().contains(&ch) {
             return Ok(Vec::new());
         }
         let params = lsp_types::DocumentOnTypeFormattingParams {
@@ -126,6 +122,19 @@ impl LspClient {
             .request("textDocument/onTypeFormatting", params)
             .await?;
         Ok(convert::text_edits_from_lsp(response))
+    }
+
+    /// Every character this server formats on as it is typed, its first
+    /// trigger first; empty when it formats on none.
+    ///
+    /// Read from the handshake. A server that registers format-on-type later
+    /// does not name its triggers through this, so it formats on none here.
+    #[must_use]
+    pub fn on_type_formatting_triggers(&self) -> Vec<char> {
+        self.server_options()
+            .on_type_formatting
+            .map(|options| options.triggers())
+            .unwrap_or_default()
     }
 
     /// The edits the server makes to `doc` before it is saved for `reason`,

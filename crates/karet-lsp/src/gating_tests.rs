@@ -248,8 +248,11 @@ async fn capabilities_are_readable_and_reflect_the_handshake() -> TestResult {
     assert!(client.supports(ServerFeature::Hover));
     assert!(!client.supports(ServerFeature::Rename));
 
+    assert_eq!(
+        client.server_options().text_sync,
+        crate::capability::TextSyncKind::Incremental
+    );
     let caps = client.capabilities();
-    assert_eq!(caps.text_sync, karet_core::TextSyncKind::Incremental);
     assert!(caps.is_completion_trigger('.'));
     assert!(!caps.is_completion_trigger('x'));
     Ok(())

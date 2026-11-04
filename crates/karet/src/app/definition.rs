@@ -1,6 +1,6 @@
 //! Go to Definition and its siblings: request, correlate, and land the caret.
 //!
-//! The backend seam already existed — `Command::Definition` in, `Event::Definitions`
+//! The backend seam already existed — `LspCommand::Definition` in, `Event::Definitions`
 //! out — and this module is the client half. Ctrl+click and F12 funnel through the
 //! same [`App::request_definition`], so a mouse jump and a keyboard jump behave
 //! identically and there is one place where staleness is decided.
@@ -12,10 +12,32 @@
 //! picker for several.
 
 use std::collections::HashMap;
+use std::path::Path;
 
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::DocumentLink;
+use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_editor::resolve_folds;
+use karet_session::DocumentId;
+use karet_session::LocationKind;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
+use ratatui::layout::Rect;
 
-use super::*;
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::language_servers::LanguageServerBadge;
+use crate::app::notifications::Report;
+use crate::overlay::Overlay;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// How long a picker row's source-line preview may run before it is cut.
 const PREVIEW_CHARS: usize = 80;
@@ -115,8 +137,8 @@ impl App {
             return;
         };
         let command = match kind {
-            None => SessionCommand::Definition { doc, position },
-            Some(kind) => SessionCommand::FindLocations {
+            None => LspCommand::Definition { doc, position },
+            Some(kind) => LspCommand::FindLocations {
                 doc,
                 position,
                 kind,
@@ -179,7 +201,7 @@ impl App {
                 let previews = self.location_previews(&locations);
                 let entries = locations.into_iter().zip(previews).collect();
                 let title = navigation_title(kind);
-                self.overlay = Some(Overlay::locations(title, &self.root.clone(), entries));
+                self.open_overlay(Overlay::locations(title, &self.root.clone(), entries));
             },
         }
     }
@@ -272,6 +294,13 @@ impl App {
         let plain = !mouse
             .modifiers
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
+        // A language server's link first, as a click follows it first.
+        if let Some((_, link)) = self.server_link_in(tab, area, point).filter(|_| plain) {
+            return Some(DefinitionHover {
+                view: tab.view,
+                range: link.range,
+            });
+        }
         if let Some((range, _)) = self.source_link_under(area, point).filter(|_| plain) {
             return Some(DefinitionHover {
                 view: tab.view,
@@ -302,7 +331,8 @@ impl App {
     /// (see [`Self::pane_source_link`]).
     pub(crate) fn focused_editor_area(&self, point: (u16, u16)) -> Option<Rect> {
         let frame = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))?;
         (frame.pane == self.focus_pane() && rect_contains(frame.editor_rect, point))
@@ -331,8 +361,25 @@ impl App {
     /// one: otherwise a Ctrl/Cmd+click on a link in a background split would
     /// fall through to Go to Definition.
     pub(crate) fn pane_source_link(&self, point: (u16, u16)) -> Option<String> {
+        let (tab, area) = self.pane_tab_at(point)?;
+        source_link_in(tab, area, point).map(|(_, target)| target)
+    }
+
+    /// The language server's link under the pointer at `point` in whichever
+    /// split's editor it is over, focused or not, with the document it was
+    /// listed for (see [`Self::pane_source_link`] for why any split).
+    pub(crate) fn pane_server_link(&self, point: (u16, u16)) -> Option<(DocumentId, DocumentLink)> {
+        let (tab, area) = self.pane_tab_at(point)?;
+        self.server_link_in(tab, area, point)
+            .map(|(doc, link)| (doc, link.clone()))
+    }
+
+    /// The front tab of the split whose editor is under `point`, and that
+    /// editor's viewport.
+    fn pane_tab_at(&self, point: (u16, u16)) -> Option<(&Tab, Rect)> {
         let frame = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))?;
         if !rect_contains(frame.editor_rect, point) {
@@ -344,7 +391,90 @@ impl App {
             let stored = self.stored.get(&frame.pane)?;
             stored.tabs.get(stored.active)?
         };
-        source_link_in(tab, frame.editor_rect, point).map(|(_, target)| target)
+        Some((tab, frame.editor_rect))
+    }
+
+    /// The language server's link under the pointer at `point` in code tab
+    /// `tab`, drawn in the editor viewport `area`, with its document.
+    fn server_link_in(
+        &self,
+        tab: &Tab,
+        area: Rect,
+        point: (u16, u16),
+    ) -> Option<(DocumentId, &DocumentLink)> {
+        let pos = char_in(tab, area, point)?;
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        self.server_link_at(*doc, buffer.version(), pos)
+            .map(|link| (*doc, link))
+    }
+
+    /// The target of the link written in the active code tab's source under
+    /// the primary caret, as written. A caret just past a link's last
+    /// character still touches it, so the caret a typed or pasted URL leaves
+    /// behind opens that URL.
+    pub(crate) fn source_link_at_caret(&self) -> Option<String> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return None;
+        };
+        let pos = tab.editor.cursor();
+        let line = buffer.line(pos.line as usize)?;
+        let byte = line
+            .char_indices()
+            .nth(pos.col as usize)
+            .map_or(line.len(), |(byte, _)| byte);
+        let links = crate::autolink::source_links(&line, tab.is_markdown());
+        // A link the caret is inside wins over one it merely ends against.
+        let inside = links.iter().position(|link| link.range.contains(&byte));
+        let index = inside.or_else(|| links.iter().position(|link| link.range.end == byte))?;
+        links.into_iter().nth(index).map(|link| link.target)
+    }
+
+    /// The language server's link under the primary caret of the active code
+    /// tab, with its document: only one the caret is on, so a source link the
+    /// caret is in is never passed over for a server link it merely ends
+    /// against.
+    fn server_link_at_caret(&self) -> Option<(DocumentId, DocumentLink)> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            ..
+        } = &tab.kind
+        else {
+            return None;
+        };
+        self.server_link_at(*doc, buffer.version(), tab.editor.cursor())
+            .map(|link| (*doc, link.clone()))
+    }
+
+    /// Open the link under the primary caret as Ctrl/Cmd+click on it would
+    /// (see [`Self::activate_link`]): the keyboard path for that gesture. A
+    /// language server's link outranks one read from the source, as it does
+    /// under the pointer.
+    pub(crate) fn open_link_at_caret(&mut self) {
+        if let Some((doc, link)) = self.server_link_at_caret() {
+            self.follow_document_link(doc, link);
+            return;
+        }
+        let Some(target) = self.source_link_at_caret() else {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "open link: no link at the caret",
+            );
+            return;
+        };
+        // Only a code tab yields a link, and a code tab always has the file a
+        // relative target resolves against, so activation always answers.
+        self.activate_link(&target);
     }
 
     /// The identifier the pointer at `point` is on in the active code tab, drawn
@@ -361,7 +491,7 @@ impl App {
         let TabKind::Code { buffer, .. } = &self.tabs.get(self.active)?.kind else {
             return None;
         };
-        let (start, end) = karet_editor::identifier_at(buffer, pos)?;
+        let (start, end) = karet_text::words::identifier_at(buffer, pos)?;
         Some((pos, Range { start, end }))
     }
 
@@ -392,13 +522,12 @@ impl App {
 /// target as written.
 fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, String)> {
     let pos = char_in(tab, area, point)?;
-    let TabKind::Code { buffer, path, .. } = &tab.kind else {
+    let TabKind::Code { buffer, .. } = &tab.kind else {
         return None;
     };
     let line = buffer.line(pos.line as usize)?;
-    let markdown = is_markdown(path);
     let (byte, _) = line.char_indices().nth(pos.col as usize)?;
-    let link = crate::autolink::source_links(&line, markdown)
+    let link = crate::autolink::source_links(&line, tab.is_markdown())
         .into_iter()
         .find(|link| link.range.contains(&byte))?;
     let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();

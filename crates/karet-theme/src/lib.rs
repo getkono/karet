@@ -9,6 +9,7 @@
 //! [`TokenId::semantic`]) resolves through the theme's `semanticTokenColors`
 //! rules, falling back to the standard class closest to its type.
 
+use karet_core::Emphasis;
 use karet_core::ThemeRole;
 use karet_core::TokenId;
 
@@ -18,9 +19,9 @@ mod load_vscode;
 mod semantic;
 
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
-pub(crate) const TOKEN_COUNT: usize = 32;
+pub(crate) const TOKEN_COUNT: usize = karet_core::StandardToken::COUNT;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 41;
+pub(crate) const ROLE_COUNT: usize = ThemeRole::COUNT;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -99,10 +100,12 @@ impl Rgba {
     }
 }
 
-pub use karet_core::Emphasis;
-
 /// Ratatui conversion for the neutral [`Emphasis`] flags (which live in
 /// `karet-core`; this view-only extension keeps ratatui out of the vocabulary).
+///
+/// The one ratatui mapping of [`Emphasis`]: a theme's token emphasis and a
+/// decoration's [`modifiers`](karet_core::Decoration::modifiers) both paint
+/// through it.
 #[cfg(feature = "view")]
 pub trait EmphasisExt {
     /// Convert to a ratatui modifier set (empty when no flag is set).
@@ -124,6 +127,9 @@ impl EmphasisExt for Emphasis {
         }
         if self.strikethrough {
             m |= ratatui::style::Modifier::CROSSED_OUT;
+        }
+        if self.dim {
+            m |= ratatui::style::Modifier::DIM;
         }
         m
     }
@@ -205,6 +211,9 @@ impl Theme {
                 italic: style.italic.unwrap_or(base.italic),
                 underline: style.underline.unwrap_or(base.underline),
                 strikethrough: style.strikethrough.unwrap_or(base.strikethrough),
+                // `semanticTokenColors` has no faint style, so dimming is
+                // always the fallback class's.
+                dim: base.dim,
             };
         }
         self.emphasis
@@ -268,17 +277,40 @@ impl Theme {
 
 /// The WCAG 2.1 contrast ratio between two colors (1.0 – 21.0).
 ///
-/// Behind the `view` feature: contrast checking is a presentation-time concern and
-/// keeps the color-science dependency out of headless builds.
+/// Symmetric in its arguments; alpha is ignored. Behind the `view` feature:
+/// contrast checking is a presentation-time concern.
 #[cfg(feature = "view")]
 #[must_use]
 pub fn contrast_ratio(fg: Rgba, bg: Rgba) -> f32 {
-    use palette::Srgb;
-    use palette::color_difference::Wcag21RelativeContrast;
+    let (a, b) = (relative_luminance(fg), relative_luminance(bg));
+    let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
 
-    let f = Srgb::new(fg.r, fg.g, fg.b).into_format::<f32>();
-    let b = Srgb::new(bg.r, bg.g, bg.b).into_format::<f32>();
-    f.relative_contrast(b)
+/// The WCAG 2.1 relative luminance of `c` (0.0 for black – 1.0 for white).
+///
+/// The weights are the luminance (Y) row of the sRGB → CIE XYZ (D65) matrix;
+/// WCAG prints the same row rounded to four places.
+#[cfg(feature = "view")]
+fn relative_luminance(c: Rgba) -> f32 {
+    0.212_672_9 * srgb_to_linear(c.r)
+        + 0.715_152_2 * srgb_to_linear(c.g)
+        + 0.072_175 * srgb_to_linear(c.b)
+}
+
+/// Decodes one 8-bit sRGB channel to linear light (0.0 – 1.0).
+///
+/// No 8-bit value falls between WCAG 2.1's `0.03928` knee and the sRGB
+/// standard's `0.04045` (10/255 ≈ 0.0392, 11/255 ≈ 0.0431), so either reads
+/// the same here.
+#[cfg(feature = "view")]
+fn srgb_to_linear(channel: u8) -> f32 {
+    let v = f32::from(channel) / 255.0;
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// Whether `c` is a dark color (Rec. 601 luma below the midpoint).
@@ -468,6 +500,39 @@ mod tests {
         assert!(ratio > 4.5, "contrast ratio was {ratio}");
     }
 
+    #[cfg(feature = "view")]
+    #[test]
+    fn contrast_ratio_spans_one_to_twenty_one_symmetrically() {
+        let black = Rgba::rgb(0, 0, 0);
+        let white = Rgba::rgb(255, 255, 255);
+        assert!((contrast_ratio(white, black) - 21.0).abs() < 1e-4);
+        assert!((contrast_ratio(black, white) - 21.0).abs() < 1e-4);
+        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-6);
+        let teal = Rgba::rgb(0x12, 0x80, 0x9a);
+        assert!((contrast_ratio(teal, white) - contrast_ratio(white, teal)).abs() < 1e-6);
+        // Alpha plays no part.
+        let translucent = Rgba { a: 0x10, ..teal };
+        assert!((contrast_ratio(translucent, white) - contrast_ratio(teal, white)).abs() < 1e-6);
+    }
+
+    /// The two greys either side of WCAG AA on white: #767676 passes (4.54:1),
+    /// #777777 fails (4.48:1). They pin the transfer curve and the weights,
+    /// which a 4.5 threshold check reads at the second decimal.
+    #[cfg(feature = "view")]
+    #[test]
+    fn contrast_ratio_matches_published_aa_greys() {
+        let white = Rgba::rgb(255, 255, 255);
+        let pass = contrast_ratio(Rgba::rgb(0x76, 0x76, 0x76), white);
+        let fail = contrast_ratio(Rgba::rgb(0x77, 0x77, 0x77), white);
+        assert!((pass - 4.54).abs() < 0.005, "{pass}");
+        assert!((fail - 4.48).abs() < 0.005, "{fail}");
+        // A dark channel below the linear-segment knee (10/255) reads on the
+        // linear segment: black-on-it is (L + 0.05) / 0.05 with L = 10/255/12.92.
+        let near_black = contrast_ratio(Rgba::rgb(10, 10, 10), Rgba::rgb(0, 0, 0));
+        let expected = (10.0 / 255.0 / 12.92 + 0.05) / 0.05;
+        assert!((near_black - expected).abs() < 1e-4, "{near_black}");
+    }
+
     #[test]
     fn the_scrollbar_roles_resolve_to_their_own_colors() {
         // `role()` indexes a fixed-size array by `role as usize` and silently falls
@@ -606,6 +671,36 @@ mod tests {
         assert_eq!(
             token_style.add_modifier,
             EmphasisExt::to_ratatui(theme.emphasis(token))
+        );
+    }
+
+    #[cfg(feature = "view")]
+    #[test]
+    fn every_emphasis_flag_maps_to_its_ratatui_modifier() {
+        use ratatui::style::Modifier;
+        assert_eq!(EmphasisExt::to_ratatui(Emphasis::NONE), Modifier::empty());
+        for (flag, modifier) in [
+            (Emphasis::BOLD, Modifier::BOLD),
+            (Emphasis::ITALIC, Modifier::ITALIC),
+            (Emphasis::UNDERLINE, Modifier::UNDERLINED),
+            (Emphasis::STRIKETHROUGH, Modifier::CROSSED_OUT),
+            (Emphasis::DIM, Modifier::DIM),
+        ] {
+            assert_eq!(EmphasisExt::to_ratatui(flag), modifier, "{flag:?}");
+        }
+        assert_eq!(
+            EmphasisExt::to_ratatui(
+                Emphasis::BOLD
+                    | Emphasis::ITALIC
+                    | Emphasis::UNDERLINE
+                    | Emphasis::STRIKETHROUGH
+                    | Emphasis::DIM
+            ),
+            Modifier::BOLD
+                | Modifier::ITALIC
+                | Modifier::UNDERLINED
+                | Modifier::CROSSED_OUT
+                | Modifier::DIM
         );
     }
 }

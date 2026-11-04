@@ -1,4 +1,6 @@
+    #[cfg(feature = "toml-format")]
     use crate::config::schema::EditorOverride;
+    #[cfg(feature = "toml-format")]
     use crate::config::schema::LanguageSelector;
 
     fn saved(events: &mut EventRx) -> bool {
@@ -17,18 +19,18 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
         let doc = opened_doc(&mut events).ok_or("the document never opened")?;
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -49,18 +51,18 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
         let doc = opened_doc(&mut events).ok_or("the document never opened")?;
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -90,18 +92,18 @@
             },
         );
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
         let doc = opened_doc(&mut events).ok_or("the document never opened")?;
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -123,12 +125,12 @@
         let mut settings = crate::config::Settings::default();
         settings.editor.format_on_save = true;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-            settings,
+            loaded_config: crate::config::LoadedConfig::from_settings(settings),
             ..SessionConfig::default()
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },
@@ -154,7 +156,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -386,7 +388,7 @@
         let (mut session, doc, mut events, _request) =
             parked_save(&path).ok_or("the save never parked")?;
 
-        session.handle(RequestId(4), Command::CloseDocument { doc });
+        session.handle(RequestId(4), DocumentCommand::Close { doc });
 
         assert!(
             warnings(&mut events)
@@ -469,7 +471,7 @@
         std::fs::write(&path, "original\n")?;
         let (mut session, _doc, mut events, _request) =
             parked_save(&path).ok_or("the save never parked")?;
-        session.config.settings.editor.format_on_save_timeout = 2_500;
+        session.config.loaded_config.settings.editor.format_on_save_timeout = 2_500;
 
         // Just short of the deadline the save is still the formatter's to finish.
         session.expire_format_on_save(2_499);
@@ -514,7 +516,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -590,18 +592,18 @@
             let mut settings = crate::config::Settings::default();
             settings.editor.format_on_save = true;
             let (mut session, mut events, _snaps) = Session::new(SessionConfig {
-                settings,
+                loaded_config: crate::config::LoadedConfig::from_settings(settings),
                 ..SessionConfig::default()
             });
             session.handle(
                 RequestId(1),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: path.clone(),
                     language: None,
                 },
             );
             let doc = opened_doc(&mut events)?;
-            session.handle(RequestId(2), Command::Save { doc, cause });
+            session.handle(RequestId(2), DocumentCommand::Save { doc, cause });
             assert!(saved(&mut events));
             std::fs::read_to_string(&path).ok()
         };
@@ -674,7 +676,7 @@
         // A second document, dirtied and parked the same way the first was.
         session.handle(
             RequestId(10),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: second.clone(),
                 language: None,
             },
@@ -692,7 +694,7 @@
         );
         session.handle(
             RequestId(11),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc: other,
                 change,
                 cause: EditCause::Replace,
@@ -742,7 +744,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -751,7 +753,7 @@
 
         session.handle(
             RequestId(2),
-            Command::Save {
+            DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             },
@@ -828,7 +830,7 @@
         session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: Change::new(
                     0,
@@ -845,7 +847,7 @@
         );
         while events.try_recv().is_some() {}
 
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
             doc,
             cause: SaveCause::Manual,
         });

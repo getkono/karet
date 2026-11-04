@@ -76,6 +76,38 @@ impl RenderedPage {
     }
 }
 
+/// The largest width or height, in pixels, [`Document::render_page`] produces.
+const MAX_RENDER_SIDE: u32 = 16_384;
+
+/// The largest pixel count (`width * height`) [`Document::render_page`]
+/// produces: 32 Mi pixels, a 128 MiB RGBA buffer.
+const MAX_RENDER_PIXELS: u64 = 1 << 25;
+
+/// Reduce `scale` so a page of `(width, height)` points renders within
+/// [`MAX_RENDER_SIDE`] and [`MAX_RENDER_PIXELS`]. A scale that is not positive
+/// (zero, negative, NaN) or a page size that is not positive and finite maps to
+/// `0.0`, which renders an empty page.
+fn bounded_scale((width, height): (f32, f32), scale: f32) -> f32 {
+    let (w, h) = (f64::from(width), f64::from(height));
+    let page_ok = w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0;
+    if !page_ok || scale.is_nan() || scale <= 0.0 {
+        return 0.0;
+    }
+    let cap =
+        (f64::from(MAX_RENDER_SIDE) / w.max(h)).min((MAX_RENDER_PIXELS as f64 / (w * h)).sqrt());
+    if f64::from(scale) <= cap {
+        return scale;
+    }
+    // `cap` is finite and at most `MAX_RENDER_SIDE`, so the cast is exact enough.
+    let narrowed = cap as f32;
+    // Round toward zero, so the f32 scale never exceeds the f64 cap.
+    if f64::from(narrowed) > cap {
+        narrowed.next_down()
+    } else {
+        narrowed
+    }
+}
+
 /// A parsed PDF document. Load once, then rasterize pages on demand.
 pub struct Document {
     pdf: Pdf,
@@ -102,6 +134,12 @@ impl Document {
     /// 72-DPI size; 2.0 is twice as large) over an opaque white background,
     /// producing straight RGBA8 pixels.
     ///
+    /// The output is bounded: where the page box at `scale` would exceed 16384
+    /// pixels on either side or 2^25 (about 33.5 million) pixels in total,
+    /// including at `scale = f32::INFINITY`, the page is rendered at the largest
+    /// scale that fits both, keeping its aspect ratio. A zero, negative, or NaN
+    /// `scale`, or a page box with no finite size, yields an empty 0×0 page.
+    ///
     /// # Errors
     /// Returns [`PdfError::PageOutOfRange`] if `index >= self.page_count()`.
     pub fn render_page(&self, index: usize, scale: f32) -> Result<RenderedPage, PdfError> {
@@ -110,6 +148,7 @@ impl Document {
         let page = pages
             .get(index)
             .ok_or(PdfError::PageOutOfRange { index, count })?;
+        let scale = bounded_scale(page.render_dimensions(), scale);
 
         let cache = hayro::RenderCache::new();
         let interpreter = InterpreterSettings::default();
@@ -142,7 +181,8 @@ impl Document {
     /// resolved. A document with no outline — or a malformed one — yields an empty
     /// `Vec` rather than an error. Named destinations (`/Names` → `/Dests` name
     /// trees) and remote/URI actions are not resolved: those entries keep their
-    /// title but report `page = None`.
+    /// title but report [`OutlineDest::Unresolved`]; an entry with neither a destination
+    /// nor an action reports [`OutlineDest::Absent`].
     #[must_use]
     pub fn outline(&self) -> Vec<OutlineItem> {
         let xref = self.pdf.xref();
@@ -173,19 +213,57 @@ impl Document {
 }
 
 /// One entry in a PDF's navigation outline (a bookmark / table-of-contents node).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OutlineItem {
     /// The bookmark's display title, decoded from the PDF text string: UTF-16BE
     /// when it starts with a `FE FF` byte-order mark, otherwise byte-by-byte as
     /// Latin-1 (an approximation of PDFDocEncoding; a UTF-8 BOM is not handled).
     pub title: String,
-    /// The 0-based page index the bookmark points to, if it targets an in-document
-    /// page via an explicit destination or a `GoTo` action. `None` when the entry
-    /// has no destination or uses one this crate does not resolve (named
-    /// destinations, remote/URI actions).
-    pub page: Option<usize>,
+    /// Where the bookmark points.
+    pub dest: OutlineDest,
     /// Nested child bookmarks, in document order.
     pub children: Vec<OutlineItem>,
+}
+
+impl OutlineItem {
+    /// An outline entry from its parts, for a consumer that builds an outline
+    /// itself (the struct is `#[non_exhaustive]`, so it has no literal syntax
+    /// outside this crate).
+    #[must_use]
+    pub fn new(title: impl Into<String>, dest: OutlineDest, children: Vec<OutlineItem>) -> Self {
+        Self {
+            title: title.into(),
+            dest,
+            children,
+        }
+    }
+}
+
+/// Where an [`OutlineItem`] points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OutlineDest {
+    /// A 0-based page index in this document, reached through an explicit
+    /// destination or a `GoTo` action.
+    Page(usize),
+    /// The entry has a destination or action this crate does not resolve: a
+    /// named destination, a remote/URI action, or an explicit destination whose
+    /// target is not a page of this document.
+    Unresolved,
+    /// The entry has no destination and no action at all (a pure grouping node).
+    Absent,
+}
+
+impl OutlineDest {
+    /// The 0-based page index, when the destination resolved to one.
+    #[must_use]
+    pub fn page(self) -> Option<usize> {
+        match self {
+            Self::Page(page) => Some(page),
+            Self::Unresolved | Self::Absent => None,
+        }
+    }
 }
 
 /// Cap on outline nesting depth, guarding against a pathological or cyclic `/First`
@@ -209,7 +287,7 @@ fn walk_outline_siblings(
             break;
         }
         let title = outline_title(&item).unwrap_or_default();
-        let page = outline_page(&item, page_index);
+        let dest = outline_dest(&item, page_index);
         let children = if depth < MAX_OUTLINE_DEPTH {
             item.get::<Dict>(keys::FIRST)
                 .map(|child| walk_outline_siblings(child, page_index, visited, depth + 1))
@@ -219,7 +297,7 @@ fn walk_outline_siblings(
         };
         items.push(OutlineItem {
             title,
-            page,
+            dest,
             children,
         });
         current = item.get::<Dict>(keys::NEXT);
@@ -231,6 +309,16 @@ fn walk_outline_siblings(
 fn outline_title(item: &Dict<'_>) -> Option<String> {
     item.get::<PdfString>(keys::TITLE)
         .map(|s| decode_pdf_text_string(s.as_bytes()))
+}
+
+/// Classify an outline entry's destination: [`OutlineDest::Absent`] when it has
+/// neither `/Dest` nor `/A`, otherwise the page [`outline_page`] resolves, or
+/// [`OutlineDest::Unresolved`] when it resolves none.
+fn outline_dest(item: &Dict<'_>, page_index: &HashMap<ObjectIdentifier, usize>) -> OutlineDest {
+    if !item.contains_key(keys::DEST) && !item.contains_key(keys::A) {
+        return OutlineDest::Absent;
+    }
+    outline_page(item, page_index).map_or(OutlineDest::Unresolved, OutlineDest::Page)
 }
 
 /// Resolve an outline entry's target page index from `/Dest` or a `GoTo` `/A`
@@ -282,6 +370,10 @@ fn decode_pdf_text_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use OutlineDest::Absent;
+    use OutlineDest::Page;
+    use OutlineDest::Unresolved;
+
     use super::*;
 
     /// A minimal, valid single-page PDF (an empty US-Letter page). Kept inline so
@@ -390,8 +482,21 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
             .unwrap_or_default();
         assert_eq!(items.len(), 1);
         assert_eq!(items.first().map(|i| i.title.as_str()), Some("Chapter 1"));
-        assert_eq!(items.first().and_then(|i| i.page), Some(0));
+        assert_eq!(items.first().map(|i| i.dest), Some(OutlineDest::Page(0)));
         assert!(items.first().is_some_and(|i| i.children.is_empty()));
+    }
+
+    /// Only a resolved destination has a page; the two unpaged kinds stay apart.
+    #[test]
+    fn outline_dest_reports_a_page_only_when_resolved() {
+        assert_eq!(Page(3).page(), Some(3));
+        assert_eq!(Unresolved.page(), None);
+        assert_eq!(Absent.page(), None);
+        let item = OutlineItem::new("Intro", Page(1), Vec::new());
+        assert_eq!(
+            (item.title.as_str(), item.dest, item.children.len()),
+            ("Intro", Page(1), 0)
+        );
     }
 
     #[test]
@@ -477,15 +582,15 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         .unwrap_or_default()
     }
 
-    /// Flatten an outline into `(depth, title, page)` rows in document order.
-    fn flatten(items: &[OutlineItem], depth: usize, out: &mut Vec<(usize, String, Option<usize>)>) {
+    /// Flatten an outline into `(depth, title, dest)` rows in document order.
+    fn flatten(items: &[OutlineItem], depth: usize, out: &mut Vec<(usize, String, OutlineDest)>) {
         for item in items {
-            out.push((depth, item.title.clone(), item.page));
+            out.push((depth, item.title.clone(), item.dest));
             flatten(&item.children, depth + 1, out);
         }
     }
 
-    fn rows(items: &[OutlineItem]) -> Vec<(usize, String, Option<usize>)> {
+    fn rows(items: &[OutlineItem]) -> Vec<(usize, String, OutlineDest)> {
         let mut out = Vec::new();
         flatten(items, 0, &mut out);
         out
@@ -508,16 +613,17 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "One".to_owned(), Some(0)),
-                (1, "One.a".to_owned(), None),
-                (1, "One.b".to_owned(), Some(1)),
-                (0, "Two".to_owned(), Some(1)),
+                (0, "One".to_owned(), Page(0)),
+                (1, "One.a".to_owned(), Absent),
+                (1, "One.b".to_owned(), Page(1)),
+                (0, "Two".to_owned(), Page(1)),
             ]
         );
     }
 
     /// Only `GoTo` actions resolve; a URI action, a named `/Dest`, and a `/Dest`
-    /// whose page reference is not a page keep their title with `page = None`.
+    /// whose page reference is not a page keep their title and report
+    /// `Unresolved`, which stays distinct from an entry with no destination at all.
     #[test]
     fn outline_leaves_unresolvable_destinations_unpaged() {
         let items = outline_doc(&[
@@ -540,11 +646,11 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "Uri".to_owned(), None),
-                (0, "Named".to_owned(), None),
-                (0, "NotAPage".to_owned(), None),
-                (0, String::new(), None),
-                (0, "Fallback".to_owned(), Some(1)),
+                (0, "Uri".to_owned(), Unresolved),
+                (0, "Named".to_owned(), Unresolved),
+                (0, "NotAPage".to_owned(), Unresolved),
+                (0, String::new(), Absent),
+                (0, "Fallback".to_owned(), Page(1)),
             ]
         );
     }
@@ -553,7 +659,7 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
     #[test]
     fn outline_self_next_cycle_terminates() {
         let items = outline_doc(&[(6, "<</Title(Loop)/Dest[3 0 R/Fit]/Next 6 0 R>>".to_owned())]);
-        assert_eq!(rows(&items), vec![(0, "Loop".to_owned(), Some(0))]);
+        assert_eq!(rows(&items), vec![(0, "Loop".to_owned(), Page(0))]);
     }
 
     /// A `/Next` back to an earlier sibling and a `/First` back to an ancestor are
@@ -568,9 +674,9 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(
             rows(&items),
             vec![
-                (0, "A".to_owned(), None),
-                (1, "A.child".to_owned(), None),
-                (0, "B".to_owned(), None),
+                (0, "A".to_owned(), Absent),
+                (1, "A.child".to_owned(), Absent),
+                (0, "B".to_owned(), Absent),
             ]
         );
     }
@@ -595,7 +701,7 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         assert_eq!(flat.len(), MAX_OUTLINE_DEPTH + 1);
         assert_eq!(
             flat.last(),
-            Some(&(MAX_OUTLINE_DEPTH, format!("L{MAX_OUTLINE_DEPTH}"), None))
+            Some(&(MAX_OUTLINE_DEPTH, format!("L{MAX_OUTLINE_DEPTH}"), Absent))
         );
     }
 
@@ -679,5 +785,77 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         let dims = doc.render_page(0, 0.255).map(|p| (p.width(), p.height()));
         assert!(matches!(dims, Ok((25, 25))));
         Ok(())
+    }
+
+    /// A one-page document whose page box is `width`×`height` points.
+    fn sized_page(width: u64, height: u64) -> Result<Document, PdfError> {
+        let page = format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 {width} {height}]>>");
+        let bodies = [PAGE_TREE[0], PAGE_TREE[1], page.as_str()];
+        Document::load(pdf_with_xref(&bodies, ""))
+    }
+
+    /// An oversized MediaBox at the app's 2.0 scale, and the same page at an
+    /// infinite scale, both narrow to `MAX_RENDER_SIDE` instead of asking hayro
+    /// for a 65535-wide pixmap. The page is one point tall at the bound, so the
+    /// raster stays cheap.
+    #[test]
+    fn oversized_page_and_infinite_scale_clamp_to_max_side() -> Result<(), PdfError> {
+        let doc = sized_page(1_000_000, 100)?;
+        for scale in [2.0, 1e9, f32::MAX, f32::INFINITY] {
+            let page = doc.render_page(0, scale)?;
+            assert_eq!(
+                (page.width(), page.height()),
+                (MAX_RENDER_SIDE, 1),
+                "scale {scale}"
+            );
+            assert_eq!(page.rgba().len(), MAX_RENDER_SIDE as usize * 4);
+        }
+        Ok(())
+    }
+
+    /// A page that fits the budget renders at exactly the requested scale.
+    #[test]
+    fn in_budget_scale_is_untouched() {
+        assert_eq!(bounded_scale((612.0, 792.0), 2.0), 2.0);
+        assert_eq!(bounded_scale((100.0, 100.0), 0.255), 0.255);
+    }
+
+    /// Whichever bound binds, the clamped raster fits both the side and the
+    /// pixel budget, computed the way hayro sizes its pixmap.
+    #[test]
+    fn clamped_scale_fits_side_and_pixel_budget() {
+        let pages = [
+            (100_000.0, 100_000.0), // pixel budget binds
+            (1_000_000.0, 100.0),   // side bound binds
+            (100.0, 1_000_000.0),
+            (14_400.0, 14_400.0), // the PDF spec's largest page box
+            (612.0, 792.0),
+        ];
+        for (w, h) in pages {
+            for scale in [2.0, 1e6, f32::INFINITY] {
+                let s = bounded_scale((w, h), scale);
+                assert!(s.is_finite() && s > 0.0, "{w}x{h}@{scale}: {s}");
+                let (pw, ph) = ((w * s).floor(), (h * s).floor());
+                assert!(pw <= MAX_RENDER_SIDE as f32 && ph <= MAX_RENDER_SIDE as f32);
+                let pixels = pw as u64 * ph as u64;
+                assert!(pixels <= MAX_RENDER_PIXELS, "{w}x{h}@{scale}: {pixels}");
+            }
+        }
+        // The pixel bound uses most of the budget rather than collapsing.
+        let s = bounded_scale((100_000.0, 100_000.0), f32::INFINITY);
+        assert_eq!((100_000.0 * s).floor(), 5792.0);
+    }
+
+    /// A page box with no finite positive size renders empty at any scale.
+    #[test]
+    fn non_finite_page_box_renders_empty() {
+        for dims in [
+            (f32::INFINITY, 10.0),
+            (10.0, f32::INFINITY),
+            (f32::NAN, 10.0),
+            (0.0, 10.0),
+        ] {
+            assert_eq!(bounded_scale(dims, 2.0), 0.0, "{dims:?}");
+        }
     }
 }

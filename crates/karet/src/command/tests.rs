@@ -135,6 +135,14 @@ fn substring_distance_basics() {
 }
 
 #[test]
+fn suggestions_allow_one_edit_per_two_typed_chars() {
+    // `quitxyz` is three edits from `quit`: a seven-char query tolerates three.
+    assert_eq!(suggest("quitxyz", &[Command::Quit]), ["Quit"]);
+    // A four-char query still tolerates the floor of two, but not three.
+    assert_eq!(suggest("qxyz", &[Command::Quit]), Vec::<&str>::new());
+}
+
+#[test]
 fn loaded_config_is_in_the_palette() {
     assert!(palette().contains(&Command::ShowLoadedConfig));
     assert_eq!(

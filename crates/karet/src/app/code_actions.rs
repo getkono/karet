@@ -18,12 +18,32 @@
 //! until the next answer replaces it; a move to another line, or an edit,
 //! takes it down at once, since it no longer describes where the caret is.
 
+use std::time::Duration;
+use std::time::Instant;
+
 use karet_core::CodeAction;
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::ThemeRole;
+use karet_editor::resolve_folds;
+use karet_filetype::IconStyle;
 use karet_session::AppliedWorkspaceEdit;
 use karet_session::CodeActionTrigger;
+use karet_session::DocumentId;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+use karet_session::ViewId;
 
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::ContextMenu;
+use crate::app::state::ContextMenuAction;
+use crate::app::state::ContextMenuEntry;
+use crate::tab::TabKind;
 
 /// The kind prefixes the menu groups by, in the order the groups appear, and
 /// each group's heading. Anything else falls in a last "More Actions" group.
@@ -204,7 +224,7 @@ impl App {
             self.notify(Report::Refusal, NotificationKind::Lsp, message);
             return;
         };
-        let id = self.send(SessionCommand::CodeActions {
+        let id = self.send(LspCommand::CodeActions {
             doc: key.doc,
             range: key.range,
             kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
@@ -266,7 +286,7 @@ impl App {
 
     /// Open the menu over `actions`, anchored on the line under the caret.
     fn open_code_action_menu(&mut self, doc: DocumentId, version: u64, actions: Vec<CodeAction>) {
-        let editor = self.editor_rect;
+        let editor = self.last_frame.editor_rect();
         let anchor = self.tabs.get(self.active).and_then(|tab| {
             let TabKind::Code {
                 buffer,
@@ -290,7 +310,7 @@ impl App {
     /// Run one listed action.
     pub(crate) fn run_code_action(&mut self, doc: DocumentId, version: u64, action: CodeAction) {
         let title = action.title.clone();
-        let id = self.send(SessionCommand::ApplyCodeAction {
+        let id = self.send(LspCommand::ApplyCodeAction {
             doc,
             version,
             action,
@@ -369,7 +389,7 @@ impl App {
                 return;
             },
         }
-        let sent = self.send(SessionCommand::CodeActions {
+        let sent = self.send(LspCommand::CodeActions {
             doc: key.doc,
             range: key.range,
             kinds: Vec::new(),

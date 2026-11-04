@@ -35,6 +35,32 @@ fn quick_open_is_recognised_and_reselects_a_file() {
 }
 
 #[test]
+fn pickers_are_told_apart_by_kind_not_title() {
+    let quick_open = Overlay::quick_open(Vec::new());
+    assert_eq!(quick_open.picker_kind(), Some(PickerKind::QuickOpen));
+    assert_eq!(quick_open.quick_open_mode(), Some(QuickOpenMode::Files));
+    // Another picker that happens to carry quick-open's title is not quick-open.
+    let lookalike = Overlay::commands(quick_open.title().to_string(), vec![Command::Quit]);
+    assert_eq!(lookalike.picker_kind(), Some(PickerKind::Commands));
+    assert_eq!(lookalike.quick_open_mode(), None);
+    assert!(!lookalike.is_quick_open());
+    assert_eq!(Overlay::stash_form().picker_kind(), None);
+}
+
+#[test]
+fn seam_roots_refill_only_the_seam_roots_picker() {
+    let mut seam = Overlay::seam_roots(Vec::new());
+    seam.set_seam_roots(vec![("karet".to_string(), PathBuf::from("/x/karet"))]);
+    assert_eq!(seam.rows(), vec!["karet"]);
+    // A different picker under the same title keeps its own rows.
+    let title = seam.title().to_string();
+    let mut lookalike = Overlay::commands(title, vec![Command::Quit]);
+    let before: Vec<String> = lookalike.rows().into_iter().map(String::from).collect();
+    lookalike.set_seam_roots(vec![("karet".to_string(), PathBuf::from("/x/karet"))]);
+    assert_eq!(lookalike.rows(), before);
+}
+
+#[test]
 fn recent_workspace_picker_accepts_a_root() {
     let items = vec![("~/src/karet".to_string(), PathBuf::from("/h/src/karet"))];
     let overlay = Overlay::recent_workspaces(items);

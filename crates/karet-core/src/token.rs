@@ -40,14 +40,17 @@ impl TokenId {
 
 /// The text emphasis requested for a run of text, independent of any renderer.
 ///
-/// The neutral emphasis vocabulary shared by themes (per-token emphasis),
-/// document models (DOCX runs), and markup rendering. It is not the only
-/// attribute type: a [`Decoration`](crate::Decoration) carries its own
-/// [`TextModifiers`](crate::TextModifiers) flags, kept separate on purpose.
+/// The one neutral text-attribute vocabulary: themes (per-token emphasis), a
+/// [`Decoration`](crate::Decoration)'s [`modifiers`](crate::Decoration::modifiers),
+/// and markup rendering all speak it, and `karet-theme`'s `view` feature holds
+/// its one ratatui mapping.
+///
 /// Markup tokens carry weight/slant as much as color: a markdown heading reads as
-/// a heading because it is **bold**, not merely blue.
+/// a heading because it is **bold**, not merely blue. Attributes combine with
+/// `|`, so overlapping decorations blend into the union of their flags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Emphasis {
     /// Render bold.
     pub bold: bool,
@@ -57,6 +60,8 @@ pub struct Emphasis {
     pub underline: bool,
     /// Render struck through.
     pub strikethrough: bool,
+    /// Render dimmed (faint).
+    pub dim: bool,
 }
 
 impl Emphasis {
@@ -66,6 +71,7 @@ impl Emphasis {
         italic: false,
         underline: false,
         strikethrough: false,
+        dim: false,
     };
     /// Bold, and nothing else.
     pub const BOLD: Self = Self {
@@ -87,6 +93,53 @@ impl Emphasis {
         strikethrough: true,
         ..Self::NONE
     };
+    /// Dimmed, and nothing else.
+    pub const DIM: Self = Self {
+        dim: true,
+        ..Self::NONE
+    };
+
+    /// Whether no attribute is set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        !(self.bold || self.italic || self.underline || self.strikethrough || self.dim)
+    }
+
+    /// Whether every attribute set in `other` is also set in `self`.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.bold || !other.bold)
+            && (self.italic || !other.italic)
+            && (self.underline || !other.underline)
+            && (self.strikethrough || !other.strikethrough)
+            && (self.dim || !other.dim)
+    }
+
+    /// The attributes set in either `self` or `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            bold: self.bold || other.bold,
+            italic: self.italic || other.italic,
+            underline: self.underline || other.underline,
+            strikethrough: self.strikethrough || other.strikethrough,
+            dim: self.dim || other.dim,
+        }
+    }
+}
+
+impl std::ops::BitOr for Emphasis {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.union(other)
+    }
+}
+
+impl std::ops::BitOrAssign for Emphasis {
+    fn bitor_assign(&mut self, other: Self) {
+        *self = self.union(other);
+    }
 }
 
 /// The canonical set of tree-sitter highlight capture classes karet recognizes.
@@ -170,6 +223,12 @@ pub enum StandardToken {
 }
 
 impl StandardToken {
+    /// How many standard classes there are: every [`id`](Self::id) is below
+    /// this, so a table indexed by id can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a class moves it.
+    pub const COUNT: usize = Self::CommentMark as usize + 1;
+
     /// The stable [`TokenId`] for this class (its discriminant).
     #[must_use]
     pub const fn id(self) -> TokenId {
@@ -375,6 +434,14 @@ pub enum ThemeRole {
     WordHighlightStrong,
 }
 
+impl ThemeRole {
+    /// How many roles there are: every `role as usize` is below this, so a
+    /// table indexed by role can be sized by it.
+    ///
+    /// Tracks the last-declared variant; appending a role moves it.
+    pub const COUNT: usize = Self::WordHighlightStrong as usize + 1;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +515,70 @@ mod tests {
             None
         );
         assert_eq!(StandardToken::from_capture_name("Keyword"), None);
+        // `COUNT` is exactly one past the last id, so a table sized by it
+        // holds every class and nothing more.
+        assert_eq!(StandardToken::COUNT, ALL.len());
+    }
+
+    #[test]
+    fn theme_role_count_is_one_past_the_last_declared_role() {
+        // A table sized by `COUNT` and indexed by `role as usize` must hold the
+        // last role, and no slot past it.
+        assert_eq!(
+            ThemeRole::WordHighlightStrong as usize,
+            ThemeRole::COUNT - 1
+        );
+        assert_eq!(ThemeRole::Background as usize, 0);
+        assert_eq!(ThemeRole::COUNT, 41);
+    }
+
+    #[test]
+    fn emphasis_combines_as_flags() {
+        let mut both = Emphasis::BOLD;
+        both |= Emphasis::STRIKETHROUGH;
+        assert!(both.contains(Emphasis::BOLD));
+        assert!(both.contains(Emphasis::STRIKETHROUGH));
+        assert!(both.contains(Emphasis::BOLD | Emphasis::STRIKETHROUGH));
+        assert!(!both.contains(Emphasis::ITALIC));
+        assert!(!both.contains(Emphasis::BOLD | Emphasis::DIM));
+        // The empty set is contained in every set, and is the default.
+        assert!(both.contains(Emphasis::NONE));
+        assert_eq!(Emphasis::default(), Emphasis::NONE);
+        assert!(Emphasis::NONE.is_empty());
+        assert!(!both.is_empty());
+        // Each single-flag constant sets exactly one flag: none contains
+        // another, and none is empty.
+        let flags = [
+            Emphasis::BOLD,
+            Emphasis::ITALIC,
+            Emphasis::UNDERLINE,
+            Emphasis::STRIKETHROUGH,
+            Emphasis::DIM,
+        ];
+        for (i, a) in flags.iter().enumerate() {
+            assert!(!a.is_empty(), "{a:?} is empty");
+            for b in &flags[i + 1..] {
+                assert!(!a.contains(*b), "{a:?} overlaps {b:?}");
+                assert!(!b.contains(*a), "{b:?} overlaps {a:?}");
+            }
+        }
+        let all = flags.iter().fold(Emphasis::NONE, |all, flag| all | *flag);
+        assert!(flags.iter().all(|flag| all.contains(*flag)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn emphasis_missing_a_flag_on_the_wire_decodes_it_as_unset() -> Result<(), serde_json::Error> {
+        // A peer that predates a flag omits it; the flag reads as off rather
+        // than failing the whole payload.
+        let old = serde_json::from_str::<Emphasis>(r#"{"bold":true}"#)?;
+        assert_eq!(old, Emphasis::BOLD);
+        let all = Emphasis::BOLD | Emphasis::DIM;
+        assert_eq!(
+            serde_json::from_str::<Emphasis>(&serde_json::to_string(&all)?)?,
+            all
+        );
+        Ok(())
     }
 
     #[test]

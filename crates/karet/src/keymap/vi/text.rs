@@ -2,7 +2,8 @@
 //! grammars: positions are `(line, char column)` and every line but the last
 //! ends in a virtual `'\n'` at column `len`, so a motion can walk the whole
 //! document one character at a time. A file's final line break ends its last
-//! line, as in vim: the empty "line" after it is not one the grammars visit.
+//! line, as in vim: the empty "line" after it is not one the grammars visit,
+//! unless the caret stands on it (a line the user just opened).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -47,12 +48,17 @@ pub(super) struct Doc<'a> {
 }
 
 impl<'a> Doc<'a> {
-    /// A view of `buffer`.
-    pub(super) fn new(buffer: &'a TextBuffer) -> Self {
+    /// A view of `buffer` with the caret on `caret_line`.
+    pub(super) fn new(buffer: &'a TextBuffer, caret_line: u32) -> Self {
         let count = buffer.line_count();
         // A trailing line break ends the last line rather than starting an
-        // empty one, so the rope's final, empty line is not counted.
-        let phantom = count > 1 && buffer.line(count - 1).is_some_and(|line| line.is_empty());
+        // empty one, so the rope's final, empty line is not counted - unless
+        // the caret is on it. The text cannot tell that line apart from one
+        // the user just opened (`o` or `<CR>` at the end of a file with no
+        // final break), and the caret standing there is what marks it real.
+        let phantom = count > 1
+            && caret_line as usize != count - 1
+            && buffer.line(count - 1).is_some_and(|line| line.is_empty());
         let last = count.saturating_sub(if phantom { 2 } else { 1 });
         Self {
             buffer,
@@ -62,7 +68,8 @@ impl<'a> Doc<'a> {
     }
 
     /// The index of the last line (a buffer always has at least one). The
-    /// empty line after a final line break is not counted.
+    /// empty line after a final line break is not counted unless the caret
+    /// is on it.
     pub(super) fn last_line(&self) -> u32 {
         self.last_line
     }

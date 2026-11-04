@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The full, validated karet configuration. Load it with
-/// [`crate::config::load`]; the sane baseline is [`Settings::default`].
+/// [`crate::config::load_report`]; the sane baseline is [`Settings::default`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +50,9 @@ pub struct Settings {
     pub debug: Debugger,
     /// Jupyter-notebook behaviour (kernel execution).
     pub notebook: NotebookSettings,
+    /// Named shell commands the Run Task picker offers, keyed by label.
+    #[serde(default)]
+    pub tasks: BTreeMap<String, Task>,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -361,6 +364,9 @@ pub struct Editor {
     pub pretty_errors: bool,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// `editor.inlineCompletion.*` — ghost text a language server (such as
+    /// Copilot) proposes at the caret.
+    pub inline_completion: InlineCompletion,
     /// The hover popup (documentation + diagnostics at the caret).
     pub hover: HoverPopup,
     /// `editor.inlayHints.*` — inferred types and parameter names drawn inline.
@@ -369,7 +375,8 @@ pub struct Editor {
     pub code_lens: bool,
     /// `editor.semanticHighlighting.*` — semantic tokens over the syntax colours.
     pub semantic_highlighting: SemanticHighlighting,
-    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
+    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the
+    /// colours a language server reports.
     pub color_highlight: ColorHighlight,
     /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
     /// the end of their line.
@@ -447,6 +454,7 @@ impl Default for Editor {
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),
+            inline_completion: InlineCompletion::default(),
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
             code_lens: true,
@@ -459,17 +467,21 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// Resolve this editor configuration for `language`.
+    /// Resolve this editor configuration for a document of `file_type`, or the
+    /// global values alone for `None`.
     ///
-    /// Language names are matched case-insensitively after trimming outer
-    /// whitespace. The selected language patch is applied over the already-merged
-    /// global editor values, so language specificity wins over config-layer
-    /// specificity.
+    /// The `[language]` override that applies is the one keyed by the file
+    /// type's [`config_selector`](karet_filetype::FileType::config_selector), never
+    /// its display name, so a `Cargo.lock` (display name `"Cargo lockfile"`,
+    /// selector `toml`) takes the `[toml]` patch. A file type with no selector
+    /// (an unrecognized file, plain text) resolves to the global values. The
+    /// selected patch is applied over the already-merged global editor values, so
+    /// language specificity wins over config-layer specificity.
     #[must_use]
-    pub fn for_language(&self, language: Option<&str>) -> ResolvedEditor<'_> {
-        let override_ = language
-            .and_then(LanguageSelector::from_language)
-            .and_then(|selector| self.language_overrides.get(&selector));
+    pub fn for_language(&self, file_type: Option<karet_filetype::FileType>) -> ResolvedEditor<'_> {
+        let override_ = file_type
+            .and_then(|file_type| file_type.config_selector())
+            .and_then(|selector| self.language_overrides.get(selector));
         ResolvedEditor::new(self, override_)
     }
 
@@ -512,6 +524,11 @@ pub use overrides::ResolvedCompletion;
 pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedInlineDiagnostics;
 pub use overrides::ResolvedSemanticComments;
+pub use tasks::BuiltinMatcher;
+pub use tasks::MatcherSeverity;
+pub use tasks::PatternMatcher;
+pub use tasks::ProblemMatcher;
+pub use tasks::Task;
 pub use workbench::IconStyleSetting;
 pub use workbench::StartupPanel;
 pub use workbench::Workbench;
@@ -523,6 +540,7 @@ mod inline_diagnostics;
 mod keymap;
 mod lsp;
 mod overrides;
+mod tasks;
 mod workbench;
 
 /// `editor.completion.*` — LSP-powered code completion.
@@ -548,13 +566,36 @@ impl Default for Completion {
     }
 }
 
-/// `editor.colorHighlight.*` — inline swatches on color literals.
+/// `editor.inlineCompletion.*` — ghost text proposed at the caret by a
+/// language server offering LSP 3.18 inline completions (such as
+/// `copilot-language-server`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineCompletion {
+    /// Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing
+    /// is shown unless a server attached to the document offers it, so this
+    /// costs nothing where none does; switch it off per language with
+    /// `"[markdown]": { "inlineCompletion": { "enabled": false } }`.
+    pub enabled: bool,
+}
+
+impl Default for InlineCompletion {
+    /// On: a server that offers inline completions was attached on purpose.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `editor.colorHighlight.*` — inline swatches on color literals and on the
+/// colours a language server reports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct ColorHighlight {
-    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)
-    /// with their own color, on the visible lines of the editor.
+    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),
+    /// and the colours the file's language server reports, with their own
+    /// color, on the visible lines of the editor.
     pub enabled: bool,
 }
 
@@ -635,8 +676,8 @@ pub struct Files {
     pub auto_save: AutoSave,
     /// Delay in milliseconds before `afterDelay` auto-save fires.
     pub auto_save_delay: u64,
-    /// Default text encoding label (informational; karet edits UTF-8).
-    pub encoding: String,
+    /// Text encoding used when saving. An `.editorconfig` `charset` overrides it.
+    pub encoding: Encoding,
     /// Line-ending style used when saving.
     pub eol: Eol,
     /// Glob patterns hidden from the file explorer.
@@ -674,7 +715,7 @@ impl Default for Files {
         Self {
             auto_save: AutoSave::Off,
             auto_save_delay: 1000,
-            encoding: "utf-8".to_string(),
+            encoding: Encoding::Auto,
             eol: Eol::Auto,
             exclude: Vec::new(),
             watcher_exclude: Vec::new(),
@@ -713,6 +754,25 @@ pub enum Eol {
     Lf,
     /// Carriage return + line feed (`\r\n`).
     Crlf,
+}
+
+/// Text encoding used when saving. karet edits UTF-8 only; the choice is
+/// whether a byte-order mark is written. Spelled as EditorConfig's `charset`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum Encoding {
+    /// Preserve the encoding the file was opened with (UTF-8 without a BOM for
+    /// a new file).
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    /// UTF-8 without a byte-order mark: one an existing file carries is dropped
+    /// on save.
+    #[serde(rename = "utf-8", alias = "utf8")]
+    Utf8,
+    /// UTF-8 with a leading byte-order mark.
+    #[serde(rename = "utf-8-bom", alias = "utf8bom")]
+    Utf8Bom,
 }
 
 /// `search.*` — workspace search behaviour.

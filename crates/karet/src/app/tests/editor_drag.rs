@@ -119,7 +119,7 @@ fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     rig.run(&[click(At::Cell(x, y)), click(At::Cell(x, y))]);
 
     assert_eq!(
-        rig.tab().editor.scroll_col,
+        rig.tab().editor.scroll_col(),
         0,
         "the click scrolled the line"
     );
@@ -134,7 +134,7 @@ fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     // The view is unwrapped, so the keyboard does scroll it.
     rig.step(key(KeyCode::End));
     assert!(
-        rig.tab().editor.scroll_col > 0,
+        rig.tab().editor.scroll_col() > 0,
         "the line does not overflow"
     );
 }
@@ -158,7 +158,7 @@ fn dragging_below_the_viewport_scrolls_and_keeps_extending() {
     let text_body: String = (0..40).map(|n| format!("line {n}\n")).collect();
     let marked = format!("|{text_body}");
     let mut rig = Rig::sized(&marked, 40, 8);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let (x, _) = rig.cell(text(0, 4));
     let below = At::Cell(x, area.bottom());
     rig.step(Step::Down(text(0, 4), KeyModifiers::NONE));
@@ -211,7 +211,7 @@ fn forty_lines() -> String {
 /// A rig whose drag from `(0, 4)` rests `rows` rows below the viewport.
 fn drag_below(rows: u16) -> Rig {
     let mut rig = Rig::sized(&forty_lines(), 40, 12);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let (x, _) = rig.cell(text(0, 4));
     rig.step(Step::Down(text(0, 4), KeyModifiers::NONE));
     rig.step(Step::Drag(
@@ -247,9 +247,9 @@ fn a_release_under_an_overlay_ends_the_drag() {
     // it, close it. The release must not be lost to the overlay's swallow.
     let mut rig = drag_below(1);
     rig.step(Step::Cmd(Command::OpenQuickOpen));
-    assert!(rig.app.overlay.is_some());
+    assert!(rig.app.keyboard.overlay().is_some());
     rig.step(Step::Up(At::Cell(1, 1), KeyModifiers::NONE));
-    rig.app.overlay = None;
+    rig.app.close_overlay();
     assert_drag_ended(&mut rig, "release under the picker");
 }
 
@@ -290,7 +290,7 @@ fn switching_tabs_ends_the_drag_and_leaves_the_other_tab_alone() {
     rig.app.push_tab(text_tab("u.rs", &body));
     rig.app.select_tab(0);
     rig.render();
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let (x, _) = rig.cell(text(0, 4));
     rig.step(Step::Down(text(0, 4), KeyModifiers::NONE));
     rig.step(Step::Drag(At::Cell(x, area.bottom()), KeyModifiers::NONE));
@@ -356,7 +356,7 @@ fn dragging_past_the_right_edge_scrolls_horizontally() {
         .map(|n| char::from(b'a' + (n % 26) as u8))
         .collect();
     let mut rig = Rig::sized(&format!("|{line}\n"), 40, 8);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let (_, y) = rig.cell(text(0, 2));
     rig.step(Step::Down(text(0, 2), KeyModifiers::NONE));
     rig.step(Step::Drag(
@@ -373,7 +373,7 @@ fn dragging_past_the_right_edge_scrolls_horizontally() {
     );
     rig.step(Step::Tick);
     assert_eq!(
-        rig.tab().editor.scroll_col,
+        rig.tab().editor.scroll_col(),
         2,
         "two columns out, two per step"
     );
@@ -425,7 +425,11 @@ fn shift_wheel_during_a_drag_scrolls_columns_and_extends() {
         KeyModifiers::SHIFT,
     ));
     assert_eq!(rig.scroll_line(), 0, "the notch did not scroll rows");
-    assert_eq!(rig.tab().editor.scroll_col, 3, "the notch scrolled columns");
+    assert_eq!(
+        rig.tab().editor.scroll_col(),
+        3,
+        "the notch scrolled columns"
+    );
     assert_eq!(
         rig.tab().editor.cursor().col,
         7,
@@ -462,7 +466,7 @@ fn sticky_header_rows_count_as_above_the_text() {
         semantic_blocks, ..
     } = &mut rig.app.tabs[idx].kind
     {
-        *semantic_blocks = karet_syntax::SemanticBlocks::new(vec![karet_syntax::SemanticBlock {
+        *semantic_blocks = karet_core::SemanticBlocks::new(vec![karet_core::SemanticBlock {
             header_start: 0,
             header_end: 0,
             scope_end: 39,
@@ -470,7 +474,7 @@ fn sticky_header_rows_count_as_above_the_text() {
     }
     rig.app.scroll_lines(10);
     rig.render();
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let viewport = rig.tab().editor.viewport();
     assert!(
         viewport.end.line - viewport.start.line < u32::from(area.height),

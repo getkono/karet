@@ -81,14 +81,14 @@ pub(crate) struct Pending<T> {
 
 /// Everything one running broker shares between its tasks.
 pub(crate) struct Core<P: BrokerProtocol> {
-    pub(crate) upstream: mpsc::Sender<Value>,
-    pub(crate) clients: Mutex<HashMap<ClientId, mpsc::Sender<Value>>>,
-    pub(crate) pending: Mutex<HashMap<u64, Pending<P::RequestTag>>>,
-    pub(crate) state: Arc<P::State>,
-    pub(crate) next_request: AtomicU64,
-    pub(crate) next_client: AtomicU64,
-    pub(crate) active_clients: AtomicUsize,
-    pub(crate) last_activity: std::sync::Mutex<Instant>,
+    upstream: mpsc::Sender<Value>,
+    clients: Mutex<HashMap<ClientId, mpsc::Sender<Value>>>,
+    pending: Mutex<HashMap<u64, Pending<P::RequestTag>>>,
+    state: Arc<P::State>,
+    next_request: AtomicU64,
+    next_client: AtomicU64,
+    active_clients: AtomicUsize,
+    last_activity: std::sync::Mutex<Instant>,
     /// Set once the brokered process's stdout ends, for any reason.
     ///
     /// A latch, not a bare [`Notify`]: `notify_waiters` wakes only the waiters
@@ -99,8 +99,8 @@ pub(crate) struct Core<P: BrokerProtocol> {
     /// its 30s idle timeout, long after the client gave up at 5s. The flag is
     /// what makes the signal survive that gap; the `Notify` only wakes a
     /// waiter that is already parked.
-    pub(crate) upstream_closed: AtomicBool,
-    pub(crate) upstream_closed_signal: Notify,
+    upstream_closed: AtomicBool,
+    upstream_closed_signal: Notify,
 }
 
 impl<P: BrokerProtocol> Core<P> {
@@ -117,6 +117,21 @@ impl<P: BrokerProtocol> Core<P> {
             upstream_closed: AtomicBool::new(false),
             upstream_closed_signal: Notify::new(),
         })
+    }
+
+    /// The protocol's broker-wide state.
+    pub(crate) fn state(&self) -> &Arc<P::State> {
+        &self.state
+    }
+
+    /// Queue a message for the server, dropping it if the queue is gone.
+    pub(crate) async fn send_upstream(&self, message: Value) {
+        let _ = self.upstream.send(message).await;
+    }
+
+    /// Reserve a request id nobody else will use on this broker.
+    pub(crate) fn next_request_id(&self) -> u64 {
+        self.next_request.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -390,7 +405,7 @@ where
                 }
             },
             ClientFlow::Forward => {
-                let _ = core.upstream.send(message).await;
+                core.send_upstream(message).await;
             },
             ClientFlow::Drop => {},
             ClientFlow::Stop => break,
@@ -406,7 +421,7 @@ async fn proxy_request<P: BrokerProtocol>(
     message: &mut Value,
     core: &Arc<Core<P>>,
 ) {
-    let id = core.next_request.fetch_add(1, Ordering::Relaxed);
+    let id = core.next_request_id();
     message["id"] = json!(id);
     core.pending.lock().await.insert(
         id,
@@ -416,7 +431,7 @@ async fn proxy_request<P: BrokerProtocol>(
             tag,
         },
     );
-    let _ = core.upstream.send(message.clone()).await;
+    core.send_upstream(message.clone()).await;
 }
 
 async fn upstream_reader<P, R>(read: R, core: Arc<Core<P>>)
@@ -468,7 +483,6 @@ where
                     let _ = tx.send(message.clone()).await;
                 }
             },
-            ServerRoute::Discard => {},
         }
     }
     core.upstream_closed.store(true, Ordering::Release);

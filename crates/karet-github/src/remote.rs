@@ -74,13 +74,6 @@ fn valid_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-/// Parse an `(owner, repository)` pair from a public GitHub remote URL.
-#[must_use]
-pub fn parse_remote(url: &str) -> Option<(String, String)> {
-    let identity = GitHubRemote::parse(url)?.into_identity();
-    Some((identity.owner, identity.repo))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +117,9 @@ mod tests {
             "git@github.com:get kono/karet.git",
             "https://github.com/getkono%2fkaret/repo",
             "https://gitlab.com/getkono/karet.git",
+            "git@example.com:a/b.git",
+            "https://github.com/onlyowner",
+            "not a url",
         ] {
             assert!(GitHubRemote::parse(input).is_none(), "accepted {input}");
         }

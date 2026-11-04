@@ -16,10 +16,11 @@ async fn open(
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error + Send + Sync>> {
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     Ok(await_opened(events).await.ok_or("no Opened")?)
 }
@@ -56,10 +57,10 @@ fn insert(
     base: u64,
     text: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 base,
@@ -69,7 +70,8 @@ fn insert(
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
     Ok(())
 }
@@ -96,19 +98,21 @@ async fn a_slow_hint_request_does_not_hold_up_completion() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
             trigger: CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     )?;
     let (rid, _, _, items) = await_completions(&mut events)
         .await
@@ -137,10 +141,11 @@ async fn a_hint_request_waits_for_its_edit_without_flushing_it_early() -> TestRe
     insert(&backend, doc, version, "x")?;
     backend.send(
         backend.next_id(),
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     insert(&backend, doc, version + 1, "y")?;
     let _ = await_inlay_hints(&mut events)
@@ -187,13 +192,14 @@ async fn a_server_without_inlay_hints_answers_them_empty() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: Range {
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, u32::MAX),
             },
-        },
+        }
+        .into(),
     )?;
     // A background request is refused *silently*: no notice precedes the
     // empty answer, or every viewport change would raise one.
@@ -243,10 +249,11 @@ async fn a_request_asked_for_by_hand_says_the_server_does_not_support_it() -> Te
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Definition {
+        LspCommand::Definition {
             doc,
             position: LineCol::new(0, 3),
-        },
+        }
+        .into(),
     )?;
     let mut notice = None;
     loop {
@@ -295,11 +302,12 @@ async fn find_references_answers_with_its_kind_in_buffer_columns() -> TestResult
     let request = backend.next_id();
     backend.send(
         request,
-        Command::FindLocations {
+        LspCommand::FindLocations {
             doc,
             position: LineCol::new(0, 1),
             kind: LocationKind::References,
-        },
+        }
+        .into(),
     )?;
     let (kind, locations) = loop {
         let (id, event) = next_event(&mut events).await.ok_or("no Locations answer")?;
@@ -351,11 +359,12 @@ async fn an_unoffered_navigation_says_which_and_answers_empty_with_its_kind() ->
     let request = backend.next_id();
     backend.send(
         request,
-        Command::FindLocations {
+        LspCommand::FindLocations {
             doc,
             position: LineCol::new(0, 3),
             kind: LocationKind::Declaration,
-        },
+        }
+        .into(),
     )?;
     let mut notice = None;
     loop {
@@ -392,10 +401,11 @@ async fn a_supported_request_raises_no_notice() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Hover {
+        LspCommand::Hover {
             doc,
             position: LineCol::new(0, 3),
-        },
+        }
+        .into(),
     )?;
     loop {
         let (_, event) = next_event(&mut events)
@@ -428,10 +438,11 @@ async fn a_to_end_of_line_hint_request_reaches_the_wire_as_the_real_end() -> Tes
 
     backend.send(
         backend.next_id(),
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv())
@@ -464,11 +475,12 @@ async fn ask_signature_help(
     let request = backend.next_id();
     backend.send(
         request,
-        Command::SignatureHelp {
+        LspCommand::SignatureHelp {
             doc,
             position,
             manual,
-        },
+        }
+        .into(),
     )?;
     let mut notice = None;
     loop {

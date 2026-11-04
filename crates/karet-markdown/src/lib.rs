@@ -214,15 +214,22 @@ pub enum Block {
 /// A parsed markdown document: an ordered sequence of blocks.
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownDocument {
-    /// The top-level blocks.
-    pub blocks: Vec<Block>,
+    /// The top-level blocks; read them through [`blocks`](Self::blocks).
+    blocks: Vec<Block>,
     /// The 0-based source line each top-level block begins on, parallel to `blocks`.
-    /// Private so the two vectors cannot drift out of step; read it through
-    /// [`block_line`](Self::block_line).
+    /// Both are private so the two vectors cannot drift out of step: anything that
+    /// inserts a top-level block lives in this crate and inserts its line alongside.
+    /// Read it through [`block_line`](Self::block_line).
     block_lines: Vec<usize>,
 }
 
 impl MarkdownDocument {
+    /// The top-level blocks, in source order.
+    #[must_use]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
     /// Soft-wrap the document to `width` terminal columns.
     ///
     /// With the `highlight` feature, a fenced code block whose info string names a
@@ -284,7 +291,7 @@ mod tests {
             }],
             block_lines: vec![0],
         };
-        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.blocks().len(), 1);
         assert_eq!(doc.block_line(0), Some(0));
         assert_eq!(doc.block_line(1), None);
         assert_eq!(Block::Rule, Block::Rule);

@@ -26,7 +26,7 @@ pub struct AiCommitAgentStatus {
 /// Whether AI commit messages can be generated, and with what.
 ///
 /// Emitted as [`crate::api::Event::AiCommitAvailability`] at startup, whenever
-/// settings reload, and on [`crate::api::Command::ProbeAiCommit`].
+/// settings reload, and on [`VcsCommand::ProbeAiCommit`](crate::api::VcsCommand::ProbeAiCommit).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AiCommitAvailability {
     /// Whether the backend was built with generation support at all. `false`

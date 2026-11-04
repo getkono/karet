@@ -34,7 +34,7 @@ pub(super) fn scroll_markers<'a>(
     let mut problems: Vec<&Diagnostic> = problems.iter().collect();
     problems.sort_by_key(|problem| std::cmp::Reverse(problem.severity));
     markers.extend(problems.into_iter().map(|problem| {
-        let role = karet_editor::severity_role(problem.severity);
+        let role = karet_core::severity_role(problem.severity);
         lines(problem.range, theme.style(role))
     }));
     markers

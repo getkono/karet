@@ -1,16 +1,25 @@
-//! The diff tab's painter: unified and side-by-side columns.
+//! Painting a backend-prepared diff: the diff tab's unified and side-by-side
+//! columns, and the theme-keyed unified rows the commit and compare cards
+//! reuse.
 //!
-//! Split out of [`super`] because the pane painter sits at the repo's per-file
-//! code-line ceiling, and this is the one arm large enough to stand alone.
+//! Diffing, syntax highlighting, and intra-line pairing all happen in the
+//! session backend (off the UI thread); this module only maps the theme onto
+//! `karet-diff`'s `view`-feature painters and caches the unified rows on the
+//! [`ChangedFile`] per theme snapshot.
+
+use karet_core::TokenId;
+use karet_diff::view::DiffPalette;
+use karet_theme::Rgba;
 
 use super::*;
+use crate::tab::ChangedFile;
 
 #[allow(clippy::too_many_arguments)] // diff model, layout mode, scroll offsets and the track sink are independent
 pub(in crate::ui) fn draw_diff(
     f: &mut Frame,
     ctx: &PaneCtx,
     area: Rect,
-    file: &render::FileView,
+    file: &ChangedFile,
     view: ViewMode,
     scroll: &mut u16,
     column: &mut u16,
@@ -19,8 +28,8 @@ pub(in crate::ui) fn draw_diff(
     let theme = ctx.theme;
     match view {
         ViewMode::Unified => {
-            let mut lines = render::unified_lines(file, theme);
-            render::pad_diff_lines(&mut lines, area.width);
+            let mut lines = unified_lines(file, theme);
+            karet_diff::view::pad_diff_lines(&mut lines, area.width);
             hits.record_both(
                 draw_scrollable_lines(f, theme, area, lines, scroll, column),
                 ScrollSurface::TabRows,
@@ -33,7 +42,7 @@ pub(in crate::ui) fn draw_diff(
             // the pair — but each pane has its own content width, so the horizontal
             // track is split to match the panes above it.
             let (body, tracks) = reserve_tracks(area, ScrollAxes::BOTH);
-            let (mut left, mut right) = render::side_by_side_lines(file, theme);
+            let (mut left, mut right) = side_by_side_lines(file, theme);
             let height = left.len().max(right.len());
             let max = u16::try_from(height)
                 .unwrap_or(u16::MAX)
@@ -51,8 +60,8 @@ pub(in crate::ui) fn draw_diff(
             let pane_width = panes[0].width.min(panes[2].width);
             let max_column = content_width.saturating_sub(usize::from(pane_width));
             *column = (*column).min(u16::try_from(max_column).unwrap_or(u16::MAX));
-            render::pad_diff_lines(&mut left, panes[0].width);
-            render::pad_diff_lines(&mut right, panes[2].width);
+            karet_diff::view::pad_diff_lines(&mut left, panes[0].width);
+            karet_diff::view::pad_diff_lines(&mut right, panes[2].width);
             f.render_widget(Paragraph::new(left).scroll((*scroll, *column)), panes[0]);
             f.render_widget(Block::new().borders(Borders::LEFT), panes[1]);
             f.render_widget(Paragraph::new(right).scroll((*scroll, *column)), panes[2]);
@@ -93,5 +102,156 @@ pub(in crate::ui) fn draw_diff(
                 *column,
             )
         },
+    }
+}
+
+/// Map `theme` onto the diff painter's color slots and run `paint` with it.
+fn with_palette<R>(theme: &Theme, paint: impl FnOnce(&DiffPalette<'_>) -> R) -> R {
+    let token_fg = |token: TokenId| theme.color(token).to_ratatui();
+    let role = |role: karet_core::ThemeRole| theme.role(role).to_ratatui();
+    let palette = DiffPalette {
+        foreground: role(karet_core::ThemeRole::Foreground),
+        added_bg: role(karet_core::ThemeRole::DiffAdded),
+        added_emphasis_bg: brighten(theme.role(karet_core::ThemeRole::DiffAdded)).to_ratatui(),
+        removed_bg: role(karet_core::ThemeRole::DiffRemoved),
+        removed_emphasis_bg: brighten(theme.role(karet_core::ThemeRole::DiffRemoved)).to_ratatui(),
+        plain_emphasis_bg: brighten(theme.role(karet_core::ThemeRole::Selection)).to_ratatui(),
+        add_marker: role(karet_core::ThemeRole::DiagnosticHint),
+        remove_marker: role(karet_core::ThemeRole::DiagnosticError),
+        gutter: role(karet_core::ThemeRole::LineNumber),
+        header: role(karet_core::ThemeRole::DiagnosticInfo),
+        dim: role(karet_core::ThemeRole::LineNumberActive),
+        token_fg: &token_fg,
+    };
+    paint(&palette)
+}
+
+/// The brighter variant of a base color used for intra-line change emphasis.
+fn brighten(c: Rgba) -> Rgba {
+    Rgba {
+        r: c.r.saturating_add(0x24),
+        g: c.g.saturating_add(0x24),
+        b: c.b.saturating_add(0x2c),
+        a: c.a,
+    }
+}
+
+/// Build (or fetch from the theme-keyed cache) the unified-view lines for `file`.
+pub(in crate::ui) fn unified_lines(file: &ChangedFile, theme: &Theme) -> Vec<Line<'static>> {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or_else(Vec::new, |(_, lines)| lines.clone())
+}
+
+/// Return the number of rows in the unified rendering without cloning those rows.
+pub(in crate::ui) fn unified_line_count(file: &ChangedFile, theme: &Theme) -> usize {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or(0, |(_, lines)| lines.len())
+}
+
+/// Return the widest unified diff row in terminal columns without cloning rows.
+pub(in crate::ui) fn unified_max_width(file: &ChangedFile, theme: &Theme) -> usize {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or(0, |(_, lines)| {
+            lines.iter().map(crate::ui::line_width).max().unwrap_or(0)
+        })
+}
+
+/// Clone only a requested window of the unified rendering.
+pub(in crate::ui) fn unified_lines_window(
+    file: &ChangedFile,
+    theme: &Theme,
+    start: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    ensure_unified(file, theme);
+    file.unified_cache
+        .borrow()
+        .as_ref()
+        .map_or_else(Vec::new, |(_, lines)| {
+            lines.iter().skip(start).take(count).cloned().collect()
+        })
+}
+
+/// Build the side-by-side lines for `file` as aligned `(old, new)` columns.
+pub(in crate::ui) fn side_by_side_lines(
+    file: &ChangedFile,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    with_palette(theme, |palette| {
+        karet_diff::view::side_by_side_lines(&file.change.diff, palette)
+    })
+}
+
+fn ensure_unified(file: &ChangedFile, theme: &Theme) {
+    if file
+        .unified_cache
+        .borrow()
+        .as_ref()
+        .is_some_and(|(cached_theme, _)| cached_theme == theme)
+    {
+        return;
+    }
+    let lines = with_palette(theme, |palette| {
+        karet_diff::view::unified_lines(&file.change.diff, palette)
+    });
+    *file.unified_cache.borrow_mut() = Some((theme.clone(), lines));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tab::test_changed_file;
+
+    fn rendered_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn unified_lines_render_both_sides() {
+        let fv = test_changed_file("notes.txt", "before\n", "after\n");
+        let text = rendered_text(&unified_lines(&fv, &Theme::dark()));
+        assert!(text.contains("before") && text.contains("after"));
+    }
+
+    #[test]
+    fn unified_max_width_matches_the_rendered_rows() {
+        let fv = test_changed_file("notes.txt", "short\n", "a much longer replacement\n");
+        let theme = Theme::dark();
+        let expected = unified_lines(&fv, &theme)
+            .iter()
+            .map(crate::ui::line_width)
+            .max()
+            .unwrap_or_default();
+        assert_eq!(unified_max_width(&fv, &theme), expected);
+    }
+
+    #[test]
+    fn unified_cache_returns_stable_rows() {
+        let fv = test_changed_file("notes.txt", "a\n", "b\n");
+        let theme = Theme::dark();
+        let first = unified_lines(&fv, &theme);
+        assert_eq!(unified_line_count(&fv, &theme), first.len());
+        assert_eq!(unified_lines(&fv, &theme), first);
+    }
+
+    #[test]
+    fn side_by_side_columns_stay_aligned() {
+        let fv = test_changed_file("x.rs", "a\nb\nc\n", "a\nB\nc\n");
+        let (left, right) = side_by_side_lines(&fv, &Theme::dark());
+        assert_eq!(left.len(), right.len());
+        assert!(!left.is_empty());
     }
 }

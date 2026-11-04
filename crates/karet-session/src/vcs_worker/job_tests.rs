@@ -60,7 +60,7 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
 
 /// Dispatch one job through the worker's `run` and collect what it emitted.
 fn dispatch(root: Option<PathBuf>, job: VcsJob) -> Vec<(Option<RequestId>, Event)> {
-    let (tx, mut rx): (_, Events) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx): (_, Events) = crate::event_tx::EventTx::channel();
     run(&root, &tx, &mut BlameCache::new(), &mut None, job);
     std::iter::from_fn(|| rx.try_recv().ok()).collect()
 }
@@ -218,9 +218,9 @@ fn diff_with_rev(
         },
     );
     events.into_iter().find_map(|(_, event)| match event {
-        Event::DiffPrepared { result, .. } => {
-            Some(result.map(|change| (change.diff.diff.is_binary, change.diff.diff.hunks.len())))
-        },
+        Event::DiffPrepared { result, .. } => Some(
+            result.map(|change| (change.diff.diff().is_binary, change.diff.diff().hunks.len())),
+        ),
         _ => None,
     })
 }

@@ -18,7 +18,7 @@ fn markdown_app(text: &str) -> App {
     let mut app = app();
     app.backend = Some(Arc::new(RecordingBackend::new()));
     app.push_tab(text_tab("notes.md", text));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
         *doc = Some(DocumentId(9));
@@ -95,7 +95,7 @@ fn typing_with_find_and_search_active_never_copies_the_document() {
         matches: Vec::new(),
     }];
     app.refresh_search_decorations();
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.tabs[app.active]
         .editor
         .set_carets(&[LineCol::new(0, 0)]);
@@ -133,7 +133,6 @@ fn a_markdown_table_still_reaches_the_renderer() {
             highlights: Arc::default(),
             semantic_blocks: Arc::default(),
             folds: Arc::default(),
-            decorations: Arc::default(),
             syntax_error_lines: Arc::default(),
             table_lines: Arc::new(vec![0..=2]),
             language: Some("Markdown"),
@@ -194,7 +193,6 @@ fn echo(app: &App) -> DocSnapshot {
         highlights: Arc::default(),
         semantic_blocks: Arc::default(),
         folds: Arc::default(),
-        decorations: Arc::default(),
         syntax_error_lines: Arc::default(),
         table_lines: Arc::default(),
         language: Some("Markdown"),
