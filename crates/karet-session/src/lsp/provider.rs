@@ -87,11 +87,11 @@ pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> Optio
 /// Copilot's language server asks which editor it serves (`editorInfo`,
 /// `editorPluginInfo`): it names the editor in what it reports to GitHub.
 pub(super) fn default_initialization_options(provider: &LanguageServerId, spec: &mut LspSpec) {
-    if provider.key() != catalog::COPILOT || spec.initialization_options.is_some() {
+    if provider.key() != catalog::COPILOT || spec.options.initialization_options.is_some() {
         return;
     }
     let info = serde_json::json!({"name": "karet", "version": env!("CARGO_PKG_VERSION")});
-    spec.initialization_options = Some(serde_json::json!({
+    spec.options.initialization_options = Some(serde_json::json!({
         "editorInfo": info,
         "editorPluginInfo": info,
     }));
