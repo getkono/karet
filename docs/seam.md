@@ -400,11 +400,70 @@ per target and resolution with a site count and the first site's line. `loc` is 
 for anything that is not a function, and its graph measures are `null` for a function the
 configuration leaves out, which is a different answer from zero.
 
+`--include-tests` applies the test configuration before the query runs, so `cfg(test)`
+functions are `active` and measured rather than `inactive` with `null` graph measures, and
+the result's `configuration` is then named `… + tests`, as the report names it.
+
 An unreadable query and a path that is not a package both fail with a non-zero exit rather
 than printing an empty result, since either would otherwise read as "no such seams here".
 A query that is understood and matches nothing is a success reporting zero.
 
-> This is an unstable automation surface: the output shape may change between major
+### A structural report, and one function's call tree
+
+```bash
+karet . --seam-report > structure.md              # everything, as Markdown
+karet . --seam-report='in:karet-seam' --seam-format json   # the `=` is required
+karet . --seam-call-tree 'karet-seam::calls::graph::CallGraph::build'
+karet . --seam-report --include-tests              # measure with test code included
+```
+
+`--seam-report` writes one document meant to be read whole — by a person, or handed to a
+language model deciding where structure and encapsulation could improve. In order:
+
+1. **How to read this** — what every measure means, and the exact thresholds the
+   rankings used.
+2. **Summary** — functions, code lines, modules, packages, recursion, the largest reach.
+3. **Hotspots**, each with its file, line, the number that singled it out and the top of
+   its call tree as evidence: call cycles (with one concrete path round each), hubs (most
+   callers), heavy entry points (reach far beyond their own size), large leaves (long,
+   calling nothing here), unreachable non-public functions, and functions only tests call.
+   "Unreachable" leaves out anything a contract may dispatch to — a trait
+   implementation, an override, a method sharing its name with a contract's — since
+   `Display::fmt` is called by `format!`, which no call edge records — and any function
+   whose name is written at a call site with too many candidates to resolve, since that
+   site counts in neither bound but may well be calling it. A method a trait or
+   interface declares is as visible as its contract, here and in the coupling section.
+4. **Module coupling** — afferent and efferent coupling and instability per module, the
+   module-to-module call matrix, calls into another module's non-public items, and
+   functions that call one other module more than their own.
+5. **Precision ledger** — call sites per language by how they resolved, how test code is
+   told apart, calls made outside any function, and the functions whose numbers rest
+   most on guesswork.
+6. **Appendix** — every function, most inclusive first, with every measure.
+
+A query, written `--seam-report='…'` (the `=` keeps `--seam-report .` meaning "report on
+`.`"), narrows which functions, modules and findings are listed. Everything is still
+measured over the whole index — per-function numbers, module coupling, the ranking
+thresholds, whole cycles a listed function belongs to — so a narrowed report's numbers
+match the whole one's. A query selecting no function the configuration includes fails
+rather than printing an empty report.
+
+Unlike the view, the report *ranks*, because a ranking is what makes a long document
+actionable; the cut-offs are a percentile of the whole index (95th by default) with
+floors — fan-in 5, 50 own lines, 200 reached lines at twice the function's size — so a
+small codebase's ordinary functions are not called hotspots. Cycles, hubs, heavy entry
+points and large leaves show the top 20 each; the unreachable and test-only lists are
+complete, since a partial list of dead code is the less useful kind. The precision
+ledger's least-certain list shows the 50 functions with the most ambiguous and
+unresolved sites (`ReportOptions::least_certain_n`), ties broken by path. When the
+configuration builds tests, test-gated functions (`cfg(test)`, or a test path outside
+Rust) are entry points a test runner calls, so they are never listed as unreachable.
+
+`--seam-call-tree` prints one function's tree: own and inclusive lines per row, call-site
+counts, and each function expanded once with later appearances marked. Both take
+`--seam-format md|json` (Markdown by default), `--seam-config`, and `--include-tests`.
+
+> These are unstable automation surfaces: the output shape may change between major
 > versions without notice.
 
 ## Calls
@@ -521,7 +580,7 @@ instead of rendering an empty tree.
 | [`karet-treesitter`](../crates/karet-treesitter) | `SyntaxTree::walk`, the neutral traversal facet extraction is built on |
 | [`karet-widgets`](../crates/karet-widgets) | the cascading-column navigator, seam-agnostic |
 | [`karet-session`](../crates/karet-session) | owns the index on a worker; `Command`/`Event` seam |
-| [`karet`](../crates/karet) | the view, the keymap, and `--seam-query` |
+| [`karet`](../crates/karet) | the view, the keymap, `--seam-query`, `--seam-report` and `--seam-call-tree` |
 
 Containment is a tree and everything else is an edge; the two are never merged, in the
 model or the UI. Facts arrive in tiers: the **structural** tier is synchronous and always
@@ -567,6 +626,7 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Workspace / multi-package / nested-crate discovery | ✅ shipped |
 | Choosing a start point | ✅ shipped |
 | Call edges, own/inclusive/tree-weighted lines, `reach:`/`callers:` | ✅ shipped |
+| `--seam-report` structural report, `--seam-call-tree` | ✅ shipped |
 | Calls and measures in the facet pane | 🧭 designed |
 | Manifest-derived feature/target configurations | 🧭 designed — needs `dependable-core` 0.2.0 |
 | Semantic-tier edge resolution via rust-analyzer | 🧭 designed — `karet-lsp` requests are in place |
