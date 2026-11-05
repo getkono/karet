@@ -33,7 +33,7 @@ use crate::model::Visibility;
 /// One function singled out, with the number that singled it out and the evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Hotspot {
+pub struct CallHotspot {
     /// The function's identity.
     pub path: String,
     /// The file it is written in.
@@ -51,7 +51,7 @@ pub struct Hotspot {
 /// One group of functions calling one another.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Cycle {
+pub struct CallCycle {
     /// Every member, by identity.
     pub members: Vec<String>,
     /// One concrete path from the first member back to itself.
@@ -63,19 +63,19 @@ pub struct Cycle {
 /// Every hotspot list.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Hotspots {
+pub struct CallHotspots {
     /// Groups of functions calling one another, largest first.
-    pub cycles: Vec<Cycle>,
+    pub cycles: Vec<CallCycle>,
     /// Functions with the most callers.
-    pub hubs: Vec<Hotspot>,
+    pub hubs: Vec<CallHotspot>,
     /// Entry points reaching far more code than they hold.
-    pub heavy_entry_points: Vec<Hotspot>,
+    pub heavy_entry_points: Vec<CallHotspot>,
     /// Long functions that call nothing here.
-    pub large_leaves: Vec<Hotspot>,
+    pub large_leaves: Vec<CallHotspot>,
     /// Non-public functions nothing calls.
-    pub unreachable: Vec<Hotspot>,
+    pub unreachable: Vec<CallHotspot>,
     /// Non-public functions only tests call.
-    pub test_only: Vec<Hotspot>,
+    pub test_only: Vec<CallHotspot>,
 }
 
 /// Names that are entry points by convention, called by a runtime rather than by code.
@@ -86,7 +86,7 @@ pub(super) fn find(
     measured: &[&FunctionMetrics],
     testing: &CallGraph,
     test_gated: &HashSet<SeamId>,
-) -> Hotspots {
+) -> CallHotspots {
     let top = context.options.top_n;
     let thresholds = context.thresholds;
     let mut hubs: Vec<&FunctionMetrics> = measured
@@ -163,7 +163,7 @@ pub(super) fn find(
         });
     }
 
-    Hotspots {
+    CallHotspots {
         cycles: cycles(context, measured),
         hubs: hubs
             .into_iter()
@@ -286,7 +286,7 @@ fn visibility(context: &Context<'_>, id: SeamId) -> Option<Visibility> {
     super::visibility_of(context.index, id)
 }
 
-fn spot(context: &Context<'_>, m: &FunctionMetrics, value: u64, why: String) -> Hotspot {
+fn spot(context: &Context<'_>, m: &FunctionMetrics, value: u64, why: String) -> CallHotspot {
     let node = context.index.node(m.id);
     let excerpt = call_tree(
         context.index,
@@ -300,7 +300,7 @@ fn spot(context: &Context<'_>, m: &FunctionMetrics, value: u64, why: String) -> 
     )
     .map(|tree| tree.render())
     .unwrap_or_default();
-    Hotspot {
+    CallHotspot {
         path: path_of(context.index, m.id),
         file: node
             .and_then(|node| context.index.file_path(node.location.file))
@@ -317,7 +317,7 @@ fn spot(context: &Context<'_>, m: &FunctionMetrics, value: u64, why: String) -> 
 ///
 /// Grouped over the whole graph, not the scope: a cycle half inside it is still a whole
 /// cycle, and showing only its in-scope half would show no cycle at all.
-fn cycles(context: &Context<'_>, measured: &[&FunctionMetrics]) -> Vec<Cycle> {
+fn cycles(context: &Context<'_>, measured: &[&FunctionMetrics]) -> Vec<CallCycle> {
     let touched: HashSet<u32> = measured
         .iter()
         .filter(|m| m.scc_size > 1)
@@ -332,13 +332,13 @@ fn cycles(context: &Context<'_>, measured: &[&FunctionMetrics]) -> Vec<Cycle> {
     {
         groups.entry(m.scc).or_default().push(m);
     }
-    let mut out: Vec<Cycle> = groups
+    let mut out: Vec<CallCycle> = groups
         .into_values()
         .filter_map(|mut members| {
             members.sort_by_key(|m| path_of(context.index, m.id));
             let ids: HashSet<SeamId> = members.iter().map(|m| m.id).collect();
             let start = members.first()?.id;
-            Some(Cycle {
+            Some(CallCycle {
                 path: cycle_path(context.graph, start, &ids)
                     .into_iter()
                     .map(|id| path_of(context.index, id))

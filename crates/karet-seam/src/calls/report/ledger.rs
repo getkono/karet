@@ -46,7 +46,7 @@ pub struct LanguageLedger {
 /// A function whose numbers rest most on guesswork.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Uncertain {
+pub struct UncertainCall {
     /// The function.
     pub path: String,
     /// Its sites.
@@ -65,7 +65,7 @@ pub struct PrecisionLedger {
     pub languages: Vec<LanguageLedger>,
     /// The functions with the most uncertain sites, most first, then by path; at most
     /// [`ReportOptions::least_certain_n`](super::ReportOptions::least_certain_n) of them.
-    pub least_certain: Vec<Uncertain>,
+    pub least_certain: Vec<UncertainCall>,
     /// Calls made outside any function — at module level, in initializers — which no
     /// function's numbers include. Counted over the whole index, whatever the scope.
     pub loose_sites: u64,
@@ -129,7 +129,7 @@ pub(super) fn account(
             }
         }
         if ambiguous + unresolved > 0 {
-            least_certain.push(Uncertain {
+            least_certain.push(UncertainCall {
                 path: path_of(index, function.id),
                 sites,
                 ambiguous,

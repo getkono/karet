@@ -64,7 +64,7 @@ pub struct InternalReach {
 /// A function that calls into one other module more than into its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Envy {
+pub struct FeatureEnvy {
     /// The function.
     pub function: String,
     /// Its call sites into its own module.
@@ -86,7 +86,7 @@ pub struct ModuleCoupling {
     /// Cross-module calls into non-public items.
     pub internal_reach: Vec<InternalReach>,
     /// Functions leaning on another module more than their own.
-    pub envious: Vec<Envy>,
+    pub envious: Vec<FeatureEnvy>,
 }
 
 /// A function calling into another module this many times is worth naming when it
@@ -161,7 +161,7 @@ pub(super) fn measure(
             && *calls >= ENVY_MINIMUM
             && *calls > own
         {
-            envious.push(Envy {
+            envious.push(FeatureEnvy {
                 function: path_of(index, function.id),
                 own_calls: own,
                 other: path_of(index, *other),

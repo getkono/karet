@@ -10,9 +10,9 @@
 
 use std::fmt::Write as _;
 
+use super::CallHotspot;
 use super::CallReport;
 use super::FunctionRow;
-use super::Hotspot;
 
 impl CallReport {
     /// The report as Markdown.
@@ -263,7 +263,7 @@ impl CallReport {
     }
 }
 
-fn write_spot(out: &mut String, spot: &Hotspot) {
+fn write_spot(out: &mut String, spot: &CallHotspot) {
     let _ = writeln!(
         out,
         "- **{}** ({}:{}) — {}\n\n  ```text\n{}  ```\n",

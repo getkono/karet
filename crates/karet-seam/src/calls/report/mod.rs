@@ -7,7 +7,7 @@
 //!
 //! Unlike the seam view, which deliberately never ranks, a report ranks: that is what
 //! makes it short enough to act on. The cut-offs are recorded in the report itself
-//! ([`Thresholds`]) so a reader can see exactly what "large" meant here.
+//! ([`ReportThresholds`]) so a reader can see exactly what "large" meant here.
 //!
 //! Everything is computed under one configuration — by default the one that leaves test
 //! code out — and over a scope, which is any node set a query selected.
@@ -24,17 +24,17 @@ mod tests;
 
 use std::collections::HashSet;
 
-pub use coupling::Envy;
+pub use coupling::FeatureEnvy;
 pub use coupling::InternalReach;
 pub use coupling::ModuleCoupling;
 pub use coupling::ModuleEdge;
 pub use coupling::ModuleRow;
-pub use hotspots::Cycle;
-pub use hotspots::Hotspot;
-pub use hotspots::Hotspots;
+pub use hotspots::CallCycle;
+pub use hotspots::CallHotspot;
+pub use hotspots::CallHotspots;
 pub use ledger::LanguageLedger;
 pub use ledger::PrecisionLedger;
-pub use ledger::Uncertain;
+pub use ledger::UncertainCall;
 
 use super::graph::CallGraph;
 use super::graph::FunctionMetrics;
@@ -75,7 +75,7 @@ impl Default for ReportOptions {
 /// The cut-offs a report actually used, so a reader can see what "large" meant.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Thresholds {
+pub struct ReportThresholds {
     /// At most this many entries per hotspot list.
     pub top_n: usize,
     /// At most this many entries in the precision ledger's least-certain list.
@@ -95,7 +95,7 @@ pub struct Thresholds {
 /// Counts over the whole scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Summary {
+pub struct ReportSummary {
     /// Functions measured.
     pub functions: usize,
     /// Their own code lines, summed.
@@ -190,11 +190,11 @@ pub struct CallReport {
     /// The configuration everything was measured under.
     pub configuration: String,
     /// The cut-offs the rankings used.
-    pub thresholds: Thresholds,
+    pub thresholds: ReportThresholds,
     /// Counts over the scope.
-    pub summary: Summary,
+    pub summary: ReportSummary,
     /// Where structure is most likely to need attention, with evidence.
-    pub hotspots: Hotspots,
+    pub hotspots: CallHotspots,
     /// How modules depend on one another through calls.
     pub coupling: ModuleCoupling,
     /// How much of every number is established, and how much is a bound.
@@ -290,7 +290,7 @@ pub(crate) struct Context<'a> {
     pub(crate) index: &'a SeamIndex,
     pub(crate) graph: &'a CallGraph,
     pub(crate) options: &'a ReportOptions,
-    pub(crate) thresholds: &'a Thresholds,
+    pub(crate) thresholds: &'a ReportThresholds,
 }
 
 /// A function's identity as text.
@@ -349,7 +349,7 @@ fn row(index: &SeamIndex, metrics: &FunctionMetrics) -> FunctionRow {
 }
 
 /// Counts over the scope.
-fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> Summary {
+fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> ReportSummary {
     let modules: HashSet<SeamId> = measured
         .iter()
         .filter_map(|m| module_of(index, m.id))
@@ -363,7 +363,7 @@ fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> Summary {
         .filter(|m| m.scc_size > 1)
         .map(|m| m.scc)
         .collect();
-    Summary {
+    ReportSummary {
         functions: measured.len(),
         code_lines: measured.iter().map(|m| u64::from(m.code_lines)).sum(),
         modules: modules.len(),
@@ -391,7 +391,7 @@ pub(crate) fn percentile(mut values: Vec<f64>, percentile: f64) -> f64 {
 
 /// The cut-offs: a percentile of every function, never below a floor that keeps a small
 /// codebase from calling its median function a hotspot.
-fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> Thresholds {
+fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> ReportThresholds {
     let p = options.percentile;
     let fan_in = percentile(measured.iter().map(|m| f64::from(m.fan_in)).collect(), p);
     let leaf = percentile(
@@ -410,7 +410,7 @@ fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> Thresho
             .collect(),
         p,
     );
-    Thresholds {
+    ReportThresholds {
         top_n: options.top_n,
         least_certain_n: options.least_certain_n,
         percentile: p,

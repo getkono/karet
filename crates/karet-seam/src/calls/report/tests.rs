@@ -69,7 +69,7 @@ fn small() -> ReportOptions {
     ReportOptions::default()
 }
 
-fn names(spots: &[Hotspot]) -> Vec<&str> {
+fn names(spots: &[CallHotspot]) -> Vec<&str> {
     spots.iter().map(|spot| spot.path.as_str()).collect()
 }
 
