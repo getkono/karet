@@ -16,6 +16,7 @@ mod markdown_images;
 mod osc8;
 mod panes;
 mod rename;
+mod reservation;
 mod scm;
 mod seam;
 mod secondary;

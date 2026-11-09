@@ -582,6 +582,7 @@ fn dragging_the_explorer_rename_field_selects_within_the_name() {
     let mut app = App::new(dir, Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.keyboard.focus_sidebar();
+    build_explorer_from_disk(&mut app);
     screen(&mut app, 80, 24);
     app.dispatch(Command::ExplorerRename);
     screen(&mut app, 80, 24);

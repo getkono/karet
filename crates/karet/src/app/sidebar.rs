@@ -236,7 +236,7 @@ impl App {
     pub(super) fn sidebar_move(&mut self, delta: i32) {
         match self.sidebar_panel {
             SidebarPanel::Explorer => {
-                self.explorer.ensure_built(&self.root);
+                self.build_explorer();
                 if delta > 0 {
                     self.explorer.select_next();
                 } else {
@@ -364,7 +364,7 @@ impl App {
     /// click previews and focuses; Enter / double-click materializes). A directory
     /// row toggles its expansion.
     pub(super) fn explorer_preview_with_focus(&mut self) {
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         if let Some(row) = self.explorer.selected() {
             let path = row.path.clone();
             if row.is_dir {
@@ -398,7 +398,7 @@ impl App {
         if self.sidebar_panel != SidebarPanel::Explorer {
             return;
         }
-        self.explorer.ensure_built(&self.root);
+        self.build_explorer();
         let Some(row) = self.explorer.selected() else {
             return;
         };
@@ -470,8 +470,7 @@ impl App {
         // The workspace root itself has no row (the tree lists its children): just
         // show and focus the Explorer without disturbing the selection.
         if same_path(path, &self.root) {
-            let root = self.root.clone();
-            self.explorer.ensure_built(&root);
+            self.build_explorer();
             self.sidebar_panel = SidebarPanel::Explorer;
             self.sidebar_visible = true;
             self.keyboard.focus_sidebar();
@@ -491,23 +490,47 @@ impl App {
             }
             self.explorer.expand(anc);
         }
-        if path.is_dir() {
-            self.explorer.expand(path);
+        // A directory the tree already knows about is expanded so its contents
+        // come with it; one it has not heard of expands when its listing lands.
+        self.explorer.expand(path);
+        // The row may not exist yet: revealing a deep path needs a listing per
+        // level, and those arrive from the backend one answer at a time. Remember
+        // the target and finish the reveal as the tree fills in.
+        self.pending_reveal = Some(path.to_path_buf());
+        self.build_explorer();
+        self.finish_reveal();
+    }
+
+    /// Select the revealed row, once the tree has a row to select.
+    ///
+    /// Called after every rebuild. The Explorer is shown and focused only on
+    /// success: a path that turns out not to be in the tree must not steal focus
+    /// on its way to reporting itself, and with listings arriving level by level
+    /// "not there" is not knowable up front.
+    ///
+    /// Gives up only once the tree has stopped waiting on directories, so a
+    /// genuinely absent path reports itself rather than waiting forever.
+    pub(super) fn finish_reveal(&mut self) {
+        let Some(path) = self.pending_reveal.clone() else {
+            return;
+        };
+        if let Some(idx) = self.explorer_row_index(&path) {
+            self.pending_reveal = None;
+            self.explorer.select_index(idx);
+            self.sidebar_panel = SidebarPanel::Explorer;
+            self.sidebar_visible = true;
+            self.keyboard.focus_sidebar();
+            return;
         }
-        self.explorer.ensure_built(&root);
-        let Some(idx) = self.explorer_row_index(path) else {
+        if self.pending_listings.is_empty() && !self.explorer.is_waiting() {
+            self.pending_reveal = None;
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
             self.notify(
                 Report::Refusal,
                 NotificationKind::Io,
                 format!("reveal: {name} is not in the explorer"),
             );
-            return;
-        };
-        self.explorer.select_index(idx);
-        self.sidebar_panel = SidebarPanel::Explorer;
-        self.sidebar_visible = true;
-        self.keyboard.focus_sidebar();
+        }
     }
 
     /// The explorer row index for `path`: an exact row match (files, plain

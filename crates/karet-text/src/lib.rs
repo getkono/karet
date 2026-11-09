@@ -185,6 +185,21 @@ impl TextBuffer {
         self.version
     }
 
+    /// Set the version this buffer reports, for a buffer standing in for a
+    /// document whose authoritative version lives elsewhere.
+    ///
+    /// A buffer normally owns its version: it starts at zero and counts its own
+    /// edits. A **replica** does not. The document it mirrors is numbered by
+    /// whoever holds it, changes arrive expressed against those numbers, and a
+    /// replica rebuilt from a full copy of the text would otherwise start
+    /// counting from its own zero and refuse every change that followed.
+    ///
+    /// Only meaningful on a replica. Moving an authoritative buffer's version
+    /// would invalidate the changes its own consumers already built against it.
+    pub fn set_version(&mut self, version: u64) {
+        self.version = version;
+    }
+
     /// Whether the buffer has unsaved changes relative to the last save point.
     ///
     /// Compares a hash of the current text with the hash taken at the last save
@@ -493,6 +508,10 @@ fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::Change;
+    use karet_core::Range;
+    use karet_core::TextEdit;
+
     use super::*;
 
     #[test]
@@ -512,6 +531,47 @@ mod tests {
         assert_eq!(b.version(), 0);
         assert!(!b.is_dirty());
         assert_eq!(b.len_bytes(), 11);
+    }
+
+    /// A replica numbered by the document it mirrors accepts the change built
+    /// against that number, and counts on from it.
+    #[test]
+    fn a_set_version_is_reported_and_bases_the_next_change() -> Result<(), TextError> {
+        let mut b = TextBuffer::from_text("alpha\n");
+        b.set_version(7);
+        assert_eq!(b.version(), 7);
+        assert_eq!(b.content_snapshot().version(), 7);
+
+        let change = Change::new(
+            7,
+            vec![TextEdit {
+                range: Range::new(LineCol { line: 0, col: 5 }, LineCol { line: 0, col: 5 }),
+                new_text: "x".to_owned(),
+            }],
+        );
+        b.apply(&change, EditContext::default())?;
+
+        assert_eq!(b.version(), 8);
+        assert_eq!(b.text(), "alphax\n");
+        Ok(())
+    }
+
+    /// A change built against the buffer's own count is refused once the
+    /// version was moved: the number, not the edit count, is authoritative.
+    #[test]
+    fn a_change_against_the_version_before_it_was_set_is_refused() {
+        let mut b = TextBuffer::from_text("alpha\n");
+        b.set_version(7);
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range::new(LineCol { line: 0, col: 0 }, LineCol { line: 0, col: 0 }),
+                new_text: "x".to_owned(),
+            }],
+        );
+
+        assert!(b.apply(&change, EditContext::default()).is_err());
+        assert_eq!(b.text(), "alpha\n");
     }
 
     #[test]

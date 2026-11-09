@@ -75,6 +75,7 @@ mod diff_prepare;
 pub mod dirs;
 mod editorconfig;
 mod event_tx;
+mod fs_worker;
 mod highlight;
 mod latex;
 mod local;
@@ -84,6 +85,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+pub mod remote;
 mod scan_walk;
 mod seam_cache;
 mod seam_worker;

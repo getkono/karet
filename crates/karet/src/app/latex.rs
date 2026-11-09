@@ -74,9 +74,17 @@ impl App {
             && let Some(index) = self.tabs.iter().position(|tab| tab.view == view)
         {
             if let Some(pdf) = pdf {
-                let mut tab = Tab::open(&pdf);
+                // A read of the previous build's PDF may still be streaming; the
+                // build has rewritten the file under it, so its remaining
+                // chunks would splice the new bytes onto the old. Abandoning it
+                // lets the new reservation read the file afresh.
+                self.forget_content_requests(&pdf);
+                let mut tab = self.open_tab(&pdf);
                 tab.view = view;
                 self.tabs[index] = tab;
+                // The tab is only a reservation: asking for its content is what
+                // fetches the PDF's bytes and renders the preview.
+                self.register_doc(index);
                 self.set_active(index);
                 self.notify(
                     Report::Outcome,

@@ -232,7 +232,7 @@ fn double_click_promotes_the_preview_tab_without_duplicating_it() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     app.explorer.select_visible(
         app.explorer
             .rows()
@@ -369,7 +369,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.keyboard.focus_sidebar();
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let a_idx = explorer_row_index(&app, "a.rs");
     let b_idx = explorer_row_index(&app, "b.rs");
     app.explorer.select_index(a_idx);
@@ -414,7 +414,7 @@ fn wheel_scrolling_the_explorer_moves_selection_without_previewing() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.keyboard.focus_sidebar();
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     let before = app.explorer.cursor();
 
     // A wheel notch moves the selection but must not open anything —
@@ -438,7 +438,7 @@ fn arrowing_onto_a_directory_row_leaves_the_editor_untouched() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.keyboard.focus_sidebar();
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     // Preview a.rs first, then arrow onto the `sub` directory row.
     let a_idx = explorer_row_index(&app, "a.rs");
     app.explorer.select_index(a_idx);
@@ -471,7 +471,7 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
     app.keyboard.focus_sidebar();
-    app.explorer.ensure_built(&dir);
+    build_explorer_from_disk(&mut app);
     // b.rs is open as a permanent tab (not a preview).
     app.open_path(&dir.join("b.rs"));
     assert!(!app.tabs[0].is_preview);
