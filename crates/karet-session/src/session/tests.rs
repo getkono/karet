@@ -13,6 +13,7 @@ include!("tests/search_replace.rs");
 include!("tests/spelling.rs");
 include!("tests/lsp_updates.rs");
 include!("tests/seam.rs");
+include!("tests/seam_calls.rs");
 include!("tests/format_on_save.rs");
 include!("tests/will_save.rs");
 include!("tests/undo_save.rs");

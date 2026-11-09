@@ -536,9 +536,10 @@ impl App {
             SessionEvent::SeamNodeDetail {
                 node,
                 edges,
+                metrics,
                 preview,
             } => {
-                self.on_seam_node_detail(id, node, edges, preview);
+                self.on_seam_node_detail(id, node, edges, metrics, preview);
             },
             SessionEvent::SearchProgress {
                 hits,
