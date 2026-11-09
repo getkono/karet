@@ -14,6 +14,7 @@ categories.workspace   = true
 publish = false
 
 [dependencies]
+karet-vcs.workspace = true            # the shared remote-URL parser GitHubRemote builds on
 reqwest.workspace = true
 bytes.workspace = true
 secrecy.workspace = true

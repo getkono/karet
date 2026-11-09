@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use super::display_path;
 use super::list_files;
-use crate::app::Pending;
+use crate::pending::Pending;
 
 /// One finished walk of a workspace.
 #[derive(Debug)]

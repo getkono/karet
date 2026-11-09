@@ -413,6 +413,17 @@ mod tests {
     }
 
     #[test]
+    fn a_key_declared_enumerated_without_a_value_is_false_for_every_value() -> Result<(), CfgError>
+    {
+        // Enumerated but valueless: no value of the key can hold, so the gate is
+        // decided rather than left unknown like an unlisted key.
+        let env = CfgEnv::new().with_known_flags(["target_os".to_owned()]);
+        assert_eq!(env.eval(&parse("target_os = \"linux\"")?), Truth::False);
+        assert_eq!(env.eval(&parse("target_env = \"gnu\"")?), Truth::Unknown);
+        Ok(())
+    }
+
+    #[test]
     fn unknown_propagates_through_a_nested_predicate() -> Result<(), CfgError> {
         let env = CfgEnv::new()
             .with_features(["view".to_owned()])

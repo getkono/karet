@@ -42,7 +42,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::connection::Outbound;
+use crate::actor::Outbound;
 use crate::message;
 use crate::message::ResponseError;
 

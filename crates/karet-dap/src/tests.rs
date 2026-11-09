@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use karet_lsp::codec;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;
@@ -13,6 +13,8 @@ use tokio::io::AsyncWrite;
 use tokio::io::BufReader;
 
 use super::*;
+
+mod connect;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -27,8 +29,9 @@ struct AdapterScript {
     launch_after_configuration_done: bool,
 }
 
-/// The commands the fake adapter received, in order.
-type Log = Arc<Mutex<Vec<String>>>;
+/// The requests the fake adapter received, in order: each command with its
+/// `arguments` (`Value::Null` when the request carried none).
+type Log = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn spawn_fake_adapter(script: AdapterScript) -> (DapClient, Log) {
     let (client_end, server_end) = tokio::io::duplex(1 << 20);
@@ -61,7 +64,8 @@ where
             .unwrap_or_default()
             .to_owned();
         if let Ok(mut log) = log.lock() {
-            log.push(command.clone());
+            let arguments = msg.get("arguments").cloned().unwrap_or(Value::Null);
+            log.push((command.clone(), arguments));
         }
         let respond = |seq: &mut i64, body: Value| {
             let mut response = json!({
@@ -162,6 +166,41 @@ where
                 );
                 write_msg(&mut write, &frame).await;
             },
+            // Each inspection reply mixes a complete entry with one missing
+            // every optional field, so the client's defaulting is pinned.
+            "threads" => {
+                let frame = respond(
+                    &mut seq,
+                    json!({"threads": [
+                        {"id": 1, "name": "main"},
+                        {"id": 2},
+                        {"name": "no id: dropped"},
+                    ]}),
+                );
+                write_msg(&mut write, &frame).await;
+            },
+            "scopes" => {
+                let frame = respond(
+                    &mut seq,
+                    json!({"scopes": [
+                        {"name": "Locals", "variablesReference": 7, "expensive": false},
+                        {"name": "Globals", "variablesReference": 8, "expensive": true},
+                        {},
+                    ]}),
+                );
+                write_msg(&mut write, &frame).await;
+            },
+            "variables" => {
+                let frame = respond(
+                    &mut seq,
+                    json!({"variables": [
+                        {"name": "x", "value": "1", "type": "i32", "variablesReference": 0},
+                        {"name": "v", "value": "Vec(2)", "variablesReference": 9},
+                        {},
+                    ]}),
+                );
+                write_msg(&mut write, &frame).await;
+            },
             "evaluate" => {
                 let bad = msg
                     .get("arguments")
@@ -218,7 +257,23 @@ async fn write_msg<W: AsyncWrite + Unpin>(write: &mut W, msg: &Value) {
 }
 
 fn commands(log: &Log) -> Vec<String> {
+    requests(log)
+        .into_iter()
+        .map(|(command, _)| command)
+        .collect()
+}
+
+fn requests(log: &Log) -> Vec<(String, Value)> {
     log.lock().map(|log| log.clone()).unwrap_or_default()
+}
+
+/// The arguments of the last `command` the fake adapter received.
+fn last_arguments(log: &Log, command: &str) -> Option<Value> {
+    requests(log)
+        .into_iter()
+        .rev()
+        .find(|(c, _)| c == command)
+        .map(|(_, arguments)| arguments)
 }
 
 fn full_script() -> AdapterScript {
@@ -320,13 +375,15 @@ async fn inspection_converts_positions_and_rejections_surface() -> TestResult {
     client.start(StartConfig::default(), &[]).await?;
     let stack = client.stack_trace(1).await?;
     assert_eq!(stack.len(), 1);
+    assert_eq!(stack[0].id, FrameId(41));
     assert_eq!(stack[0].line, 9, "wire line 10 → 0-based 9");
     assert_eq!(
         stack[0].source_path.as_deref(),
         Some(Path::new("/w/main.rs"))
     );
-    let ok = client.evaluate("1 + 41", Some(41)).await?;
+    let ok = client.evaluate("1 + 41", Some(FrameId(41))).await?;
     assert_eq!(ok.result, "42");
+    assert_eq!(ok.variables_reference, VariablesRef::NONE);
     let err = client.evaluate("boom", None).await;
     assert!(
         matches!(err, Err(DapError::Adapter(ref m)) if m.contains("invalid expression")),
@@ -337,19 +394,133 @@ async fn inspection_converts_positions_and_rejections_surface() -> TestResult {
 
 #[tokio::test]
 async fn disconnect_gates_terminate_debuggee_on_the_capability() -> TestResult {
-    // Advertised: the flag goes on the wire.
-    let (mut client, log) = spawn_fake_adapter(full_script());
-    client.initialize("fake").await?;
-    client.disconnect(true).await?;
-    assert!(commands(&log).contains(&"disconnect".to_owned()));
+    // Advertised: the caller's choice goes on the wire verbatim, either way.
+    for terminate in [true, false] {
+        let (mut client, log) = spawn_fake_adapter(full_script());
+        client.initialize("fake").await?;
+        client.disconnect(terminate).await?;
+        assert_eq!(
+            last_arguments(&log, "disconnect"),
+            Some(json!({ "terminateDebuggee": terminate })),
+        );
+    }
 
-    // Not advertised: disconnect is still sent, without the flag (the fake
-    // can't observe arguments through the log, so assert via a scripted
-    // arguments check instead: the bare adapter still answers success).
+    // Not advertised: disconnect is still sent, but without the flag, even
+    // when the caller asked to terminate.
     let (mut client, log) = spawn_fake_adapter(AdapterScript::default());
     client.initialize("fake").await?;
     client.disconnect(true).await?;
-    assert!(commands(&log).contains(&"disconnect".to_owned()));
+    assert_eq!(last_arguments(&log, "disconnect"), Some(json!({})));
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_controls_send_their_command_for_the_given_thread() -> TestResult {
+    let (mut client, log) = spawn_fake_adapter(full_script());
+    client.initialize("fake").await?;
+    client.resume(1).await?;
+    client.step_over(2).await?;
+    client.step_in(3).await?;
+    client.step_out(4).await?;
+    client.pause(5).await?;
+    let sent: Vec<(String, Value)> = requests(&log).into_iter().skip(1).collect();
+    let expected: Vec<(String, Value)> = [
+        ("continue", 1),
+        ("next", 2),
+        ("stepIn", 3),
+        ("stepOut", 4),
+        ("pause", 5),
+    ]
+    .into_iter()
+    .map(|(command, thread)| (command.to_owned(), json!({ "threadId": thread })))
+    .collect();
+    assert_eq!(sent, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn threads_drop_entries_without_an_id_and_default_the_name() -> TestResult {
+    let (mut client, log) = spawn_fake_adapter(full_script());
+    client.initialize("fake").await?;
+    let threads = client.threads().await?;
+    assert_eq!(
+        threads,
+        [
+            Thread {
+                id: 1,
+                name: "main".to_owned(),
+            },
+            Thread {
+                id: 2,
+                name: String::new(),
+            },
+        ]
+    );
+    assert_eq!(
+        last_arguments(&log, "threads"),
+        Some(Value::Null),
+        "threads takes no arguments"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn scopes_request_the_frame_and_default_missing_fields() -> TestResult {
+    let (mut client, log) = spawn_fake_adapter(full_script());
+    client.initialize("fake").await?;
+    let scopes = client.scopes(FrameId(41)).await?;
+    assert_eq!(last_arguments(&log, "scopes"), Some(json!({"frameId": 41})));
+    let got: Vec<(&str, i64, bool)> = scopes
+        .iter()
+        .map(|s| (s.name.as_str(), s.variables_reference.0, s.expensive))
+        .collect();
+    assert_eq!(
+        got,
+        [("Locals", 7, false), ("Globals", 8, true), ("", 0, false)]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn variables_request_the_reference_and_default_missing_fields() -> TestResult {
+    let (mut client, log) = spawn_fake_adapter(full_script());
+    client.initialize("fake").await?;
+    let variables = client.variables(VariablesRef(7)).await?;
+    assert_eq!(
+        last_arguments(&log, "variables"),
+        Some(json!({"variablesReference": 7}))
+    );
+    let field = |name: &str, value: &str, ty: Option<&str>, reference| DebugVariable {
+        name: name.to_owned(),
+        value: value.to_owned(),
+        ty: ty.map(str::to_owned),
+        variables_reference: VariablesRef(reference),
+    };
+    assert_eq!(
+        variables,
+        [
+            field("x", "1", Some("i32"), 0),
+            field("v", "Vec(2)", None, 9),
+            field("", "", None, 0),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn evaluate_sends_the_frame_only_when_given() -> TestResult {
+    let (mut client, log) = spawn_fake_adapter(full_script());
+    client.initialize("fake").await?;
+    client.evaluate("a", Some(FrameId(41))).await?;
+    assert_eq!(
+        last_arguments(&log, "evaluate"),
+        Some(json!({"expression": "a", "context": "repl", "frameId": 41}))
+    );
+    client.evaluate("b", None).await?;
+    assert_eq!(
+        last_arguments(&log, "evaluate"),
+        Some(json!({"expression": "b", "context": "repl"}))
+    );
     Ok(())
 }
 
@@ -369,21 +540,72 @@ async fn a_dead_adapter_fails_requests_and_synthesizes_terminated() -> TestResul
 
 #[test]
 fn port_substitution_replaces_every_occurrence() {
-    let spec = DapSpec {
-        command: "codelldb".to_owned(),
-        args: vec![
-            "--port".to_owned(),
-            "${port}".to_owned(),
-            "--x=${port}".to_owned(),
-        ],
-        transport: DapTransport::Tcp,
-    };
-    let substituted: Vec<String> = spec
-        .args
-        .iter()
-        .map(|arg| arg.replace("${port}", "4711"))
-        .collect();
-    assert_eq!(substituted, ["--port", "4711", "--x=4711"]);
+    let args: Vec<String> = ["--port", "${port}", "--x=${port}:${port}", "plain"]
+        .map(str::to_owned)
+        .into();
+    assert_eq!(
+        substitute_port(&args, 4711),
+        ["--port", "4711", "--x=4711:4711", "plain"]
+    );
+    assert!(substitute_port(&[], 4711).is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_adapter_executable_is_a_launch_error() {
+    let missing = "karet-dap-test-no-such-adapter";
+    for transport in [DapTransport::Stdio, DapTransport::Tcp] {
+        let spec = DapSpec {
+            command: missing.to_owned(),
+            args: vec!["--port".to_owned(), "${port}".to_owned()],
+            transport,
+        };
+        let got = DapClient::spawn(&spec).await;
+        assert!(
+            matches!(got, Err(DapError::Launch(_))),
+            "{transport:?}: {:?}",
+            got.err()
+        );
+    }
+    let got = DapClient::spawn_tcp(tokio::process::Command::new(missing), 1).await;
+    assert!(matches!(got, Err(DapError::Launch(_))), "{:?}", got.err());
+}
+
+#[tokio::test]
+async fn spawn_with_hands_prepare_the_spec_and_propagates_its_error() -> TestResult {
+    // Stdio passes the spec through verbatim (`${port}` is only a TCP
+    // placeholder); TCP substitutes a real port into every occurrence. A
+    // failing `prepare` aborts the launch with its own error, untouched.
+    for transport in [DapTransport::Stdio, DapTransport::Tcp] {
+        let spec = DapSpec {
+            command: "adapter".to_owned(),
+            args: vec!["--port".to_owned(), "${port}".to_owned()],
+            transport,
+        };
+        let mut seen = None;
+        let got = DapClient::spawn_with(&spec, |given| {
+            seen = Some(given.clone());
+            Err(DapError::Launch("prepare refused".to_owned()))
+        })
+        .await;
+        assert!(
+            matches!(&got, Err(DapError::Launch(m)) if m == "prepare refused"),
+            "{transport:?}: {:?}",
+            got.err()
+        );
+        let seen = seen.ok_or("prepare never ran")?;
+        assert_eq!(seen.command, "adapter");
+        assert_eq!(seen.transport, transport);
+        assert_eq!(seen.args[0], "--port");
+        match transport {
+            DapTransport::Stdio => assert_eq!(seen.args[1], "${port}"),
+            DapTransport::Tcp => assert!(
+                seen.args[1].parse::<u16>().is_ok_and(|port| port != 0),
+                "{:?}",
+                seen.args
+            ),
+        }
+    }
+    Ok(())
 }
 
 #[test]

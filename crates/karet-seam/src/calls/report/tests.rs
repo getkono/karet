@@ -69,7 +69,7 @@ fn small() -> ReportOptions {
     ReportOptions::default()
 }
 
-fn names(spots: &[Hotspot]) -> Vec<&str> {
+fn names(spots: &[CallHotspot]) -> Vec<&str> {
     spots.iter().map(|spot| spot.path.as_str()).collect()
 }
 
@@ -221,12 +221,83 @@ fn including_tests_is_said_in_the_configuration_and_empties_test_only() -> TestR
         &small(),
     );
     assert!(
-        report.configuration.ends_with(" + test"),
+        report.configuration.ends_with(" + tests"),
         "{}",
         report.configuration
     );
     assert!(report.hotspots.test_only.is_empty());
-    assert!(!names(&report.hotspots.unreachable).contains(&"k::only_tested"));
+    // A test function has no caller in code — its runner calls it — so it is not dead.
+    assert_eq!(names(&report.hotspots.unreachable), ["k::dead", "k::spin"]);
+    assert!(
+        report
+            .functions
+            .iter()
+            .any(|row| row.path == "k::tests::check"),
+        "tests are measured under a test configuration"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_least_certain_list_ranks_by_uncertain_sites_then_path_and_is_capped() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    // `parse` has two candidates (ambiguous) and `nowhere` none (unresolved).
+    let lib = "\
+mod a { pub fn parse() -> u32 { 1 } }
+mod b { pub fn parse() -> u32 { 2 } }
+pub fn both() -> u32 { parse() + nowhere() }
+pub fn guess() -> u32 { parse() }
+pub fn lost() -> u32 { nowhere() }
+pub fn sure() -> u32 { a::parse() }
+";
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"k\"\nversion = \"0.1.0\"\n",
+    )?;
+    std::fs::create_dir_all(dir.path().join("src"))?;
+    std::fs::write(dir.path().join("src/lib.rs"), lib)?;
+    let index = crate::package::index_workspace(dir.path(), IndexOptions::default())?;
+
+    let whole = report(&index, &GraphOptions::default(), &[], &small());
+    let listed: Vec<(&str, usize, usize, usize)> = whole
+        .ledger
+        .least_certain
+        .iter()
+        .map(|u| (u.path.as_str(), u.sites, u.ambiguous, u.unresolved))
+        .collect();
+    // Most uncertain sites first, ties by path; a function with none is not listed.
+    assert_eq!(
+        listed,
+        [
+            ("k::both", 2, 1, 1),
+            ("k::guess", 1, 1, 0),
+            ("k::lost", 1, 0, 1)
+        ]
+    );
+    let rust = whole.ledger.languages.first().ok_or("no language")?;
+    assert_eq!((rust.ambiguous, rust.unresolved), (2, 2), "{rust:?}");
+    assert!(whole.markdown().contains("(at most 50)"));
+
+    let capped = report(
+        &index,
+        &GraphOptions::default(),
+        &[],
+        &ReportOptions {
+            least_certain_n: 2,
+            ..ReportOptions::default()
+        },
+    );
+    let kept: Vec<&str> = capped
+        .ledger
+        .least_certain
+        .iter()
+        .map(|u| u.path.as_str())
+        .collect();
+    assert_eq!(kept, ["k::both", "k::guess"]);
+    assert_eq!(capped.thresholds.least_certain_n, 2);
     Ok(())
 }
 
@@ -503,4 +574,94 @@ fn a_percentile_is_nearest_rank_and_safe_on_nothing() {
     assert!((percentile(values.clone(), 0.95) - 19.0).abs() < f64::EPSILON);
     assert!((percentile(values.clone(), 1.0) - 20.0).abs() < f64::EPSILON);
     assert!((percentile(values, 0.0) - 1.0).abs() < f64::EPSILON);
+}
+
+/// Index a one-file crate `k` with `lib` as its root.
+fn index_lib(lib: &str) -> Result<crate::index::SeamIndex, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"k\"\nversion = \"0.1.0\"\n",
+    )?;
+    std::fs::create_dir_all(dir.path().join("src"))?;
+    std::fs::write(dir.path().join("src/lib.rs"), lib)?;
+    Ok(crate::package::index_workspace(
+        dir.path(),
+        IndexOptions::default(),
+    )?)
+}
+
+#[test]
+fn a_name_written_at_a_too_ambiguous_site_is_not_called_dead() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    // One more `render` than the resolver weighs, so the call counts in neither bound.
+    let mut lib = String::new();
+    for module in 0..=crate::calls::resolve::MAX_CANDIDATES {
+        lib.push_str(&format!("mod m{module} {{ fn render() -> u32 {{ 1 }} }}\n"));
+    }
+    lib.push_str("pub fn draw() -> u32 { render() }\nfn lonely() -> u32 { 0 }\n");
+    let index = index_lib(&lib)?;
+    let report = report(&index, &GraphOptions::default(), &[], &small());
+
+    let rust = report.ledger.languages.first().ok_or("no language")?;
+    assert_eq!(rust.too_ambiguous, 1, "{rust:?}");
+    // Every `render` is plausibly that site's target; `lonely` is still silent.
+    assert_eq!(names(&report.hotspots.unreachable), ["k::lonely"]);
+    assert!(report.hotspots.test_only.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_method_a_contract_declares_is_as_visible_as_the_contract() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    let lib = "\
+mod api {
+    pub trait Framing {
+        fn read_frame(&self) -> u32;
+        fn write_frame(&self) -> u32 { 0 }
+    }
+    trait Hidden {
+        fn secret(&self) -> u32;
+    }
+}
+mod user {
+    pub fn send(framing: &dyn crate::api::Framing) -> u32 {
+        crate::api::Framing::write_frame(framing)
+    }
+}
+";
+    let index = index_lib(lib)?;
+    let report = report(&index, &GraphOptions::default(), &[], &small());
+
+    // A public trait's methods are its API, called or not; a private trait's are not.
+    assert_eq!(
+        names(&report.hotspots.unreachable),
+        ["k::api::Hidden::secret"]
+    );
+    let read = report
+        .functions
+        .iter()
+        .find(|row| row.path == "k::api::Framing::read_frame")
+        .ok_or("no read_frame row")?;
+    assert_eq!(read.visibility.as_deref(), Some("public"));
+    // Calling a public trait's method from another module is no reach into internals.
+    assert!(
+        report
+            .coupling
+            .edges
+            .iter()
+            .any(|e| e.from == "k::user" && e.to == "k::api"),
+        "{:?}",
+        report.coupling.edges
+    );
+    assert!(
+        report.coupling.internal_reach.is_empty(),
+        "{:?}",
+        report.coupling.internal_reach
+    );
+    Ok(())
 }

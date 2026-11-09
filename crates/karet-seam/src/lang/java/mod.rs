@@ -11,7 +11,6 @@
 
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
-use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
@@ -39,7 +38,7 @@ pub fn mapping() -> &'static dyn SeamLanguage {
 /// The grammar this mapping serves, when compiled in.
 #[must_use]
 pub fn language_id() -> Option<LanguageId> {
-    language_id_from_injection_name("java")
+    karet_treesitter::languages::JAVA
 }
 
 /// Declared `public`.
@@ -66,8 +65,8 @@ const UNREAD: &[Lens] = &[
 ];
 
 impl SeamLanguage for Java {
-    fn language(&self) -> LanguageId {
-        language_id().unwrap_or(LanguageId(u16::MAX))
+    fn language(&self) -> Option<LanguageId> {
+        language_id()
     }
 
     fn classify(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classified> {

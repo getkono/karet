@@ -19,10 +19,11 @@ async fn open_served(
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error + Send + Sync>> {
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let opened = await_opened(events).await.ok_or("no Opened")?;
     await_method(observed, "textDocument/didOpen").await?;
@@ -104,18 +105,20 @@ async fn a_restart_reports_a_running_hint_request_unanswered() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     await_method(&mut observed, "textDocument/inlayHint").await?;
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::RustAnalyzer,
-        },
+        }
+        .into(),
     )?;
     let hints = await_hint_answer(&mut events, request)
         .await
@@ -195,10 +198,11 @@ async fn a_lost_connection_reports_a_running_hint_request_unanswered() -> TestRe
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlayHints {
+        LspCommand::InlayHints {
             doc,
             range: whole_first_line(),
-        },
+        }
+        .into(),
     )?;
     let hints = await_hint_answer(&mut events, request)
         .await
@@ -222,7 +226,11 @@ async fn a_lost_connection_reports_a_running_hint_request_unanswered() -> TestRe
 /// Falsified by: re-arming `flush_at` on every command in `server_task`, as
 /// the per-command timeout did -- the edit reaches the server only after the
 /// stream stops, well past the bound.
-#[tokio::test]
+///
+/// On tokio's virtual clock: the server and its transport are in-process, so
+/// time moves only once every message in flight has been handled, and the
+/// measured flush time is exact rather than inflated by a loaded machine.
+#[tokio::test(start_paused = true)]
 async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "lib.rs", "fn a() {}\n").ok_or("write failed")?;
@@ -233,11 +241,11 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
     let backend = local_session(session, None);
     let (doc, version) = open_served(&backend, &mut events, &mut observed, path).await?;
 
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
-    let edited = std::time::Instant::now();
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
+    let edited = tokio::time::Instant::now();
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 version,
@@ -247,7 +255,8 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
 
     // Far longer than the debounce, and far shorter than the stream: a flush
@@ -258,10 +267,11 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
     while flushed.is_none() && edited.elapsed() < stream {
         backend.send(
             backend.next_id(),
-            Command::InlayHints {
+            LspCommand::InlayHints {
                 doc,
                 range: whole_first_line(),
-            },
+            }
+            .into(),
         )?;
         tokio::time::sleep(Duration::from_millis(50)).await;
         while let Ok(message) = observed.try_recv() {
@@ -287,7 +297,10 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
 ///
 /// A server that keeps dying can sit behind an open circuit indefinitely, so
 /// holding its last hints there would paint them stale forever.
-#[tokio::test]
+///
+/// On tokio's virtual clock, so the back-off runs on its documented schedule
+/// however slowly the machine runs the polls between its attempts.
+#[tokio::test(start_paused = true)]
 async fn hints_are_held_while_retrying_and_dropped_once_the_circuit_opens() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "main.rs", "let a = 1;\n").ok_or("write failed")?;
@@ -305,10 +318,11 @@ async fn hints_are_held_while_retrying_and_dropped_once_the_circuit_opens() -> T
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -321,10 +335,11 @@ async fn hints_are_held_while_retrying_and_dropped_once_the_circuit_opens() -> T
         let request = backend.next_id();
         backend.send(
             request,
-            Command::InlayHints {
+            LspCommand::InlayHints {
                 doc,
                 range: whole_first_line(),
-            },
+            }
+            .into(),
         )?;
         match await_hint_answer(&mut events, request).await {
             Some(None) => held += 1,

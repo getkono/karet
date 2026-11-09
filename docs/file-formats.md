@@ -16,7 +16,8 @@ consumes:
   bundled grammar.
 
 To add or change a format, edit the `REGISTRY` table in
-`crates/karet-filetype/src/registry.rs` (one line per type) and, if it should be
+`crates/karet-filetype/src/registry/table.rs` (one row per type, carrying its
+comment tokens and auto-closing pairs) and, if it should be
 highlighted, add a grammar in `crates/karet-treesitter`.
 
 ## Icon styles
@@ -34,7 +35,7 @@ the default is **Nerd Font**.
 
 These extensions highlight via a compiled-in grammar (the `karet` app enables the
 `all-languages` feature). This table mirrors the registry in
-`karet-filetype/src/registry.rs` and the grammar catalog in
+`karet-filetype/src/registry/table.rs` and the grammar catalog in
 `karet-treesitter/src/registry.rs`; changes there must update it in the same
 change.
 
@@ -162,8 +163,8 @@ not advertised yet because the published Gamut versions do not currently provide
 the pure-Rust decode path karet needs (and no C `*-sys` dependency is permitted).
 
 The **Image** and **PDF** renderers are optional, default-on Cargo features
-(`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
-`karet-fileview`). Building the app with `--no-default-features` drops their heavy
+(`images` and `pdf` on the `karet` app; `raster`/`images` on `karet-fileview`,
+which has no `pdf` feature). Building the app with `--no-default-features` drops their heavy
 dependency trees (Gamut, `hayro`) and routes those kinds to the
 placeholder branch instead — see [binary-size.md](binary-size.md). Classification
 (`FileKind`) is unaffected; only rendering degrades.

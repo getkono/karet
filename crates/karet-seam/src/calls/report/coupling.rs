@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use super::module_of;
 use super::path_of;
+use super::visibility_of;
 use crate::calls::graph::Bound;
 use crate::calls::graph::CallGraph;
 use crate::calls::graph::FunctionMetrics;
@@ -63,7 +64,7 @@ pub struct InternalReach {
 /// A function that calls into one other module more than into its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Envy {
+pub struct FeatureEnvy {
     /// The function.
     pub function: String,
     /// Its call sites into its own module.
@@ -85,7 +86,7 @@ pub struct ModuleCoupling {
     /// Cross-module calls into non-public items.
     pub internal_reach: Vec<InternalReach>,
     /// Functions leaning on another module more than their own.
-    pub envious: Vec<Envy>,
+    pub envious: Vec<FeatureEnvy>,
 }
 
 /// A function calling into another module this many times is worth naming when it
@@ -138,10 +139,8 @@ pub(super) fn measure(
             if !in_scope {
                 continue;
             }
-            if let Some(visibility) = index
-                .node(callee)
-                .and_then(crate::model::Node::effective_visibility)
-                .filter(|visibility| *visibility < Visibility::Public)
+            if let Some(visibility) =
+                visibility_of(index, callee).filter(|visibility| *visibility < Visibility::Public)
             {
                 internal_reach.push(InternalReach {
                     caller: path_of(index, function.id),
@@ -162,7 +161,7 @@ pub(super) fn measure(
             && *calls >= ENVY_MINIMUM
             && *calls > own
         {
-            envious.push(Envy {
+            envious.push(FeatureEnvy {
                 function: path_of(index, function.id),
                 own_calls: own,
                 other: path_of(index, *other),

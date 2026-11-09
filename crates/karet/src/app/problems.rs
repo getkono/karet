@@ -7,7 +7,24 @@
 //! whenever a document's diagnostic set is replaced or the document closes, so
 //! it can never show a diagnostic the editor has already dropped.
 
-use super::*;
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::Diagnostic;
+use karet_core::LineCol;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_widgets::ListSelection;
+
+use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::app::state::SpellingChrome;
+use crate::keymap::SidebarPanel;
+use crate::tab::TabKind;
+use crate::view::View;
 
 /// The `source` the spell checker stamps on its diagnostics (mirrors
 /// `karet_session`'s private `SPELL_SOURCE`). Misspellings have a panel of
@@ -125,6 +142,9 @@ pub(crate) struct ProblemsPanel {
     pub(crate) filter: String,
     /// Whether keys are being typed into `filter`.
     pub(crate) filter_input: bool,
+    /// What each task's problem matchers found in its output, by task label:
+    /// listed beside the documents' diagnostics until that task runs again.
+    pub(crate) task_problems: std::collections::BTreeMap<String, Vec<ProblemEntry>>,
 }
 
 impl ProblemsPanel {
@@ -236,8 +256,10 @@ pub(crate) fn step_problem(starts: &[LineCol], caret: LineCol, forward: bool) ->
 }
 
 impl App {
-    /// Rebuild the Problems panel from the held diagnostic sets.
+    /// Rebuild the Problems panel from the held diagnostic sets and the
+    /// problems tasks' output matched.
     pub(super) fn refresh_problems(&mut self) {
+        let tasks = self.problems.task_problems.values().flatten().cloned();
         let entries = self
             .docs
             .diagnostics
@@ -252,15 +274,30 @@ impl App {
                         diagnostic: diagnostic.clone(),
                     })
             })
+            .chain(tasks)
             .collect();
         self.problems.set_entries(entries);
+    }
+
+    /// Replace what task `label`'s matchers found (an empty set drops the
+    /// task's entries), then rebuild the panel.
+    #[cfg(feature = "terminal")]
+    pub(super) fn set_task_problems(&mut self, label: &str, entries: Vec<ProblemEntry>) {
+        if entries.is_empty() {
+            self.problems.task_problems.remove(label);
+        } else {
+            self.problems
+                .task_problems
+                .insert(label.to_owned(), entries);
+        }
+        self.refresh_problems();
     }
 
     /// Show the Problems panel with the keyboard in it.
     pub(super) fn show_problems(&mut self) {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Problems;
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         // Arriving at the panel lands on the list, never mid-way through a
         // filter edit the user walked away from.
         self.problems.filter_input = false;
@@ -295,7 +332,7 @@ impl App {
         if self.sidebar_panel != SidebarPanel::Problems || !self.sidebar_visible {
             self.show_problems();
         }
-        self.focus = Focus::Sidebar;
+        self.keyboard.focus_sidebar();
         self.problems.filter_input = true;
     }
 
@@ -406,7 +443,7 @@ impl App {
             tab.editor.goto(&buffer, at);
         }
         self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.keyboard.focus_editor();
         self.problems.filter_input = false;
         let label = match severity {
             Severity::Error => "error",
@@ -433,6 +470,7 @@ pub(crate) type ProblemsChrome = SpellingChrome;
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn diagnostic(line: u32, col: u32, severity: Severity, message: &str) -> Diagnostic {

@@ -68,6 +68,14 @@ impl KeyChord {
         c
     }
 
+    /// Whether this is a plain key: no `Ctrl` or `Alt`, and not a function
+    /// key. A modal preset's Normal mode gives every plain key to its own
+    /// layer and grammar.
+    #[must_use]
+    pub fn is_plain(self) -> bool {
+        !self.mods.ctrl && !self.mods.alt && !matches!(self.code, KeyCode::F(_))
+    }
+
     /// The canonical chord for a live terminal key event.
     #[must_use]
     pub fn from_event(ev: KeyEvent) -> Self {
@@ -161,9 +169,13 @@ fn format_code(code: KeyCode) -> String {
     match code {
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
+        KeyCode::F(n) => format!("F{n}"),
         KeyCode::Tab => "Tab".to_string(),
         KeyCode::Enter => "Enter".to_string(),
         KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Insert => "Insert".to_string(),
         KeyCode::Up => "Up".to_string(),
         KeyCode::Down => "Down".to_string(),
         KeyCode::Left => "Left".to_string(),
@@ -237,6 +249,10 @@ mod tests {
         );
         let document_end = chord(true, false, false, KeyCode::End);
         assert!(document_end.matches(ev(KeyCode::Down, KeyModifiers::SUPER)));
+        let line_end = chord(false, false, false, KeyCode::End);
+        assert!(line_end.matches(ev(KeyCode::Right, KeyModifiers::SUPER)));
+        let document_start = chord(true, false, false, KeyCode::Home);
+        assert!(document_start.matches(ev(KeyCode::Up, KeyModifiers::SUPER)));
         let cut = chord(true, false, false, KeyCode::Char('x'));
         assert!(cut.matches(ev(KeyCode::Char('x'), KeyModifiers::SUPER)));
         assert_eq!(
@@ -254,5 +270,23 @@ mod tests {
         assert_eq!(ctrl_p.display(ChordStyle::Caret), "^P");
         let tab = chord(false, false, false, KeyCode::Tab);
         assert_eq!(tab.display(ChordStyle::Verbose), "Tab");
+    }
+
+    #[test]
+    fn display_names_function_and_editing_keys() {
+        let shift_f5 = chord(false, true, false, KeyCode::F(5));
+        assert_eq!(shift_f5.display(ChordStyle::Verbose), "Shift+F5");
+        assert_eq!(shift_f5.display(ChordStyle::Caret), "⇧F5");
+        let f12 = chord(false, false, false, KeyCode::F(12));
+        assert_eq!(f12.display(ChordStyle::Verbose), "F12");
+        let ctrl_backspace = chord(true, false, false, KeyCode::Backspace);
+        assert_eq!(
+            ctrl_backspace.display(ChordStyle::Verbose),
+            "Ctrl+Backspace"
+        );
+        let alt_delete = chord(false, false, true, KeyCode::Delete);
+        assert_eq!(alt_delete.display(ChordStyle::Verbose), "Alt+Delete");
+        let insert = chord(false, false, false, KeyCode::Insert);
+        assert_eq!(insert.display(ChordStyle::Verbose), "Insert");
     }
 }

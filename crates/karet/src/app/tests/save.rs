@@ -46,7 +46,12 @@ fn duplicate_save_command_is_debounced_while_in_flight() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Save { .. }))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::Save { .. })
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -105,7 +110,7 @@ fn focus_change_auto_save_only_fires_when_the_edited_document_loses_focus() {
         saved_docs(&backend).is_empty(),
         "the same editor keeps focus"
     );
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.auto_save_context_changed(Some(DocumentId(2)));
     assert_eq!(saved_docs(&backend), [DocumentId(2)]);
 }
@@ -120,7 +125,7 @@ fn a_late_dirty_snapshot_saves_when_its_document_already_lost_focus() {
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(2));
     }
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     app.schedule_auto_save(DocumentId(2), 1, Instant::now());
 
@@ -269,7 +274,7 @@ fn scm_log_pages_replace_then_append() {
 #[test]
 fn hover_maps_to_explorer_and_scm_rows() {
     let mut app = app();
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -277,10 +282,16 @@ fn hover_maps_to_explorer_and_scm_rows() {
     };
     // Explorer: hover at y=4 with offset 0 → absolute row 2.
     app.hover = Some((5, 4));
-    assert_eq!(app.hovered_explorer_row(), Some(2));
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        Some(2)
+    );
     // Above the content area → no hovered row.
     app.hover = Some((5, 1));
-    assert_eq!(app.hovered_explorer_row(), None);
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        None
+    );
 
     // Source control: display 0 is a section header, 1 and 2 are changes. Hover
     // maps against the changes region rect.
@@ -302,13 +313,13 @@ fn hover_maps_to_explorer_and_scm_rows() {
 fn sidebar_header_hover_tracks_header_only() {
     let mut app = app();
     app.sidebar_visible = true;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 20,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -360,7 +371,7 @@ fn esc_dismisses_a_toast_before_normal_handling() {
 #[test]
 fn starts_explorer_focused_with_welcome_tab() {
     let app = app();
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
     assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
 }
@@ -371,7 +382,7 @@ fn focus_target_tracks_focus_and_panel() {
     assert_eq!(app.focus_target(), FocusTarget::Explorer);
     app.sidebar_panel = SidebarPanel::SourceControl;
     assert_eq!(app.focus_target(), FocusTarget::SourceControl);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     assert_eq!(app.focus_target(), FocusTarget::Editor);
 }
 
@@ -386,7 +397,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
     let _ = std::fs::write(&file, [0x81u8, 0x01]);
 
     let mut app = app();
-    let len = karet_fileview::viewer::SIZE_GUARD + 1;
+    let len = karet_filetype::SIZE_GUARD + 1;
     app.tabs = vec![Tab::new(
         "big.cbor",
         TabKind::Placeholder {
@@ -397,7 +408,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         },
     )];
     app.active = 0;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // A too-large placeholder gets the override layer, so Enter is bound.
     assert_eq!(app.focus_target(), FocusTarget::Oversize);
 
@@ -408,13 +419,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         "the placeholder is replaced, not appended"
     );
     assert!(
-        matches!(
-            app.tabs[0].kind,
-            TabKind::Code {
-                language: "CBOR",
-                ..
-            }
-        ),
+        matches!(app.tabs[0].kind, TabKind::Code { .. }) && app.tabs[0].status_label() == "CBOR",
         "open-anyway decodes the CBOR in place"
     );
 
@@ -432,14 +437,14 @@ fn a_message_no_longer_takes_the_hint_bar_or_its_click_targets() {
     // named no shortcuts and every shortcut on it stopped answering clicks.
     let mut app = app();
     let _ = frame(&mut app, 120, 8);
-    let hints_before = app.status_hits.len();
+    let hints_before = app.last_frame.status_hits.len();
     assert!(hints_before > 0, "the bar starts with clickable hints");
 
     app.notify(Report::Failure, NotificationKind::Io, "save failed");
     let rows = screen(&mut app, 120, 8).join("\n");
 
     assert_eq!(
-        app.status_hits.len(),
+        app.last_frame.status_hits.len(),
         hints_before,
         "the hints and their click targets survive an active notification"
     );
@@ -594,7 +599,9 @@ fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
             .map(|sent| {
                 sent.iter()
                     .filter_map(|(_, command)| match command {
-                        SessionCommand::Save { cause, .. } => Some(*cause),
+                        SessionCommand::Document(DocumentCommand::Save { cause, .. }) => {
+                            Some(*cause)
+                        },
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -622,7 +629,7 @@ fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
     assert_eq!(
         causes(|app, doc| {
             app.settings.files.auto_save = AutoSave::OnFocusChange;
-            app.focus = Focus::Editor;
+            app.keyboard.focus_editor();
             app.schedule_auto_save(doc, 1, Instant::now());
             app.auto_save_focus_lost();
         }),
@@ -658,8 +665,9 @@ fn switching_branches_waits_for_a_save_already_in_flight() {
         .sent
         .lock()
         .map(|sent| {
-            sent.iter()
-                .any(|(_, command)| matches!(command, SessionCommand::VcsAction { .. }))
+            sent.iter().any(|(_, command)| {
+                matches!(command, SessionCommand::Vcs(VcsCommand::Action { .. }))
+            })
         })
         .unwrap_or_default();
     assert!(

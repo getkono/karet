@@ -40,7 +40,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -275,16 +274,24 @@ pub enum CommitOutcome {
 }
 
 impl Repository {
-    /// Commit the staged changes, calling `on_line` for every line `git` and its
-    /// hooks print, and reporting whether a commit was created.
+    /// Commit the staged changes, streaming the hooks' console output, and stop
+    /// on request.
     ///
-    /// Every line reaches `on_line` before success or failure is decided, so a
-    /// hook that fails after printing its diagnosis still delivers it.
+    /// [`commit`](Self::commit) with a sink: `on_line` is called for every line
+    /// `git` and its hooks print, as they print it, and every line arrives before
+    /// the result is decided — so a hook that fails after explaining itself still
+    /// delivers the explanation.
     ///
-    /// `cancel` can stop the run from another thread at any point; see
-    /// [`CommitCancel`] for what that does and [`CommitOutcome`] for why it does
-    /// not by itself decide the answer.
-    pub fn commit_streaming(
+    /// `cancel` stops the commit and its hooks from any thread; see
+    /// [`CommitCancel`] for what that does. It reports
+    /// [`CommitOutcome::Cancelled`] only when no commit was created; a request
+    /// that arrives too late to prevent one says so — see [`CommitOutcome`].
+    ///
+    /// # Errors
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
+    /// [`VcsError::Git`] when the commit is refused, carrying the last thing
+    /// written to stderr as the reason.
+    pub fn commit_with_output(
         &self,
         message: &str,
         cancel: &CommitCancel,
@@ -391,13 +398,9 @@ impl Repository {
 
     /// Start `git commit` in its own process group, pipes captured, stdin closed.
     fn spawn_commit(&self, message: &str) -> Result<GroupChild, VcsError> {
-        Command::new("git")
+        // The same non-interactive environment every other write runs under.
+        self.git_command()?
             .args([OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)])
-            .current_dir(self.commit_workdir()?)
-            // The same non-interactive environment every other write runs under.
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

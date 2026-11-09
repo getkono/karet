@@ -52,7 +52,14 @@ pub(crate) fn run(
             ..karet_seam::GraphOptions::default()
         },
     );
-    Ok(render(&index, &graph, &result.nodes, query, &active.name))
+    // Named as `--seam-report` names it, so the two surfaces never disagree on what a
+    // configuration with tests built is called.
+    let configuration = if include_tests {
+        format!("{} + tests", active.name)
+    } else {
+        active.name.clone()
+    };
+    Ok(render(&index, &graph, &result.nodes, query, &configuration))
 }
 
 /// Index everything under `root` and apply the configuration asked for.
@@ -67,7 +74,7 @@ pub(crate) fn prepare(
     flag: &str,
     configuration: Option<&str>,
     include_tests: bool,
-) -> Result<(SeamIndex, karet_seam::Configuration), QueryFailure> {
+) -> Result<(SeamIndex, karet_seam::config::Configuration), QueryFailure> {
     let mut index =
         karet_seam::index_workspace(root, IndexOptions::default()).map_err(|error| {
             QueryFailure {
@@ -77,9 +84,10 @@ pub(crate) fn prepare(
         })?;
     // A named configuration changes what the tree even contains, so it is applied
     // before any query rather than filtered afterwards.
-    let mut active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
-        karet_seam::Configuration::named(name, Vec::new())
-    });
+    let mut active = configuration
+        .map_or_else(karet_seam::config::Configuration::unconfigured, |name| {
+            karet_seam::config::Configuration::named(name, Vec::new())
+        });
     if include_tests {
         active = active.for_target("test");
     }
@@ -91,7 +99,10 @@ pub(crate) fn prepare(
 ///
 /// # Errors
 /// The query does not parse.
-pub(crate) fn parse_query(flag: &str, query: &str) -> Result<karet_seam::Query, QueryFailure> {
+pub(crate) fn parse_query(
+    flag: &str,
+    query: &str,
+) -> Result<karet_seam::query::Query, QueryFailure> {
     karet_seam::query::parse(query).map_err(|error| QueryFailure {
         message: format!(
             "{flag}: {} (at byte {}..{})",
@@ -172,7 +183,7 @@ fn node_json(
             let count = if unread.contains(lens) {
                 "null".to_owned()
             } else {
-                node.rollups.get(*lens).to_string()
+                node.rollups().get(*lens).to_string()
             };
             format!("{}: {count}", quote(lens.name()))
         })
@@ -339,7 +350,7 @@ mod tests {
     #[test]
     fn a_result_carries_identities_locations_facets_and_rollups()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -370,7 +381,7 @@ mod tests {
 
     #[test]
     fn a_function_carries_its_sizes_and_its_calls() -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -381,7 +392,8 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src"))?;
         std::fs::write(
             dir.path().join("src/lib.rs"),
-            "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n",
+            "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n\
+             pub fn afar() {\n    elsewhere::send();\n}\n",
         )?;
 
         let json = run(dir.path(), "outer", None, false)?;
@@ -396,6 +408,15 @@ mod tests {
             ),
             "{json}"
         );
+        // A callee outside the index has no path, so it is named by its display text.
+        let json = run(dir.path(), "afar", None, false)?;
+        assert!(
+            json.contains(
+                "{\"display\": \"elsewhere::send\", \"resolution\": \"external\", \"count\": 1, \
+                 \"line\": 8}"
+            ),
+            "{json}"
+        );
         // A type has no lines of its own to report.
         let json = run(dir.path(), "kind:type", None, false)?;
         assert!(json.contains("\"loc\": null, \"calls\": []"), "{json}");
@@ -405,7 +426,7 @@ mod tests {
     #[test]
     fn a_lens_a_language_does_not_read_reports_null_rather_than_zero()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::java::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -431,7 +452,7 @@ mod tests {
     #[test]
     fn a_query_matching_nothing_is_a_success_with_no_nodes()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -445,6 +466,47 @@ mod tests {
         // Distinct from a failure: the question was understood, and the answer is none.
         let json = run(dir.path(), "lens:hazard", None, false)?;
         assert!(json.contains("\"matched\": 0"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_code_is_queried_and_named_only_with_include_tests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"q\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::create_dir_all(dir.path().join("src"))?;
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn shipped() {}\n#[cfg(test)]\nmod tests {\n    fn check() {}\n}\n",
+        )?;
+
+        // The tree keeps a gated-out node, marked inactive and left unmeasured.
+        let check = |json: &str| {
+            json.lines()
+                .find(|line| line.contains("\"id\": \"q::tests::check\""))
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        let without = run(dir.path(), "kind:function", None, false)?;
+        let gated = check(&without);
+        assert!(gated.contains("\"membership\": \"inactive\""), "{without}");
+        assert!(gated.contains("\"inclusive\": null"), "{without}");
+        assert!(!without.contains(" + tests"), "{without}");
+
+        let with = run(dir.path(), "kind:function", None, true)?;
+        let built = check(&with);
+        assert!(built.contains("\"membership\": \"active\""), "{with}");
+        assert!(built.contains("\"inclusive\": 1"), "{with}");
+        assert!(
+            with.contains("\"configuration\": \"") && with.contains(" + tests\""),
+            "{with}"
+        );
         Ok(())
     }
 }

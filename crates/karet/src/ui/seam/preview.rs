@@ -14,7 +14,7 @@
 //! is reserved and left blank rather than closed up, for the same reason.
 
 use karet_core::ThemeRole;
-use karet_diff::TokenSpan;
+use karet_core::TokenSpan;
 use karet_filetype::IconStyle;
 use karet_session::api::SeamPreview;
 use karet_theme::Theme;
@@ -28,7 +28,7 @@ use ratatui::widgets::Paragraph;
 
 use super::PENDING;
 use super::UNRESOLVABLE;
-use crate::app::seam::SeamViewState;
+use crate::tab::seam::SeamViewState;
 
 /// Rows of context shown on each side of the node's own lines.
 const CONTEXT: usize = 3;

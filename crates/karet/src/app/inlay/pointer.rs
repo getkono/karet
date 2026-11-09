@@ -8,8 +8,8 @@
 //! not just the hint.
 
 use karet_core::Markup;
-use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
+use karet_session::api::LspCommand;
 use karet_session::api::RequestId;
 
 use super::super::App;
@@ -17,7 +17,7 @@ use super::super::KeyModifiers;
 use super::super::MouseEvent;
 use super::super::MouseEventKind;
 use super::super::Rect;
-use super::super::util::rect_contains;
+use crate::app::hit::rect_contains;
 
 /// Where the last frame painted one label part of one of the focused pane's
 /// hints: the part `part` of hint `hint` in `doc`'s held set.
@@ -234,7 +234,7 @@ impl App {
             }
             return;
         }
-        let command = SessionCommand::ResolveInlayHint {
+        let command = LspCommand::ResolveInlayHint {
             doc: hit.doc,
             hint: hint.clone(),
         };

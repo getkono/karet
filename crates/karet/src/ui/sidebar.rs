@@ -1,12 +1,14 @@
 mod debug;
+mod hierarchy;
 mod problems;
 pub(super) mod search;
 
 use super::*;
 
 /// Draw the right-side outline panel: a header over the active tab's navigation
-/// outline (a depth-indented, selectable list). Records the content rect and syncs
-/// the selection length for keyboard navigation and mouse hit-testing.
+/// outline (a depth-indented, selectable list). Records the content rect for
+/// mouse hit-testing; the outline request and the selection's length are kept
+/// current by [`App::prepare_frame`].
 pub(super) fn draw_outline(
     f: &mut Frame,
     app: &mut App,
@@ -14,7 +16,6 @@ pub(super) fn draw_outline(
     area: Rect,
     hits: &mut ScrollHits,
 ) {
-    app.request_active_outline();
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let header = rows[0];
     let content = rows[1];
@@ -34,10 +35,9 @@ pub(super) fn draw_outline(
     );
 
     let entries = app.active_outline_rows();
-    app.outline.sel.set_len(entries.len());
     if entries.is_empty() {
         let pending = app.active_outline_loading();
-        let label = if pending.is_some_and(crate::app::Pending::visible) {
+        let label = if pending.is_some_and(crate::pending::Pending::visible) {
             " Loading…"
         } else if pending.is_some() {
             ""
@@ -51,7 +51,7 @@ pub(super) fn draw_outline(
         return;
     }
 
-    let focused = app.focus == Focus::Outline;
+    let focused = app.keyboard.focus() == Focus::Outline;
     let cursor = app.outline.sel.cursor();
     let sel_bg = if focused {
         ThemeRole::Selection
@@ -93,11 +93,12 @@ pub(super) fn draw_sidebar(
     app: &mut App,
     theme: &Theme,
     area: Rect,
-    hits: &mut ScrollHits,
+    frame: &mut FrameHits,
 ) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    app.sidebar_content_rect = rows[1];
-    draw_sidebar_header(f, app, theme, rows[0]);
+    frame.sidebar_content_rect = rows[1];
+    draw_sidebar_header(f, app, theme, rows[0], frame);
+    let hits = &mut frame.scroll;
     match app.sidebar_panel {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
@@ -120,17 +121,16 @@ pub(super) fn draw_sidebar(
                         .map(Path::to_path_buf)
                 })
                 .collect();
-            let explorer_focused =
-                app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
-            let hover = app.hovered_explorer_row();
+            let explorer_focused = app.keyboard.focus() == Focus::Sidebar
+                && app.sidebar_panel == SidebarPanel::Explorer;
             let cut_paths = app.explorer_cut_paths().to_vec();
-            app.request_nested_repository_statuses();
             let repository_badges = app.nested_repository_badges(Instant::now());
             // The tree's rect is also its click target, so narrowing it here is what
             // makes a click on the track column fall outside the tree instead of
             // selecting whatever row it happens to sit beside.
             let (tree, tracks) = reserve_tracks(rows[1], ScrollAxes::VERTICAL);
-            app.sidebar_content_rect = tree;
+            frame.sidebar_content_rect = tree;
+            let hover = app.hovered_explorer_row(tree.y);
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
@@ -164,6 +164,7 @@ pub(super) fn draw_sidebar(
         SidebarPanel::Todos => draw_todos_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Debug => debug::draw_debug_panel(f, app, theme, rows[1], hits),
         SidebarPanel::Problems => problems::draw_problems_panel(f, app, theme, rows[1], hits),
+        SidebarPanel::Hierarchy => hierarchy::draw_hierarchy_panel(f, app, theme, rows[1], hits),
     }
 }
 
@@ -174,7 +175,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     // Resolve the app-specific row texts (default command labels + key hints);
     // the shared widget owns placement, clamping, and painting.
     let hints: Vec<Option<String>> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry
@@ -183,7 +184,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
         })
         .collect();
     let labels: Vec<String> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry.label.clone().unwrap_or_else(|| {
@@ -223,7 +224,13 @@ pub(super) fn context_menu_label(command: Command) -> &'static str {
     }
 }
 
-pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_sidebar_header(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
     let name = match app.sidebar_panel {
         SidebarPanel::Explorer => "EXPLORER",
         SidebarPanel::Search => "SEARCH",
@@ -232,6 +239,11 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         SidebarPanel::Todos => "TODOS",
         SidebarPanel::Debug => "DEBUG",
         SidebarPanel::Problems => "PROBLEMS",
+        SidebarPanel::Hierarchy => match app.hierarchy.tree.as_ref() {
+            Some(tree) if !tree.direction().is_calls() => "TYPE HIERARCHY",
+            Some(_) => "CALL HIERARCHY",
+            None => "HIERARCHY",
+        },
     };
     // Header columns: a compact workspace-root label, the panel title, an
     // optional Explorer toolbar, then the activity-bar switcher (7 cells). The
@@ -241,11 +253,16 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     const ACTIONS_W: u16 = 8; // four buttons × 2 cells
     // The activity-bar switcher: one 2-cell button per shown panel, plus a
     // trailing cell. Spelling is offered only while spell check is on, Todos
-    // only while codetag highlighting is.
+    // only while codetag highlighting is, and Hierarchy only while it holds a
+    // tree to go back to.
     let spelling = app.spelling_available();
     let todos_shown = app.todos_available();
+    let hierarchy = app.hierarchy.tree.is_some();
     // 3 always-on panels (2 cells each) + Debug + Problems + a trailing spacer cell.
-    let switcher_w: u16 = 11 + if spelling { 2 } else { 0 } + if todos_shown { 2 } else { 0 };
+    let switcher_w: u16 = 11
+        + if spelling { 2 } else { 0 }
+        + if todos_shown { 2 } else { 0 }
+        + if hierarchy { 2 } else { 0 };
     let icon_style = app.icon_style;
     let explorer = app.sidebar_panel == SidebarPanel::Explorer;
     let actions_w = if explorer && area.width >= 9 + ACTIONS_W + switcher_w {
@@ -289,7 +306,6 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
 
     // The Explorer toolbar (new file / new folder / refresh / collapse all), each
     // glyph occupying 2 cells; hit regions march in twos like the switcher.
-    app.header_action_hits = Vec::new();
     if actions_w > 0 {
         let a = cols[2];
         let actions = [
@@ -301,8 +317,8 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         let mut spans = Vec::with_capacity(actions.len());
         for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
             let x = a.x + i as u16 * 2;
-            app.header_action_hits.push((x, x + 2, cmd));
-            let hovered = header_hovered(app, x, x + 2);
+            frame.header_action_hits.push((x, x + 2, cmd));
+            let hovered = header_hovered(app, area.y, x, x + 2);
             let state = if hovered {
                 ChromeButtonState::Hovered
             } else {
@@ -320,32 +336,32 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     // plus the space after it (2 cells), so the hit regions march in twos.
     let switch = cols[3];
     let active = app.sidebar_panel;
-    app.panel_hits = vec![
+    let panel_hits = &mut frame.panel_hits;
+    panel_hits.extend([
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
-    ];
+    ]);
     let mut next_hit = switch.x + 6;
     if spelling {
-        app.panel_hits
-            .push((next_hit, next_hit + 2, SidebarPanel::Spelling));
+        panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Spelling));
         next_hit += 2;
     }
     let todos = app.todos_available();
     if todos {
-        app.panel_hits
-            .push((next_hit, next_hit + 2, SidebarPanel::Todos));
+        panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Todos));
         next_hit += 2;
     }
-    app.panel_hits
-        .push((next_hit, next_hit + 2, SidebarPanel::Debug));
-    app.panel_hits
-        .push((next_hit + 2, next_hit + 4, SidebarPanel::Problems));
+    panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Debug));
+    panel_hits.push((next_hit + 2, next_hit + 4, SidebarPanel::Problems));
+    if hierarchy {
+        panel_hits.push((next_hit + 4, next_hit + 6, SidebarPanel::Hierarchy));
+    }
+    let panel_hits = &*panel_hits;
     let icon = |ui: UiIcon, panel: SidebarPanel| {
-        let hovered = app
-            .panel_hits
+        let hovered = panel_hits
             .iter()
-            .any(|&(start, end, p)| p == panel && header_hovered(app, start, end));
+            .any(|&(start, end, p)| p == panel && header_hovered(app, area.y, start, end));
         let state = match (active == panel, hovered) {
             (true, true) => ChromeButtonState::ActiveHovered,
             (true, false) => ChromeButtonState::Active,
@@ -370,6 +386,9 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     }
     icons.push(icon(UiIcon::Debug, SidebarPanel::Debug));
     icons.push(icon(UiIcon::Problems, SidebarPanel::Problems));
+    if hierarchy {
+        icons.push(icon(UiIcon::Hierarchy, SidebarPanel::Hierarchy));
+    }
     f.render_widget(Paragraph::new(Line::from(icons)), switch);
 }
 
@@ -394,9 +413,10 @@ pub(super) fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> St
     }
 }
 
-pub(super) fn header_hovered(app: &App, start: u16, end: u16) -> bool {
+/// Whether the pointer rests on the sidebar header row `y` within `start..end`.
+pub(super) fn header_hovered(app: &App, y: u16, start: u16, end: u16) -> bool {
     app.sidebar_header_hover
-        .is_some_and(|(col, row)| row == app.sidebar_rect.y && col >= start && col < end)
+        .is_some_and(|(col, row)| row == y && col >= start && col < end)
 }
 
 pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
@@ -415,11 +435,7 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
     if cell_width(&compact) <= max_width {
         return compact;
     }
-    truncate_left(&full, max_width)
-}
-
-pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
-    karet_widgets::text::fit_start(text, usize::from(max_width))
+    karet_widgets::text::fit_start(&full, usize::from(max_width))
 }
 
 pub(super) fn draw_spelling_panel(

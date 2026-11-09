@@ -140,8 +140,8 @@ pub fn newline(caret: LineCol, selection: Option<Range>, buffer: &TextBuffer, ba
 }
 
 /// Insert a newline, replacing any selection, and start the new line with
-/// `indent` — typically a syntax-aware indentation such as
-/// `karet_syntax::Indenter` computes. `None` falls back to [`newline`]'s copy of
+/// `indent` — typically a syntax-aware indentation such as `karet-syntax`'s
+/// `Indenter` computes (this crate does not depend on it). `None` falls back to [`newline`]'s copy of
 /// the current line's leading whitespace.
 #[must_use]
 pub fn newline_indented(
@@ -228,7 +228,7 @@ pub fn delete_word_backward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let start = crate::previous_word_boundary(buffer, caret);
+    let start = karet_text::words::previous_word_boundary(buffer, caret);
     (start != caret).then(|| delete_between(start, caret, base))
 }
 
@@ -244,7 +244,7 @@ pub fn delete_word_forward(
     if let Some(range) = non_empty(selection) {
         return Some(delete_between(range.start, range.end, base));
     }
-    let end = crate::next_word_boundary(buffer, caret);
+    let end = karet_text::words::next_word_boundary(buffer, caret);
     (end != caret).then(|| delete_between(caret, end, base))
 }
 

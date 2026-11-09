@@ -25,7 +25,7 @@ fn inlay_requests(backend: &RecordingBackend) -> Vec<(RequestId, u32, u32)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::InlayHints { range, .. } => {
+                    SessionCommand::Lsp(LspCommand::InlayHints { range, .. }) => {
                         Some((*id, range.start.line, range.end.line))
                     },
                     _ => None,
@@ -47,7 +47,7 @@ fn inlay_request_docs(backend: &RecordingBackend) -> Vec<DocumentId> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::InlayHints { doc, .. } => Some(*doc),
+                    SessionCommand::Lsp(LspCommand::InlayHints { doc, .. }) => Some(*doc),
                     _ => None,
                 })
                 .collect()
@@ -70,16 +70,15 @@ fn type_text(app: &mut App, text: &str) {
 /// A snapshot republishing the active tab's buffer exactly as it is.
 fn snapshot_of(app: &App) -> DocSnapshot {
     let buffer = match &app.tabs[app.active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => karet_text::TextBuffer::from_text(""),
     };
     DocSnapshot {
         version: buffer.version(),
         buffer,
-        highlights: Arc::new(karet_syntax::Highlights::default()),
-        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        highlights: Arc::new(karet_core::Highlights::default()),
+        semantic_blocks: Arc::new(karet_core::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),
@@ -271,7 +270,7 @@ fn one_document_in_two_panes_is_asked_about_once_over_both_viewports() {
     app.split_focused(karet_widgets::SplitDir::Right);
     // The new, focused pane scrolls far down; the stored one stays at the top.
     let active = app.active;
-    app.tabs[active].editor.scroll_line = 500;
+    app.tabs[active].editor.scroll_to_line(500);
 
     app.request_inlay_hints();
     let asked = inlay_requests(&backend);
@@ -457,7 +456,7 @@ fn deleting_the_text_around_a_hint_drops_it() {
     // Select the whole first line and delete it.
     let active = app.active;
     let buffer = match &app.tabs[active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => unreachable!("a code tab"),
     };
     app.tabs[active]

@@ -126,6 +126,9 @@ pub fn resolve(
 }
 
 /// Whether `file` is a crate root — the entry point of a build target.
+///
+/// Nothing in the crate calls this, so only the tests pinning the rule compile it.
+#[cfg(test)]
 #[must_use]
 pub fn is_crate_root(file: &Path) -> bool {
     matches!(

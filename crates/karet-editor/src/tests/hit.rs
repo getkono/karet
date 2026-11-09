@@ -22,13 +22,17 @@ fn a_click_on_a_sticky_row_counts_its_tabs_as_painted() {
     }]);
     let area = Rect::new(0, 0, 30, 3);
     let mut state = EditorState::new();
-    state.scroll_line = 2;
+    state.scroll_to_line(2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
         .semantic_blocks(&blocks)
         .sticky_scroll(true)
         .render(area, &mut target, &mut state);
-    assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+    assert_eq!(
+        state.frame.sticky_rows,
+        vec![0],
+        "line 0 is the sticky header"
+    );
 
     // The tab expands to four cells, so `Foo`'s `F` (column 13) paints at
     // content cell 16, not 13.
@@ -186,8 +190,8 @@ fn a_keyboard_move_drops_the_wrap_affinity() {
     let (buffer, area, mut state) = wrapped(3);
     let pos = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
     state.set_caret(&buffer, pos);
-    state.move_right(&buffer);
-    state.move_left(&buffer);
+    state.extend_right(&buffer);
+    state.extend_left(&buffer);
     assert_eq!(state.cursor(), pos);
     assert_eq!(
         caret_after_render(&buffer, area, &mut state),
@@ -392,7 +396,7 @@ fn line_start_inline_text_does_not_hide_a_revealed_line_end() {
     let Some((x, _)) = state.primary_caret_cell(area, &buffer, &[]) else {
         unreachable!(
             "the end of the line is revealed, scrolled {}",
-            state.scroll_col
+            state.scroll_col()
         );
     };
     assert!(x < area.right());

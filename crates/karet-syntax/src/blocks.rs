@@ -2,67 +2,12 @@
 
 use std::collections::HashMap;
 
+use karet_core::SemanticBlock;
+use karet_core::SemanticBlocks;
 use karet_treesitter::LanguageId;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
 use karet_treesitter::semantic_query;
-
-/// One semantic source block with a header and an enclosing lifetime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SemanticBlock {
-    /// First 0-based source line of the header.
-    pub header_start: u32,
-    /// Last 0-based source line occupied by the header or signature.
-    pub header_end: u32,
-    /// Last 0-based source line for which this header remains the active context.
-    pub scope_end: u32,
-}
-
-impl SemanticBlock {
-    /// Whether `line` is inside the block after its header has scrolled away.
-    #[must_use]
-    pub fn active_at(self, line: u32) -> bool {
-        self.header_start < line && line <= self.scope_end
-    }
-
-    /// Whether the source signature occupies more than one physical line.
-    #[must_use]
-    pub fn has_multiline_header(self) -> bool {
-        self.header_end > self.header_start
-    }
-}
-
-/// Semantic blocks in document order, outer scopes before inner scopes on ties.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SemanticBlocks {
-    blocks: Vec<SemanticBlock>,
-}
-
-impl SemanticBlocks {
-    /// Build a normalized semantic-block collection from external block data.
-    #[must_use]
-    pub fn new(mut blocks: Vec<SemanticBlock>) -> Self {
-        blocks.sort_unstable_by_key(|block| (block.header_start, u32::MAX - block.scope_end));
-        blocks.dedup();
-        Self { blocks }
-    }
-
-    /// Borrow the extracted blocks.
-    #[must_use]
-    pub fn blocks(&self) -> &[SemanticBlock] {
-        &self.blocks
-    }
-
-    /// Return the active outer-to-inner block chain at `line`.
-    #[must_use]
-    pub fn active_at(&self, line: u32) -> Vec<SemanticBlock> {
-        self.blocks
-            .iter()
-            .copied()
-            .filter(|block| block.active_at(line))
-            .collect()
-    }
-}
 
 /// Cached grammar-query runner that derives [`SemanticBlocks`] from syntax trees.
 #[derive(Default)]
@@ -192,21 +137,6 @@ mod tests {
         let mut pool = ParserPool::new();
         let tree = SyntaxTree::parse(&mut pool, lang, text)?;
         Ok(SemanticBlocker::new().analyze(&tree, text))
-    }
-
-    #[test]
-    fn public_model_reports_active_and_multiline_headers() {
-        let block = SemanticBlock {
-            header_start: 1,
-            header_end: 2,
-            scope_end: 8,
-        };
-        assert!(!block.active_at(1));
-        assert!(block.active_at(2));
-        assert!(block.has_multiline_header());
-        let blocks = SemanticBlocks::new(vec![block]);
-        assert_eq!(blocks.blocks(), [block]);
-        assert_eq!(blocks.active_at(4), [block]);
     }
 
     #[test]

@@ -1,3 +1,11 @@
+//! Provider resolution: which server serves a language, and with what launch spec.
+//!
+//! This module maps a language to its built-in provider and builds that
+//! provider's [`LspSpec`] (argv from `catalog`, default initialization options),
+//! looks for a project-local executable and checks `PATH`, finds the repository
+//! root a slot is keyed by, and applies the per-project provider choices
+//! (Python diagnostics, Biome, the project's TypeScript SDK).
+
 use super::*;
 
 /// One built-in provider and the language IDs that resolve to it.
@@ -70,6 +78,23 @@ pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> Optio
             .collect(),
         vec![language.to_owned()],
     ))
+}
+
+/// Give `spec` the `initializationOptions` `provider` needs to start, when
+/// it has none -- a user's own (`lsp.servers.<id>.initializationOptions`)
+/// replace these afterwards.
+///
+/// Copilot's language server asks which editor it serves (`editorInfo`,
+/// `editorPluginInfo`): it names the editor in what it reports to GitHub.
+pub(super) fn default_initialization_options(provider: &LanguageServerId, spec: &mut LspSpec) {
+    if provider.key() != catalog::COPILOT || spec.options.initialization_options.is_some() {
+        return;
+    }
+    let info = serde_json::json!({"name": "karet", "version": env!("CARGO_PKG_VERSION")});
+    spec.options.initialization_options = Some(serde_json::json!({
+        "editorInfo": info,
+        "editorPluginInfo": info,
+    }));
 }
 
 /// Whether `path` is a file this process could actually execute.

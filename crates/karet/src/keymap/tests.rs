@@ -6,7 +6,9 @@ use crate::view::View;
 
 mod carets;
 mod context;
+mod gestures;
 mod hints;
+mod modal;
 mod navigation;
 mod search;
 
@@ -373,42 +375,6 @@ fn word_motion_and_select_all_bind_in_editor() {
         ),
         Some(Command::EditorSelectAll)
     );
-}
-
-/// The keyboard paths `docs/editing-behavior.md` lists for the pointer
-/// gestures a terminal may swallow (its "Modifiers terminals may not deliver"
-/// table) are all bound, so none of those gestures is the only way in.
-#[test]
-fn every_swallowable_gesture_has_a_bound_keyboard_path() {
-    use KeyCode::*;
-    let ctrl = KeyModifiers::CONTROL;
-    let shift = KeyModifiers::SHIFT;
-    let alt = KeyModifiers::ALT;
-    let none = KeyModifiers::NONE;
-    for (code, modifiers, command) in [
-        // Ctrl/Super+click: go to definition.
-        (F(12), none, Command::GoToDefinition),
-        // Alt+click: add carets.
-        (Up, ctrl | alt, Command::AddCursorAbove),
-        (Down, ctrl | alt, Command::AddCursorBelow),
-        (Char('d'), ctrl, Command::AddCursorNextOccurrence),
-        // Shift+click: extend the selection.
-        (Left, shift, Command::SelectLeft),
-        (Right, shift, Command::SelectRight),
-        (Up, shift, Command::SelectUp),
-        (Down, shift, Command::SelectDown),
-        // Shift+Alt+drag: box selection.
-        (Up, ctrl | shift | alt, Command::ColumnSelectUp),
-        (Down, ctrl | shift | alt, Command::ColumnSelectDown),
-        (Left, ctrl | shift | alt, Command::ColumnSelectLeft),
-        (Right, ctrl | shift | alt, Command::ColumnSelectRight),
-    ] {
-        assert_eq!(
-            res(Focus::Editor, false, key(code, modifiers)),
-            Some(command),
-            "{modifiers:?}+{code:?}"
-        );
-    }
 }
 
 #[test]
@@ -859,25 +825,4 @@ fn ctrl_alt_left_goes_back_from_any_focus() {
             Some(Command::JumpForward)
         );
     }
-}
-
-#[test]
-fn alt_arrows_walk_history_outside_the_editor_and_move_by_word_inside_it() {
-    assert_eq!(
-        res(Focus::Sidebar, false, key(KeyCode::Left, KeyModifiers::ALT)),
-        Some(Command::JumpBack)
-    );
-    assert_eq!(
-        res(
-            Focus::Sidebar,
-            false,
-            key(KeyCode::Right, KeyModifiers::ALT)
-        ),
-        Some(Command::JumpForward)
-    );
-    // The editor layer outranks Global: Alt+arrow stays word motion there (#141).
-    assert_eq!(
-        res(Focus::Editor, false, key(KeyCode::Right, KeyModifiers::ALT)),
-        Some(Command::CaretWordRight)
-    );
 }

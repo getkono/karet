@@ -3,19 +3,15 @@
 
     #[cfg(feature = "cbor")]
     #[test]
-    fn corrupt_cbor_answers_not_utf8_like_binary_text() {
-        let Some(dir) = tempfile::tempdir().ok() else {
-            return;
-        };
+    fn corrupt_cbor_answers_not_utf8_like_binary_text() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("broken.cbor");
         // A map header promising an entry, with none: undecodable CBOR.
-        if std::fs::write(&path, [0xa1u8]).is_err() {
-            return;
-        }
+        std::fs::write(&path, [0xa1u8])?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -31,15 +27,14 @@
         }
         assert_eq!(not_utf8_path, Some(path));
         assert!(!opened, "undecodable CBOR must not report as Opened");
+        Ok(())
     }
 
     #[cfg(feature = "docx")]
     #[test]
-    fn convert_document_answers_with_markdown() {
+    fn convert_document_answers_with_markdown() -> TestResult {
         use std::io::Write as _;
-        let Some(dir) = tempfile::tempdir().ok() else {
-            return;
-        };
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("report.docx");
         // A minimal DOCX (one Heading1 paragraph) zipped in-memory.
         const DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
@@ -48,61 +43,42 @@
 </w:body></w:document>"#;
         let mut bytes = Vec::new();
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-        if writer
-            .start_file("word/document.xml", zip::write::SimpleFileOptions::default())
-            .is_err()
-            || writer.write_all(DOCUMENT_XML.as_bytes()).is_err()
-            || writer.finish().is_err()
-        {
-            return;
-        }
-        if std::fs::write(&path, &bytes).is_err() {
-            return;
-        }
+        writer.start_file("word/document.xml", zip::write::SimpleFileOptions::default())?;
+        writer.write_all(DOCUMENT_XML.as_bytes())?;
+        writer.finish()?;
+        std::fs::write(&path, &bytes)?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        session.handle(RequestId(1), Command::ConvertDocument { path: path.clone() });
-        // The conversion runs on its own thread; poll with a deadline.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let markdown = loop {
-            if let Some((_, Event::DocumentConverted { markdown, .. })) = events.try_recv() {
-                break Some(markdown);
-            }
-            if std::time::Instant::now() > deadline {
-                break None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
+        session.handle(RequestId(1), DocumentCommand::Convert { path: path.clone() });
+        // The conversion runs on its own thread; await its answer.
+        let markdown = await_event(&mut events, EVENT_DEADLINE, |_, event| match event {
+            Event::DocumentConverted { markdown, .. } => Some(markdown),
+            _ => None,
+        });
         assert_eq!(markdown, Some(Ok("# Report".to_string())));
+        Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
-    fn cbor_opens_decoded_and_save_reencodes() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn cbor_opens_decoded_and_save_reencodes() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("data.cbor");
         let original = karet_cbor::CborValue::Array(vec![
             karet_cbor::CborValue::Integer(1),
             karet_cbor::CborValue::Integer(2),
         ]);
-        let Ok(bytes) = karet_cbor::encode(&original) else {
-            return;
-        };
-        if std::fs::write(&path, &bytes).is_err() {
-            return;
-        }
+        let bytes = karet_cbor::encode(&original)?;
+        std::fs::write(&path, &bytes)?;
 
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         // The buffer holds decoded diagnostic notation, not the raw CBOR bytes.
         let text = session.document(doc).map(|v| v.buffer().text());
         assert_eq!(text.as_deref(), Some("[\n  1,\n  2\n]"));
@@ -121,7 +97,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -130,7 +106,7 @@
         while events.try_recv().is_some() {}
 
         // Save re-encodes to CBOR; the file on disk decodes to the edited value.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -141,42 +117,36 @@
             }
         }
         assert!(saved, "a cbor save should succeed");
-        let disk = std::fs::read(&path).unwrap_or_default();
+        let disk = std::fs::read(&path)?;
         let expected = karet_cbor::CborValue::Array(vec![
             karet_cbor::CborValue::Integer(1),
             karet_cbor::CborValue::Integer(3),
         ]);
         assert_eq!(karet_cbor::decode(&disk).ok(), Some(expected));
+        Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
-    fn cbor_save_of_malformed_edit_leaves_file_untouched() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn cbor_save_of_malformed_edit_leaves_file_untouched() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bad.cbor");
         let original = karet_cbor::CborValue::Array(vec![
             karet_cbor::CborValue::Integer(1),
             karet_cbor::CborValue::Integer(2),
         ]);
-        let Ok(bytes) = karet_cbor::encode(&original) else {
-            return;
-        };
-        if std::fs::write(&path, &bytes).is_err() {
-            return;
-        }
+        let bytes = karet_cbor::encode(&original)?;
+        std::fs::write(&path, &bytes)?;
 
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
         // Delete the closing ']' (line 3, col 0), making the text un-parseable.
         let change = Change::new(
@@ -191,7 +161,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -200,31 +170,32 @@
         while events.try_recv().is_some() {}
 
         // Save fails to encode; no Saved event, and the file is unchanged.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
         let mut saved = false;
-        let mut failed = false;
+        let mut failure = None;
         while let Some((_, ev)) = events.try_recv() {
             match ev {
                 Event::Saved { .. } => saved = true,
                 Event::Notification {
                     severity: Severity::Error,
+                    message,
                     ..
-                } => failed = true,
+                } => failure = Some(message),
                 _ => {},
             }
         }
         assert!(!saved, "a malformed cbor buffer must not save");
+        let failure = failure.ok_or("the failure should surface as an error notification")?;
+        // The encode error keeps its parse position, rather than being reported
+        // as an I/O failure.
         assert!(
-            failed,
-            "the failure should surface as an error notification"
+            failure.contains("diagnostic notation parse error at line") && !failure.contains("i/o"),
+            "{failure}"
         );
-        assert_eq!(
-            std::fs::read(&path).unwrap_or_default(),
-            bytes,
-            "the file is untouched"
-        );
+        assert_eq!(std::fs::read(&path)?, bytes, "the file is untouched");
+        Ok(())
     }
 

@@ -66,6 +66,23 @@ fn bare_urls_flag_and_wrap_in_angle_brackets() {
     assert!(ids("`https://example.com`\n").is_empty());
 }
 
+/// A URL ends where adjacent HTML begins, so the fix wraps only the URL and
+/// leaves the markup intact. Falsified by `bare_urls` reading `<` as part of
+/// the URL, which turned `<!-- c -->` into `<!-->` and swallowed `<br>`.
+#[test]
+fn bare_url_stops_before_adjacent_html() {
+    assert_eq!(
+        fixed("# T\n\nhttps://example.com<!-- c -->\n"),
+        "# T\n\n<https://example.com><!-- c -->\n"
+    );
+    assert_eq!(
+        fixed("https://example.com<br>\n"),
+        "<https://example.com><br>\n"
+    );
+    // The fixed text is stable: the wrapped URL is an autolink now.
+    assert!(ids("<https://example.com><br>\n").is_empty());
+}
+
 // --- heading rules ---
 
 #[test]
@@ -154,6 +171,58 @@ fn a_single_trailing_newline_is_required() {
     assert_eq!(ids("# T\n\ntext"), vec!["MD047"]);
     assert_eq!(fixed("# T\n\ntext"), "# T\n\ntext\n");
     assert!(ids("# T\n\ntext\n").is_empty());
+}
+
+// --- line endings ---
+
+/// Every fix kind (replace, insert-blank, delete, trailing newline) applied
+/// to a CRLF document yields the LF result with CRLF endings: untouched
+/// lines keep theirs and added lines take the document's. Falsified by
+/// `apply_fixes` re-joining lines with a bare `\n`.
+#[test]
+fn fixes_preserve_crlf_line_endings() {
+    for lf in [
+        "text \nkept\n",
+        "a\tb\nkept\n",
+        "# Title\nBody\n",
+        "a\n\n\n\nb\n",
+        "# T\n\ntext",
+        "# T\n\ntext\n\n\n",
+        "- item\n\n\n- item",
+    ] {
+        let crlf = lf.replace('\n', "\r\n");
+        let expected = fixed(lf).replace('\n', "\r\n");
+        assert_ne!(fixed(lf), lf, "{lf:?} must exercise a fix");
+        assert_eq!(ids(&crlf), ids(lf), "{crlf:?} must lint like {lf:?}");
+        assert_eq!(fixed(&crlf), expected, "{crlf:?}");
+    }
+}
+
+/// A mixed-ending document keeps each untouched line's own ending, and a
+/// fixed line keeps its ending too. Falsified by normalising every line to
+/// one ending style.
+#[test]
+fn fixes_keep_each_lines_own_ending_in_mixed_documents() {
+    assert_eq!(fixed("a\r\nb \nc\r\n"), "a\r\nb\nc\r\n");
+    assert_eq!(fixed("a \r\nb\nc"), "a\r\nb\nc\r\n");
+}
+
+/// Text with nothing to fix comes back byte-identical whatever its endings,
+/// including a lone `\r` that is not part of a line ending.
+#[test]
+fn crlf_text_with_nothing_to_fix_is_returned_unchanged() {
+    for text in [
+        "# T\r\n\r\nBody.\r\n",
+        "# T\r\n\r\nBody.\n",
+        "# T\r\n\r\na\rb\r\n",
+    ] {
+        let issues = lint(text, &base_config());
+        assert!(
+            issues.iter().all(|i| i.fix.is_none()),
+            "{text:?}: {issues:?}"
+        );
+        assert_eq!(apply_fixes(text, &issues), text);
+    }
 }
 
 // --- fences gate content rules ---
@@ -277,9 +346,167 @@ fn md037_survives_odd_runs_of_emphasis_markers() {
         "**a** *** **b**\n",
     ] {
         let issues = lint(text, &Config::default());
-        // The fixes must round-trip too, not just the scan.
-        let _ = apply_fixes(text, &issues);
+        // The fixes must round-trip too, not just the scan: the fixed text
+        // carries nothing left to fix, and fixing it again changes nothing.
+        let out = apply_fixes(text, &issues);
+        let again = lint(&out, &Config::default());
+        assert!(
+            again.iter().all(|i| i.fix.is_none()),
+            "{text:?} fixed to {out:?} still has fixable {again:?}"
+        );
+        assert_eq!(apply_fixes(&out, &again), out, "{text:?}");
+        // Input with nothing to fix comes back byte for byte.
+        if issues.iter().all(|i| i.fix.is_none()) {
+            assert_eq!(out, text);
+        }
     }
+}
+
+/// Text with no fixable issue survives `apply_fixes` unchanged, with or
+/// without a trailing newline (MD047 off, so a missing one is not a fix) and
+/// whatever unfixable issues it carries. Falsified by `apply_fixes`
+/// normalising lines or newlines it was not asked to touch.
+#[test]
+fn text_with_nothing_to_fix_is_returned_unchanged() {
+    let config = Config::from_json(r#"{ "MD047": false }"#).unwrap_or_default();
+    for text in [
+        "",
+        "# Title\n\nBody text.\n",
+        "# Title\n\nBody text.",
+        "plain paragraph\nsecond line\n",
+        "- item\n- item\n",
+    ] {
+        let issues = lint(text, &config);
+        assert!(
+            issues.iter().all(|i| i.fix.is_none()),
+            "{text:?}: {issues:?}"
+        );
+        assert_eq!(apply_fixes(text, &issues), text);
+    }
+}
+
+/// A small deterministic generator (64-bit LCG), so a failure names the seed
+/// that reproduces it.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(self.0 >> 33).unwrap_or(0) % n.max(1)
+    }
+}
+
+/// Every rule scans, and its fixes apply, without panicking on arbitrary
+/// markdown — lint rules slicing on marker positions have panicked on
+/// ordinary text before (MD037 on `***`). Each document is built from
+/// markdown-significant fragments, multi-byte characters among them so a
+/// byte-for-char slice lands mid-character. Falsified by any rule indexing
+/// or slicing without a bounds or boundary check, or reporting a position or
+/// a fix target outside the text it scanned.
+///
+/// Fix convergence is deliberately not asserted here: `apply_fixes` keeps
+/// one whole-line fix per line per pass, so a line two rules fix needs a
+/// second pass by design.
+#[test]
+fn lint_and_fix_never_panic_on_generated_markdown() {
+    const PIECES: &[&str] = &[
+        "x",
+        " ",
+        "  ",
+        "\t",
+        "\n",
+        "\n\n",
+        "#",
+        "# ",
+        "## h",
+        "*",
+        "**",
+        "***",
+        "_",
+        "__",
+        "`",
+        "```",
+        "```rust\n",
+        "~~~",
+        "- ",
+        "* ",
+        "+ ",
+        "1. ",
+        "> ",
+        "| a |",
+        "|---|",
+        "[",
+        "]",
+        "(",
+        ")",
+        "[a]: ",
+        "<",
+        ">",
+        "<br>",
+        "<!-- markdownlint-disable -->",
+        "<!-- markdownlint-enable -->",
+        "<!-- markdownlint-disable MD009 -->",
+        "https://example.com",
+        "!",
+        "\\",
+        "é",
+        "日本",
+        "😀",
+        "\r\n",
+        "---",
+        "===",
+    ];
+    for seed in 1..=300 {
+        let mut rng = Rng(seed);
+        let mut text = String::new();
+        for _ in 0..=rng.below(40) {
+            text.push_str(PIECES.get(rng.below(PIECES.len())).unwrap_or(&"x"));
+        }
+        let out = apply_fixes(&text, &checked_lint(&text, seed));
+        // An MD034 wrap never runs into adjacent HTML (seed 27 once fixed
+        // `https://example.com<br>` to `<https://example.com<br>>`); the
+        // pattern may already sit in the input, so only new ones count.
+        let runs = |s: &str| s.matches("<https://example.com<").count();
+        assert!(
+            runs(&out) <= runs(&text),
+            "seed {seed}: {text:?} -> {out:?}"
+        );
+        // The fixed text must lint and fix again, too.
+        let twice = apply_fixes(&out, &checked_lint(&out, seed));
+        // Fixes may add a final newline, never strip one.
+        if text.ends_with('\n') {
+            assert!(out.ends_with('\n'), "seed {seed}: {text:?} -> {out:?}");
+        }
+        if out.ends_with('\n') {
+            assert!(twice.ends_with('\n'), "seed {seed}: {out:?} -> {twice:?}");
+        }
+    }
+}
+
+/// Lint `text` and require every issue to sit inside it: its line exists,
+/// its column is within (or just past) that line, it spans at least one
+/// character, and any line-addressed fix targets a line `apply_fixes` holds.
+fn checked_lint(text: &str, seed: u64) -> Vec<Issue> {
+    let lines: Vec<&str> = text.lines().collect();
+    let issues = lint(text, &Config::default());
+    for issue in &issues {
+        let ctx = format!("seed {seed}: {issue:?} on {text:?}");
+        assert!(issue.len >= 1, "{ctx}");
+        let line = lines.get(issue.line).copied().unwrap_or("");
+        assert!(issue.line < lines.len().max(1), "{ctx}");
+        assert!(issue.col <= line.chars().count(), "{ctx}");
+        match &issue.fix {
+            Some(Fix::Replace { line, .. } | Fix::Delete { line }) => {
+                assert!(*line < lines.len(), "{ctx}");
+            },
+            Some(Fix::InsertBlankBefore { line }) => assert!(*line <= lines.len(), "{ctx}"),
+            Some(Fix::EnsureTrailingNewline) | None => {},
+        }
+    }
+    issues
 }
 
 #[test]
@@ -288,4 +515,57 @@ fn md037_still_reports_padded_emphasis() {
     let issues = lint(text, &Config::default());
     assert!(issues.iter().any(|i| i.rule == "MD037"), "{issues:?}");
     assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
+}
+
+/// A blank inserted before a line and a fix of that same line both land
+/// (#649). Falsified by applying the insert first: the line shifts down, the
+/// fix overwrites the new blank, and the unfixed original survives beside a
+/// fixed copy.
+#[test]
+fn a_blank_insert_and_a_line_fix_on_one_line_both_apply() {
+    // MD022 blank below the heading + MD009 on line 1.
+    assert_eq!(fixed("## h\nx \n"), "## h\n\nx\n");
+    // MD032 blank above the list + MD009 on line 2.
+    assert_eq!(fixed("# T\ntext\n- a \n"), "# T\n\ntext\n\n- a\n");
+}
+
+/// A `Delete` and a blank insert on one line leave the blank where the line
+/// was, whichever order the issues arrive in. Falsified by inserting first:
+/// the delete then removes the new blank and the line it named survives.
+#[test]
+fn a_delete_and_a_blank_insert_on_one_line_both_apply() {
+    let issue = |fix: Fix| Issue {
+        line: 1,
+        col: 0,
+        len: 1,
+        rule: "TEST",
+        alias: "test",
+        message: String::new(),
+        severity: LintSeverity::Error,
+        fix: Some(fix),
+    };
+    let insert = issue(Fix::InsertBlankBefore { line: 1 });
+    let delete = issue(Fix::Delete { line: 1 });
+    let text = "a\nb\nc\n";
+    let both = [insert.clone(), delete.clone()];
+    assert_eq!(apply_fixes(text, &both), "a\n\nc\n");
+    assert_eq!(apply_fixes(text, &[delete, insert]), "a\n\nc\n");
+}
+
+/// Fence delimiters are never interior; a delimiter of the other character,
+/// or one shorter than the opener, is interior rather than a closer.
+#[test]
+fn the_context_marks_fence_delimiters_apart_from_their_interior() {
+    let text = "a\n```\n~~~\n````\nb\n~~~~\n~~~\n~~~~~\n";
+    let lines: Vec<&str> = text.lines().collect();
+    let config = Config::default();
+    let cx = rules::Context::new(text, &lines, &config);
+    assert_eq!(
+        cx.in_fence,
+        [false, false, true, false, false, false, true, false]
+    );
+    assert_eq!(
+        cx.is_fence_line,
+        [false, true, false, true, false, true, false, true]
+    );
 }

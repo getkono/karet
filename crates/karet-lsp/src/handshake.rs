@@ -12,8 +12,42 @@
 
 use std::path::Path;
 
+use serde_json::Value;
+
 use crate::LspError;
 use crate::uri;
+
+/// What `LspClient::semantic_tokens` asks for and can read: whole-document
+/// requests with deltas, in the relative format, naming every type and
+/// modifier `karet_core`'s vocabulary carries -- the names a token is decoded
+/// by, so a server that tailors its legend to the client's list loses
+/// nothing. Overlapping and multi-line tokens are declined: the overlay is a
+/// flat, line-local layer. `augmentsSyntaxTokens` says the tokens are laid
+/// over a syntax highlighter's, so a server may leave out what syntax shows.
+/// Without dynamic registration, whose options carry the legend the gate
+/// drops.
+fn semantic_token_capabilities() -> lsp_types::SemanticTokensClientCapabilities {
+    lsp_types::SemanticTokensClientCapabilities {
+        dynamic_registration: None,
+        requests: lsp_types::SemanticTokensClientCapabilitiesRequests {
+            range: Some(false),
+            full: Some(lsp_types::SemanticTokensFullOptions::Delta { delta: Some(true) }),
+        },
+        token_types: karet_core::SemanticTokenType::ALL
+            .into_iter()
+            .map(|ty| lsp_types::SemanticTokenType::new(ty.name()))
+            .collect(),
+        token_modifiers: karet_core::SemanticTokenModifiers::ALL
+            .into_iter()
+            .map(|(name, _)| lsp_types::SemanticTokenModifier::new(name))
+            .collect(),
+        formats: vec![lsp_types::TokenFormat::RELATIVE],
+        overlapping_token_support: Some(false),
+        multiline_token_support: Some(false),
+        server_cancel_support: Some(true),
+        augments_syntax_tokens: Some(true),
+    }
+}
 
 /// What this client does with code actions: literals of every kind it groups
 /// by, preferred and disabled flags, and edits deferred to
@@ -127,8 +161,10 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
             // `LspClient::pull_diagnostics`. A registration's options carry
-            // only an identifier and dependency flags, which a pull does not
-            // need, so registering dynamically loses nothing. Related
+            // only an identifier and dependency flags; the registration
+            // handler keeps `interFileDependencies` as
+            // `ServerFeature::InterFileDiagnostics`, so registering
+            // dynamically loses nothing. Related
             // documents' reports are returned beside the asked one's.
             diagnostic: Some(lsp_types::DiagnosticClientCapabilities {
                 dynamic_registration: Some(true),
@@ -154,6 +190,7 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             definition: Some(goto),
             implementation: Some(goto),
+            call_hierarchy: Some(dynamic),
             type_hierarchy: Some(dynamic),
             document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
                 dynamic_registration: Some(true),
@@ -171,6 +208,22 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             formatting: Some(dynamic),
             range_formatting: Some(dynamic),
+            // `LspClient::on_type_formatting`. Without dynamic registration:
+            // its options carry the trigger characters, which the gate drops.
+            on_type_formatting: Some(
+                lsp_types::DocumentOnTypeFormattingClientCapabilities::default(),
+            ),
+            // `LspClient::linked_editing_ranges`, for Start Linked Editing.
+            linked_editing_range: Some(lsp_types::LinkedEditingRangeClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
+            // `LspClient::will_save_wait_until`, asked before every save that
+            // may format; `didSave` is sent after every save.
+            synchronization: Some(lsp_types::TextDocumentSyncClientCapabilities {
+                will_save_wait_until: Some(true),
+                did_save: Some(true),
+                ..lsp_types::TextDocumentSyncClientCapabilities::default()
+            }),
             // `LspClient::selection_ranges`, for Expand Selection.
             selection_range: Some(lsp_types::SelectionRangeClientCapabilities {
                 dynamic_registration: Some(true),
@@ -185,6 +238,36 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             // `workspace.codeLens.refreshSupport`: lenses are re-asked as the
             // text changes instead.
             code_lens: Some(lsp_types::CodeLensClientCapabilities::default()),
+            // `LspClient::document_links`; a deferred target is filled in by
+            // `LspClient::resolve_document_link`, handing `data` back
+            // untouched. Without dynamic registration, for the reason code
+            // lenses go without it: a registration's `resolveProvider` flag
+            // is not read. The tooltip is kept with the link.
+            document_link: Some(lsp_types::DocumentLinkClientCapabilities {
+                dynamic_registration: None,
+                tooltip_support: Some(true),
+            }),
+            // `LspClient::document_colors`, drawn as swatches. Nothing nests
+            // under a registration, so dynamic registration is honoured.
+            color_provider: Some(lsp_types::DocumentColorClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
+            semantic_tokens: Some(semantic_token_capabilities()),
+            // `LspClient::folding_ranges`. Every karet fold hides whole lines,
+            // so the server need not compute columns; a registration carries
+            // only a document selector, so dynamic registration is honoured.
+            folding_range: Some(lsp_types::FoldingRangeClientCapabilities {
+                dynamic_registration: Some(true),
+                line_folding_only: Some(true),
+                folding_range_kind: Some(lsp_types::FoldingRangeKindCapability {
+                    value_set: Some(vec![
+                        lsp_types::FoldingRangeKind::Comment,
+                        lsp_types::FoldingRangeKind::Imports,
+                        lsp_types::FoldingRangeKind::Region,
+                    ]),
+                }),
+                ..lsp_types::FoldingRangeClientCapabilities::default()
+            }),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
         workspace: Some(lsp_types::WorkspaceClientCapabilities {
@@ -194,6 +277,17 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             // Answered, and relayed through `LspClient::refreshes`.
             inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            // Answered, and relayed through `LspClient::refreshes` as
+            // `ServerRefresh::SemanticTokens`.
+            semantic_tokens: Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            // Answered, and relayed through `LspClient::refreshes` as
+            // `ServerRefresh::Diagnostics`. `lsp_types` names the member
+            // `diagnostic`; the spec's `diagnostics` is added by `to_wire`.
+            diagnostic: Some(lsp_types::DiagnosticWorkspaceClientCapabilities {
                 refresh_support: Some(true),
             }),
             // Relayed through `LspClient::apply_edit_requests`.
@@ -245,4 +339,40 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
         capabilities,
         ..lsp_types::InitializeParams::default()
     })
+}
+
+/// `params` as sent, with what `lsp_types` cannot express added.
+///
+/// `lsp_types` 0.97 serializes the workspace diagnostic capability as
+/// `workspace.diagnostic`, while the spec -- and `vscode-languageserver`, which
+/// most servers are built on -- reads `workspace.diagnostics`. Both are sent:
+/// a server built on `lsp_types` reads the first, every other the second.
+///
+/// `textDocument.inlineCompletion` (LSP 3.18) exists in `lsp_types` 0.97 only
+/// behind its `proposed` feature, so it is added here: `LspClient::inline_completion`
+/// asks for it, and its registration carries nothing beyond "on" and a
+/// document selector, so dynamic registration is honoured like the others.
+///
+/// # Errors
+/// Returns [`LspError::Protocol`] if `params` cannot be serialized.
+pub(crate) fn to_wire(params: lsp_types::InitializeParams) -> Result<Value, LspError> {
+    let mut wire =
+        serde_json::to_value(params).map_err(|error| LspError::Protocol(error.to_string()))?;
+    if let Some(workspace) = wire
+        .pointer_mut("/capabilities/workspace")
+        .and_then(Value::as_object_mut)
+        && let Some(diagnostic) = workspace.get("diagnostic").cloned()
+    {
+        workspace.insert("diagnostics".to_owned(), diagnostic);
+    }
+    if let Some(text_document) = wire
+        .pointer_mut("/capabilities/textDocument")
+        .and_then(Value::as_object_mut)
+    {
+        text_document.insert(
+            "inlineCompletion".to_owned(),
+            serde_json::json!({ "dynamicRegistration": true }),
+        );
+    }
+    Ok(wire)
 }

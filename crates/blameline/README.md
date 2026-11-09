@@ -7,22 +7,26 @@
 - Carries the **full commit message**, not just the short hash.
 - **Tree-sitter powered**: narrow blame to the function or block enclosing a line.
 - **Structured output**: every group serializes to
-  `{lines, commit_hash, message, author, date}` via [`serde`], so the result is one
+  `{lines, commit_hash, message, author, date, author_time}` via [`serde`], so the result is one
   `serde_json::to_string` away — ready to pipe into another tool or an AI agent.
 - Works for any bundled tree-sitter language with clear function syntax (Rust,
   Python, JavaScript/TypeScript, Go, C, …).
 
-```rust
+```rust no_run
 use std::path::Path;
 
-// Whole-file semantic blame, grouped by commit.
-let groups = blameline::blame_file(Path::new("."), Path::new("src/parser.rs"))?;
-println!("{}", blameline::to_json(&groups)?);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Whole-file semantic blame, grouped by commit.
+    let groups = blameline::blame_file(Path::new("."), Path::new("src/parser.rs"))?;
+    println!("{}", blameline::to_json(&groups)?);
 
-// Blame narrowed to the function enclosing line 42 (0-based).
-let source = std::fs::read_to_string("src/parser.rs")?;
-let scoped = blameline::blame_function(Path::new("."), Path::new("src/parser.rs"), &source, 42)?;
-# Ok::<(), blameline::BlameError>(())
+    // Blame narrowed to the function enclosing line 42 (1-based, like the output).
+    let source = std::fs::read_to_string("src/parser.rs")?;
+    let scoped =
+        blameline::blame_function(Path::new("."), Path::new("src/parser.rs"), &source, 42)?;
+    println!("{}", blameline::to_json(&scoped)?);
+    Ok(())
+}
 ```
 
 ## Git backend

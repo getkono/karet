@@ -36,7 +36,9 @@ fn titles(app: &App) -> Vec<String> {
 fn go_to_definition_on_a_server_without_it_says_so_once() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
     app.dispatch(Command::GoToDefinition);
-    let Some(id) = sent_id(&backend, |c| matches!(c, SessionCommand::Definition { .. })) else {
+    let Some(id) = sent_id(&backend, |c| {
+        matches!(c, SessionCommand::Lsp(LspCommand::Definition { .. }))
+    }) else {
         unreachable!("the command issues a request");
     };
 
@@ -64,7 +66,7 @@ fn go_to_declaration_on_a_server_without_it_names_declaration_once() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
     app.dispatch(Command::GoToDeclaration);
     let Some(id) = sent_id(&backend, |c| {
-        matches!(c, SessionCommand::FindLocations { .. })
+        matches!(c, SessionCommand::Lsp(LspCommand::FindLocations { .. }))
     }) else {
         unreachable!("the command issues a request");
     };
@@ -91,7 +93,9 @@ fn go_to_declaration_on_a_server_without_it_names_declaration_once() {
 fn hover_on_a_server_without_it_says_so_instead_of_no_information() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
     app.request_hover();
-    let Some(id) = sent_id(&backend, |c| matches!(c, SessionCommand::Hover { .. })) else {
+    let Some(id) = sent_id(&backend, |c| {
+        matches!(c, SessionCommand::Lsp(LspCommand::Hover { .. }))
+    }) else {
         unreachable!("the command issues a request");
     };
 
@@ -113,7 +117,9 @@ fn an_empty_answer_without_a_refusal_still_reads_as_nothing_found() {
     // a server that offers hover and found nothing is still "no information".
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
     app.request_hover();
-    let Some(id) = sent_id(&backend, |c| matches!(c, SessionCommand::Hover { .. })) else {
+    let Some(id) = sent_id(&backend, |c| {
+        matches!(c, SessionCommand::Lsp(LspCommand::Hover { .. }))
+    }) else {
         unreachable!("the command issues a request");
     };
     app.on_backend_event(Some(id), SessionEvent::HoverResult { hover: None });
@@ -130,10 +136,10 @@ fn format_selection_on_a_server_without_it_says_so() {
     let Some(id) = sent_id(&backend, |c| {
         matches!(
             c,
-            SessionCommand::Format(karet_session::FormatRequest {
+            SessionCommand::Lsp(LspCommand::Format(karet_session::FormatRequest {
                 doc: DocumentId(9),
                 scope: karet_session::FormatScope::Ranges(ranges),
-            }) if *ranges == [karet_core::Range {
+            })) if *ranges == [karet_core::Range {
                 start: LineCol::new(1, 3),
                 end: LineCol::new(1, 3),
             }]
@@ -162,10 +168,10 @@ fn format_document_asks_for_the_whole_document() {
         sent_id(&backend, |c| {
             matches!(
                 c,
-                SessionCommand::Format(karet_session::FormatRequest {
+                SessionCommand::Lsp(LspCommand::Format(karet_session::FormatRequest {
                     doc: DocumentId(9),
                     scope: karet_session::FormatScope::Document,
-                })
+                }))
             )
         })
         .is_some()

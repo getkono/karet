@@ -4,25 +4,11 @@
 use tree_sitter_language::LanguageFn;
 
 use super::GrammarInfo;
-#[cfg(any(
-    feature = "lang-scss",
-    feature = "lang-sass",
-    feature = "lang-less",
-    feature = "lang-erb",
-    feature = "lang-mdx"
-))]
-use crate::LanguageId;
-
-#[cfg(feature = "lang-scss")]
-pub(super) const SCSS: LanguageId = LanguageId(54);
-#[cfg(feature = "lang-sass")]
-pub(super) const SASS: LanguageId = LanguageId(55);
-#[cfg(feature = "lang-less")]
-pub(super) const LESS: LanguageId = LanguageId(56);
-#[cfg(feature = "lang-erb")]
-pub(super) const ERB: LanguageId = LanguageId(57);
-#[cfg(feature = "lang-mdx")]
-pub(super) const MDX: LanguageId = LanguageId(58);
+#[allow(
+    unused_imports,
+    reason = "a build with none of these grammars compiles no constant to import"
+)]
+use crate::languages::ids::*;
 
 #[cfg(feature = "lang-sass")]
 unsafe extern "C" {
@@ -101,6 +87,42 @@ pub(super) const PHP_HTML_INJECTION: &str = r#"
  (#set! injection.combined))
 "#;
 
+// tree-sitter-vue-next 0.1 publishes its queries under `queries/vue/`, while
+// its Rust binding currently looks only in `queries/`. Keep the small Karet
+// query here until the crate exposes those constants correctly.
+#[cfg(feature = "lang-vue")]
+pub(super) const VUE_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(doctype) @keyword
+(tag_name) @tag
+(attribute_name) @tag.attribute
+(directive_name) @tag.attribute
+(directive_value) @variable
+(attribute_value) @string
+(quoted_attribute_value) @string
+["<" ">" "</" "/>" "="] @punctuation.delimiter
+"#;
+
+#[cfg(feature = "lang-vue")]
+pub(super) const VUE_INJECTIONS: &str = r#"
+((style_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (quoted_attribute_value (attribute_value) @injection.language)))
+  (raw_text) @injection.content)
+ (#eq? @_attr "lang"))
+((script_element
+  (start_tag
+    (attribute
+      (attribute_name) @_attr
+      (quoted_attribute_value (attribute_value) @injection.language)))
+  (raw_text) @injection.content)
+ (#eq? @_attr "lang"))
+((interpolation (raw_text) @injection.content)
+ (#set! injection.language "typescript"))
+"#;
+
 // The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
 pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
@@ -123,6 +145,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_scss::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-sass")]
     grammars.push(GrammarInfo {
@@ -136,6 +161,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
             "../../vendor/tree-sitter-sass/queries/injections.scm"
         )),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-less")]
     grammars.push(GrammarInfo {
@@ -147,6 +175,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_less::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-erb")]
     grammars.push(GrammarInfo {
@@ -158,6 +189,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_embedded_template::HIGHLIGHTS_QUERY,
         injections: Some(tree_sitter_embedded_template::INJECTIONS_ERB_QUERY),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-mdx")]
     grammars.push(GrammarInfo {
@@ -171,5 +205,8 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
             "../../vendor/tree-sitter-mdx/queries/injections.scm"
         )),
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
 }

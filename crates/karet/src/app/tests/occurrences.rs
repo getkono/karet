@@ -4,10 +4,10 @@
 //! when the caret leaves every occurrence, the text changes, or a selection
 //! is made.
 
+use karet_core::DocumentHighlight;
+use karet_core::HighlightKind;
 use karet_core::Range;
 use karet_session::LSP_CHANGE_DEBOUNCE;
-use karet_session::api::DocumentHighlight;
-use karet_session::api::HighlightKind;
 
 use super::support::*;
 use crate::app::*;
@@ -23,7 +23,9 @@ fn asks(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::DocumentHighlights { position, .. } => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::DocumentHighlights { position, .. }) => {
+                        Some((*id, *position))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -126,9 +128,9 @@ fn the_servers_occurrences_are_painted_writes_apart_from_reads() {
     assert_eq!(
         painted(&app),
         vec![
-            (span(0, 4, 9), Some(ThemeRole::MatchingBracket)),
-            (span(1, 0, 5), Some(ThemeRole::HoverHighlight)),
-            (span(2, 6, 11), Some(ThemeRole::HoverHighlight)),
+            (span(0, 4, 9), Some(ThemeRole::WordHighlightStrong)),
+            (span(1, 0, 5), Some(ThemeRole::WordHighlight)),
+            (span(2, 6, 11), Some(ThemeRole::WordHighlight)),
         ]
     );
 }
@@ -141,7 +143,7 @@ fn with_no_server_answer_the_word_is_matched_as_text() {
     settle(&mut app, Instant::now());
     let (id, _) = asks(&backend)[0];
     answer(&mut app, id, None);
-    let role = Some(ThemeRole::HoverHighlight);
+    let role = Some(ThemeRole::WordHighlight);
     assert_eq!(
         painted(&app),
         vec![
@@ -255,7 +257,7 @@ fn an_answer_for_a_caret_that_moved_on_is_dropped() {
     answer(&mut app, id, None);
     assert_eq!(
         painted(&app),
-        vec![(span(2, 0, 5), Some(ThemeRole::HoverHighlight))]
+        vec![(span(2, 0, 5), Some(ThemeRole::WordHighlight))]
     );
 }
 
@@ -271,7 +273,7 @@ fn the_occurrences_are_drawn_behind_the_text() {
     answer(&mut app, id, Some(found));
 
     let buffer = frame(&mut app, 80, 20);
-    let want = app.theme.role(ThemeRole::MatchingBracket).to_ratatui();
+    let want = app.theme.role(ThemeRole::WordHighlightStrong).to_ratatui();
     // The cell where `let value` is drawn, found cell by cell: the gutter's
     // glyphs make byte offsets in a joined row useless as columns.
     let spells = |x: u16, y: u16| {

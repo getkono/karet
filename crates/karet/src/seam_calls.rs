@@ -10,9 +10,9 @@ use std::path::Path;
 use karet_seam::Bound;
 use karet_seam::CallGraph;
 use karet_seam::GraphOptions;
+use karet_seam::ReportOptions;
 use karet_seam::SeamPath;
-use karet_seam::calls::ReportOptions;
-use karet_seam::calls::TreeLimits;
+use karet_seam::TreeLimits;
 
 use crate::cli::SeamFormat;
 use crate::seam_query::QueryFailure;
@@ -49,7 +49,7 @@ pub(crate) fn run_report(
         }
         nodes
     };
-    let report = karet_seam::calls::report(
+    let report = karet_seam::report(
         &index,
         &GraphOptions {
             configuration: active,
@@ -110,7 +110,7 @@ pub(crate) fn run_call_tree(
             ..GraphOptions::default()
         },
     );
-    let tree = karet_seam::calls::call_tree(&index, &graph, id, Bound::Lower, TreeLimits::FULL)
+    let tree = karet_seam::call_tree(&index, &graph, id, Bound::Lower, TreeLimits::FULL)
         .ok_or_else(|| {
             fail(format!(
                 "`{function}` is not a function this configuration includes"
@@ -137,7 +137,7 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn package() -> Result<Option<tempfile::TempDir>, Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(None);
         }
         let dir = tempfile::tempdir()?;

@@ -14,10 +14,11 @@ async fn open(
 ) -> Result<(DocumentId, u64), Box<dyn std::error::Error + Send + Sync>> {
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     Ok(await_opened(events).await.ok_or("no Opened")?)
 }
@@ -61,11 +62,12 @@ async fn an_item_lists_and_resolves_through_the_seam_in_buffer_columns() -> Test
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: LineCol::new(0, 3),
             trigger: CompletionTrigger::Character('.'),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::Completions {
         items,
@@ -91,10 +93,11 @@ async fn an_item_lists_and_resolves_through_the_seam_in_buffer_columns() -> Test
     let request = backend.next_id();
     backend.send(
         request,
-        Command::ResolveCompletion {
+        LspCommand::ResolveCompletion {
             doc,
             item: item.clone(),
-        },
+        }
+        .into(),
     )?;
     let Some(Event::CompletionResolved {
         doc: answered,
@@ -157,7 +160,7 @@ async fn an_item_no_server_resolves_is_answered_with_nothing() -> TestResult {
         ..CompletionItem::new("x", karet_core::CompletionKind::Text)
     };
     let request = backend.next_id();
-    backend.send(request, Command::ResolveCompletion { doc, item })?;
+    backend.send(request, LspCommand::ResolveCompletion { doc, item }.into())?;
     let Some(Event::CompletionResolved { resolved, .. }) = answer_to(&mut events, request).await
     else {
         return Err("no resolve answer".into());

@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use karet_core::LineIndex;
 use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
@@ -35,7 +36,6 @@ use crate::model::Node;
 use crate::model::NodeKind;
 use crate::model::SeamLocation;
 use crate::rollup::Rollups;
-use crate::text::LineIndex;
 
 /// Errors extracting a file into the index.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,7 +57,6 @@ struct Frame {
     depth: u16,
     id: SeamId,
     kind: NodeKind,
-    name: String,
     path: SeamPath,
     type_parameters: Vec<String>,
 }
@@ -67,7 +66,7 @@ struct Frame {
 /// The package walk resolves these; a single-file extraction cannot, because the file it
 /// would have to read is exactly what it does not have.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExternalModule {
+pub(crate) struct ExternalModule {
     /// The module node already added to the index, awaiting its contents.
     pub id: SeamId,
     /// The declared module name.
@@ -80,7 +79,7 @@ pub struct ExternalModule {
 
 /// What one file's extraction produced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ExtractOutcome {
+pub(crate) struct ExtractOutcome {
     /// Every node added, in source order.
     pub added: Vec<SeamId>,
     /// Module declarations whose bodies live elsewhere.
@@ -104,7 +103,7 @@ pub struct ExtractOutcome {
 /// [`ExtractError::NoGrammar`] when the grammar is not compiled in,
 /// [`ExtractError::NoMapping`] when the language has no seam mapping, and
 /// [`ExtractError::ParseFailed`] when no tree could be produced at all.
-pub fn extract_file(
+pub(crate) fn extract_file(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
     parent: SeamId,
@@ -112,8 +111,47 @@ pub fn extract_file(
     language: LanguageId,
     text: &str,
 ) -> Result<ExtractOutcome, ExtractError> {
+    let parsed = parse_file(pool, language, text)?;
+    Ok(extract_parsed(index, parent, file, language, &parsed, text))
+}
+
+/// A file paired with its mapping and parsed, but not yet extracted into any index.
+pub(crate) struct ParsedFile {
+    mapping: &'static dyn SeamLanguage,
+    tree: SyntaxTree,
+}
+
+/// The fallible half of [`extract_file`]: resolve the mapping and parse, touching no index.
+///
+/// Split out so a caller that must first clear the file's old nodes (a re-index) can do
+/// every step that may fail *before* it removes anything, and never strands the index
+/// without the file's nodes.
+///
+/// # Errors
+/// [`ExtractError::NoMapping`] when the language has no seam mapping, and
+/// [`ExtractError::ParseFailed`] when no tree could be produced at all.
+pub(crate) fn parse_file(
+    pool: &mut ParserPool,
+    language: LanguageId,
+    text: &str,
+) -> Result<ParsedFile, ExtractError> {
     let mapping = for_language(language).ok_or(ExtractError::NoMapping)?;
     let tree = SyntaxTree::parse(pool, language, text).map_err(|_| ExtractError::ParseFailed)?;
+    Ok(ParsedFile { mapping, tree })
+}
+
+/// The infallible half of [`extract_file`]: extract an already-parsed file into `index`,
+/// nested under `parent`.
+pub(crate) fn extract_parsed(
+    index: &mut SeamIndex,
+    parent: SeamId,
+    file: FileId,
+    language: LanguageId,
+    parsed: &ParsedFile,
+    text: &str,
+) -> ExtractOutcome {
+    let ParsedFile { mapping, tree } = parsed;
+    let mapping = *mapping;
     let parent_path = index.path(parent).cloned().unwrap_or_default();
     // The root frame takes the real parent's kind. Assuming a module here would make a
     // crate-root `fn main` look like an ordinary nested function rather than an entry point.
@@ -131,18 +169,18 @@ pub fn extract_file(
             depth: 0,
             id: parent,
             kind: parent_kind,
-            name: String::new(),
             path: parent_path,
             type_parameters: Vec::new(),
         }],
+        modules: Vec::new(),
         pending: Vec::new(),
         ordinals: HashMap::new(),
         outcome: ExtractOutcome::default(),
     };
     tree.walk(|node| extractor.visit(node));
     let outcome = extractor.outcome;
-    crate::calls::extract::annotate(index, &tree, mapping, language, text, file, &outcome.added);
-    Ok(outcome)
+    crate::calls::extract::annotate(index, tree, mapping, language, text, file, &outcome.added);
+    outcome
 }
 
 /// Walk state: the containment stack, pending attributes, and sibling ordinals.
@@ -153,6 +191,8 @@ struct Extractor<'a> {
     lines: &'a LineIndex,
     file: FileId,
     stack: Vec<Frame>,
+    /// The names of the module frames above frame 0, kept in step with `stack`.
+    modules: Vec<String>,
     pending: Vec<(u16, Attribute)>,
     ordinals: HashMap<(SeamId, String), u32>,
     outcome: ExtractOutcome,
@@ -164,7 +204,9 @@ impl Extractor<'_> {
         let depth = node.depth();
         // Everything deeper than this node is finished, so unwind to its level.
         while self.stack.len() > 1 && self.stack.last().is_some_and(|f| f.depth >= depth) {
-            self.stack.pop();
+            if self.stack.pop().is_some_and(|f| f.kind == NodeKind::Module) {
+                self.modules.pop();
+            }
         }
 
         // A decoration is read by the language, since only it knows what one looks
@@ -219,6 +261,7 @@ impl Extractor<'_> {
             lines: self.lines,
             attributes,
             container: self.stack.last().map(|f| f.kind),
+            modules: &self.modules,
             type_parameters: self.stack.last().map_or(&[][..], |f| &f.type_parameters),
         }
     }
@@ -255,7 +298,9 @@ impl Extractor<'_> {
         let id = self.index.intern(path.clone());
         let type_parameters = self.mapping.type_parameters(node, self.text);
 
-        let name = classified.name.clone();
+        if classified.kind == NodeKind::Module {
+            self.modules.push(classified.name.clone());
+        }
         self.index.insert(Node {
             id,
             kind: classified.kind,
@@ -281,7 +326,6 @@ impl Extractor<'_> {
             depth,
             id,
             kind: classified.kind,
-            name,
             path,
             type_parameters,
         });
@@ -294,12 +338,7 @@ impl Extractor<'_> {
     /// opened by a `mod … { … }` in this file, and each one deepens where a nested
     /// `mod x;` looks for its file.
     fn inline_module_path(&self) -> Vec<String> {
-        self.stack
-            .iter()
-            .skip(1)
-            .filter(|frame| frame.kind == NodeKind::Module)
-            .map(|frame| frame.name.clone())
-            .collect()
+        self.modules.clone()
     }
 
     /// Disambiguate a segment against its siblings.

@@ -236,14 +236,5 @@ fn has_c_sources(directory: &Path) -> bool {
 
 /// A directory's subdirectories, sorted, skipping the ones never worth walking.
 fn children(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !scan::skipped(path))
-        .collect();
-    out.sort();
-    out
+    scan::subdirs(directory, scan::skipped)
 }

@@ -50,7 +50,8 @@ const SCHEMA: u32 = 2;
 fn languages() -> Vec<u16> {
     let mut out: Vec<u16> = karet_seam::lang::registered()
         .iter()
-        .map(|language| language.language().0)
+        .filter_map(|language| language.language())
+        .map(karet_treesitter::LanguageId::get)
         .collect();
     out.sort_unstable();
     out
@@ -60,16 +61,10 @@ fn languages() -> Vec<u16> {
 ///
 /// Deliberately not `DefaultHasher`: the standard library does not promise its output
 /// stays the same across releases, and this names a file that has to be found again after
-/// a toolchain upgrade. FNV-1a is fixed by its definition.
+/// a toolchain upgrade. [`karet_text::content_fingerprint`] is FNV-1a, fixed by its
+/// definition.
 fn workspace_key(root: &Path) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for byte in root.as_os_str().as_encoded_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
+    karet_text::content_fingerprint(root.as_os_str().as_encoded_bytes())
 }
 
 /// The per-user directory seam caches belong in, for a host that wants the default.
@@ -78,7 +73,7 @@ fn workspace_key(root: &Path) -> u64 {
 /// this costs a rebuild, and nothing else.
 #[must_use]
 pub fn default_cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "karet").map(|dirs| dirs.cache_dir().join("seam"))
+    crate::dirs::cache_dir().map(|dir| dir.join("seam"))
 }
 
 /// Where this workspace's cache lives under `dir`.
@@ -104,7 +99,7 @@ impl Header {
             schema: SCHEMA,
             engine: env!("CARGO_PKG_VERSION").to_owned(),
             languages: languages(),
-            calls: karet_seam::calls::extract::fingerprint(),
+            calls: karet_seam::call_query_fingerprint(),
             root: root.to_path_buf(),
         }
     }
@@ -114,7 +109,7 @@ impl Header {
         self.schema == SCHEMA
             && self.engine == env!("CARGO_PKG_VERSION")
             && self.languages == languages()
-            && self.calls == karet_seam::calls::extract::fingerprint()
+            && self.calls == karet_seam::call_query_fingerprint()
             && self.root == root
     }
 }
@@ -298,6 +293,15 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    #[test]
+    fn the_default_dir_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into.
+        assert_eq!(
+            default_cache_dir(),
+            crate::dirs::cache_dir().map(|dir| dir.join("seam"))
+        );
+    }
+
     fn contribution(file: &Path) -> FileContribution {
         FileContribution {
             file: file.to_path_buf(),
@@ -314,14 +318,14 @@ mod tests {
             unresolved: Vec::new(),
             callables: vec![karet_seam::CachedCallable {
                 node: 0,
-                callable: karet_seam::calls::site::Callable {
+                callable: karet_seam::Callable {
                     code_lines: 3,
                     span_lines: 4,
                     has_body: true,
-                    sites: vec![karet_seam::calls::site::CallSite {
+                    sites: vec![karet_seam::CallSite {
                         name: Some("helper".to_owned()),
                         qualifier: Some("util".to_owned()),
-                        receiver: Some(karet_seam::calls::site::Receiver::SelfRef),
+                        receiver: Some(karet_seam::Receiver::SelfRef),
                         construct: false,
                         external: false,
                         weak: true,
@@ -329,8 +333,8 @@ mod tests {
                     }],
                 },
             }],
-            file_calls: karet_seam::calls::site::FileCalls {
-                imports: vec![karet_seam::calls::site::Import {
+            file_calls: karet_seam::FileCalls {
+                imports: vec![karet_seam::Import {
                     segments: vec!["std".to_owned(), "fmt".to_owned()],
                     alias: Some("f".to_owned()),
                     glob: false,
@@ -339,6 +343,21 @@ mod tests {
                 loose_sites: 1,
             },
         }
+    }
+
+    #[test]
+    fn the_cache_file_name_is_fixed_by_its_definition() {
+        // The name must still be found after a toolchain upgrade, so these are
+        // golden FNV-1a values, not whatever a std hasher produces today.
+        let dir = Path::new("/cache");
+        assert_eq!(
+            path_for(dir, Path::new("")),
+            dir.join("cbf29ce484222325.cbor")
+        );
+        assert_eq!(
+            path_for(dir, Path::new("a")),
+            dir.join("af63dc4c8601ec8c.cbor")
+        );
     }
 
     #[test]

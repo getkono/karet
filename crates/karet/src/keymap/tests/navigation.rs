@@ -69,6 +69,35 @@ fn ctrl_t_goes_to_a_workspace_symbol_beside_its_neighbours() {
     );
 }
 
+/// VS Code parity: Ctrl+Shift+F2 starts linked editing, beside F2's rename.
+#[test]
+fn ctrl_shift_f2_starts_linked_editing_in_the_editor() {
+    let chord = key(KeyCode::F(2), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        res(Focus::Editor, false, chord),
+        Some(Command::StartLinkedEditing)
+    );
+    assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::F(2), KeyModifiers::NONE)),
+        Some(Command::RenameSymbol)
+    );
+}
+
+/// VS Code's Show Call Hierarchy chord, Shift+Alt+H, opens the incoming
+/// calls from the editor only; the other directions are palette commands.
+#[test]
+fn shift_alt_h_shows_incoming_calls_from_the_editor() {
+    let shift_alt_h = key(KeyCode::Char('H'), KeyModifiers::SHIFT | KeyModifiers::ALT);
+    assert_eq!(
+        res(Focus::Editor, false, shift_alt_h),
+        Some(Command::ShowIncomingCalls)
+    );
+    assert_ne!(
+        res(Focus::Sidebar, false, shift_alt_h),
+        Some(Command::ShowIncomingCalls)
+    );
+}
+
 /// VS Code's formatting chords, from the editor only: Shift+Alt+F formats the
 /// document and `Ctrl+K Ctrl+F` the selections.
 #[test]
@@ -91,5 +120,26 @@ fn formatting_chords_bind_in_the_editor() {
     assert_eq!(
         hint_for(Command::FormatSelection, ChordStyle::Verbose).as_deref(),
         Some("Ctrl+K Ctrl+F")
+    );
+}
+
+#[test]
+fn alt_arrows_walk_history_outside_the_editor_and_move_by_word_inside_it() {
+    assert_eq!(
+        res(Focus::Sidebar, false, key(KeyCode::Left, KeyModifiers::ALT)),
+        Some(Command::JumpBack)
+    );
+    assert_eq!(
+        res(
+            Focus::Sidebar,
+            false,
+            key(KeyCode::Right, KeyModifiers::ALT)
+        ),
+        Some(Command::JumpForward)
+    );
+    // The editor layer outranks Global: Alt+arrow stays word motion there (#141).
+    assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::Right, KeyModifiers::ALT)),
+        Some(Command::CaretWordRight)
     );
 }

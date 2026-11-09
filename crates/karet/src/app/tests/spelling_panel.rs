@@ -66,10 +66,11 @@ fn activating_a_word_row_opens_its_file_at_the_misspelling() {
     // Row 0 is the file heading, row 1 the word.
     app.spelling.selection.move_to(1);
     app.open_selected_spelling();
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.tabs[app.active].path(), Some(path.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -89,6 +90,7 @@ fn activating_a_file_heading_jumps_to_that_files_first_misspelling() {
 
     app.spelling.selection.move_to(0); // the heading
     app.open_selected_spelling();
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
 
@@ -155,6 +157,7 @@ fn clicking_a_result_row_opens_it() {
 
     // y = 3 is the second row: the word under its file heading.
     app.spelling_click(4, 3);
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.tabs[app.active].path(), Some(path.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 4));
@@ -276,7 +279,7 @@ fn a_panel_that_never_scanned_ignores_document_spelling_updates() {
 }
 
 /// A `ConfigChanged` carrying `settings`, as the watcher's reload would deliver it.
-fn config_changed(app: &mut App, settings: karet_session::config::Settings) {
+fn config_changed(app: &mut App, settings: karet_session::Settings) {
     app.on_backend_event(
         None,
         SessionEvent::ConfigChanged {
@@ -397,7 +400,7 @@ fn re_showing_the_panel_does_not_rescan_results_it_already_has() {
 
     assert_eq!(app.spelling.hits.len(), 1);
     assert_eq!(app.sidebar_panel, SidebarPanel::Spelling);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -67,10 +67,22 @@ fn attach(index: &mut SeamIndex, id: SeamId, owners: &[Owner]) -> Option<HashMap
         .find_map(|owner| resolve(index, id, &owner.name).map(|target| (owner, target)));
     let (owner, target) = owner?;
     if owner.dissolve {
-        Some(dissolve(index, id, target))
-    } else {
-        Some(index.relocate(id, target, owner.rename.clone()))
+        return Some(dissolve(index, id, target));
     }
+    let remap = index.relocate(id, target, owner.rename.clone());
+    let moved = remap.get(&id).copied().unwrap_or(id);
+    let under_module = index
+        .node(target)
+        .is_some_and(|t| t.kind == NodeKind::Module)
+        && index.node(moved).is_some_and(|n| n.parent == Some(target));
+    if let (Some(form), true) = (&owner.in_module, under_module)
+        && let Some(node) = index.node_mut(moved)
+    {
+        node.kind = form.kind;
+        node.visibility = form.visibility;
+        node.facets.clone_from(&form.facets);
+    }
+    Some(remap)
 }
 
 /// Lift `id`'s children into `target` and drop `id` itself.

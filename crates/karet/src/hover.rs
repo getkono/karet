@@ -1,6 +1,6 @@
 //! Hover UI state and pure helpers.
 //!
-//! The app talks to LSP only through the session seam: `Command::Hover` goes
+//! The app talks to LSP only through the session seam: `LspCommand::Hover` goes
 //! out, the answering `Event::HoverResult` (correlated by request id) fills
 //! [`HoverUi`], and the popup renders through `karet_widgets::hover`. The
 //! popup also carries the diagnostics under the caret, so one keystroke
@@ -164,7 +164,7 @@ pub(crate) fn hover_markup(
 /// pretty rendering is on and a formatter claims the diagnostic, else the raw
 /// message.
 fn display_message(d: &Diagnostic, pretty: bool) -> std::borrow::Cow<'_, str> {
-    if pretty && let Some(formatted) = karet_session::ts_errors::format_diagnostic(d) {
+    if pretty && let Some(formatted) = crate::ts_errors::format_diagnostic(d) {
         return std::borrow::Cow::Owned(formatted.markdown);
     }
     std::borrow::Cow::Borrowed(&d.message)

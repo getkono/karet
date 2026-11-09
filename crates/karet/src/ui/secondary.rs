@@ -205,7 +205,7 @@ pub(super) fn draw_markdown_preview(
     if *preview.rendered != Some(key) {
         let mut doc = karet_markdown::parse(&preview.buffer.text());
         if let Some(languages) = preview.env.mermaid {
-            substitute_mermaid(&mut doc.blocks, languages);
+            substitute_mermaid(&mut doc, languages);
         }
         let sizer = images.sizer(preview.source, preview.root);
         let sizer = super::markdown_images::StyledSizer::new(&sizer, preview.env.icon_style);
@@ -381,10 +381,9 @@ pub(super) fn hint_segment(hint: &keymap::Hint) -> String {
 }
 
 /// The terminal-cell width of `s` (display width, wide/combining aware — unlike a
-/// raw `chars().count()`), via ratatui's own measurement so no extra dependency is
-/// pulled in.
+/// raw `chars().count()`), saturating at `u16::MAX`.
 pub(super) fn cell_width(s: &str) -> u16 {
-    u16::try_from(Span::raw(s).width()).unwrap_or(u16::MAX)
+    u16::try_from(karet_widgets::text::width(s)).unwrap_or(u16::MAX)
 }
 
 /// How many leading `hints` fit in `avail` columns when joined by [`HINT_SEP`].
@@ -449,183 +448,18 @@ pub(super) fn render_hints(
     }
 }
 
-/// Replace mermaid fences with their rendered diagrams, recursing into
-/// quotes, list items and aligned HTML containers. Unsupported or unparsable diagrams keep their
-/// source under a one-line note. The renderer (parser + layout engine) is
-/// reused across fences and frames.
+/// Replace the fences in `languages` with their rendered diagrams, through a
+/// renderer (parser + layout engine) reused across fences and frames.
 #[cfg(feature = "mermaid")]
-fn substitute_mermaid(blocks: &mut Vec<karet_markdown::Block>, languages: &[String]) {
-    use karet_markdown::Block;
+fn substitute_mermaid(doc: &mut karet_markdown::MarkdownDocument, languages: &[String]) {
     use karet_markdown::mermaid::MermaidCharset;
-    use karet_markdown::mermaid::MermaidOutcome;
     use karet_markdown::mermaid::MermaidRenderer;
     thread_local! {
         static RENDERER: MermaidRenderer = MermaidRenderer::new(MermaidCharset::Unicode);
     }
-    // Rebuilt rather than edited in place: an unsupported diagram gains a
-    // paragraph ahead of its source, and a paragraph is what makes the reason
-    // wrap. Folding it into the code block instead would leave it preformatted,
-    // and a narrow preview pane would clip away the very part that explains
-    // itself (the diagram type).
-    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
-    for mut block in std::mem::take(blocks) {
-        match &mut block {
-            Block::CodeBlock {
-                lang: lang @ Some(_),
-                code,
-            } if lang
-                .as_deref()
-                .is_some_and(|l| languages.iter().any(|name| name.eq_ignore_ascii_case(l))) =>
-            {
-                match RENDERER.with(|renderer| renderer.render(code)) {
-                    MermaidOutcome::Diagram(lines) => {
-                        *lang = None;
-                        *code = lines.join("\n");
-                    },
-                    MermaidOutcome::Unsupported { reason } => {
-                        *lang = None;
-                        out.push(Block::Paragraph(vec![karet_markdown::Inline::Text(
-                            format!("mermaid: {reason} — showing source"),
-                        )]));
-                    },
-                }
-            },
-            Block::Quote(inner) | Block::Aligned { blocks: inner, .. } => {
-                substitute_mermaid(inner, languages);
-            },
-            Block::List { items, .. } => {
-                for item in items {
-                    substitute_mermaid(&mut item.blocks, languages);
-                }
-            },
-            _ => {},
-        }
-        out.push(block);
-    }
-    *blocks = out;
+    RENDERER.with(|renderer| doc.substitute_mermaid(renderer, languages));
 }
 
 /// Compiled out: fences pass through untouched.
 #[cfg(not(feature = "mermaid"))]
-fn substitute_mermaid(_blocks: &mut Vec<karet_markdown::Block>, _languages: &[String]) {}
-
-#[cfg(all(test, feature = "mermaid"))]
-mod mermaid_tests {
-    use karet_markdown::Block;
-    use karet_markdown::Inline;
-
-    use super::substitute_mermaid;
-
-    fn fence(lang: &str, code: &str) -> Block {
-        Block::CodeBlock {
-            lang: Some(lang.to_owned()),
-            code: code.to_owned(),
-        }
-    }
-
-    /// The text of a paragraph block, if it is one.
-    fn paragraph_text(block: &Block) -> Option<String> {
-        match block {
-            Block::Paragraph(inlines) => Some(
-                inlines
-                    .iter()
-                    .map(|i| match i {
-                        Inline::Text(t) => t.clone(),
-                        _ => String::new(),
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn a_renderable_diagram_replaces_the_fence_in_place() {
-        let mut blocks = vec![fence("mermaid", "flowchart TD\n    A[Start] --> B[End]\n")];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        assert_eq!(blocks.len(), 1, "no explanatory paragraph is added");
-        let Some(Block::CodeBlock { lang, code }) = blocks.first() else {
-            panic!("expected a code block, got {blocks:?}");
-        };
-        assert!(
-            lang.is_none(),
-            "the rendered diagram is not source any more"
-        );
-        assert!(code.contains('─'), "box drawing reached the block: {code}");
-    }
-
-    #[test]
-    fn an_unsupported_diagram_explains_itself_in_a_wrappable_paragraph() {
-        // The reason must be a paragraph, not part of the code block: a code
-        // block is preformatted, so a narrow preview pane would clip the very
-        // words naming the diagram type.
-        let mut blocks = vec![fence("mermaid", "gitGraph\n    commit\n")];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        assert_eq!(blocks.len(), 2, "reason paragraph, then the source");
-        let Some(note) = paragraph_text(&blocks[0]) else {
-            panic!("the reason must be a paragraph, got {:?}", blocks[0]);
-        };
-        assert!(note.starts_with("mermaid: "), "{note}");
-        assert!(note.ends_with(" — showing source"), "{note}");
-        let Some(Block::CodeBlock { code, .. }) = blocks.get(1) else {
-            panic!("the source must survive, got {:?}", blocks.get(1));
-        };
-        assert!(code.contains("gitGraph"), "{code}");
-        assert!(
-            !code.contains("mermaid:"),
-            "the reason must not be inside the block: {code}"
-        );
-    }
-
-    #[test]
-    fn a_diagram_inside_an_aligned_html_container_is_substituted() {
-        let mut blocks = vec![Block::Aligned {
-            align: karet_markdown::Alignment::Center,
-            blocks: vec![fence("mermaid", "flowchart TD\n    A --> B\n")],
-        }];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-        assert!(matches!(
-            blocks.first(),
-            Some(Block::Aligned { blocks: inner, .. })
-                if matches!(inner.first(), Some(Block::CodeBlock { lang: None, .. }))
-        ));
-    }
-
-    #[test]
-    fn a_fence_in_another_language_is_left_alone() {
-        let mut blocks = vec![fence("rust", "fn main() {}\n")];
-        let before = blocks.clone();
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-        assert_eq!(blocks, before);
-    }
-
-    #[test]
-    fn diagrams_nested_in_quotes_and_lists_are_substituted_too() {
-        let mut blocks = vec![
-            Block::Quote(vec![fence("mermaid", "gitGraph\n    commit\n")]),
-            Block::List {
-                start: None,
-                items: vec![karet_markdown::ListItem {
-                    blocks: vec![fence("mermaid", "gitGraph\n    commit\n")],
-                    task: None,
-                }],
-            },
-        ];
-        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
-
-        let Some(Block::Quote(inner)) = blocks.first() else {
-            panic!("expected a quote, got {blocks:?}");
-        };
-        assert_eq!(inner.len(), 2, "the quote gained its reason paragraph");
-        let Some(Block::List { items, .. }) = blocks.get(1) else {
-            panic!("expected a list, got {blocks:?}");
-        };
-        assert_eq!(
-            items[0].blocks.len(),
-            2,
-            "the list item gained its reason paragraph"
-        );
-    }
-}
+fn substitute_mermaid(_doc: &mut karet_markdown::MarkdownDocument, _languages: &[String]) {}

@@ -31,6 +31,7 @@ mod scan;
 mod trees;
 
 pub(crate) use scan::skipped;
+pub(crate) use scan::subdirs;
 
 /// Which ecosystem's rules apply to a discovered package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -117,8 +118,9 @@ pub struct DiscoveryOptions {
     pub max_packages: usize,
     /// Stop after visiting this many directories.
     ///
-    /// Depth alone does not bound the walk — a shallow tree can still be enormous — and
-    /// discovery runs synchronously while a reader waits for a picker to open.
+    /// Depth alone does not bound the walk — a shallow tree can still be enormous — so
+    /// this bounds the walk, which a caller runs on a worker while its picker waits for
+    /// the packages to arrive.
     pub max_directories: usize,
 }
 
@@ -130,8 +132,8 @@ impl Default for DiscoveryOptions {
             max_depth: 3,
             max_packages: 512,
             // Generous enough that no real repository is cut short, low enough that a
-            // pathological tree cannot stall the picker for longer than it takes to
-            // notice.
+            // pathological tree cannot keep a picker's packages from arriving for longer
+            // than it takes to notice.
             max_directories: 8192,
         }
     }
@@ -149,8 +151,14 @@ pub fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     found.extend(python::discover(root, options));
     found.extend(trees::discover(root, options));
 
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    found.retain(|package| seen.insert(package.root.clone()));
+    // One package per root, so two ecosystems reading the same files do not index them
+    // twice — except C/C++, whose extensions no other ecosystem reads: a Cargo crate or a
+    // Node addon with a `CMakeLists.txt` beside its manifest has C sources nothing else
+    // would index, and the C walk has already pruned the nested projects below them.
+    let mut seen: HashSet<(PathBuf, bool)> = HashSet::new();
+    found.retain(|package| {
+        seen.insert((package.root.clone(), package.kind == PackageKind::CFamily))
+    });
     found.truncate(options.max_packages);
     found
 }

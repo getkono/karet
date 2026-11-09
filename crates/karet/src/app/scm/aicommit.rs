@@ -28,11 +28,12 @@ use karet_core::NotificationKind;
 use karet_session::AiCommitAvailability;
 use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
+use karet_session::VcsCommand;
 use karet_widgets::Spinner;
 
 use crate::app::App;
-use crate::app::Pending;
 use crate::app::Report;
+use crate::pending::Pending;
 
 /// How long a generation runs before the elapsed seconds join the spinner.
 ///
@@ -132,7 +133,7 @@ impl App {
             self.send_command(SessionCommand::Cancel { request: previous });
         }
         let draft = self.commit_input.text.clone();
-        match self.send(SessionCommand::GenerateCommitMessage) {
+        match self.send(VcsCommand::GenerateCommitMessage) {
             Some(request) => {
                 self.ai_commit.state = AiCommitState::Generating {
                     request,
@@ -313,8 +314,8 @@ impl App {
             .as_ref()
             .map(|status| status.options.clone())
             .unwrap_or_else(|| self.settings.git.ai_commit.clone());
-        self.send_command(SessionCommand::ProbeAiCommit);
-        self.overlay = Some(crate::overlay::Overlay::AiCommit(
+        self.send_command(VcsCommand::ProbeAiCommit);
+        self.open_overlay(crate::overlay::Overlay::AiCommit(
             crate::overlay::AiCommitForm::new(options, self.ai_commit.availability.clone()),
         ));
     }
@@ -326,7 +327,7 @@ impl App {
     pub(crate) fn save_ai_commit_options(&mut self, options: karet_session::AiCommit) {
         // A configuration change can only invalidate a run already in flight;
         // let it finish under what it started with rather than half-applying.
-        self.send_command(SessionCommand::SetAiCommitOptions {
+        self.send_command(VcsCommand::SetAiCommitOptions {
             options: Box::new(options),
         });
     }

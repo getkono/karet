@@ -1,11 +1,11 @@
 //! Completion UI state and pure helpers (issue #57, #371).
 //!
 //! The app talks to LSP only through the session seam: a trigger sends
-//! [`karet_session::Command::Completion`], the answering
+//! [`karet_session::LspCommand::Completion`], the answering
 //! `Event::Completions` (tagged with the request id, document, and version)
 //! fills [`CompletionUi`], and the popup renders through
 //! `karet_widgets::completion`. The selected item's deferred documentation and
-//! additional edits arrive through `Command::ResolveCompletion`. Everything
+//! additional edits arrive through `LspCommand::ResolveCompletion`. Everything
 //! stateful lives on `App`; this module holds the state types and the pure
 //! logic (trigger classification, edit-range and additional-edit math, the
 //! syntax-error gate) so they are unit-testable without an `App`.
@@ -253,11 +253,9 @@ pub(crate) enum CompletionMode {
     Spelling { caret: LineCol },
 }
 
-/// Whether `c` is an identifier character for auto-trigger purposes (matches
-/// the editor's word-boundary vocabulary).
-pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+/// Whether `c` is an identifier character for auto-trigger purposes: the
+/// editor's word-boundary vocabulary.
+pub(crate) use karet_core::is_word_char;
 
 /// Whether any syntax-error line range in `errors` (inclusive `(start, end)`
 /// rows) covers `line` — the "no outright errors" auto-trigger gate.

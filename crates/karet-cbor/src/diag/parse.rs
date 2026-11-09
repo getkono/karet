@@ -4,13 +4,15 @@
 //! plus lenient whitespace and optional trailing commas — enough to re-parse a
 //! hand-edited buffer. It does not implement every diagnostic-notation dialect.
 
+use crate::MAX_DEPTH;
 use crate::error::CborError;
 use crate::value::CborValue;
 
 /// Parse pretty CBOR diagnostic notation into a [`CborValue`].
 ///
 /// # Errors
-/// Returns [`CborError::Parse`] (with a line/column) if `text` is malformed.
+/// Returns [`CborError::Parse`] (with a line/column) if `text` is malformed,
+/// or nests arrays, maps, and tags deeper than [`MAX_DEPTH`].
 pub fn from_diagnostic(text: &str) -> Result<CborValue, CborError> {
     let mut parser = Parser::new(text);
     parser.skip_ws();
@@ -25,6 +27,8 @@ pub fn from_diagnostic(text: &str) -> Result<CborValue, CborError> {
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    /// How many arrays, maps, and tags enclose the current position.
+    depth: usize,
 }
 
 impl Parser {
@@ -32,6 +36,7 @@ impl Parser {
         Self {
             chars: text.chars().collect(),
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -77,8 +82,8 @@ impl Parser {
             .peek()
             .ok_or_else(|| self.error("unexpected end of input"))?;
         match c {
-            '[' => self.parse_array(),
-            '{' => self.parse_map(),
+            '[' => self.nested(self.pos, Self::parse_array),
+            '{' => self.nested(self.pos, Self::parse_map),
             '"' => Ok(CborValue::Text(self.parse_string()?)),
             'h' => self.parse_bytes(),
             't' | 'f' => self.parse_bool(),
@@ -87,6 +92,29 @@ impl Parser {
             c if c == '-' || c.is_ascii_digit() => self.parse_number_or_tag(),
             _ => Err(self.error("unexpected character")),
         }
+    }
+
+    /// Run `parse` one nesting level deeper — for an array, map, or tag whose
+    /// opening token starts at `start` — refusing to go past [`MAX_DEPTH`].
+    ///
+    /// The cap keeps adversarial `[[[[…` text from overflowing the stack, and
+    /// matches the limit [`decode`](crate::decode) applies, so text that parses
+    /// never encodes to bytes the editor cannot reopen.
+    fn nested(
+        &mut self,
+        start: usize,
+        parse: impl FnOnce(&mut Self) -> Result<CborValue, CborError>,
+    ) -> Result<CborValue, CborError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(self.error_at(
+                start,
+                &format!("nesting exceeds the maximum depth of {MAX_DEPTH}"),
+            ));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
     }
 
     fn parse_array(&mut self) -> Result<CborValue, CborError> {
@@ -284,7 +312,7 @@ impl Parser {
                 .parse()
                 .map_err(|_| self.error_at(start, "invalid tag number"))?;
             self.bump(); // consume '('
-            let inner = self.parse_value()?;
+            let inner = self.nested(start, Self::parse_value)?;
             self.skip_ws();
             self.expect(')')?;
             return Ok(CborValue::Tag(tag, Box::new(inner)));
@@ -458,27 +486,240 @@ mod tests {
         );
     }
 
+    /// The `(line, column, message)` of a parse error, or `None` if `text`
+    /// parsed or failed some other way.
+    fn parse_error(text: &str) -> Option<(usize, usize, String)> {
+        match from_diagnostic(text) {
+            Err(CborError::Parse {
+                line,
+                column,
+                message,
+            }) => Some((line, column, message)),
+            _ => None,
+        }
+    }
+
     #[test]
     fn reports_error_position() {
-        assert!(matches!(
-            from_diagnostic("@"),
-            Err(CborError::Parse {
-                line: 1,
-                column: 1,
-                ..
-            })
+        let cases: &[(&str, usize, usize, &str)] = &[
+            ("", 1, 1, "unexpected end of input"),
+            ("@", 1, 1, "unexpected character"),
+            ("[1, 2", 1, 6, "expected ',' or ']' in array"),
+            ("[1 2]", 1, 4, "expected ',' or ']' in array"),
+            ("{\"a\": 1 \"b\"}", 1, 9, "expected ',' or '}' in map"),
+            ("{\"a\" 1}", 1, 6, "expected ':'"),
+            ("1 2", 1, 3, "unexpected trailing characters"),
+            ("1\n 2", 2, 2, "unexpected trailing characters"),
+            ("[\n  1,\n  @\n]", 3, 3, "unexpected character"),
+            // Columns count characters, not UTF-8 bytes.
+            ("\"é\" @", 1, 5, "unexpected trailing characters"),
+            ("\"abc", 1, 1, "unterminated string"),
+            ("[\"ab\\", 1, 2, "unterminated escape"),
+            ("\"\\q\"", 1, 4, "invalid escape sequence"),
+            ("h'0'", 1, 1, "odd number of hex digits in byte string"),
+            ("h'zz'", 1, 4, "invalid hex digit in byte string"),
+            ("h'00", 1, 1, "unterminated byte string"),
+            ("h00", 1, 2, "expected '''"),
+            ("tru", 1, 1, "invalid literal"),
+            ("trueish", 1, 1, "invalid literal"),
+            ("nul", 1, 1, "invalid literal"),
+            ("-", 1, 1, "invalid number"),
+            ("1.2.3", 1, 1, "invalid number"),
+            ("NaNa", 1, 1, "invalid number"),
+            ("-1(2)", 1, 1, "invalid tag number"),
+            ("1(2", 1, 4, "expected ')'"),
+        ];
+        for &(text, line, column, message) in cases {
+            assert_eq!(
+                parse_error(text),
+                Some((line, column, message.to_string())),
+                "input: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_simple_and_unicode_escapes() {
+        assert_eq!(
+            from_diagnostic(r#""\b\f\/\u00e9\u0001""#).ok(),
+            Some(CborValue::Text("\u{8}\u{c}/é\u{1}".to_string()))
+        );
+    }
+
+    #[test]
+    fn joins_surrogate_pairs() {
+        assert_eq!(
+            from_diagnostic(r#""\uD83D\uDE00""#).ok(),
+            Some(CborValue::Text("😀".to_string()))
+        );
+        // The highest code point: U+10FFFF.
+        assert_eq!(
+            from_diagnostic(r#""\udbff\udfff""#).ok(),
+            Some(CborValue::Text("\u{10ffff}".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_surrogates_and_hex() {
+        let cases: &[(&str, usize, usize, &str)] = &[
+            // A high surrogate with no following escape.
+            (r#""\uD800""#, 1, 8, "expected '\\'"),
+            (r#""\uD800x""#, 1, 8, "expected '\\'"),
+            (r#""\uD800\n""#, 1, 9, "expected 'u'"),
+            // A high surrogate followed by a non-low-surrogate escape.
+            (
+                r#""\uD800\u0041""#,
+                1,
+                14,
+                "invalid low surrogate in \\u escape",
+            ),
+            (
+                r#""\uD800\uD800""#,
+                1,
+                14,
+                "invalid low surrogate in \\u escape",
+            ),
+            // A lone low surrogate is not a scalar value.
+            (r#""\uDC00""#, 1, 8, "invalid unicode escape"),
+            (r#""\u12""#, 1, 7, "invalid hex digit in \\u escape"),
+            ("\"\\u12", 1, 6, "truncated \\u escape"),
+        ];
+        for &(text, line, column, message) in cases {
+            assert_eq!(
+                parse_error(text),
+                Some((line, column, message.to_string())),
+                "input: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_characters_round_trip() {
+        round_trip(CborValue::Text(
+            "\u{0}\u{1}\u{8}\u{c}\u{1b}\u{1f}\u{7f}\\\r".to_string(),
         ));
+    }
+
+    #[test]
+    fn integer_bounds_parse_at_the_cbor_extremes() {
+        let max = i128::from(u64::MAX);
+        assert_eq!(
+            from_diagnostic("18446744073709551615").ok(),
+            Some(CborValue::Integer(max))
+        );
+        assert_eq!(
+            from_diagnostic("-18446744073709551616").ok(),
+            Some(CborValue::Integer(-max - 1))
+        );
+        // Out of the CBOR range but inside i128: parsed, rejected later by encode.
+        assert_eq!(
+            from_diagnostic("18446744073709551616").ok(),
+            Some(CborValue::Integer(max + 1))
+        );
+        // Beyond i128 the token is not a number at all.
+        assert_eq!(
+            parse_error("1000000000000000000000000000000000000000"),
+            Some((1, 1, "invalid number".to_string()))
+        );
+    }
+
+    #[test]
+    fn non_finite_and_exponent_floats() {
         assert!(matches!(
-            from_diagnostic("[1, 2"),
-            Err(CborError::Parse { .. })
+            from_diagnostic("NaN"),
+            Ok(CborValue::Float(f)) if f.is_nan()
         ));
-        assert!(matches!(
-            from_diagnostic("1 2"),
-            Err(CborError::Parse { line: 1, .. })
-        ));
-        assert!(matches!(
-            from_diagnostic("h'0'"),
-            Err(CborError::Parse { .. })
-        ));
+        assert_eq!(
+            from_diagnostic("[Infinity, -Infinity, 1e3, 2.5E-1]").ok(),
+            Some(CborValue::Array(vec![
+                CborValue::Float(f64::INFINITY),
+                CborValue::Float(f64::NEG_INFINITY),
+                CborValue::Float(1000.0),
+                CborValue::Float(0.25),
+            ]))
+        );
+    }
+
+    #[test]
+    fn byte_strings_tolerate_whitespace_and_mixed_case() {
+        assert_eq!(
+            from_diagnostic("h'De aD\n bE'").ok(),
+            Some(CborValue::Bytes(vec![0xde, 0xad, 0xbe]))
+        );
+        assert_eq!(from_diagnostic("h''").ok(), Some(CborValue::Bytes(vec![])));
+    }
+
+    #[test]
+    fn tag_allows_whitespace_before_and_inside_parens() {
+        assert_eq!(
+            from_diagnostic("24 ( [ ] )").ok(),
+            Some(CborValue::Tag(24, Box::new(CborValue::Array(vec![]))))
+        );
+    }
+
+    /// `depth` nested containers of one kind around the scalar `1`.
+    fn nested_text(open: &str, close: &str, depth: usize) -> String {
+        format!("{}1{}", open.repeat(depth), close.repeat(depth))
+    }
+
+    #[test]
+    fn nesting_up_to_max_depth_parses() {
+        for (open, close) in [("[", "]"), ("{0: ", "}"), ("7(", ")")] {
+            let text = nested_text(open, close, MAX_DEPTH);
+            let mut value = from_diagnostic(&text).ok();
+            assert!(value.is_some(), "{open}…{close} at depth {MAX_DEPTH}");
+            // Walk down: exactly MAX_DEPTH containers, then the scalar.
+            let mut levels = 0;
+            while let Some(current) = value {
+                value = match current {
+                    CborValue::Array(mut items) => items.pop(),
+                    CborValue::Map(mut pairs) => pairs.pop().map(|(_, v)| v),
+                    CborValue::Tag(_, inner) => Some(*inner),
+                    scalar => {
+                        assert_eq!(scalar, CborValue::Integer(1));
+                        None
+                    },
+                };
+                levels += 1;
+            }
+            assert_eq!(levels, MAX_DEPTH + 1, "{open}…{close}");
+        }
+    }
+
+    #[test]
+    fn nesting_past_max_depth_is_a_parse_error_at_the_offending_opener() {
+        let message = format!("nesting exceeds the maximum depth of {MAX_DEPTH}");
+        // Openers are one, four, and two characters wide, so the 257th starts
+        // at column 257, 1025, and 513.
+        for (open, close, column) in [("[", "]", 257), ("{0: ", "}", 1025), ("7(", ")", 513)] {
+            let text = nested_text(open, close, MAX_DEPTH + 1);
+            assert_eq!(
+                parse_error(&text),
+                Some((1, column, message.clone())),
+                "{open}…{close}"
+            );
+        }
+        // Mixed kinds share one budget.
+        let mixed = format!("{}{}", "[".repeat(MAX_DEPTH), "1(0)");
+        assert_eq!(
+            parse_error(&mixed),
+            Some((1, MAX_DEPTH + 1, message.clone()))
+        );
+    }
+
+    #[test]
+    fn adversarial_nesting_fails_without_overflowing_the_stack() {
+        // Far past the cap: rejected as soon as the cap is crossed, so the
+        // parser never recurses deeper than MAX_DEPTH frames.
+        let text = "[".repeat(1_000_000);
+        assert!(matches!(parse_error(&text), Some((1, 257, _))));
+    }
+
+    #[test]
+    fn depth_is_released_on_the_way_out() {
+        // Many siblings, each at depth MAX_DEPTH, never accumulate depth.
+        let deep = nested_text("[", "]", MAX_DEPTH - 1);
+        let text = format!("[{}]", vec![deep; 3].join(", "));
+        assert!(from_diagnostic(&text).is_ok());
     }
 }

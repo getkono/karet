@@ -27,10 +27,11 @@ async fn a_server_that_dies_while_idle_is_noticed_without_being_asked() -> TestR
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let mut retrying = false;
@@ -94,10 +95,11 @@ async fn a_dead_servers_diagnostics_are_cleared() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let mut published = false;

@@ -1,6 +1,22 @@
 //! Pull-request-specific keyboard and mouse interaction.
 
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::github::state::GithubPullRequestEditor;
+use crate::app::github::state::GithubPullRequestSection;
+use crate::app::github::state::GithubViewState;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::pending::Pending;
 
 impl App {
     pub(super) fn github_pull_request_key(&mut self, key: KeyEvent) -> bool {
@@ -113,12 +129,10 @@ impl App {
                 );
                 return;
             }
-            self.open_range(SessionCommand::RangeChanges {
-                spec: karet_session::RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base: true,
-                },
+            self.open_range(karet_session::RangeSpec::Between {
+                base,
+                head,
+                merge_base: true,
             });
         }
     }
@@ -146,12 +160,8 @@ impl App {
             return;
         }
         let command = match editor {
-            GithubPullRequestEditor::Body => {
-                SessionCommand::GithubUpdatePullRequestBody { number, body }
-            },
-            GithubPullRequestEditor::Comment => {
-                SessionCommand::GithubCommentPullRequest { number, body }
-            },
+            GithubPullRequestEditor::Body => GithubCommand::UpdatePullRequestBody { number, body },
+            GithubPullRequestEditor::Comment => GithubCommand::CommentPullRequest { number, body },
         };
         let request = self.send(command);
         if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {
@@ -182,7 +192,7 @@ impl App {
             );
             return;
         };
-        let request = self.send(SessionCommand::GithubMergePullRequest { number, head_sha });
+        let request = self.send(GithubCommand::MergePullRequest { number, head_sha });
         self.set_pull_request_pending(request);
     }
 
@@ -210,7 +220,7 @@ impl App {
             );
             return;
         };
-        let request = self.send(SessionCommand::GithubSetPullRequestDraft {
+        let request = self.send(GithubCommand::SetPullRequestDraft {
             node_id,
             number,
             draft,

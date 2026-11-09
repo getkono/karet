@@ -1,4 +1,4 @@
-//! The LSP completion popup (relocated here from `karet-lsp`).
+//! The LSP completion popup.
 //!
 //! [`CompletionPopup`] renders `karet-core` [`CompletionItem`]s the backend
 //! supplied over the event stream: one row per candidate with a kind glyph, the
@@ -56,8 +56,9 @@ pub struct CompletionPopup<'a> {
 /// Selection and scroll state, kept by the caller across frames.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompletionState {
-    /// The selected row, as an index into [`CompletionPopup::ranked`].
-    pub selected: usize,
+    /// The selected row, as an index into [`CompletionPopup::ranked`]. Private
+    /// so every write goes through a method that keeps it inside the list.
+    selected: usize,
     /// The first visible row (maintained by the render).
     scroll: usize,
     /// The scrollbar track the last render painted, so the popup's bar can be
@@ -112,6 +113,22 @@ impl CompletionState {
         let max = len.saturating_sub(visible);
         let position = self.scroll.saturating_add_signed(delta).min(max);
         self.scroll_to(position, visible);
+    }
+
+    /// The selected row, as an index into [`CompletionPopup::ranked`].
+    ///
+    /// It is in range for the list it was last set against; a list that has
+    /// since shrunk (the filter narrowed) may leave it past the end, which the
+    /// next render clamps.
+    #[must_use]
+    pub const fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Select `row` of a `len`-row list, clamped to its last row (`0` for an
+    /// empty list).
+    pub fn select(&mut self, row: usize, len: usize) {
+        self.selected = row.min(len.saturating_sub(1));
     }
 
     /// Move the selection down, wrapping past the end of a `len`-row list.
@@ -763,6 +780,17 @@ mod tests {
     }
 
     #[test]
+    fn a_direct_selection_is_clamped_to_the_list() {
+        let mut state = CompletionState::default();
+        state.select(1, 3);
+        assert_eq!(state.selected(), 1);
+        state.select(9, 3);
+        assert_eq!(state.selected(), 2, "past the end lands on the last row");
+        state.select(4, 0);
+        assert_eq!(state.selected(), 0, "an empty list selects row 0");
+    }
+
+    #[test]
     fn empty_area_or_no_items_renders_nothing() {
         let items = [item("x", CompletionKind::Text, None)];
         let mut state = CompletionState::default();
@@ -808,5 +836,19 @@ mod tests {
         let mut state = CompletionState::default();
         let buf = render(&items, "", Rect::new(0, 0, 14, 1), &mut state);
         assert!(row_text(&buf, 0).contains("doc_bearer"));
+    }
+
+    #[test]
+    fn accept_range_spans_anchor_to_caret_only_while_anchored() {
+        use karet_core::LineCol;
+        let anchor = LineCol::new(3, 4);
+        let span = |caret| {
+            accept_range(anchor, caret).map(|range: karet_core::Range| (range.start, range.end))
+        };
+        assert_eq!(span(LineCol::new(3, 7)), Some((anchor, LineCol::new(3, 7))));
+        assert_eq!(span(anchor), Some((anchor, anchor)), "an empty prefix");
+        assert_eq!(span(LineCol::new(3, 3)), None, "before the anchor");
+        assert_eq!(span(LineCol::new(4, 7)), None, "another line");
+        assert_eq!(span(LineCol::new(2, 9)), None, "another line");
     }
 }

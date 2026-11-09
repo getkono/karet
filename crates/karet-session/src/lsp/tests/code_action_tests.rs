@@ -56,10 +56,11 @@ async fn actions_list_in_buffer_columns_and_run_through_resolve_edit_and_command
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -67,12 +68,13 @@ async fn actions_list_in_buffer_columns_and_run_through_resolve_edit_and_command
     let list = |id| {
         send(
             id,
-            Command::CodeActions {
+            LspCommand::CodeActions {
                 doc,
                 range: caret(3),
                 kinds: Vec::new(),
                 trigger: CodeActionTrigger::Invoked,
-            },
+            }
+            .into(),
         )
     };
     let request = backend.next_id();
@@ -102,11 +104,12 @@ async fn actions_list_in_buffer_columns_and_run_through_resolve_edit_and_command
     let run = backend.next_id();
     send(
         run,
-        Command::ApplyCodeAction {
+        LspCommand::ApplyCodeAction {
             doc,
             version,
             action: replace.clone(),
-        },
+        }
+        .into(),
     )?;
     let applied = await_applied(&mut events, run).await.ok_or("no answer")?;
     assert!(applied.result.applied, "{applied:?}");
@@ -123,11 +126,12 @@ async fn actions_list_in_buffer_columns_and_run_through_resolve_edit_and_command
     let run = backend.next_id();
     send(
         run,
-        Command::ApplyCodeAction {
+        LspCommand::ApplyCodeAction {
             doc,
             version,
             action: fix,
-        },
+        }
+        .into(),
     )?;
     let applied = await_applied(&mut events, run).await.ok_or("no answer")?;
     assert!(applied.result.applied, "{applied:?}");
@@ -185,10 +189,11 @@ async fn a_probe_of_a_server_without_code_actions_stays_quiet() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -196,12 +201,13 @@ async fn a_probe_of_a_server_without_code_actions_stays_quiet() -> TestResult {
         let request = backend.next_id();
         backend.send(
             request,
-            Command::CodeActions {
+            LspCommand::CodeActions {
                 doc,
                 range: caret(0),
                 kinds: Vec::new(),
                 trigger,
-            },
+            }
+            .into(),
         )?;
         let mut unsupported = false;
         let answer = loop {
@@ -244,10 +250,11 @@ async fn a_probe_waits_for_the_debounced_flush_instead_of_forcing_it() -> TestRe
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let next_method = async |observed: &mut mpsc::UnboundedReceiver<serde_json::Value>| {
@@ -262,7 +269,7 @@ async fn a_probe_waits_for_the_debounced_flush_instead_of_forcing_it() -> TestRe
     let edited = std::time::Instant::now();
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 version,
@@ -272,17 +279,19 @@ async fn a_probe_waits_for_the_debounced_flush_instead_of_forcing_it() -> TestRe
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
     let probe = backend.next_id();
     backend.send(
         probe,
-        Command::CodeActions {
+        LspCommand::CodeActions {
             doc,
             range: caret(1),
             kinds: Vec::new(),
             trigger: CodeActionTrigger::Automatic,
-        },
+        }
+        .into(),
     )?;
 
     let mut flushed = None;

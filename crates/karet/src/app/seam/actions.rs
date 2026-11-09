@@ -7,9 +7,9 @@
 use std::collections::HashSet;
 
 use karet_core::NotificationKind;
-use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
 use karet_session::api::SeamCallMetricsView;
+use karet_session::api::SeamCommand;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
@@ -17,14 +17,14 @@ use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
 use karet_session::api::SeamSync;
 
-use super::Reroot;
-use super::SeamFocus;
-use super::SeamViewState;
 use crate::app::App;
 use crate::app::Report;
-use crate::app::pending::Pending;
+use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
+use crate::tab::seam::Reroot;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::SeamViewState;
 
 impl Tab {
     /// The title a Seam view on `root` carries.
@@ -107,20 +107,11 @@ impl App {
 
     /// Offer the start points the Seam view could be opened on.
     ///
-    /// Discovery runs here on the app thread rather than on the backend. The picker *is*
-    /// the surface being opened, so rows arriving after it would move the selection under
-    /// the reader's fingers, and withholding it until they arrived would be exactly the
-    /// delayed surface a picker must never be. Discovery only reads manifests and lists
-    /// directories, and it is bounded — the app already runs a heavier walk than this
-    /// synchronously to open the quick-open picker.
+    /// The picker opens at once over the reader's context and the packages the last
+    /// discovery found; a fresh discovery runs on a worker thread (it walks directories,
+    /// and on a large root that takes long enough to stall a frame) and fills the rows in
+    /// when it lands, keeping the highlighted row where the reader left it.
     pub(crate) fn open_seam_view_picker(&mut self) {
-        let items = self.seam_root_candidates();
-        self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
-    }
-
-    /// The start points on offer: the reader's context, and what discovery found.
-    fn seam_root_candidates(&mut self) -> Vec<(String, std::path::PathBuf)> {
-        let discovered = karet_seam::discover(&self.root, karet_seam::DiscoveryOptions::default());
         let current = self
             .tabs
             .get(self.active)
@@ -128,7 +119,35 @@ impl App {
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_path_buf);
         let explorer = self.explorer_seam_root();
-        super::roots::candidates(&self.root.clone(), current, explorer, discovered)
+        let root = self.root.clone();
+        let items = self.seam_root_candidates(&root, current.clone(), explorer.clone());
+        self.open_overlay(crate::overlay::Overlay::seam_roots(items));
+        self.seam_discovery.start(&root, current, explorer);
+    }
+
+    /// The start points on offer now: the reader's context, and what discovery last found.
+    fn seam_root_candidates(
+        &self,
+        root: &std::path::Path,
+        current: Option<std::path::PathBuf>,
+        explorer: Option<std::path::PathBuf>,
+    ) -> Vec<(String, std::path::PathBuf)> {
+        let known = self.seam_discovery.known(root);
+        super::roots::candidates(root, current, explorer, known)
+    }
+
+    /// Adopt a finished package discovery, filling in an open Seam picker.
+    ///
+    /// A picker closed since it asked is left closed, and any other overlay open in its
+    /// place is left alone; the packages are still kept for the next picker.
+    pub(crate) fn on_seam_discovery(&mut self, discovery: super::roots::Discovery) {
+        let root = self.root.clone();
+        let Some(items) = self.seam_discovery.accept(&root, discovery) else {
+            return;
+        };
+        if let Some(overlay) = self.keyboard.overlay_mut() {
+            overlay.set_seam_roots(items);
+        }
     }
 
     /// The explorer's selection as a directory, when the panel has one.
@@ -159,7 +178,7 @@ impl App {
             Some((pane, index)) => {
                 self.focus_pane_switch(pane);
                 self.set_active(index);
-                self.focus = crate::app::Focus::Editor;
+                self.keyboard.focus_editor();
                 if let Some(tab) = self.tabs.get_mut(index) {
                     tab.repoint_seam(root.clone());
                 }
@@ -214,7 +233,7 @@ impl App {
 
     /// Send the index request and record what the view is waiting on.
     fn request_seam_index(&mut self, root: std::path::PathBuf, mode: SeamSync) {
-        self.seam_index_req = self.send(SessionCommand::IndexSeams {
+        self.seam_index_req = self.send(SeamCommand::Index {
             root: Some(root),
             mode,
         });
@@ -227,13 +246,20 @@ impl App {
             return;
         };
         state.lens_filter = match settings.lens_filter {
-            karet_session::config::SeamLensFilter::Demote => super::LensFilter::Demote,
-            karet_session::config::SeamLensFilter::Hide => super::LensFilter::Hide,
+            karet_session::config::schema::SeamLensFilter::Demote => {
+                crate::tab::seam::LensFilter::Demote
+            },
+            karet_session::config::schema::SeamLensFilter::Hide => {
+                crate::tab::seam::LensFilter::Hide
+            },
         };
         state.hide_inactive = settings.hide_inactive;
         state.spine = settings.spine;
         for lens in &settings.default_lenses {
-            if let Some(known) = super::LENS_NAMES.iter().find(|name| *name == lens) {
+            if let Some(known) = crate::tab::seam::LENS_NAMES
+                .iter()
+                .find(|name| *name == lens)
+            {
                 state.lenses.insert(known);
             }
         }
@@ -248,7 +274,7 @@ impl App {
         if !self.seam_view().is_some_and(|state| state.covers(path)) {
             return;
         }
-        self.seam_index_req = self.send(SessionCommand::ReindexSeams {
+        self.seam_index_req = self.send(SeamCommand::Reindex {
             path: path.to_path_buf(),
             text,
         });
@@ -318,7 +344,7 @@ impl App {
             );
             return;
         };
-        self.seam_index_req = self.send(SessionCommand::SetSeamConfiguration { name: next });
+        self.seam_index_req = self.send(SeamCommand::SetConfiguration { name: next });
     }
 
     /// Copy the selected node's identity — its citation form.
@@ -542,7 +568,7 @@ impl App {
             // delay decides whether they say anything while the answer is on its way.
             state.detail_since = Some(Pending::start());
         }
-        self.seam_node_req = self.send(SessionCommand::SeamNode { path: id });
+        self.seam_node_req = self.send(SeamCommand::Node { path: id });
     }
 
     /// Send the current query text for evaluation.
@@ -557,7 +583,7 @@ impl App {
             }
             return;
         }
-        self.seam_query_req = self.send(SessionCommand::SeamQuery { text });
+        self.seam_query_req = self.send(SeamCommand::Query { text });
     }
 
     /// Open the selected node's source in an ordinary editor tab.
@@ -664,7 +690,7 @@ impl App {
 
     /// Toggle one lens by its position in the legend.
     pub(crate) fn seam_toggle_lens(&mut self, index: usize) {
-        let Some(lens) = super::LENS_NAMES.get(index).copied() else {
+        let Some(lens) = crate::tab::seam::LENS_NAMES.get(index).copied() else {
             return;
         };
         if let Some(state) = self.active_seam() {

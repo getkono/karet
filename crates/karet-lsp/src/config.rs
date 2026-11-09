@@ -17,7 +17,6 @@ use serde_json::Value;
 
 use crate::LspClient;
 use crate::LspError;
-use crate::LspSpec;
 
 /// The settings one connection answers `workspace/configuration` from.
 pub(crate) type Settings = Arc<RwLock<Value>>;
@@ -53,15 +52,6 @@ impl ConnectOptions {
     pub fn with_settings(mut self, settings: Option<Value>) -> Self {
         self.settings = settings;
         self
-    }
-}
-
-impl From<&LspSpec> for ConnectOptions {
-    fn from(spec: &LspSpec) -> Self {
-        Self {
-            initialization_options: spec.initialization_options.clone(),
-            settings: spec.settings.clone(),
-        }
     }
 }
 

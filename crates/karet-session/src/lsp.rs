@@ -1,9 +1,12 @@
-//! LSP orchestration: lazy per-language server tasks and completion serving.
+//! LSP orchestration: lazy server tasks, one per provider at a repository root.
 //!
 //! The [`LspManager`] lives on the session actor and owns one background task per
-//! language. A task is spawned lazily on the first open of a matching document; it
-//! owns the [`LspClient`], serializes document sync ahead of requests (a
-//! completion always sees the latest text), debounces `didChange` forwards --
+//! slot -- a [`SlotKey`]: one provider at one repository root. A task is spawned
+//! lazily on the first open of a matching document; it owns the [`LspClient`],
+//! serves every request the session routes to that provider (completion, hover,
+//! formatting, code actions and lenses, pulled diagnostics, inlay hints, and the
+//! server's window traffic), serializes document sync ahead of requests (a
+//! request always sees the latest text), debounces `didChange` forwards --
 //! sent as ranges to a server that asked for incremental sync, else as the
 //! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`]
 //! channel — the session converts positions (LSP UTF-16 ↔ buffer UTF-32)
@@ -15,24 +18,30 @@
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod account;
 mod catalog;
 mod code_actions;
 mod code_lens;
 mod commands;
 mod connector;
 mod delta;
+mod editing;
+mod folding;
 mod format;
 mod forward;
 mod health;
 mod hint_flight;
+mod inline_completion;
 mod inventory;
 mod jdtls;
 mod lifecycle;
+mod link_color;
 mod message;
 mod provider;
 mod pull;
 mod requests;
 mod runtime;
+mod semantic_tokens;
 mod slot;
 #[cfg(test)]
 mod tests;
@@ -60,10 +69,18 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+pub(crate) use link_color::LinkColorAnswer;
+pub(crate) use link_color::LinkColorCmd;
+pub(crate) use link_color::NO_TARGET;
+pub(crate) use message::DiagnosticFeed;
 pub(crate) use message::DiagnosticLayer;
 pub(crate) use message::DocumentHighlightsAnswer;
+pub(crate) use message::EditingAnswer;
+pub(crate) use message::EditingAsk;
+pub(crate) use message::EditingReply;
 pub(crate) use message::FormattingAsk;
 pub(crate) use message::FormattingScope;
+pub(crate) use message::HierarchyAsk;
 pub(crate) use message::LspUpdate;
 pub(crate) use message::RenameAnswer;
 pub(crate) use message::SelectionRangesAnswer;
@@ -101,9 +118,9 @@ use crate::api::LanguageServerSource;
 use crate::api::RequestId;
 use crate::config::schema::Lsp as LspSettings;
 
-/// How long an edited document may sit before its full text is forwarded as
-/// `didChange`. A pending forward is also flushed immediately ahead of any
-/// request the user is waiting on, so completions never see stale text; an
+/// How long an edited document may sit before its pending edits are forwarded
+/// as `didChange`. A pending forward is also flushed immediately ahead of any
+/// request the user is waiting on, so requests never see stale text; an
 /// inlay-hint request waits for the debounced flush instead (see
 /// `hint_flight`).
 ///
@@ -126,7 +143,7 @@ const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
 /// its squiggles pointing at lines the user has since edited away.
 const DIAGNOSTIC_GRACE: Duration = Duration::from_secs(1);
 
-/// Lazy per-language language-server orchestration (see the module docs).
+/// Lazy per-slot language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
     settings: LspSettings,
     generation: u64,
@@ -157,6 +174,9 @@ pub(crate) struct LspManager {
     next_token: SlotToken,
     /// Each provider's log and the questions servers are waiting on.
     pub(crate) window: WindowState,
+    /// `editor.semanticHighlighting.enabled`, handed to every slot that owns
+    /// semantic tokens (see [`Self::set_semantic_highlighting`]).
+    semantic_highlighting: bool,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -194,6 +214,8 @@ impl LspManager {
                 connector: spawn_connector(supervisor, registry_root),
                 next_token: SlotToken::FIRST,
                 window: WindowState::default(),
+                // The setting's default; the session applies its own value.
+                semantic_highlighting: true,
             },
             rx,
         )
@@ -282,6 +304,15 @@ impl LspManager {
             | LspUpdate::DiagnosticsCleared {
                 token, server: key, ..
             }
+            | LspUpdate::PulledDiagnosticsWithdrawn {
+                token, server: key, ..
+            }
+            | LspUpdate::SemanticTokens {
+                token, server: key, ..
+            }
+            | LspUpdate::FoldingRanges {
+                token, server: key, ..
+            }
             | LspUpdate::SpawnFailed { token, key, .. }
             | LspUpdate::ServerDied { token, key, .. }
             | LspUpdate::RuntimeState { token, key, .. } => self
@@ -293,11 +324,15 @@ impl LspManager {
             | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::InlayHintResolved { generation, .. }
+            | LspUpdate::InlineCompletions { generation, .. }
+            | LspUpdate::Account { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::SignatureHelp { generation, .. }
             | LspUpdate::SelectionRanges { generation, .. }
             | LspUpdate::DocumentHighlights { generation, .. }
+            | LspUpdate::Editing { generation, .. }
+            | LspUpdate::Hierarchy { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
@@ -305,6 +340,7 @@ impl LspManager {
             | LspUpdate::PrepareRename { generation, .. }
             | LspUpdate::CodeAction { generation, .. }
             | LspUpdate::CodeLens { generation, .. }
+            | LspUpdate::LinkColor { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
@@ -411,7 +447,7 @@ impl LspManager {
                     .then_some((fallback, LanguageServerSource::Path))
             })
             .or_else(|| {
-                crate::lsp_registry::installed_spec(
+                crate::lsp_registry::store::installed_spec(
                     self.registry_root.as_deref(),
                     provider,
                     language,
@@ -445,22 +481,22 @@ impl LspManager {
         language: &str,
         root: &Path,
     ) -> bool {
-        if !provider::is_astro(provider, spec) || spec.initialization_options.is_some() {
+        if !provider::is_astro(provider, spec) || spec.options.initialization_options.is_some() {
             return true;
         }
         let managed = || {
-            crate::lsp_registry::installed_spec(
+            crate::lsp_registry::store::installed_spec(
                 self.registry_root.as_deref(),
                 &LanguageServerId::new(provider::ASTRO),
                 language,
             )
-            .and_then(|managed| managed.initialization_options)
+            .and_then(|managed| managed.options.initialization_options)
         };
         if let Some(options) = provider::project_typescript_sdk(Path::new(&spec.command), root)
             .map(|tsdk| provider::typescript_sdk_options(&tsdk))
             .or_else(managed)
         {
-            spec.initialization_options = Some(options);
+            spec.options.initialization_options = Some(options);
             return true;
         }
         // Refusing to launch is the honest outcome: Astro would reject the
@@ -556,8 +592,9 @@ impl LspManager {
         }
         // Built-in JavaScript and TypeScript share one provider process, so the
         // key names the *provider*, not the language that selected it.
+        let owner = self.owns_semantic_tokens(&language, &provider, true);
         let key = SlotKey::new(provider, root.clone());
-        self.spawn_slot(&key, &spec, true, settings_key)?;
+        self.spawn_slot(&key, &spec, true, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
@@ -584,12 +621,31 @@ impl LspManager {
             self.report_unresolved(provider, language);
             return None;
         };
+        provider::default_initialization_options(&provider, &mut spec);
         // A companion reads only its own entry: the language's belongs to
         // the language's primary.
         let settings_key = self.configure(&mut spec, &provider, None);
+        let owner = self.owns_semantic_tokens(language, &provider, false);
         let key = SlotKey::new(provider, root);
-        self.spawn_slot(&key, &spec, false, settings_key)?;
+        self.spawn_slot(&key, &spec, false, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
+    }
+
+    /// The inline-completion companion every document is attached to, once
+    /// the user opted in to it: installed it through karet, or gave it an
+    /// `lsp.servers` entry (one with `enabled: false` is honoured by the
+    /// launch, which then starts nothing). Being on `PATH` is not opting in:
+    /// it sends the code being edited to a remote service, which a server
+    /// installed for another editor never agreed to on karet's behalf.
+    fn inline_companion(&self) -> Option<LanguageServerId> {
+        let copilot = LanguageServerId::new(catalog::COPILOT);
+        let opted_in = self.settings.servers.contains_key(copilot.key())
+            || crate::lsp_registry::store::installed_version(
+                self.registry_root.as_deref(),
+                &copilot,
+            )
+            .is_some();
+        opted_in.then_some(copilot)
     }
 
     /// The running task inbox for `language`, when one was already spawned.
@@ -668,6 +724,11 @@ impl LspManager {
                 {
                     targets.push(target);
                 }
+            }
+            if let Some(provider) = self.inline_companion()
+                && let Some(target) = self.ensure_additional_provider(provider, language_key, &path)
+            {
+                targets.push(target);
             }
         }
         if targets.is_empty() {

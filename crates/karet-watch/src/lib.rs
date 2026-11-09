@@ -31,6 +31,11 @@ use std::time::Duration;
 
 use ignore::DirEntry;
 use ignore::WalkBuilder;
+// The directory names whose contents are never surfaced or watched (build output,
+// VCS metadata) are karet-search's, so watching, searching, and quick-open agree
+// on what a workspace walk covers. Git dirs are watched separately and narrowly
+// (see `watch_git_dir`).
+use karet_search::IGNORED_DIRS;
 use notify::Config;
 use notify::ErrorKind;
 use notify::EventKind;
@@ -52,12 +57,6 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// Polling fallback interval used only after the native backend reports watch
 /// exhaustion. Kept slower than the main debounce so degraded trees remain cheap.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// Directory names whose contents are never surfaced or watched (build output / VCS
-/// metadata). Git dirs are watched separately and narrowly — see [`watch_git_dir`].
-/// Kept in parity with `karet_search::IGNORED_DIRS` so watching, searching, and
-/// quick-open agree on what a workspace walk covers.
-const IGNORED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
 /// What kind of change a [`FsEvent`] reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,10 +214,8 @@ impl Drop for Watcher {
     }
 }
 
-/// The background worker: registers watches (off the caller's critical path), then
-/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
-/// debouncer so it can register new watches (e.g. for a freshly created directory)
-/// from the same thread that reads its event stream.
+/// The borrowed channels, roots and stop flag [`worker_main`] runs over, bundled so
+/// its signature stays short.
 struct WorkerMainArgs<'a> {
     raw_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
     poll_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
@@ -229,6 +226,10 @@ struct WorkerMainArgs<'a> {
     stop: &'a AtomicBool,
 }
 
+/// The background worker: registers watches (off the caller's critical path), then
+/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
+/// debouncer so it can register new watches (e.g. for a freshly created directory)
+/// from the same thread that reads its event stream.
 fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: WorkerMainArgs<'_>) {
     let WorkerMainArgs {
         raw_rx,
@@ -400,6 +401,42 @@ struct WatchState {
     degraded_sent: bool,
 }
 
+impl WatchState {
+    /// Record `dir` as polled, returning the [`FsEventKind::WatchDegraded`] event
+    /// to emit: only the first fallback of a watcher's lifetime reports one.
+    fn record_polled(&mut self, dir: PathBuf) -> Option<FsEvent> {
+        self.polled.insert(dir.clone());
+        if self.degraded_sent {
+            return None;
+        }
+        self.degraded_sent = true;
+        Some(FsEvent {
+            kind: FsEventKind::WatchDegraded,
+            paths: vec![dir],
+        })
+    }
+}
+
+/// What a failed native watch registration does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WatchFallback {
+    /// The native backend ran out of watches: poll the directory instead.
+    Poll,
+    /// Any other failure: log it and leave the directory unwatched.
+    Skip,
+}
+
+/// Decide the fallback for a native watch that failed with `kind`. Only watch
+/// exhaustion degrades to polling; a missing path or an I/O error would fail the
+/// poll watcher just the same.
+fn native_watch_fallback(kind: &ErrorKind) -> WatchFallback {
+    if matches!(kind, ErrorKind::MaxFilesWatch) {
+        WatchFallback::Poll
+    } else {
+        WatchFallback::Skip
+    }
+}
+
 fn watch_dir(
     native: &mut NativeDebouncer,
     poll: &mut PollDebouncer,
@@ -414,7 +451,7 @@ fn watch_dir(
         Ok(()) => {
             watched.native.insert(dir);
         },
-        Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+        Err(e) if native_watch_fallback(&e.kind) == WatchFallback::Poll => {
             tracing::warn!(
                 path = %dir.display(),
                 error = %e,
@@ -436,13 +473,8 @@ fn watch_polled(
 ) {
     match poll.watch(&dir, RecursiveMode::NonRecursive) {
         Ok(()) => {
-            watched.polled.insert(dir.clone());
-            if !watched.degraded_sent {
-                watched.degraded_sent = true;
-                let _ = tx.send(FsEvent {
-                    kind: FsEventKind::WatchDegraded,
-                    paths: vec![dir],
-                });
+            if let Some(degraded) = watched.record_polled(dir) {
+                let _ = tx.send(degraded);
             }
         },
         Err(e) => {
@@ -526,7 +558,7 @@ fn watch_git_dir(
             Ok(()) => {
                 watched.native.insert(refs);
             },
-            Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+            Err(e) if native_watch_fallback(&e.kind) == WatchFallback::Poll => {
                 watch_polled(poll, watched, tx, refs);
             },
             Err(e) => {

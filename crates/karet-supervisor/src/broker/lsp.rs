@@ -2,32 +2,27 @@
 //!
 //! This is the *only* module in `karet-supervisor` allowed to know what an LSP
 //! message means, and the only one that may name `karet_lsp`. Everything the
-//! skeleton needs from it arrives through [`BrokerProtocol`] and [`Framing`]:
+//! skeleton needs from it arrives through [`BrokerProtocol`] and its `Framing`:
 //! `initialize` de-duplication, `didOpen`/`didClose` reference counting,
 //! `shutdown`/`exit` interception, `Content-Length` framing, and the
 //! server-to-client routing policy.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io;
 use std::path::Path;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use karet_jsonrpc::framing::content_length::ContentLength;
 use karet_lsp::LspSpec;
 use serde_json::Value;
 use serde_json::json;
-use tokio::io::AsyncBufRead;
-use tokio::io::AsyncWrite;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 
-use crate::broker::BrokerError;
 use crate::broker::endpoint;
-use crate::broker::framing::Framing;
 use crate::broker::key::Launch;
 use crate::broker::lease;
 use crate::broker::protocol::BrokerProtocol;
@@ -38,7 +33,7 @@ use crate::broker::protocol::ServerLink;
 use crate::broker::protocol::ServerRoute;
 
 /// Environment flag selecting the hidden LSP-broker entry point.
-pub const MODE_ENV: &str = "KARET_INTERNAL_LSP_BROKER";
+const MODE_ENV: &str = "KARET_INTERNAL_LSP_BROKER";
 const SPEC_ENV: &str = "KARET_INTERNAL_LSP_BROKER_SPEC";
 const PRELUDE: &str = "KARET-LSP-BROKER ";
 const PROTOCOL_VERSION: &str = "1";
@@ -66,26 +61,6 @@ pub enum LspRequest {
     Plain,
     /// The single `initialize` whose result every other client shares.
     Initialize,
-}
-
-/// `Content-Length` framing, delegating to `karet-lsp`'s codec.
-#[derive(Clone, Copy, Debug)]
-pub struct ContentLength;
-
-impl Framing for ContentLength {
-    async fn read_message<R>(reader: &mut R) -> io::Result<Option<Value>>
-    where
-        R: AsyncBufRead + Unpin + Send,
-    {
-        read_message(reader).await
-    }
-
-    async fn write_message<W>(writer: &mut W, message: &Value) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        write_message(writer, message).await
-    }
 }
 
 impl BrokerProtocol for LspBroker {
@@ -322,31 +297,21 @@ async fn close_client_documents(link: &ClientLink<'_, LspBroker>) {
     }
 }
 
-/// Read one framed JSON-RPC message, delegating framing (and the shared size
-/// cap) to `karet-lsp`'s codec — the one Content-Length implementation.
-async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Option<Value>> {
-    let Some(body) = karet_lsp::codec::read_frame(reader)
-        .await
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
-    else {
-        return Ok(None);
-    };
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value) -> io::Result<()> {
-    let body = serde_json::to_vec(message)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    karet_lsp::codec::write_frame(writer, &body).await
-}
-
-fn launch(spec: &LspSpec, root: &Path) -> Launch {
-    Launch {
-        command: spec.command.clone(),
-        args: spec.args.clone(),
-        root: root.to_path_buf(),
+impl Launch {
+    /// The broker's description of a language-server launch: `spec`'s command
+    /// and arguments, rooted at `root`.
+    ///
+    /// The one way a connector names an LSP launch, so the value it hands to
+    /// [`crate::broker::connect_observed`] and
+    /// [`crate::broker::reported_failure`] derives the same broker key the
+    /// hidden broker does.
+    #[must_use]
+    pub fn for_lsp(spec: &LspSpec, root: &Path) -> Self {
+        Self {
+            command: spec.command.clone(),
+            args: spec.args.clone(),
+            root: root.to_path_buf(),
+        }
     }
 }
 
@@ -362,23 +327,6 @@ pub fn run_from_env() -> i32 {
     lease::run_from_env::<LspBroker>()
 }
 
-/// Connect to the shared broker for `spec` and `root`, starting it when absent.
-///
-/// The returned stream has already completed the broker authentication prelude
-/// and can be passed directly to `karet_lsp::LspClient::connect`.
-///
-/// # Errors
-/// Returns [`BrokerError`] if the state directory, hidden process, or loopback
-/// connection cannot be established before the startup deadline.
-pub async fn connect(
-    executable: &Path,
-    state_root: &Path,
-    spec: &LspSpec,
-    root: &Path,
-) -> Result<TcpStream, BrokerError> {
-    lease::connect::<LspBroker>(executable, state_root, &launch(spec, root)).await
-}
-
 /// Whether a live shared broker still references a managed immutable payload.
 #[must_use]
 pub fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
@@ -387,6 +335,7 @@ pub fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::time::Duration;
 
     use tokio::io::BufReader;
@@ -394,13 +343,14 @@ mod tests {
     use super::*;
     use crate::broker::key;
     use crate::broker::serve::Core;
+    use crate::broker::serve::read_message;
 
     type BoxError = Box<dyn std::error::Error>;
 
     /// Keeps the moved tests' call shape: identity is derived from the launch
     /// description, which for LSP is a spec plus a repository root.
     fn broker_key(spec: &LspSpec, root: &Path) -> String {
-        key::broker_key(PRELUDE, PROTOCOL_VERSION, &launch(spec, root))
+        key::broker_key(PRELUDE, PROTOCOL_VERSION, &Launch::for_lsp(spec, root))
     }
 
     /// The document-lease tests only touch [`LspState`]; the channel keeps the
@@ -480,11 +430,34 @@ mod tests {
         );
     }
 
+    /// The launch is what runs and where, nothing more: the language ids a spec
+    /// serves must not partition brokers, or two windows that registered the
+    /// same server for different languages would each start their own.
+    #[test]
+    fn an_lsp_launch_is_the_command_its_arguments_and_the_root() {
+        let spec = LspSpec::new(
+            "rust-analyzer",
+            vec!["--stdio".to_owned()],
+            vec!["rust".to_owned()],
+        );
+        let launch = Launch::for_lsp(&spec, Path::new("/workspace"));
+        assert_eq!(launch.command, "rust-analyzer");
+        assert_eq!(launch.args, ["--stdio"]);
+        assert_eq!(launch.root, Path::new("/workspace"));
+
+        let mut other_languages = spec.clone();
+        other_languages.languages = vec!["toml".to_owned()];
+        assert_eq!(
+            broker_key(&spec, Path::new("/workspace")),
+            broker_key(&other_languages, Path::new("/workspace"))
+        );
+    }
+
     #[tokio::test]
     async fn framing_rejects_oversized_messages() -> Result<(), Box<dyn std::error::Error>> {
         let input = b"Content-Length: 70000000\r\n\r\n";
         let mut reader = BufReader::new(&input[..]);
-        let error = read_message(&mut reader)
+        let error = read_message::<ContentLength, _>(&mut reader)
             .await
             .err()
             .ok_or("expected error")?;
@@ -546,7 +519,7 @@ mod tests {
         let mut parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;
@@ -573,12 +546,12 @@ mod tests {
         let mut parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;
 
-        parts.core.state.initialize_ready.notify_waiters();
+        parts.core.state().initialize_ready.notify_waiters();
         tokio::task::yield_now().await;
         assert!(
             !waiter.is_finished(),
@@ -610,7 +583,7 @@ mod tests {
         let parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
 
@@ -622,7 +595,7 @@ mod tests {
         )
         .await;
 
-        assert!(parts.core.state.initialize_result.lock().await.is_none());
+        assert!(parts.core.state().initialize_result.lock().await.is_none());
         let link = ClientLink::new(&parts.core, 3, &parts.sender);
         let mut retry = json!({"jsonrpc": "2.0", "id": 4, "method": "initialize"});
         assert_eq!(
@@ -639,7 +612,7 @@ mod tests {
         let parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;

@@ -1,9 +1,8 @@
 //! File-type identity → language detection.
 //!
-//! Two layers so a viewer can label a file even when its grammar isn't built in:
-//! [`language_id_from_path`] resolves only grammars compiled into this build, while
-//! [`language_name_from_path`] also recognizes common languages without a bundled
-//! grammar (for the UI label), falling back to "plaintext" rendering.
+//! [`language_id_from_path`] resolves only grammars compiled into this build. A
+//! file's display label is not the parse host's concern: callers read it from
+//! [`karet_filetype`], which also names languages with no bundled grammar.
 
 use std::path::Path;
 
@@ -22,17 +21,6 @@ pub fn language_id_from_path(path: &Path) -> Option<LanguageId> {
     language_id_from_injection_name(karet_filetype::file_type_for_path(path).grammar()?)
 }
 
-/// A human-readable language name for `path`, for UI labels.
-///
-/// Defers to the shared [`karet_filetype`] catalogue, keeping display identity
-/// independent from whichever grammar happens to parse the file.
-/// `None` for unrecognized files (the caller should show "plaintext").
-#[must_use]
-pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
-    let ft = karet_filetype::file_type_for_path(path);
-    ft.is_recognized().then(|| ft.name())
-}
-
 /// The [`LanguageId`] a grammar-injection language name refers to, if that grammar is
 /// compiled in.
 ///
@@ -40,33 +28,46 @@ pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
 /// file path: an injection query's `#set! injection.language "javascript"`, a dynamic
 /// `@injection.language` capture, or a markdown code fence's info string (` ```sh `).
 /// Matching is case-insensitive and covers each grammar's common aliases, so `rs`,
-/// `sh` and `c++` all resolve. Unknown names (`jsdoc`, `regex`, `latex` — languages
-/// karet bundles no grammar for) return `None`, and the caller simply leaves that
-/// region unhighlighted.
+/// `sh` and `c++` all resolve (as do `tex`/`latex` when `lang-latex` is on). Unknown
+/// names (`jsdoc`, `regex` — languages karet bundles no grammar for) and names
+/// whose grammar's `lang-*` feature is off return `None`, and the caller simply
+/// leaves that region unhighlighted. When two grammars claim the same alias, the
+/// one registered first wins.
+///
+/// A whole fence info string resolves by its first word, as CommonMark reads it:
+/// the name ends at the first comma, whitespace or `{`, so rustdoc's
+/// `rust,no_run` and `rust compile_fail` both name Rust.
 #[must_use]
 pub fn language_id_from_injection_name(name: &str) -> Option<LanguageId> {
-    let name = name.trim().to_ascii_lowercase();
+    let name = name
+        .trim()
+        .split(|c: char| c == ',' || c == '{' || c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     registry::all()
         .iter()
         .find(|g| g.names.contains(&name.as_str()))
         .map(|g| g.id)
 }
 
-/// Lowercased extension of `path`, without the dot (test helper).
-#[cfg(test)]
-fn extension(path: &Path) -> Option<String> {
-    path.extension()?.to_str().map(str::to_ascii_lowercase)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The display label `karet-filetype` gives `path`, `None` when it does not
+    /// recognize the file. These tests pair it with [`language_id_from_path`] so
+    /// the label a viewer shows and the grammar that parses stay in step.
+    fn label(path: &Path) -> Option<&'static str> {
+        let ft = karet_filetype::file_type_for_path(path);
+        ft.is_recognized().then(|| ft.name())
+    }
 
     #[test]
     fn unknown_extension_is_unlabelled() {
         let p = Path::new("file.unknownext");
         assert_eq!(language_id_from_path(p), None);
-        assert_eq!(language_name_from_path(p), None);
+        assert_eq!(label(p), None);
     }
 
     #[cfg(not(feature = "lang-kotlin"))]
@@ -75,7 +76,7 @@ mod tests {
         // Optional grammars remain recognized for labelling when omitted.
         let p = Path::new("Main.kt");
         assert_eq!(language_id_from_path(p), None);
-        assert_eq!(language_name_from_path(p), Some("Kotlin"));
+        assert_eq!(label(p), Some("Kotlin"));
     }
 
     #[test]
@@ -85,6 +86,25 @@ mod tests {
             assert_eq!(language_id_from_injection_name("rs"), Some(rust));
             assert_eq!(language_id_from_injection_name("  RuSt "), Some(rust));
         }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn fence_info_strings_resolve_by_their_first_word() {
+        let rust = language_id_from_injection_name("rust");
+        assert!(rust.is_some());
+        for info in [
+            "rust,no_run",
+            "rust,compile_fail",
+            "rust,ignore",
+            "rust no_run",
+            "rust{.class}",
+        ] {
+            assert_eq!(language_id_from_injection_name(info), rust, "{info:?}");
+        }
+        // The first word decides: an attribute alone names no language.
+        assert_eq!(language_id_from_injection_name("no_run,rust"), None);
+        assert_eq!(language_id_from_injection_name(",rust"), None);
     }
 
     #[test]
@@ -126,11 +146,7 @@ mod tests {
             ("component.svelte", "Svelte"),
             ("component.vue", "Vue"),
         ] {
-            assert_eq!(
-                language_name_from_path(std::path::Path::new(path)),
-                Some(expected),
-                "{path}"
-            );
+            assert_eq!(label(std::path::Path::new(path)), Some(expected), "{path}");
             assert!(
                 language_id_from_path(std::path::Path::new(path)).is_some(),
                 "{path}"
@@ -151,7 +167,7 @@ mod tests {
             ("schema.gql", "GraphQL"),
             ("schema.proto", "Protobuf"),
         ] {
-            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert_eq!(label(Path::new(path)), Some(expected));
             assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
         }
     }
@@ -172,7 +188,7 @@ mod tests {
             ("CMakeLists.txt", "CMake"),
             ("module.cmake", "CMake"),
         ] {
-            assert_eq!(language_name_from_path(Path::new(path)), Some(expected));
+            assert_eq!(label(Path::new(path)), Some(expected));
             assert!(language_id_from_path(Path::new(path)).is_some(), "{path}");
         }
         assert_ne!(
@@ -194,7 +210,7 @@ mod tests {
             ("paper.tex", "TeX", "latex"),
         ] {
             let path_id = language_id_from_path(Path::new(path));
-            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert_eq!(label(Path::new(path)), Some(name));
             assert!(path_id.is_some(), "{path}");
             assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
@@ -217,7 +233,7 @@ mod tests {
             ("build.bat", "Batch", "batch"),
         ] {
             let path_id = language_id_from_path(Path::new(path));
-            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert_eq!(label(Path::new(path)), Some(name));
             assert!(path_id.is_some(), "{path}");
             assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
@@ -263,7 +279,7 @@ mod tests {
             ("plugin.vim", "Vim script", "vimscript"),
         ] {
             let path_id = language_id_from_path(Path::new(path));
-            assert_eq!(language_name_from_path(Path::new(path)), Some(name));
+            assert_eq!(label(Path::new(path)), Some(name));
             assert!(path_id.is_some(), "{path}");
             assert_eq!(path_id, language_id_from_injection_name(alias), "{path}");
         }
@@ -319,18 +335,14 @@ mod tests {
 
     #[test]
     fn extension_is_case_insensitive() {
-        assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));
-        assert_eq!(
-            language_name_from_path(Path::new("README.MD")),
-            Some("Markdown")
-        );
+        assert_eq!(label(Path::new("README.MD")), Some("Markdown"));
     }
 
     #[cfg(feature = "lang-latex")]
     #[test]
     fn latex_sources_resolve_to_the_tex_grammar() {
         assert!(language_id_from_path(Path::new("paper.tex")).is_some());
-        assert_eq!(language_name_from_path(Path::new("paper.TEX")), Some("TeX"));
+        assert_eq!(label(Path::new("paper.TEX")), Some("TeX"));
         assert!(language_id_from_injection_name("latex").is_some());
     }
 }

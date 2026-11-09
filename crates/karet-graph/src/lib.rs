@@ -8,7 +8,11 @@
 //! the left of the existing commit text.
 //!
 //! With the **`view`** feature, [`render_rail`](view::render_rail) turns a [`RailRow`]
-//! into a themed ratatui [`Line`](ratatui::text::Line).
+//! into a ratatui [`Line`](ratatui::text::Line) coloured through a caller-supplied
+//! `lane_style` closure, and [`graph_tree_lines`](view::graph_tree_lines) flattens a
+//! [`karet_core::GraphView`] into indented tree rows styled by plain
+//! [`TreeStyles`](view::TreeStyles). The view takes no theme dependency; the caller
+//! maps its own palette onto the styles.
 
 #[cfg(feature = "view")]
 pub mod view;
@@ -168,7 +172,6 @@ fn trim_trailing(lanes: &mut Vec<Option<String>>, colors: &mut Vec<u8>) {
 /// Render one row into a glyph gutter. Uses a cell grid of `2*width - 1` columns —
 /// lanes at even indices, inter-lane connectors at odd indices — then trims trailing
 /// blanks. `lanes`/`colors` are the *post-update* lane picture (what continues below).
-#[allow(clippy::too_many_arguments)] // a self-contained renderer; splitting hurts clarity
 fn render_row(
     node_lane: usize,
     row: &LaneInput,
@@ -319,44 +322,104 @@ mod tests {
             LaneInput::new("a", vec![]),
         ]);
         assert_eq!(rows.len(), 4);
-        // Merge row: node is ◆ and a second lane is opened to the right.
+        // Merge row: node ◆ in lane 0, a connector opening lane 1 (colour 1) to the right.
         assert!(rows[0].merge);
         assert_eq!(rows[0].node_col, 0);
-        assert!(
-            rows[0].gutter.starts_with('\u{25C6}'),
-            "merge node is ◆, got {:?}",
-            rows[0].gutter
-        );
-        assert!(
-            rows[0].gutter.contains('\u{2500}'),
-            "merge draws a horizontal connector, got {:?}",
-            rows[0].gutter
-        );
+        assert_eq!(rows[0].gutter, "◆─╮");
+        assert_eq!(rows[0].colors, vec![0, 1, 1]);
         // While the side branch is live, the main-lane commit shows a parallel rail.
-        assert!(
-            rows[1].gutter.contains('\u{2502}'),
-            "a parallel rail is shown while the branch is open, got {:?}",
-            rows[1].gutter
-        );
-        // The side-branch commit sits in lane 1.
+        assert!(!rows[1].merge);
+        assert_eq!(rows[1].node_col, 0);
+        assert_eq!(rows[1].gutter, "● │");
+        assert_eq!(rows[1].colors, vec![0, 0, 1]);
+        // The side-branch commit sits in lane 1 and joins its parent's lane 0.
+        assert!(!rows[2].merge);
         assert_eq!(rows[2].node_col, 2, "side-branch node in the second lane");
+        assert_eq!(rows[2].gutter, "╭─●");
+        assert_eq!(rows[2].colors, vec![0, 0, 1]);
         // Back to a single column at the root.
+        assert_eq!(rows[3].node_col, 0);
         assert_eq!(rows[3].gutter, "\u{25CF}");
+        assert_eq!(rows[3].colors, vec![0]);
+    }
+
+    /// Three side-by-side branches; the middle one ends at its root, and the next new
+    /// tip reuses that freed middle lane under a fresh colour rather than widening.
+    #[test]
+    fn freed_middle_lane_is_reused_with_a_fresh_colour() {
+        let rows = assign_lanes(&[
+            LaneInput::new("x", vec!["a".into()]),
+            LaneInput::new("y", vec!["b".into()]),
+            LaneInput::new("z", vec!["c".into()]),
+            LaneInput::new("b", vec![]),
+            LaneInput::new("w", vec!["d".into()]),
+            LaneInput::new("a", vec![]),
+            LaneInput::new("c", vec![]),
+            LaneInput::new("d", vec![]),
+        ]);
+        let got: Vec<(&str, &[u8], usize)> = rows
+            .iter()
+            .map(|r| (r.gutter.as_str(), r.colors.as_slice(), r.node_col))
+            .collect();
+        let want: Vec<(&str, &[u8], usize)> = vec![
+            ("●", &[0], 0),
+            ("│ ●", &[0, 0, 1], 2),
+            ("│ │ ●", &[0, 0, 1, 0, 2], 4),
+            // b is a root: lane 1 ends here, but lane 2 keeps the gutter width.
+            ("│ ● │", &[0, 0, 1, 0, 2], 2),
+            // w takes the freed lane 1 with the next colour (3), not a new lane 3.
+            ("│ ● │", &[0, 0, 3, 0, 2], 2),
+            ("● │ │", &[0, 0, 3, 0, 2], 0),
+            ("  │ ●", &[0, 0, 3, 0, 2], 4),
+            ("  ●", &[0, 0, 3], 2),
+        ];
+        assert_eq!(got, want);
     }
 
     #[test]
     fn colors_len_matches_gutter_char_count() {
-        for row in assign_lanes(&linear()) {
-            assert_eq!(row.gutter.chars().count(), row.colors.len());
+        let branching = [
+            LaneInput::new("d", vec!["c".into(), "b".into()]),
+            LaneInput::new("c", vec!["a".into()]),
+            LaneInput::new("b", vec!["a".into()]),
+            LaneInput::new("a", vec![]),
+        ];
+        let rows: Vec<RailRow> = assign_lanes(&linear())
+            .into_iter()
+            .chain(assign_lanes(&branching))
+            .collect();
+        assert_eq!(rows.len(), 7);
+        for row in rows {
+            assert_eq!(
+                row.gutter.chars().count(),
+                row.colors.len(),
+                "gutter {:?}",
+                row.gutter
+            );
         }
     }
 
     #[test]
     fn unknown_parents_do_not_panic_and_terminate_lanes() {
         // A tip whose parent is outside the provided window: the lane simply carries
-        // the pending parent id and is never resolved — must not panic.
-        let rows = assign_lanes(&[LaneInput::new("x", vec!["missing".into()])]);
-        assert_eq!(rows.len(), 1);
+        // the pending parent id and is never resolved — must not panic. The rows below
+        // it keep that lane's rail, while a root's lane ends at the root.
+        let rows = assign_lanes(&[
+            LaneInput::new("x", vec!["missing".into()]),
+            LaneInput::new("y", vec![]),
+            LaneInput::new("z", vec![]),
+        ]);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].node_col, 0);
+        assert_eq!(rows[0].gutter, "●");
+        assert_eq!(rows[0].colors, vec![0]);
+        // The unresolved lane 0 is still drawn as a rail beside the next tip.
+        assert_eq!(rows[1].node_col, 2);
+        assert_eq!(rows[1].gutter, "│ ●");
+        assert_eq!(rows[1].colors, vec![0, 0, 1]);
+        // y's lane terminated at y: z opens lane 1 afresh (colour 2), lane 0 still runs.
+        assert_eq!(rows[2].node_col, 2);
+        assert_eq!(rows[2].gutter, "│ ●");
+        assert_eq!(rows[2].colors, vec![0, 0, 2]);
     }
 }

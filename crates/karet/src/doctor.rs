@@ -149,6 +149,22 @@ pub(crate) fn evaluate(probes: &Probes, settings: &Settings) -> Vec<Finding> {
                 "not supported — images render as unicode halfblocks",
             )
         },
+        if caps.kitty_placeholders() {
+            Finding::new(Severity::Ok, "kitty image placeholders", "supported")
+        } else if caps.kitty_graphics_supported() {
+            Finding::new(
+                Severity::Info,
+                "kitty image placeholders",
+                "not drawn here (WezTerm, Konsole, or tmux) — markdown preview images \
+                 render as unicode halfblocks",
+            )
+        } else {
+            Finding::new(
+                Severity::Info,
+                "kitty image placeholders",
+                "not supported — markdown preview images render as unicode halfblocks",
+            )
+        },
         match caps.osc22_pointer_shape {
             Some(true) => Finding::new(Severity::Ok, "OSC 22 pointer shapes", "supported"),
             _ => Finding::new(
@@ -310,6 +326,7 @@ mod tests {
                 osc22_pointer_shape: Some(true),
                 undercurl: true,
                 color_depth: ColorDepth::TrueColor,
+                placeholders: true,
             },
             term: Some("xterm-kitty".to_string()),
             term_program: None,
@@ -327,6 +344,7 @@ mod tests {
                 osc22_pointer_shape: None,
                 undercurl: false,
                 color_depth: ColorDepth::Indexed256,
+                placeholders: true,
             },
             term: Some("xterm-256color".to_string()),
             term_program: None,
@@ -418,6 +436,39 @@ mod tests {
             Severity::Ok
         );
         assert_eq!(exit_code(&findings), 0);
+    }
+
+    /// The placeholder rule the app applies to markdown preview images is the
+    /// one reported: drawn under Kitty graphics, not drawn where the terminal
+    /// drops placeholders even though it speaks Kitty, and never an error.
+    #[test]
+    fn kitty_image_placeholders_follow_the_apps_rule() {
+        let mut dropped = all_supported();
+        dropped.caps.placeholders = false;
+        for (name, probes, severity, detail) in [
+            ("drawn", all_supported(), Severity::Ok, "supported"),
+            ("dropped", dropped, Severity::Info, "not drawn here"),
+            (
+                "no kitty",
+                none_supported(),
+                Severity::Info,
+                "not supported",
+            ),
+        ] {
+            let findings = evaluate(&probes, &Settings::default());
+            let placeholders = finding(&findings, "kitty image placeholders");
+            assert_eq!(placeholders.severity, severity, "{name}");
+            assert!(
+                placeholders.detail.starts_with(detail),
+                "{name}: {}",
+                placeholders.detail
+            );
+            assert_eq!(
+                crate::app::TerminalCaps::from_capabilities(&probes.caps).placeholders,
+                severity == Severity::Ok,
+                "{name}: the app agrees"
+            );
+        }
     }
 
     #[test]

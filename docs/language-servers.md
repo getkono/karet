@@ -257,15 +257,21 @@ provider, path, and document version, then sorted and deduplicated.
 
 | Capability | Owner and behavior |
 |---|---|
-| Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
+| Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline (folds give way to a server's folding ranges, below) |
+| Folding ranges | the language's primary server, when it offers them (`textDocument/foldingRange`, declared as whole-line folding). Every open document is asked at each version the server has been sent, at most once at a time and off the server task's serial path; a request the server cancels is asked again a bounded number of times. An answer for a version the text has moved past is dropped. While held, the server's ranges replace the tree-sitter (or indentation) folds -- its `comment` and `imports` kinds feed *Fold All Comments* and *Fold All Imports*, `region` stays its own kind -- and they move with the text, by line, until the next answer. An empty answer, a reload, a change of language, or the server going away for good gives the tree-sitter folds back |
 | Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
 | Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. A request the server fails, times out on, or never answers because it is restarting leaves the hints on screen as they are and is re-asked after the same pause, the wait doubling with each failure in a row up to 30 seconds (a server coming back, an answer, or an edit resets it); only a server that does not offer hints, one that is unavailable for good, or one whose restart circuit has opened clears them. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
 | Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | References (`Shift+F12`), implementation (`Ctrl+F12`), declaration and type definition (palette) | the language's primary server, as above, each gated on its own capability (`referencesProvider`, `implementationProvider`, `declarationProvider`, `typeDefinitionProvider`). References ask with `includeDeclaration: true` and are always listed in the location picker; the others jump to a lone answer like Go to Definition. Every location is converted to buffer columns against its own file |
+| Call hierarchy (`Shift+Alt+H` for incoming calls, outgoing calls in the palette) and type hierarchy (supertypes and subtypes, palette), walked in the Hierarchy sidebar panel (`Ctrl+8`), which stays open with its expansion when Enter opens an item | the language's primary server, as above, gated on `callHierarchyProvider` or `typeHierarchyProvider`. `textDocument/prepareCallHierarchy` / `prepareTypeHierarchy` finds the roots at the caret; each level after is asked only when its node is first expanded (`callHierarchy/incomingCalls`, `…/outgoingCalls`, `typeHierarchy/supertypes`, `…/subtypes`), handing the server back its item exactly as it sent it, `data` included. Every item is converted to buffer columns against its own file, and an answer is delivered even after an edit, since each item is anchored in the file it names |
 | Rename (`F2`) and workspace edits | the language's primary server, as above. `prepareRename` shapes the prompt (a server without it, or one answering `defaultBehavior`, gets the identifier at the caret). Every workspace edit -- a rename's, and a server's own `workspace/applyEdit` -- goes through one session path: text edits land in documents (unopened files are opened in the background, so each change is unsaved and undoable per document), creates, renames and deletes act on disk, and a text-only edit applies whole or not at all (`textOnlyTransactional`). An edit computed against a document version that has moved on is refused |
 | Code actions (`Ctrl+.` / `Alt+Enter`, the gutter lightbulb, *Organize Imports*, *Fix All*) | the language's primary server, as above. The request carries the diagnostics that server last published touching the range, exactly as it sent them (`data` included), and an optional kind filter that is also applied to the answer. The lightbulb asks with `triggerKind: Automatic` once the caret has rested for the `didChange` debounce, and never reports a server without code actions; a request made by hand does. Running an action resolves a deferred edit (`codeAction/resolve`), applies the edit through the workspace-edit path above, then runs its command (`workspace/executeCommand`, refused without being sent when the server listed its commands and this is not one); edits the server makes while running it arrive as `workspace/applyEdit`. An action listed at a document version that has moved on is refused |
 | Code lenses (`editor.codeLens`) | the language's primary server, as above. Listed for the whole document (`textDocument/codeLens`) for the front tab of each visible pane, on the inlay-hint schedule: once an edit has been quiet for the `didChange` debounce, and again when the viewport leaves the lines already resolved. The deferred lenses on the viewport and its overscan are resolved (`codeLens/resolve`) inside the same request, concurrently; one elsewhere stays untitled, and undrawn, until it is scrolled to. At most one listing per document is in flight, off the server task's serial path, and its timeouts never mark a server hung. Until the replacement arrives the lenses on screen move with the text; a failed listing leaves them as they are and is re-asked with the inlay-hint back-off. A click on a title runs its command (`workspace/executeCommand`, refused without being sent when the server does not run it -- the client-side commands some servers put on lenses among them, reported under the lens's title); `workspace/codeLens/refresh` is not declared |
-| Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
+| Document links and colours (`Ctrl+Click` on a link; colour swatches under `editor.colorHighlight`) | the language's primary server, as above. Both are listed for the whole document together (`textDocument/documentLink` and `textDocument/documentColor`, concurrently) for the front tab of each visible pane, once per text version: once an edit has been quiet for the `didChange` debounce, and again when a server's state changes. At most one listing per document is in flight, off the server task's serial path, and its timeouts never mark a server hung; each half stands or fails on its own, and a failed half leaves what is shown and is re-asked with the inlay-hint back-off. Until the replacement arrives the links and colours move with the text, and one an edit reaches into is dropped. `Ctrl`-hover underlines a link over the span the server gave, and `Ctrl+Click` follows it ahead of a link read from the source: a link the server sent without a target is resolved first (`documentLink/resolve`), a web or mail link opens with the desktop, a `file:` link opens in the editor -- at the line and column a `#L<line>,<column>` fragment names -- and one outside the workspace asks first. A server colour is drawn as a swatch, and the built-in detector's swatch is skipped wherever a server colour already covers it |
+| Semantic tokens | one owner per language: `lsp.languages.<id>.semanticTokens` when set (a provider that does not serve the language leaves it without), else the language's primary server. While `editor.semanticHighlighting.enabled` is on (the default), every open document is asked at each version the owner has been sent (`textDocument/semanticTokens/full`), and afterwards as a delta against the last answer (`…/full/delta`); a delta that does not fit is asked again whole. At most one request per document is in flight, off the server task's serial path, and a newer version aborts the older one. `workspace/semanticTokens/refresh` re-asks every open document. The answer is laid over the tree-sitter highlights as a sparse overlay -- comments, strings and markup keep their tree-sitter class -- and moves with the text until the next one arrives; it is dropped with its server's diagnostics when the server stays down or is retired. Turning the setting off stops the requests and clears the overlay without restarting anything. Never allowed to replace parsing |
+| Linked editing (*Start Linked Editing* `Ctrl+Shift+F2`) | the language's primary server, as above (`textDocument/linkedEditingRange`). Asked by hand only, so a server without it says so. The answer puts a caret in every linked range -- an HTML or JSX tag's name and its closing tag's -- each at the caret's offset into its own range (a selection inside the name is mirrored too), and from there it is ordinary multi-caret editing. An answer for text or selections that have changed since is dropped; a range spanning lines is skipped, and the server's `wordPattern` is not enforced |
+| On-type formatting (`editor.formatOnType`, *Toggle Format on Type*) | the language's primary server, as above (`textDocument/onTypeFormatting`). Off by default, as in VS Code. While on, a character typed with a single bare caret (`\n` for Enter) is offered to the server, until its first answer names the characters it formats on, and then only those (none at all for a server without on-type formatting); a character it does not format on costs no request. The edits are applied by the client, as one undoable edit, and only while the buffer is still at the version they were computed for -- a keystroke typed while the server worked drops them rather than being lost or misplaced. Never reported as unsupported |
+| Will-save edits (`textDocument/willSaveWaitUntil`) | the formatting server, as below, when it asks for them in its `textDocumentSync` options. Before every save that may format (every cause but the `afterDelay` autosave) the server is asked, with the save's reason, whether or not `formatOnSave` is on; its edits are applied to the buffer first, and format-on-save then formats the text they produced. The wait shares format-on-save's `formatOnSaveTimeout`: the will-save request and the formatting after it spend one deadline between them, and a will-save request that spends all of it leaves the save unformatted rather than formatting text already written. A refusal, failure or overrun costs the edits, never the save |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
 | Formatting (format-on-save, *Format Document* `Shift+Alt+F`, *Format Selection* `Ctrl+K Ctrl+F`) | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default. *Format Selection* sends one `textDocument/rangeFormatting` per selection (a bare caret stands for its line; touching selections merge) and applies the answers together as one undoable edit. An answer for a document version that has moved on is dropped with a notice; with no server, *Format Document* falls back to the built-in formatter where the language has one |
 
@@ -314,6 +320,13 @@ What the client declares at the handshake is kept to what it honours:
   `workspace.codeLens.refreshSupport`. A lens the server sends untitled is
   filled in with `codeLens/resolve`, handing it back exactly as the server
   sent it, when it is near the viewport.
+- `textDocument.documentLink` with `tooltipSupport`, without dynamic
+  registration (its options carry a `resolveProvider` flag karet would drop).
+  A link the server sends without a target is filled in with
+  `documentLink/resolve`, handing it back exactly as the server sent it, when
+  it is Ctrl+clicked.
+- `textDocument.colorProvider`, with dynamic registration. Colours are only
+  drawn: `textDocument/colorPresentation` is not asked.
 - `textDocument.completion`: a trigger context on every request (invoked, a
   trigger character, or narrowing an incomplete list), insert/replace edits,
   commit characters, markdown documentation, and `resolveSupport` for
@@ -330,10 +343,12 @@ What the client declares at the handshake is kept to what it honours:
 - `dynamicRegistration` for the gated requests whose registration carries
   nothing karet reads beyond "on": hover, definition, implementation, type
   hierarchy, document and workspace symbols, rename, formatting, range
-  formatting, and inlay hints. Completion, signature help and code actions are
-  deliberately not declared: their registrations carry trigger characters and
-  action kinds karet would drop, so a server should keep stating them in its
-  handshake.
+  formatting, linked editing ranges, and inlay hints. Completion, signature
+  help, code actions and on-type formatting are deliberately not declared:
+  their registrations carry trigger characters and action kinds karet would
+  drop, so a server should keep stating them in its handshake.
+- `synchronization.willSaveWaitUntil` and `synchronization.didSave`: the
+  will-save edits above are asked for, and every save is announced.
 
 A registration applies only to the documents its `registerOptions.documentSelector`
 covers; an absent or `null` selector covers every document, and so does one
@@ -366,10 +381,15 @@ Tree-sitter and LSP are complementary. Tree-sitter is local, incremental, stable
 while a server restarts, and understands injected regions in Astro, Svelte, Vue,
 Markdown, and similar documents. LSP semantic tokens are repository-aware and can
 distinguish meanings that syntax alone cannot. karet therefore paints Tree-sitter
-as the complete current layer. When semantic-token transport is enabled, it will
-be a sparse, single-provider overlay; servers are not advertised that capability
-until the overlay is present. LSP data never controls parsing, indentation
-structure, or injection boundaries.
+as the complete base layer, and lays one provider's semantic tokens over it as a
+sparse overlay. The client advertises the token types and modifiers it can
+style -- the LSP standard set plus the common custom names (`mutable`,
+`unresolvedReference`, `lifetime`, …) -- with `augmentsSyntaxTokens`, so a
+server may leave out what syntax already shows; a token of any other type is
+dropped and the Tree-sitter colour beneath it stays. The theme resolves each
+token through its `semanticTokenColors`, falling back to the colour of the
+closest syntax class. LSP data never controls parsing, indentation structure,
+or injection boundaries.
 
 ### Python
 
@@ -399,6 +419,23 @@ TypeScript Language Server remains the intelligence owner. A repository containi
 layer and preferred repository formatter without duplicating completion or
 navigation. Astro, Svelte, and Vue use their framework server for the outer
 document and Tree-sitter language injections for embedded script and style syntax.
+
+### Inline completions (Copilot)
+
+`copilot-language-server` proposes ghost text for every language through LSP
+3.18 `textDocument/inlineCompletion` (see `editor.inlineCompletion` in the
+[configuration](configuration.md)). It sends the code being edited to GitHub,
+so it is attached only once you opt in: install it from the Language Servers
+manager (a karet-managed npm install), or give it an `lsp.servers` entry --
+`"copilot-language-server": {}` attaches the one on `PATH`, and
+`{ "enabled": false }` keeps it off. Being on `PATH` alone attaches nothing.
+
+Sign in with **Copilot: Sign In** from the palette: the device code is copied
+to the clipboard and shown until dismissed, together with the GitHub page to
+enter it at. karet does not open that page for you: open it in a browser and
+enter the code. Once you have, a second notification says whether the sign-in
+landed. **Copilot: Sign Out** signs out. Any other server that
+offers inline completions is asked too, beside the language's primary.
 
 ## Shared process lifecycle
 

@@ -65,7 +65,10 @@ with only part of it would be a quieter kind of wrong than failing.
 C and C++ have no manifest, so the build file stands in for one. A CMake project usually
 has one in every directory, so the outermost claims the tree beneath it. A bare `Makefile`
 is every kind of project's build file, so it marks a C project only when C or C++ sources
-sit beside it or in its `src`.
+sit beside it or in its `src`. A directory is one package even when two manifests mark
+it, except that a C/C++ project is kept beside whatever else roots there: a Rust crate or
+Node addon with a `CMakeLists.txt` next to its manifest is two packages, since no other
+ecosystem reads C or C++ sources.
 
 Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,
 and a root with no manifest whose crates sit a level or two down (`rust/api/`,
@@ -186,16 +189,25 @@ C, C++ and Java are mapped for **containment and the `api` lens only**:
 
 | Lens | C / C++ | Java |
 |---|---|---|
-| `api` | `static` and `extern` linkage; C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
+| `api` | `static` and `extern` linkage of functions (inside an anonymous namespace, `static`); C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
 | `substitution` · `variation` · `boundary` · `hazard` | `?` — not read | `?` — not read |
 
 A lens a language does not read shows `?` and "not read for this language" in the facet
 pane, its rollup is `null` in `--seam-query`, and the node lists it under
-`unread_lenses`, because showing `—` would claim the index looked and found nothing. A
+`unread_lenses`, because showing `—` would claim the index looked and found nothing.
+A lens is unread at a node only when neither its language nor any language beneath it
+reads the lens: a directory of a Gradle source set mixing Java and Kotlin counts what its
+Kotlin files carry, so it reports their counts whichever file it is anchored on.
+Those three surfaces are the only ones that carry the distinction: the spine's lens
+filter and the query language stay two-valued, matching what carries a facet of the lens,
+so `!lens:hazard` includes a node whose `hazard` is unread, and the filter counts and
+dims it as having none. A
 C or C++ file is a module named by its whole file name — `widget.h` and `widget.c` are
 two modules, since a header and its source share a stem. A C++ method defined outside its
 class (`void Widget::draw() {…}`) is regrouped under the class beside its declaration, as
-a Rust `impl` is, and claims no access of its own.
+a Rust `impl` is, and claims no access of its own. The same shape with a namespace as its
+owner (`int geo::scale() {…}`) is regrouped under that namespace as a free function with
+`extern` linkage.
 
 One known limit: a `.h` file is always read with the C grammar, as its extension says. A
 C++ class declared in a `.h` therefore parses as damaged C (its nodes are marked
@@ -412,6 +424,10 @@ per target and resolution with a site count and the first site's line. `loc` is 
 for anything that is not a function, and its graph measures are `null` for a function the
 configuration leaves out, which is a different answer from zero.
 
+`--include-tests` applies the test configuration before the query runs, so `cfg(test)`
+functions are `active` and measured rather than `inactive` with `null` graph measures, and
+the result's `configuration` is then named `… + tests`, as the report names it.
+
 An unreadable query and a path that is not a package both fail with a non-zero exit rather
 than printing an empty result, since either would otherwise read as "no such seams here".
 A query that is understood and matches nothing is a success reporting zero.
@@ -437,7 +453,10 @@ language model deciding where structure and encapsulation could improve. In orde
    calling nothing here), unreachable non-public functions, and functions only tests call.
    "Unreachable" leaves out anything a contract may dispatch to — a trait
    implementation, an override, a method sharing its name with a contract's — since
-   `Display::fmt` is called by `format!`, which no call edge records.
+   `Display::fmt` is called by `format!`, which no call edge records — and any function
+   whose name is written at a call site with too many candidates to resolve, since that
+   site counts in neither bound but may well be calling it. A method a trait or
+   interface declares is as visible as its contract, here and in the coupling section.
 4. **Module coupling** — afferent and efferent coupling and instability per module, the
    module-to-module call matrix, calls into another module's non-public items, and
    functions that call one other module more than their own.
@@ -458,7 +477,11 @@ actionable; the cut-offs are a percentile of the whole index (95th by default) w
 floors — fan-in 5, 50 own lines, 200 reached lines at twice the function's size — so a
 small codebase's ordinary functions are not called hotspots. Cycles, hubs, heavy entry
 points and large leaves show the top 20 each; the unreachable and test-only lists are
-complete, since a partial list of dead code is the less useful kind.
+complete, since a partial list of dead code is the less useful kind. The precision
+ledger's least-certain list shows the 50 functions with the most ambiguous and
+unresolved sites (`ReportOptions::least_certain_n`), ties broken by path. When the
+configuration builds tests, test-gated functions (`cfg(test)`, or a test path outside
+Rust) are entry points a test runner calls, so they are never listed as unreachable.
 
 `--seam-call-tree` prints one function's tree: own and inclusive lines per row, call-site
 counts, and each function expanded once with later appearances marked. Both take
@@ -520,10 +543,13 @@ it, `karet_core` for `karet-core`; a method on a named value is exact when the o
 member of that name in the language is in the caller's package, a dispatch when one of
 the candidates is a contract's declaration and every other names that contract as what it
 implements, and otherwise every candidate is ambiguous; a method on a call's result
-(`xs.iter().filter(…)`) is never exact, since its type is unknown; a free call means — in
-Kotlin, Swift, Java and C++, where a bare name can reach one — a member of the caller's
-type, then its module, its file, its imports, a type of that name (a constructor), and
-its package. A free name found only in
+(`xs.iter().filter(…)`) is never exact, since its type is unknown; a free call means, in
+Rust, Python and TypeScript, the caller's module, then its file, its imports, a type of
+that name (a constructor), and its package. Kotlin, Swift, Java and the C family first
+check a member of the caller's type, since a bare name can reach one there (C has no
+members, so the check finds nothing), and then check the file before the module, since a
+module there spans files and a file-private helper beats its namesake elsewhere; the
+imports, constructor and package follow as before. A free name found only in
 another package is ambiguous, since nothing imported it. Candidates are always in the
 caller's language family, the ones the host build has win over gated-out twins, and a
 definition wins over its bare declaration.

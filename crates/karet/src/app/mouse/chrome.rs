@@ -4,14 +4,39 @@
 //! hover and diagnostic popups. Split from the core mouse module to respect the
 //! per-file code-line ceiling.
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_core::Notification;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_editor::resolve_folds;
+use karet_widgets::PaneId;
+use karet_widgets::breadcrumbs::BreadcrumbTarget;
+use ratatui::layout::Rect;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::hit::ScrollSurface;
+use crate::app::hit::TabDrag;
+use crate::app::hit::rect_contains;
+use crate::app::hit::tab_at;
+use crate::app::notifications::Report;
+use crate::app::state::StoredPane;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Handle a mouse event over a pane's tab strip (click to switch / close, wheel
     /// to cycle). Returns `true` when the event was consumed.
     pub(in crate::app) fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        let Some((pane, hit, action)) = self.pane_frames.iter().find_map(|f| {
+        let Some((pane, hit, action)) = self.last_frame.panes.iter().find_map(|f| {
             rect_contains(f.tabstrip_rect, point).then(|| {
                 let action = f.action_hits.iter().find_map(|&(start, end, command)| {
                     (mouse.column >= start && mouse.column < end).then_some(command)
@@ -21,7 +46,7 @@ impl App {
         }) else {
             return false;
         };
-        // Act on the clicked pane (borrow of `pane_frames` has ended).
+        // Act on the clicked pane (borrow of `last_frame.panes` has ended).
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 self.focus_pane_switch(pane);
@@ -87,7 +112,7 @@ impl App {
         let point = (mouse.column, mouse.row);
         // The badge is checked before the path segments because it is painted over
         // the row's right edge, which the breadcrumb no longer occupies.
-        if self.pane_frames.iter().any(|f| {
+        if self.last_frame.panes.iter().any(|f| {
             rect_contains(f.breadcrumb_rect, point)
                 && f.lsp_badge_hit
                     .is_some_and(|(start, end)| mouse.column >= start && mouse.column < end)
@@ -99,7 +124,7 @@ impl App {
             self.dispatch(Command::ManageLanguageServers);
             return true;
         }
-        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
+        let Some((pane, hit)) = self.last_frame.panes.iter().find_map(|f| {
             rect_contains(f.breadcrumb_rect, point).then(|| {
                 let target = f
                     .breadcrumb_hits
@@ -135,6 +160,7 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let Some(hit) = self
+            .last_frame
             .toast_hits
             .iter()
             .find(|h| rect_contains(h.rect, point))
@@ -162,14 +188,15 @@ impl App {
 
     /// The command bound to the status-bar segment at column `x`, if any.
     pub(in crate::app) fn status_command_at(&self, x: u16) -> Option<Command> {
-        self.status_hits
+        self.last_frame
+            .status_hits
             .iter()
             .find_map(|&(start, end, cmd)| (x >= start && x < end).then_some(cmd))
     }
 
     /// Handle a left click on a status-bar segment. Returns `true` when consumed.
     pub(in crate::app) fn handle_status_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !rect_contains(self.status_rect, (mouse.column, mouse.row)) {
+        if !rect_contains(self.last_frame.status_rect, (mouse.column, mouse.row)) {
             return false;
         }
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
@@ -183,13 +210,17 @@ impl App {
     /// Handle a left click on the top-level view switcher. Returns `true` when the
     /// event was over the chrome row — clicks there never fall through to the body.
     pub(in crate::app) fn handle_view_chrome_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !rect_contains(self.view_chrome_rect, (mouse.column, mouse.row)) {
+        if !rect_contains(self.last_frame.view_chrome_rect, (mouse.column, mouse.row)) {
             return false;
         }
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some(view) = self.view_hits.iter().find_map(|&(start, end, view)| {
-                (mouse.column >= start && mouse.column < end).then_some(view)
-            })
+            && let Some(view) = self
+                .last_frame
+                .view_hits
+                .iter()
+                .find_map(|&(start, end, view)| {
+                    (mouse.column >= start && mouse.column < end).then_some(view)
+                })
         {
             self.dispatch(Command::SelectView(view));
         }
@@ -204,19 +235,21 @@ impl App {
         let point = (mouse.column, mouse.row);
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !self
-                .blame_rect
+                .last_frame
+                .blame_rect()
                 .is_some_and(|rect| rect_contains(rect, point))
         {
             return false;
         }
         if let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)
         {
             self.focus_pane_switch(pane);
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
         if self.click_streak(mouse.column, mouse.row) >= 2 {
             self.open_live_blame_detail();
@@ -225,12 +258,13 @@ impl App {
     }
 
     /// Activate a link only for the explicit Ctrl/Cmd-click gesture: one
-    /// rendered in a Markdown preview, or one written in the source of the
-    /// editor under the pointer, focused split or not (a bare URL, or a
-    /// Markdown `[text](target)`).
+    /// rendered in a Markdown preview, or one in the editor under the
+    /// pointer, focused split or not -- a language server's document link
+    /// first, else one written in the source (a bare URL, or a Markdown
+    /// `[text](target)`).
     ///
-    /// A source link outranks Go to Definition under the same gesture: the
-    /// link is what the underline promised. Alt or Shift keep the click the
+    /// A link outranks Go to Definition under the same gesture: the link is
+    /// what the underline promised. Alt or Shift keep the click the
     /// editor's (multi-caret, extend), as Ctrl+click on a symbol does.
     pub(in crate::app) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -242,28 +276,56 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let preview = self
-            .markdown_link_hits
-            .iter()
+            .last_frame
+            .markdown_link_hits()
             .find(|hit| rect_contains(hit.rect, point))
             .map(|hit| hit.target.clone());
         let plain = !mouse
             .modifiers
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
-        let Some(target) = preview.or_else(|| self.pane_source_link(point).filter(|_| plain))
-        else {
-            return false;
+        // A language server's link outranks one read from the source: the
+        // server knows where the text leads, where a scan only recognises it.
+        let server = if preview.is_none() && plain {
+            self.pane_server_link(point)
+        } else {
+            None
         };
+        let target = match (&server, preview) {
+            (Some(_), _) => None,
+            (None, Some(preview)) => Some(preview),
+            (None, None) => self.pane_source_link(point).filter(|_| plain),
+        };
+        if server.is_none() && target.is_none() {
+            return false;
+        }
         // Every pane's links are live. The link resolves against the file it is
         // in, so the click focuses that pane first, as any click on its text does.
         if let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)
         {
             self.focus_pane_switch(pane);
-            self.focus = Focus::Editor;
+            self.keyboard.focus_editor();
         }
+        if let Some((doc, link)) = server {
+            self.follow_document_link(doc, link);
+            return true;
+        }
+        let Some(target) = target else {
+            return false;
+        };
+        self.activate_link(&target)
+    }
+
+    /// Open the link `target`, as written in the active tab's file, the way a
+    /// Ctrl/Cmd+click does: a URL with the desktop's opener, a workspace file
+    /// in karet, a file outside the workspace only after a confirmation, and
+    /// anything else refused with a notice. `false` when the active tab has no
+    /// file for a relative target to resolve against.
+    pub(in crate::app) fn activate_link(&mut self, target: &str) -> bool {
         let Some(source) = self
             .tabs
             .get(self.active)
@@ -273,7 +335,7 @@ impl App {
             return false;
         };
 
-        match crate::links::resolve(&target, &source, &self.root) {
+        match crate::links::resolve(target, &source, &self.root) {
             Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
                 if let Err(error) = crate::links::open_external(&url) {
                     self.notify(
@@ -287,18 +349,7 @@ impl App {
                 self.open_markdown_file_link(&path);
             },
             Ok(crate::links::LinkTarget::OutsideWorkspaceFile(path)) => {
-                self.confirm_action(
-                    "Open a file outside this workspace?",
-                    format!(
-                        "This link points to {}, which is outside {}. Opening it \
-                         leaves the workspace you started karet in.",
-                        path.display(),
-                        self.root.display()
-                    ),
-                    "Stay in the workspace",
-                    "Open it",
-                    ConfirmAction::OpenOutsideWorkspaceLink(path),
-                );
+                self.confirm_outside_workspace_link(path);
             },
             Err(error) => self.notify(
                 Report::Refusal,
@@ -307,6 +358,22 @@ impl App {
             ),
         }
         true
+    }
+
+    /// Ask before opening `path`, a link's file outside the workspace.
+    pub(in crate::app) fn confirm_outside_workspace_link(&mut self, path: PathBuf) {
+        self.confirm_action(
+            "Open a file outside this workspace?",
+            format!(
+                "This link points to {}, which is outside {}. Opening it \
+                 leaves the workspace you started karet in.",
+                path.display(),
+                self.root.display()
+            ),
+            "Stay in the workspace",
+            "Open it",
+            ConfirmAction::OpenOutsideWorkspaceLink(path),
+        );
     }
 
     pub(in crate::app) fn open_markdown_file_link(&mut self, path: &Path) {
@@ -366,7 +433,8 @@ impl App {
             _ => return false,
         };
         let Some((pane, in_editor, in_rail, in_preview)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| {
@@ -415,7 +483,8 @@ impl App {
         // Only the bars that scroll a pane's own tab; anything floating over a pane
         // (the outline overlay) is not the pane's to lend.
         let tab_scoped = self
-            .scroll_hits
+            .last_frame
+            .scroll
             .at(mouse.column, mouse.row)
             .is_some_and(|hit| {
                 matches!(
@@ -431,7 +500,8 @@ impl App {
         }
         let focused = self.focus_pane();
         let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane != focused && rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)
@@ -441,7 +511,7 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(_) => {
                 self.focus_pane_switch(pane);
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
                 self.scrollbar_mouse(mouse)
             },
             MouseEventKind::ScrollDown
@@ -461,7 +531,7 @@ impl App {
     /// it. Returns `true` when the event landed on the popup. Its scrollbar is
     /// routed before this, with every other bar.
     pub(in crate::app) fn handle_completion_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(list) = self.completion.as_ref().map(|ui| ui.list) else {
+        let Some(list) = self.completion.popup.as_ref().map(|ui| ui.list) else {
             return false;
         };
         if !rect_contains(list.area(), (mouse.column, mouse.row)) {
@@ -476,8 +546,8 @@ impl App {
                     .row_at(mouse.column, mouse.row)
                     .filter(|row| *row < len)
                 {
-                    if let Some(ui) = self.completion.as_mut() {
-                        ui.list.selected = row;
+                    if let Some(ui) = self.completion.popup.as_mut() {
+                        ui.list.select(row, len);
                     }
                     self.accept_completion();
                 }
@@ -487,7 +557,7 @@ impl App {
             _ => return false,
         };
         let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
-        if let Some(ui) = self.completion.as_mut() {
+        if let Some(ui) = self.completion.popup.as_mut() {
             ui.list.scroll_by(delta, len);
         }
         true
@@ -587,14 +657,32 @@ impl App {
         };
         let point = (mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect, point) => {
+            MouseEventKind::Down(MouseButton::Left) if rect_contains(menu.rect(), point) => {
                 // The click and the hover accent resolve rows the same way, so
                 // the row that lit up is the row that runs.
-                let row = menu.row_at(mouse.column, mouse.row);
-                if let (Some(menu), Some(row)) = (self.context_menu.as_mut(), row) {
-                    menu.selected = row;
+                let Some(row) = menu.row_at(mouse.column, mouse.row) else {
+                    self.accept_context_menu();
+                    return true;
+                };
+                let picked = self
+                    .context_menu
+                    .as_mut()
+                    .is_some_and(|menu| menu.select_row(row));
+                if picked {
+                    self.accept_context_menu();
+                    return true;
                 }
-                self.accept_context_menu();
+                // A disabled row keeps the cursor where it was (keyboard
+                // navigation never rests on one either) but still owes the user
+                // its note; the menu stays open so another row can be chosen.
+                let note = self
+                    .context_menu
+                    .as_ref()
+                    .and_then(|menu| menu.entries().get(row))
+                    .and_then(|entry| entry.note.clone());
+                if let Some(note) = note {
+                    self.notify(Report::Refusal, NotificationKind::System, note);
+                }
                 true
             },
             MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {

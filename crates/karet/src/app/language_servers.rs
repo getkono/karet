@@ -3,11 +3,36 @@ mod progress;
 mod prompts;
 mod work;
 
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_fileview::viewer::human_size;
+use karet_session::LanguageServerChange;
+use karet_session::LanguageServerCommand;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerPlanId;
+use karet_session::LanguageServerRuntimeState;
+use karet_session::LanguageServerStatus;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::hit::rect_contains;
+use crate::app::notifications::Report;
+use crate::overlay::Overlay;
+use crate::overlay::TextPurpose;
+use crate::pending::Pending;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServerPending;
 use crate::tab::LanguageServerPendingKind;
 use crate::tab::LanguageServersViewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::code_language;
 
 /// Lifecycle states retained independently of whether the manager tab is open.
 #[derive(Default)]
@@ -144,10 +169,13 @@ impl App {
         &self,
         tab: &Tab,
     ) -> Option<LanguageServerBadgeSummary> {
-        let TabKind::Code { path, language, .. } = &tab.kind else {
+        let TabKind::Code {
+            path, file_type, ..
+        } = &tab.kind
+        else {
             return None;
         };
-        self.lsp_runtime.badge_for(path, language)
+        self.lsp_runtime.badge_for(path, code_language(*file_type))
     }
 
     /// The active code file's language-server badge, when covered.
@@ -176,7 +204,7 @@ impl App {
     /// without recording it here would have its answer dropped on the floor. One
     /// helper rather than three call sites each remembering to do it.
     fn request_language_server_inventory(&mut self) -> Option<RequestId> {
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        let request = self.send(LanguageServerCommand::Status);
         self.lsp_runtime.inventory_request = request;
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
@@ -384,7 +412,7 @@ impl App {
             );
             return;
         }
-        let request = self.send(SessionCommand::CheckLanguageServerUpdates {
+        let request = self.send(LanguageServerCommand::CheckUpdates {
             server: Some(status.server.clone()),
         });
         self.set_language_server_pending(
@@ -395,7 +423,7 @@ impl App {
     }
 
     pub(super) fn check_all_language_servers(&mut self) {
-        let request = self.send(SessionCommand::CheckLanguageServerUpdates { server: None });
+        let request = self.send(LanguageServerCommand::CheckUpdates { server: None });
         self.set_language_server_pending(request, None, LanguageServerPendingKind::CheckAll);
         // Deliberately silent: the check answers with "up to date" or "N updates
         // available" a moment later, and that outcome is the announcement. A card
@@ -463,7 +491,7 @@ impl App {
             );
             return;
         }
-        self.send_command(SessionCommand::RestartLanguageServer {
+        self.send_command(LanguageServerCommand::Restart {
             server: status.server.clone(),
         });
         // `Activity`, not a tracked progress card: a restart registers no pending
@@ -511,7 +539,7 @@ impl App {
     }
 
     pub(super) fn prompt_language_server_filter(&mut self) {
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             "Filter by server or language (submit empty text to clear)",
             TextPurpose::FilterLanguageServers,
         ));
@@ -603,7 +631,7 @@ impl App {
     }
 
     pub(super) fn begin_language_server_install(&mut self, server: LanguageServerId) {
-        let request = self.send(SessionCommand::InstallLanguageServer {
+        let request = self.send(LanguageServerCommand::Install {
             server: server.clone(),
         });
         self.set_language_server_pending(request, Some(server), LanguageServerPendingKind::Install);
@@ -616,7 +644,7 @@ impl App {
         install: bool,
     ) {
         let target = (servers.len() == 1).then(|| servers[0].clone());
-        let request = self.send(SessionCommand::ApplyLanguageServerPlan { plan, servers });
+        let request = self.send(LanguageServerCommand::ApplyPlan { plan, servers });
         self.set_language_server_pending(
             request,
             target,
@@ -629,7 +657,7 @@ impl App {
     }
 
     pub(super) fn begin_language_server_uninstall(&mut self, server: LanguageServerId) {
-        let request = self.send(SessionCommand::UninstallLanguageServer {
+        let request = self.send(LanguageServerCommand::Uninstall {
             server: server.clone(),
         });
         self.set_language_server_pending(
@@ -743,7 +771,7 @@ impl App {
             .filter_map(|change| change.download_bytes)
             .sum();
         let size = if bytes > 0 {
-            format!(" Downloads about {}.", human_bytes(bytes))
+            format!(" Downloads about {}.", human_size(bytes))
         } else {
             String::new()
         };
@@ -788,6 +816,9 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        // A first install reopens documents under the new server, which may
+        // format on characters the server they had before did not.
+        self.forget_on_type_triggers();
         // Untagged: an outcome must survive another operation's next progress
         // tick (see `fail_language_server_operation`).
         self.notify(
@@ -823,6 +854,9 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        // The session reopens the removed server's documents under whatever
+        // server resolves for them now, if any.
+        self.forget_on_type_triggers();
         if let Some(status) = self
             .lsp_runtime
             .servers

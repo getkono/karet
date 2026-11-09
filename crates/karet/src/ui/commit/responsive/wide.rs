@@ -1,8 +1,8 @@
 //! The wide two-column commit layout, split from the responsive module to
 //! respect the per-file code-line ceiling.
 
-use super::super::list::keep_visible;
 use super::*;
+use crate::app::keep_visible;
 
 // A render helper threads every precomputed section through one call; a
 // one-use bundling struct would only add indirection.
@@ -13,7 +13,7 @@ pub(super) fn draw_wide(
     area: Rect,
     header: Vec<Line<'static>>,
     badge: Option<BadgeHit>,
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     tree: &[ChangedFileRow],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
@@ -237,7 +237,7 @@ pub(super) fn draw_wide(
 /// has lost their place; the row that hides the active file is the row that marks it.
 fn selected_row(
     tree: &[ChangedFileRow],
-    files: &[render::FileView],
+    files: &[crate::tab::ChangedFile],
     active: usize,
 ) -> Option<usize> {
     if let Some(row) = tree.iter().position(|row| row.file() == Some(active)) {

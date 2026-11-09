@@ -25,7 +25,7 @@ impl Session {
         }
         query
             .excludes
-            .extend(self.config.settings.search.exclude.iter().cloned());
+            .extend(self.config.settings().search.exclude.iter().cloned());
         let job = SearchJob::Search {
             id,
             roots,
@@ -56,13 +56,15 @@ impl Session {
                 Event::SearchReplaced {
                     files_changed: 0,
                     replacements: 0,
+                    failures: Vec::new(),
+                    error: None,
                 },
             );
             return;
         }
         query
             .excludes
-            .extend(self.config.settings.search.exclude.iter().cloned());
+            .extend(self.config.settings().search.exclude.iter().cloned());
         let job = SearchJob::ReplaceAll {
             id,
             roots,
@@ -70,11 +72,15 @@ impl Session {
             replacement,
         };
         if self.search_worker.send(job).is_err() {
+            // The worker thread is gone, so nothing was written: say so rather
+            // than answer as if the replace ran and matched nothing.
             self.emit(
                 Some(id),
                 Event::SearchReplaced {
                     files_changed: 0,
                     replacements: 0,
+                    failures: Vec::new(),
+                    error: Some("the search worker is not running".to_owned()),
                 },
             );
         }

@@ -17,7 +17,7 @@ default = []
 # Load VS Code JSON themes.
 vscode = ["dep:serde", "dep:serde_json"]
 # Convert resolved colors into ratatui `Style`s + WCAG contrast checking.
-view = ["dep:ratatui", "dep:palette"]
+view = ["dep:ratatui"]
 
 [dependencies]
 karet-core.workspace = true
@@ -25,7 +25,6 @@ thiserror.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 ratatui = { workspace = true, optional = true }
-palette = { workspace = true, optional = true }
 
 [lints]
 workspace = true

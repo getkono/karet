@@ -2,14 +2,12 @@
 //! in-process on a thread of its own and spoken to over an in-memory pipe.
 //!
 //! taplo's native release assets carry no publisher-authenticated digest, so
-//! the managed registry will not fetch them, and before this TOML was the one
-//! language whose default server could only ever be installed by hand.
-//! Compiling the server in makes the crates.io checksum its integrity check and
-//! leaves nothing to install.
+//! the managed registry will not fetch them. Compiling the server in makes the
+//! crates.io checksum its integrity check and leaves nothing to install.
 //!
 //! It is the *last* resolution step, never the first: a taplo the user
 //! configured, the project ships, or `PATH` provides still wins, so a pinned
-//! version keeps working exactly as before.
+//! version is always the one that runs.
 //!
 //! The server is taplo's own handler table driven by a loop of ours, because
 //! the transports taplo ships are stdio and TCP, and neither is an in-memory
@@ -27,12 +25,12 @@ use futures::SinkExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::sink::SinkMapErr;
+use karet_jsonrpc::framing::content_length as codec;
 use karet_lsp::ConnectOptions;
 use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
-use karet_lsp::codec;
 use lsp_async_stub::rpc::Message;
 use taplo_common::environment::native::NativeEnvironment;
 use tokio::io::AsyncBufRead;

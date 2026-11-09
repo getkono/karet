@@ -1,11 +1,12 @@
 //! Opening the Seam view, and the guards that keep one index behind one view.
 //!
-//! The pure navigation model is covered in `app::seam::tests`; these cover what the app
+//! The pure navigation model is covered in `tab::seam::tests`; these cover what the app
 //! does around it — which root is asked for, which tab an answer lands on, and which
 //! answers are refused.
 
 use std::sync::Arc;
 
+use karet_session::SeamCommand;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamSummary;
 
@@ -20,9 +21,9 @@ fn index_requests(backend: &RecordingBackend) -> Vec<(RequestId, PathBuf)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::IndexSeams {
+                    SessionCommand::Seam(SeamCommand::Index {
                         root: Some(root), ..
-                    } => Some((*id, root.clone())),
+                    }) => Some((*id, root.clone())),
                     _ => None,
                 })
                 .collect()
@@ -38,7 +39,7 @@ fn reindex_paths(backend: &RecordingBackend) -> Vec<PathBuf> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::ReindexSeams { path, .. } => Some(path.clone()),
+                    SessionCommand::Seam(SeamCommand::Reindex { path, .. }) => Some(path.clone()),
                     _ => None,
                 })
                 .collect()
@@ -441,7 +442,7 @@ fn node_requests(backend: &RecordingBackend) -> Vec<String> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::SeamNode { path } => Some(path.clone()),
+                    SessionCommand::Seam(SeamCommand::Node { path }) => Some(path.clone()),
                     _ => None,
                 })
                 .collect()
@@ -514,8 +515,12 @@ fn clicking_the_configuration_marker_cycles_it() {
     }
     press(&mut app, 31, 0);
     let cycled = backend.sent.lock().is_ok_and(|sent| {
-        sent.iter()
-            .any(|(_, c)| matches!(c, SessionCommand::SetSeamConfiguration { .. }))
+        sent.iter().any(|(_, c)| {
+            matches!(
+                c,
+                SessionCommand::Seam(SeamCommand::SetConfiguration { .. })
+            )
+        })
     });
     assert!(
         cycled,
@@ -545,7 +550,7 @@ fn clicking_the_query_line_focuses_it() {
     press(&mut app, 4, 23);
     assert!(
         app.active_seam()
-            .is_some_and(|state| state.focus == crate::app::seam::SeamFocus::Query)
+            .is_some_and(|state| state.focus == crate::tab::seam::SeamFocus::Query)
     );
 }
 
@@ -573,7 +578,7 @@ fn a_wheel_notch_over_a_background_seam_split_moves_its_selection() {
     app.dispatch(Command::SplitRight);
     let focused = app.focus_pane();
     assert_ne!(focused, frame.pane, "the new split took the focus");
-    app.pane_frames = vec![frame];
+    app.last_frame.panes = vec![frame];
 
     wheel(&mut app, MouseEventKind::ScrollDown, 22, 1);
     assert_eq!(
@@ -695,7 +700,7 @@ fn a_re_answered_index_asks_again_for_the_node_being_read() {
     // reader survives it, but its calls and measures may not: they must be asked for.
     let (backend, mut app) = calling_app();
     let asked = node_requests(&backend).len();
-    app.seam_index_req = app.send(SessionCommand::SetSeamConfiguration {
+    app.seam_index_req = app.send(SeamCommand::SetConfiguration {
         name: "tests".to_owned(),
     });
     let id = app.seam_index_req;

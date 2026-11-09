@@ -1,4 +1,26 @@
-use super::*;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use karet_core::NotificationKind;
+use karet_session::VcsAction;
+
+use crate::app::App;
+use crate::app::confirm::ConfirmAction;
+use crate::app::notifications::Report;
+use crate::command::Command;
+use crate::keymap;
+use crate::keymap::Context;
+use crate::keymap::Focus;
+use crate::keymap::KeyChord;
+use crate::keymap::Modal;
+use crate::keymap::Resolved;
+use crate::keymap::SidebarPanel;
+use crate::overlay::Overlay;
+use crate::overlay::OverlayEvent;
+use crate::overlay::StashAction;
+use crate::overlay::TextPurpose;
+use crate::tab::SearchField;
+use crate::view::View;
 
 impl App {
     /// Selected text owned by the active Search or commit-message field.
@@ -93,6 +115,7 @@ impl App {
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        self.vi_record(key);
         self.begin_inlay_key();
         self.handle_key_inner(key);
         self.end_inlay_key();
@@ -103,7 +126,7 @@ impl App {
         // produces no mouse event would otherwise leave the underline behind.
         self.definition_hover = None;
         let dismiss_outline_after = self.outline.overlay
-            && self.focus == Focus::Editor
+            && self.keyboard.focus() == Focus::Editor
             && self.input_context().modal.is_none();
         if self.operation_blocker.is_some() {
             if key.code == KeyCode::Esc && key.modifiers.is_empty() {
@@ -141,6 +164,8 @@ impl App {
             && key.modifiers.is_empty()
             && !self.notifications.is_empty()
             && self.input_context().modal.is_none()
+            // In a modal preset's Insert mode, Esc is the way back to Normal.
+            && self.vi_editing() != crate::keymap::Editing::Insert
         {
             self.notifications.dismiss_latest();
             return;
@@ -155,6 +180,9 @@ impl App {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
+            // A modal preset (`editor.keymap`) takes the editor's keys first:
+            // Normal mode's commands and grammar, and Insert mode's `Esc`.
+            None if self.vi_key(key) => {},
             None => {
                 // An open hover popup is dismissed by Esc before anything else
                 // sees the key; every other key falls through (and most will
@@ -165,17 +193,29 @@ impl App {
                 // The completion popup is a light key layer over the editor:
                 // it consumes only its navigation/accept/dismiss keys and lets
                 // everything else (typing, movement) fall through.
+                // A key a popup takes means something else without it, so
+                // modal editing's `.` and macros do not replay it.
                 if self.completion_key(key) {
+                    self.vi_popup_took(key);
+                    return;
+                }
+                // Ghost text on show takes Tab, Ctrl+Right and Esc, ahead of
+                // a snippet session's Tab: accepting it is what Tab was
+                // pressed for while it is the thing on screen.
+                if self.inline_completion_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // The signature popup under it takes only Esc, and Up/Down
                 // when there are overloads to cycle.
                 if self.signature_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A snippet session under them takes Tab, Shift+Tab and Esc
                 // while the caret is in the snippet.
                 if self.snippet_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A find bar left open behind the editor still closes on Esc
@@ -196,8 +236,7 @@ impl App {
         self.reconcile_completion();
         self.reconcile_hover();
         self.reconcile_rename();
-        // The theme picker previews the row a key highlighted, and puts the
-        // theme back when a key closed it.
+        // The theme picker previews the row a key highlighted.
         self.sync_theme_preview();
         self.request_live_blame();
         if dismiss_outline_after {
@@ -217,11 +256,11 @@ impl App {
             // A commit's console is what the user is waiting on; it outranks the
             // pickers, but not a question raised from it.
             Some(Modal::CommitConsole)
-        } else if self.overlay.is_some() {
+        } else if self.keyboard.overlay().is_some() {
             Some(Modal::Overlay)
         } else if self.rename.as_ref().is_some_and(|prompt| prompt.shown) {
             Some(Modal::Rename)
-        } else if self.commit_input.focused {
+        } else if self.keyboard.commit_box_focused() {
             Some(Modal::CommitInput)
         } else if self.rev_input.is_some() {
             Some(Modal::RevInput)
@@ -233,13 +272,15 @@ impl App {
             Some(Modal::Find)
         } else if self.explorer.is_editing() {
             Some(Modal::ExplorerEdit)
-        } else if self.focus == Focus::Sidebar && self.sidebar_panel == SidebarPanel::Search {
+        } else if self.keyboard.focus() == Focus::Sidebar
+            && self.sidebar_panel == SidebarPanel::Search
+        {
             Some(if self.search.input {
                 Modal::SearchInput
             } else {
                 Modal::SearchList
             })
-        } else if self.focus == Focus::Sidebar
+        } else if self.keyboard.focus() == Focus::Sidebar
             && self.sidebar_panel == SidebarPanel::Problems
             && self.problems.filter_input
         {
@@ -250,6 +291,11 @@ impl App {
         Context {
             modal,
             target: self.focus_target(),
+            editing: if modal.is_none() {
+                self.vi_editing()
+            } else {
+                crate::keymap::Editing::Modeless
+            },
         }
     }
 
@@ -257,7 +303,7 @@ impl App {
     /// editor view is showing, and no modal (an overlay, a menu, a focused find
     /// bar, an inline rename, a console) has taken the keyboard.
     pub(crate) fn editor_owns_keyboard(&self) -> bool {
-        self.focus == Focus::Editor
+        self.keyboard.focus() == Focus::Editor
             && self.view == View::Editor
             && self.input_context().modal.is_none()
     }
@@ -267,7 +313,7 @@ impl App {
     /// input; a broken sequence is dropped.
     pub(super) fn resolve_key(&mut self, key: KeyEvent) {
         self.pending.push(KeyChord::from_event(key));
-        let ctx = Context::focus(self.focus_target());
+        let ctx = Context::focus(self.focus_target()).with_editing(self.vi_editing());
         match keymap::resolve(ctx, &self.pending) {
             Resolved::Command(command) => {
                 self.pending.clear();
@@ -297,7 +343,7 @@ impl App {
                     return;
                 }
                 if !mid_sequence
-                    && self.focus == Focus::Editor
+                    && self.keyboard.focus() == Focus::Editor
                     // …and likewise for the unbound-printable fallback: a keystroke
                     // in another view must never land in a hidden document.
                     && self.view == View::Editor
@@ -418,11 +464,11 @@ impl App {
 
     /// Accept the highlighted overlay row (open a file / run a command), then close.
     pub(super) fn overlay_accept(&mut self) {
-        let event = match self.overlay.as_ref() {
+        let event = match self.keyboard.overlay() {
             Some(overlay) => overlay.accept(),
             None => return,
         };
-        self.overlay = None;
+        self.close_overlay();
         self.handle_overlay_event(event);
     }
 
@@ -436,6 +482,7 @@ impl App {
             OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
             OverlayEvent::AcceptTheme(choice) => self.accept_theme(choice),
+            OverlayEvent::AcceptTask { label, .. } => self.run_task(&label),
             OverlayEvent::AcceptLocation { path, position }
             | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);
@@ -492,7 +539,7 @@ impl App {
                     );
                 },
                 StashAction::Branch(reference) => {
-                    self.overlay = Some(Overlay::text(
+                    self.open_overlay(Overlay::text(
                         "Branch from stash",
                         TextPurpose::StashBranch { reference },
                     ));
@@ -582,4 +629,27 @@ fn is_alt_word_motion(key: KeyEvent) -> bool {
         && !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::harness::*;
+    use crate::app::*;
+
+    /// A printable that breaks a pending chord is dropped, not typed: the buffer
+    /// stays as it was and the pending sequence empties, so the next press of the
+    /// same key inserts it as ordinary text.
+    #[test]
+    fn a_printable_breaking_a_chord_is_dropped() {
+        let mut rig = Rig::new("a|b");
+        rig.step(Step::Key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(rig.app.pending.len(), 1, "Ctrl+K waits for its second key");
+
+        rig.step(Step::Key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(rig.marked(), "a|b", "the breaking key is not inserted");
+        assert!(rig.app.pending.is_empty(), "the broken sequence is cleared");
+
+        rig.step(Step::Key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(rig.marked(), "ax|b", "the next press types normally");
+    }
 }

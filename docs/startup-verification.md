@@ -7,10 +7,12 @@ This note records the startup coverage for large workspaces and git roots.
 ## Automated Coverage
 
 - `karet-session::tests::session_new_does_not_walk_large_tree_on_caller_thread`
-  builds a 1,200-directory workspace and asserts `Session::new` returns in under
-  one second.
-- The test covers the startup invariant that directory enumeration and watch
-  registration stay off the caller's first-frame path.
+  builds a 1,200-directory git workspace and asserts, through the event stream
+  rather than a stopwatch, that `Session::new` queues no initial status (the
+  full `git status` walk) and that `Session::start` delivers it.
+- Watch registration stays off the caller's first-frame path by construction:
+  `karet_watch::Watcher::spawn_with_paths` enumerates directories on its own
+  worker thread. No test times it.
 - The regular session and watcher suites cover external change delivery after
   startup.
 

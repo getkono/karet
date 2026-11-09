@@ -17,6 +17,8 @@ use karet_session::AiCommitAgent;
 use karet_session::AiCommitAvailability;
 use karet_session::AiCommitEffort;
 
+use super::yes_no;
+
 /// The editable AI commit-message options.
 pub(crate) struct AiCommitForm {
     /// The options being edited.
@@ -201,10 +203,6 @@ impl AiCommitForm {
         }
         options
     }
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]

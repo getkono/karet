@@ -16,11 +16,20 @@
 //! page of text records nothing. Entries are positioned against the text they were
 //! recorded in and move with it as it is edited (see [`App::shift_navigation`]).
 
+use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::LineCol;
+use karet_core::NotificationKind;
 use karet_core::TextEdit;
 use karet_session::api::DocumentId;
 
 use super::inlay::map_position;
-use super::*;
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 /// How many entries each direction keeps. Deep enough to walk back through a long
 /// exploration; bounded so a long session cannot grow it without limit.
@@ -353,6 +362,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn at(path: &str, line: u32, version: u64) -> NavPoint {

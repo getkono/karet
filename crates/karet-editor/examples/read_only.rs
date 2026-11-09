@@ -59,14 +59,14 @@ fn run(terminal: &mut DefaultTerminal, buffer: &TextBuffer, theme: &Theme) -> io
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Char('j') | KeyCode::Down => {
-                state.scroll_line = state.scroll_line.saturating_add(1);
+                state.scroll_to_line(state.scroll_line().saturating_add(1));
             },
             KeyCode::Char('k') | KeyCode::Up => {
-                state.scroll_line = state.scroll_line.saturating_sub(1);
+                state.scroll_to_line(state.scroll_line().saturating_sub(1));
             },
             KeyCode::Char(' ') | KeyCode::PageDown => state.scroll_page_down(),
             KeyCode::Char('b') | KeyCode::PageUp => state.scroll_page_up(),
-            KeyCode::Char('g') | KeyCode::Home => state.scroll_line = 0,
+            KeyCode::Char('g') | KeyCode::Home => state.scroll_to_line(0),
             KeyCode::Char('G') | KeyCode::End => state.center_on(last_line),
             _ => {},
         }

@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The full, validated karet configuration. Load it with
-/// [`crate::config::load`]; the sane baseline is [`Settings::default`].
+/// [`crate::config::load_report`]; the sane baseline is [`Settings::default`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +50,9 @@ pub struct Settings {
     pub debug: Debugger,
     /// Jupyter-notebook behaviour (kernel execution).
     pub notebook: NotebookSettings,
+    /// Named shell commands the Run Task picker offers, keyed by label.
+    #[serde(default)]
+    pub tasks: BTreeMap<String, Task>,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -312,15 +315,26 @@ pub struct Editor {
     pub render_whitespace: RenderWhitespace,
     /// `editor.bracketPairColorization.*` — brackets coloured by nesting depth.
     pub bracket_pair_colorization: BracketPairColorization,
-    /// Override file-type wrapping: `null` uses the file default, `true` wraps,
-    /// and `false` uses horizontal overflow.
-    pub word_wrap: Option<bool>,
+    /// Override file-type wrapping: `null` uses the file default, `true` or
+    /// `"on"` wraps at the viewport, `false` or `"off"` uses horizontal
+    /// overflow, and `"wordWrapColumn"` or `"bounded"` wrap at
+    /// `wordWrapColumn` (or the viewport, when it is narrower).
+    pub word_wrap: Option<WordWrap>,
+    /// The column `"wordWrapColumn"` and `"bounded"` wrapping break at; `0`
+    /// wraps at the viewport.
+    pub word_wrap_column: u16,
+    /// How the continuation rows of a soft-wrapped line are indented.
+    pub wrapping_indent: WrappingIndent,
     /// Keep the active semantic block hierarchy pinned above scrolled text.
     pub sticky_scroll: bool,
     /// Paste the primary selection at a middle click in the text: `null` turns
     /// it on for Linux, where the primary selection is a platform convention,
     /// and off elsewhere.
     pub middle_click_paste: Option<bool>,
+    /// The editing model of a code tab: `"default"` types at the caret, as in
+    /// VS Code; `"vim"` and `"helix"` add a modal Normal/Insert layer with
+    /// that editor's motions, operators, text objects, registers and macros.
+    pub keymap: KeymapPreset,
     /// When an opening bracket inserts its closing bracket. Typing over a
     /// closer it inserted steps past it, and Backspace between an empty pair
     /// deletes both halves.
@@ -339,6 +353,10 @@ pub struct Editor {
     #[serde(deserialize_with = "format_on_save_timeout")]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = FORMAT_ON_SAVE_TIMEOUT_MAX_MS)))]
     pub format_on_save_timeout: u64,
+    /// Apply the language server's on-type formatting
+    /// (`textDocument/onTypeFormatting`) after typing one of its trigger
+    /// characters. Off by default, as in VS Code.
+    pub format_on_type: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
     /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
@@ -346,13 +364,19 @@ pub struct Editor {
     pub pretty_errors: bool,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// `editor.inlineCompletion.*` — ghost text a language server (such as
+    /// Copilot) proposes at the caret.
+    pub inline_completion: InlineCompletion,
     /// The hover popup (documentation + diagnostics at the caret).
     pub hover: HoverPopup,
     /// `editor.inlayHints.*` — inferred types and parameter names drawn inline.
     pub inlay_hints: InlayHints,
     /// Show the language server's code lenses on rows above the code they describe.
     pub code_lens: bool,
-    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
+    /// `editor.semanticHighlighting.*` — semantic tokens over the syntax colours.
+    pub semantic_highlighting: SemanticHighlighting,
+    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the
+    /// colours a language server reports.
     pub color_highlight: ColorHighlight,
     /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
     /// the end of their line.
@@ -415,20 +439,26 @@ impl Default for Editor {
             render_whitespace: RenderWhitespace::None,
             bracket_pair_colorization: BracketPairColorization::default(),
             word_wrap: None,
+            word_wrap_column: 80,
+            wrapping_indent: WrappingIndent::Same,
             sticky_scroll: true,
             middle_click_paste: None,
+            keymap: KeymapPreset::Default,
             auto_closing_brackets: AutoClosing::LanguageDefined,
             auto_closing_quotes: AutoClosing::LanguageDefined,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: true,
             format_on_save_timeout: FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS,
+            format_on_type: false,
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),
+            inline_completion: InlineCompletion::default(),
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
             code_lens: true,
+            semantic_highlighting: SemanticHighlighting::default(),
             color_highlight: ColorHighlight::default(),
             inline_diagnostics: InlineDiagnostics::default(),
             language_overrides: BTreeMap::new(),
@@ -437,17 +467,21 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// Resolve this editor configuration for `language`.
+    /// Resolve this editor configuration for a document of `file_type`, or the
+    /// global values alone for `None`.
     ///
-    /// Language names are matched case-insensitively after trimming outer
-    /// whitespace. The selected language patch is applied over the already-merged
-    /// global editor values, so language specificity wins over config-layer
-    /// specificity.
+    /// The `[language]` override that applies is the one keyed by the file
+    /// type's [`config_selector`](karet_filetype::FileType::config_selector), never
+    /// its display name, so a `Cargo.lock` (display name `"Cargo lockfile"`,
+    /// selector `toml`) takes the `[toml]` patch. A file type with no selector
+    /// (an unrecognized file, plain text) resolves to the global values. The
+    /// selected patch is applied over the already-merged global editor values, so
+    /// language specificity wins over config-layer specificity.
     #[must_use]
-    pub fn for_language(&self, language: Option<&str>) -> ResolvedEditor<'_> {
-        let override_ = language
-            .and_then(LanguageSelector::from_language)
-            .and_then(|selector| self.language_overrides.get(&selector));
+    pub fn for_language(&self, file_type: Option<karet_filetype::FileType>) -> ResolvedEditor<'_> {
+        let override_ = file_type
+            .and_then(|file_type| file_type.config_selector())
+            .and_then(|selector| self.language_overrides.get(selector));
         ResolvedEditor::new(self, override_)
     }
 
@@ -469,11 +503,15 @@ pub use display::BracketPairColorization;
 pub use display::Guides;
 pub use display::LineNumbers;
 pub use display::RenderWhitespace;
+pub use display::SemanticHighlighting;
+pub use display::WordWrap;
+pub use display::WrappingIndent;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
 pub use inline_diagnostics::DiagnosticSeverity;
 pub use inline_diagnostics::InlineDiagnostics;
 pub use inline_diagnostics::InlineDiagnosticsMode;
+pub use keymap::KeymapPreset;
 pub use lsp::Lsp;
 pub use lsp::LspLanguage;
 pub use lsp::LspServer;
@@ -486,13 +524,24 @@ pub use overrides::ResolvedCompletion;
 pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedInlineDiagnostics;
 pub use overrides::ResolvedSemanticComments;
+pub use tasks::BuiltinMatcher;
+pub use tasks::MatcherSeverity;
+pub use tasks::PatternMatcher;
+pub use tasks::ProblemMatcher;
+pub use tasks::Task;
+pub use workbench::IconStyleSetting;
+pub use workbench::StartupPanel;
+pub use workbench::Workbench;
 
 mod aicommit;
 mod display;
 mod inlay_hints;
 mod inline_diagnostics;
+mod keymap;
 mod lsp;
 mod overrides;
+mod tasks;
+mod workbench;
 
 /// `editor.completion.*` — LSP-powered code completion.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -517,13 +566,36 @@ impl Default for Completion {
     }
 }
 
-/// `editor.colorHighlight.*` — inline swatches on color literals.
+/// `editor.inlineCompletion.*` — ghost text proposed at the caret by a
+/// language server offering LSP 3.18 inline completions (such as
+/// `copilot-language-server`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineCompletion {
+    /// Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing
+    /// is shown unless a server attached to the document offers it, so this
+    /// costs nothing where none does; switch it off per language with
+    /// `"[markdown]": { "inlineCompletion": { "enabled": false } }`.
+    pub enabled: bool,
+}
+
+impl Default for InlineCompletion {
+    /// On: a server that offers inline completions was attached on purpose.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `editor.colorHighlight.*` — inline swatches on color literals and on the
+/// colours a language server reports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct ColorHighlight {
-    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)
-    /// with their own color, on the visible lines of the editor.
+    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),
+    /// and the colours the file's language server reports, with their own
+    /// color, on the visible lines of the editor.
     pub enabled: bool,
 }
 
@@ -604,8 +676,8 @@ pub struct Files {
     pub auto_save: AutoSave,
     /// Delay in milliseconds before `afterDelay` auto-save fires.
     pub auto_save_delay: u64,
-    /// Default text encoding label (informational; karet edits UTF-8).
-    pub encoding: String,
+    /// Text encoding used when saving. An `.editorconfig` `charset` overrides it.
+    pub encoding: Encoding,
     /// Line-ending style used when saving.
     pub eol: Eol,
     /// Glob patterns hidden from the file explorer.
@@ -643,7 +715,7 @@ impl Default for Files {
         Self {
             auto_save: AutoSave::Off,
             auto_save_delay: 1000,
-            encoding: "utf-8".to_string(),
+            encoding: Encoding::Auto,
             eol: Eol::Auto,
             exclude: Vec::new(),
             watcher_exclude: Vec::new(),
@@ -684,73 +756,23 @@ pub enum Eol {
     Crlf,
 }
 
-/// `workbench.*` — UI shell appearance.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct Workbench {
-    /// Colour theme: the built-in name `"dark"`, or a path to a VS Code
-    /// `.json` theme file.
-    pub color_theme: String,
-    /// Icon glyph set for the file tree and activity bar.
-    pub icon_style: IconStyleSetting,
-    /// Which sidebar panel is shown at startup (`none` starts collapsed).
-    pub startup_panel: StartupPanel,
-}
-
-impl Default for Workbench {
-    fn default() -> Self {
-        Self {
-            color_theme: "dark".to_string(),
-            icon_style: IconStyleSetting::NerdFont,
-            startup_panel: StartupPanel::Explorer,
-        }
-    }
-}
-
-/// Icon glyph set — the camelCase settings-file spelling of
-/// [`karet_filetype::IconStyle`].
-///
-/// This wire enum exists for the config format alone (camelCase JSONC values +
-/// the generated JSON Schema, which `karet-filetype`'s dependency-free charter
-/// cannot provide); the [`From`] conversion below is the single translation.
+/// Text encoding used when saving. karet edits UTF-8 only; the choice is
+/// whether a byte-order mark is written. Spelled as EditorConfig's `charset`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum IconStyleSetting {
-    /// Rich Nerd Font glyphs (needs a patched font).
+pub enum Encoding {
+    /// Preserve the encoding the file was opened with (UTF-8 without a BOM for
+    /// a new file).
     #[default]
-    NerdFont,
-    /// 1-cell Unicode geometric glyphs.
-    Unicode,
-    /// Plain ASCII (maximally portable).
-    Ascii,
-}
-
-impl From<IconStyleSetting> for karet_filetype::IconStyle {
-    fn from(setting: IconStyleSetting) -> Self {
-        match setting {
-            IconStyleSetting::NerdFont => Self::NerdFont,
-            IconStyleSetting::Unicode => Self::Unicode,
-            IconStyleSetting::Ascii => Self::Ascii,
-        }
-    }
-}
-
-/// Which sidebar panel is shown at startup.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum StartupPanel {
-    /// The file explorer.
-    #[default]
-    Explorer,
-    /// The search panel.
-    Search,
-    /// The source-control panel.
-    SourceControl,
-    /// Start with the sidebar collapsed.
-    None,
+    #[serde(rename = "auto")]
+    Auto,
+    /// UTF-8 without a byte-order mark: one an existing file carries is dropped
+    /// on save.
+    #[serde(rename = "utf-8", alias = "utf8")]
+    Utf8,
+    /// UTF-8 with a leading byte-order mark.
+    #[serde(rename = "utf-8-bom", alias = "utf8bom")]
+    Utf8Bom,
 }
 
 /// `search.*` — workspace search behaviour.
@@ -952,219 +974,4 @@ impl Default for Git {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_sane() {
-        let s = Settings::default();
-        assert_eq!(s.editor.tab_size, 4);
-        assert!(s.editor.insert_spaces);
-        assert_eq!(s.editor.line_numbers, LineNumbers::On);
-        assert_eq!(s.editor.graphical_cursor, None);
-        assert_eq!(s.editor.word_wrap, None);
-        assert!(s.editor.sticky_scroll);
-        assert_eq!(s.files.auto_save, AutoSave::Off);
-        assert_eq!(s.workbench.color_theme, "dark");
-        assert!(s.search.smart_case);
-        assert!(!s.spellcheck.enabled);
-        assert_eq!(s.spellcheck.language, "en_US");
-        assert!(s.spellcheck.documents);
-        assert!(s.spellcheck.comments);
-        assert!(!s.spellcheck.strings);
-        assert!(!s.spellcheck.identifiers);
-        assert_eq!(s.spellcheck.debounce_ms, 500);
-        assert!(!s.latex.build_on_save);
-        assert_eq!(s.latex.command, "latexmk");
-        assert!(s.latex.args.iter().any(|argument| argument == "{file}"));
-        assert!(s.latex.output_directory.is_empty());
-        assert_eq!(s.latex.timeout_ms, 120_000);
-        assert!(s.git.decorations);
-        assert!(s.editor.semantic_comments.enabled);
-        assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
-        assert!(s.editor.completion.enabled, "completion defaults on (#57)");
-        assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
-        assert!(s.lsp.servers.is_empty(), "no user overrides by default");
-    }
-
-    #[test]
-    fn undo_settings_default_to_a_cap_and_no_persistence() {
-        let files = Files::default();
-        assert_eq!(files.undo_limit, 1000);
-        assert_eq!(files.undo_cap(), Some(1000));
-        assert!(!files.persistent_undo, "persistent undo is opt-in");
-    }
-
-    #[test]
-    fn a_zero_undo_limit_lifts_the_cap() {
-        let parse = |json: &str| serde_json::from_str::<Files>(json).unwrap_or_default();
-        let unbounded = parse(r#"{ "undoLimit": 0, "persistentUndo": true }"#);
-        assert_eq!(unbounded.undo_cap(), None);
-        assert!(unbounded.persistent_undo);
-        assert_eq!(parse(r#"{ "undoLimit": 5 }"#).undo_cap(), Some(5));
-    }
-
-    /// The bound is the JSON-RPC request timeout at the top and one millisecond
-    /// at the bottom, both inclusive; anything outside fails the section.
-    #[test]
-    fn format_on_save_timeout_is_held_inside_the_request_timeout() {
-        let parse = |value: &str| {
-            serde_json::from_str::<Editor>(&format!(r#"{{ "formatOnSaveTimeout": {value} }}"#))
-                .map(|editor| editor.format_on_save_timeout)
-        };
-        assert_eq!(Editor::default().format_on_save_timeout, 10_000);
-        assert_eq!(parse("1").ok(), Some(1));
-        assert_eq!(parse("30000").ok(), Some(30_000));
-        assert!(parse("30001").is_err_and(|e| e.to_string().contains("between 1 and 30000")));
-        assert!(parse("0").is_err());
-        assert!(parse("-5").is_err());
-        assert!(parse("\"10s\"").is_err());
-    }
-
-    #[test]
-    fn word_wrap_accepts_auto_and_boolean_overrides() {
-        let automatic: Editor = serde_json::from_str(r#"{ "wordWrap": null }"#).unwrap_or_default();
-        let wrapped: Editor = serde_json::from_str(r#"{ "wordWrap": true }"#).unwrap_or_default();
-        let overflow: Editor = serde_json::from_str(r#"{ "wordWrap": false }"#).unwrap_or_default();
-        assert_eq!(automatic.word_wrap, None);
-        assert_eq!(wrapped.word_wrap, Some(true));
-        assert_eq!(overflow.word_wrap, Some(false));
-    }
-
-    #[test]
-    fn middle_click_paste_defaults_to_the_platform_and_obeys_an_explicit_value() {
-        let parse = |json: &str| {
-            serde_json::from_str::<Editor>(json)
-                .unwrap_or_default()
-                .middle_click_paste()
-        };
-        assert_eq!(parse("{}"), cfg!(target_os = "linux"));
-        assert_eq!(
-            parse(r#"{ "middleClickPaste": null }"#),
-            cfg!(target_os = "linux")
-        );
-        assert!(parse(r#"{ "middleClickPaste": true }"#));
-        assert!(!parse(r#"{ "middleClickPaste": false }"#));
-    }
-
-    #[test]
-    fn language_selector_normalizes_and_displays() {
-        let selector = LanguageSelector::from_language(" Rust ");
-        assert_eq!(
-            selector.as_ref().map(LanguageSelector::language),
-            Some("rust")
-        );
-        assert_eq!(selector.map(|s| s.to_string()).as_deref(), Some("[rust]"));
-        assert!(LanguageSelector::from_language("").is_none());
-        assert!(LanguageSelector::from_language("[rust]").is_none());
-    }
-
-    #[test]
-    fn language_override_resolves_every_editor_setting() {
-        let parsed: Editor = serde_json::from_str(
-            r#"{
-                "tabSize": 8,
-                "wordWrap": true,
-                "stickyScroll": true,
-                "graphicalCursor": true,
-                "semanticComments": { "enabled": true, "tags": ["TODO"] },
-                "completion": { "enabled": true, "autoTrigger": true },
-                "autoClosingQuotes": "always",
-                "inlineDiagnostics": { "mode": "all", "minSeverity": "warning" },
-                "[Rust]": {
-                    "inlineDiagnostics": { "minSeverity": "error" },
-                    "autoClosingBrackets": "never",
-                    "tabSize": 2,
-                    "insertSpaces": false,
-                    "lineNumbers": "relative",
-                    "cursorLine": false,
-                    "graphicalCursor": null,
-                    "scrollOff": 9,
-                    "rulers": [80, 100],
-                    "wordWrap": null,
-                    "stickyScroll": false,
-                    "trimTrailingWhitespace": false,
-                    "insertFinalNewline": false,
-                    "formatOnSave": true,
-                    "semanticComments": { "enabled": false, "tags": ["NOTE"] },
-                    "completion": { "enabled": false, "autoTrigger": false }
-                }
-            }"#,
-        )
-        .unwrap_or_default();
-
-        let rust = parsed.for_language(Some("rust"));
-        assert_eq!(rust.tab_size(), 2);
-        assert!(!rust.insert_spaces());
-        assert_eq!(rust.line_numbers(), LineNumbers::Relative);
-        assert!(!rust.cursor_line());
-        assert_eq!(rust.graphical_cursor(), None);
-        assert_eq!(rust.scroll_off(), 9);
-        assert_eq!(rust.rulers(), [80, 100]);
-        assert_eq!(rust.word_wrap(), None);
-        assert!(!rust.sticky_scroll());
-        assert!(!rust.trim_trailing_whitespace());
-        assert!(!rust.insert_final_newline());
-        assert!(rust.format_on_save());
-        assert!(!rust.semantic_comments().enabled());
-        assert_eq!(rust.semantic_comments().tags(), ["NOTE"]);
-        assert!(!rust.completion().enabled());
-        assert!(!rust.completion().auto_trigger());
-        assert_eq!(rust.auto_closing_brackets(), AutoClosing::Never);
-        assert_eq!(rust.auto_closing_quotes(), AutoClosing::Always);
-        assert_eq!(rust.inline_diagnostics().mode(), InlineDiagnosticsMode::All);
-        assert_eq!(
-            rust.inline_diagnostics().min_severity(),
-            DiagnosticSeverity::Error
-        );
-
-        let python = parsed.for_language(Some("python"));
-        assert_eq!(python.auto_closing_brackets(), AutoClosing::LanguageDefined);
-        assert_eq!(python.tab_size(), 8);
-        assert_eq!(
-            python.inline_diagnostics().min_severity(),
-            DiagnosticSeverity::Warning
-        );
-        assert_eq!(python.graphical_cursor(), Some(true));
-        assert_eq!(python.word_wrap(), Some(true));
-        assert!(python.sticky_scroll());
-        assert!(python.semantic_comments().enabled());
-        assert_eq!(python.semantic_comments().tags(), ["TODO"]);
-        assert!(python.completion().enabled());
-        assert!(python.completion().auto_trigger());
-    }
-
-    #[test]
-    fn language_override_rejects_malformed_selectors_and_unknown_keys() {
-        assert!(serde_json::from_str::<Editor>(r#"{ "rust": { "tabSize": 2 } }"#).is_err());
-        assert!(serde_json::from_str::<Editor>(r#"{ "[]": { "tabSize": 2 } }"#).is_err());
-        assert!(serde_json::from_str::<Editor>(r#"{ "[rust][toml]": { "tabSize": 2 } }"#).is_err());
-        assert!(serde_json::from_str::<Editor>(r#"{ "[rust]": { "wat": 1 } }"#).is_err());
-    }
-    #[test]
-    fn semantic_comments_default_on_with_the_conventional_tags() {
-        let s = SemanticComments::default();
-        assert!(s.enabled, "the feature is on by default");
-        assert_eq!(s.tags, ["TODO", "FIXME", "HACK", "XXX", "BUG"]);
-        // And the on-disk key deserializes camelCase under `editor`.
-        let parsed: Editor = serde_json::from_str(
-            r#"{ "semanticComments": { "enabled": false, "tags": ["TODO"] } }"#,
-        )
-        .unwrap_or_default();
-        assert!(!parsed.semantic_comments.enabled);
-        assert_eq!(parsed.semantic_comments.tags, ["TODO"]);
-    }
-
-    #[test]
-    fn camel_case_enum_labels_round_trip() {
-        // Enum variants serialize to the VS Code / Zed style camelCase strings.
-        assert_eq!(
-            serde_json::to_string(&AutoSave::AfterDelay).ok().as_deref(),
-            Some("\"afterDelay\"")
-        );
-        assert_eq!(
-            serde_json::from_str::<AutoSave>("\"onFocusChange\"").ok(),
-            Some(AutoSave::OnFocusChange)
-        );
-    }
-}
+mod tests;

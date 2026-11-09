@@ -42,6 +42,8 @@ lang-java       = ["karet-treesitter/lang-java"]
 
 [dependencies]
 karet-core.workspace       = true
+# Language display names for the call report's rows and precision ledger.
+karet-filetype.workspace   = true
 karet-fuzzy.workspace      = true
 karet-treesitter.workspace = true
 # Manifest reading. Already a workspace dependency, and the crate that owns Cargo
@@ -59,6 +61,9 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace         = true
-# The workspace integration suite indexes this repo's own crates, which needs the
-# grammar and the parser pool the library only takes as an argument.
-karet-treesitter.workspace = true
+
+# The workspace integration suite indexes this repo's own Rust crates, so it needs the
+# Rust grammar; its parser pool comes from the ordinary `karet-treesitter` dependency.
+[[test]]
+name              = "workspace"
+required-features = ["lang-rust"]

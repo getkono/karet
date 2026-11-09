@@ -1,18 +1,18 @@
 //! When a connected language server counts as lost.
 //!
-//! The server task used to learn this one way only: a request it made came back
-//! `Closed`. That made loss detection demand-driven, and produced two failures
-//! the user saw as "the LSP just stops working".
+//! Loss detection is not demand-driven: a request coming back `Closed` is only
+//! one of the ways the server task learns a server is gone, so a lost server is
+//! noticed even when nobody is typing.
 //!
-//! A server that exits while nobody is typing was invisible. The reader task had
-//! already set its closed flag and the diagnostics forwarder had already
-//! returned, but the server task was parked on `rx.recv()` with no liveness arm,
-//! so the state stayed `Running`, the badge stayed green, and the retry clock did
-//! not start until the next keystroke. [`Wake`] adds that arm.
+//! A server that exits while idle is caught by [`Wake`]: the task, parked
+//! waiting for commands, also wakes when the connection's closed flag is set, so
+//! the state leaves `Running` and the retry clock starts without waiting for the
+//! next keystroke.
 //!
-//! A server that stops answering but holds its pipe open was worse: every request
-//! timed out, each timeout was logged and discarded, and nothing ever concluded
-//! the connection was dead. [`FailureTally`] gives repeated timeouts a verdict.
+//! A server that stops answering but holds its pipe open is caught by
+//! [`FailureTally`]: consecutive request timeouts on a connection that has
+//! answered before are a verdict that the connection is dead, rather than each
+//! being logged and discarded.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -35,7 +35,7 @@ use super::hint_flight::Flights;
 use super::hint_flight::HintAnswer;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
-use super::pull::Pulls;
+use super::semantic_tokens::DocumentFetches;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use crate::api::LanguageServerRuntimeState;
@@ -90,8 +90,14 @@ pub(super) enum Wake {
     Probe(Answer<Vec<karet_core::CodeAction>>),
     /// A launched code-lens listing finished.
     Lens(Answer<Vec<karet_core::CodeLens>>),
-    /// The server registered or withdrew a capability: a document skipped
-    /// for want of one may now be pulled.
+    /// A launched inline-completion ask finished.
+    Inline(Answer<Vec<karet_core::InlineCompletionItem>>),
+    /// A launched document-link and colour listing finished.
+    LinkColor(Answer<super::link_color::Listing>),
+    /// The server registered or withdrew a capability -- a document skipped
+    /// for want of one may now be pulled -- or semantic highlighting was
+    /// turned on or off for this slot, or the server asked for its semantic
+    /// tokens or pulled diagnostics again.
     Registered,
 }
 
@@ -108,7 +114,7 @@ pub(super) async fn next_wake(
     client: Option<&LspClient>,
     flush_at: Option<Instant>,
     flights: &mut Flights,
-    pulls: &mut Pulls,
+    fetches: &mut DocumentFetches,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
@@ -117,10 +123,15 @@ pub(super) async fn next_wake(
         hints,
         probes,
         lenses,
+        inline,
+        links,
+        ..
     } = flights;
     let busy = hints.is_busy();
     let probing = probes.is_busy();
     let listing = lenses.is_busy();
+    let proposing = inline.is_busy();
+    let linking = links.is_busy();
     if let Some(flush_at) = flush_at {
         // A deadline rather than a timeout on the next command: the debounce
         // measures quiet since the last *edit*, and a command that does not
@@ -133,7 +144,9 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
-            () = pulls.registered() => Wake::Registered,
+            Some(answer) = inline.next(), if proposing => Wake::Inline(answer),
+            Some(answer) = links.next(), if linking => Wake::LinkColor(answer),
+            () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
@@ -143,7 +156,9 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
-            () = pulls.registered() => Wake::Registered,
+            Some(answer) = inline.next(), if proposing => Wake::Inline(answer),
+            Some(answer) = links.next(), if linking => Wake::LinkColor(answer),
+            () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }

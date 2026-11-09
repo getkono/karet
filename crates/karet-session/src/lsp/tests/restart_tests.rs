@@ -5,7 +5,11 @@ use super::*;
 /// A binary that is not there will not be there on the next attempt either.
 /// Before this, the task retried five times, opened a five-minute circuit, then
 /// retried five more times, forever.
-#[tokio::test]
+///
+/// On tokio's virtual clock, so "no further attempts" is checked across a span
+/// longer than every retry delay and the five-minute circuit together, rather
+/// than across whatever real time a test can afford to sleep.
+#[tokio::test(start_paused = true)]
 async fn a_server_that_can_never_start_stops_being_retried() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
@@ -14,10 +18,11 @@ async fn a_server_that_can_never_start_stops_being_retried() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let mut unavailable = false;
@@ -37,9 +42,10 @@ async fn a_server_that_can_never_start_stops_being_retried() -> TestResult {
     }
     assert!(unavailable, "expected the provider to become unavailable");
 
-    // Terminal means terminal: no further attempts.
+    // Terminal means terminal: no further attempts. Idle virtual time runs every
+    // timer due inside the span, so a retry scheduled anywhere in it would land.
     let attempts = spawns.load(Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    tokio::time::sleep(Duration::from_secs(600)).await;
     assert_eq!(spawns.load(Ordering::SeqCst), attempts);
     Ok(())
 }
@@ -69,10 +75,11 @@ async fn a_transient_failure_is_retried_rather_than_giving_up() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

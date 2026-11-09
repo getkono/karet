@@ -16,7 +16,8 @@
 //! server→client requests a headless client must not leave hanging
 //! (`workspace/configuration` from the consumer's [`ConnectOptions::settings`],
 //! `client/registerCapability`, `window/workDoneProgress/create`,
-//! `workspace/inlayHint/refresh` -- the last also surfaced through
+//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh`,
+//! `workspace/diagnostic/refresh` -- the last three also surfaced through
 //! [`LspClient::refreshes`]). The server requests that must wait on the
 //! editor, `workspace/applyEdit` and `window/showMessageRequest`, are handed
 //! out through [`LspClient::apply_edit_requests`] and
@@ -27,10 +28,11 @@
 //! Three protocol choices are deliberate and documented here once:
 //!
 //! - **Positions cross this API in UTF-16.** The client offers the LSP-default
-//!   `utf-16` as its only position encoding and stays faithful to it; a server's
-//!   `positionEncoding` reply is recorded in [`Capabilities`] but not yet acted
-//!   on. Every [`LineCol`] and [`Range`] passed to or returned from this crate
-//!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
+//!   `utf-16` as its only position encoding and stays faithful to it, so a
+//!   server's `positionEncoding` reply is not read: offered nothing else, a
+//!   conforming server has no other choice. Every [`LineCol`] and [`Range`]
+//!   passed to or returned from this crate counts columns in UTF-16 code
+//!   units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
 //! - **Document sync is the consumer's choice of two.** [`LspClient::did_change`]
@@ -48,25 +50,111 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, document highlights, inlay hints, rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), and document/range
-//! formatting are implemented as typed, non-panicking operations.
+//! symbols, document highlights, inlay hints, inline completions (LSP 3.18
+//! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
+//! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
+//! `codeAction/resolve` and `workspace/executeCommand`), document links (with
+//! `documentLink/resolve`), document colours, folding ranges (see
+//! [`LspClient::folding_ranges`]), document/range
+//! formatting, on-type formatting, linked editing ranges and will-save edits
+//! are implemented as typed, non-panicking operations.
 
-/// `Content-Length` message framing (the LSP base protocol).
-///
-/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
-/// the implementation now lives; the `karet_lsp::codec` path is kept because it
-/// is this crate's published surface.
 pub use apply_edit::ApplyEditRequest;
 pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
-pub use highlight::DocumentHighlight;
-pub use highlight::HighlightKind;
-pub use karet_jsonrpc::framing::content_length as codec;
+pub use editing::LinkedEditingRanges;
+pub use editing::SaveReason;
+/// `Content-Length` message framing (the LSP base protocol).
+///
+/// Deprecated: a second public path to [`karet_jsonrpc::framing::content_length`],
+/// where the implementation lives. Use that module directly; this alias is kept
+/// for one release so existing callers keep compiling with a warning.
+///
+/// A `#[deprecated]` module warns only where the module itself is named
+/// (`use karet_lsp::codec;`), not on `karet_lsp::codec::read_frame`, so every
+/// item here is a deprecated forwarder of its own: each path through the module
+/// warns, whichever way it is written.
+#[deprecated(
+    since = "0.8.0",
+    note = "use `karet_jsonrpc::framing::content_length`, which this re-exports"
+)]
+pub mod codec {
+    use std::io;
+
+    use karet_jsonrpc::framing::content_length;
+    use tokio::io::AsyncBufRead;
+    use tokio::io::AsyncWrite;
+
+    /// Deprecated alias of [`content_length::MAX_MESSAGE_BYTES`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::MAX_MESSAGE_BYTES`"
+    )]
+    pub const MAX_MESSAGE_BYTES: usize = content_length::MAX_MESSAGE_BYTES;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] framing type.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    pub type ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] unit value, so
+    /// `codec::ContentLength` keeps working in expression position too.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    #[allow(non_upper_case_globals)] // must keep the unit struct's own name
+    pub const ContentLength: content_length::ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of [`content_length::CodecError`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::CodecError`"
+    )]
+    pub type CodecError = content_length::CodecError;
+
+    /// Deprecated forwarder to [`content_length::read_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::read_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::read_frame`"
+    )]
+    pub async fn read_frame<R>(
+        reader: &mut R,
+    ) -> Result<Option<Vec<u8>>, content_length::CodecError>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        content_length::read_frame(reader).await
+    }
+
+    /// Deprecated forwarder to [`content_length::write_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::write_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::write_frame`"
+    )]
+    pub async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        content_length::write_frame(writer, body).await
+    }
+}
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 pub use pull::PulledDiagnostics;
+pub use semantic_tokens::SemanticTokens;
+pub use semantic_tokens::SemanticTokensLegend;
 pub use watch::FileChange;
 pub use watch::FileChangeKind;
 pub use window::MessageLevel;
@@ -85,15 +173,21 @@ mod completion;
 mod config;
 mod conn;
 mod convert;
+mod editing;
+mod folding;
 mod gate;
 mod handshake;
+mod hierarchy;
 mod highlight;
 mod inlay;
+mod inline_completion;
 mod launch;
+mod link_color;
 mod navigation;
 mod pull;
 mod selection;
 mod selector;
+mod semantic_tokens;
 mod snippet;
 mod uri;
 mod watch;
@@ -229,17 +323,15 @@ pub struct LspSpec {
     pub args: Vec<String>,
     /// Language identifiers this server handles (e.g. `"rust"`).
     pub languages: Vec<String>,
-    /// Server-specific `initializationOptions`, sent verbatim with
-    /// `initialize`.
+    /// What the connection sends at the handshake and answers with afterwards:
+    /// the server's `initializationOptions` and the settings
+    /// `workspace/configuration` is answered from (see [`ConnectOptions`]).
     ///
-    /// Some servers cannot start without one. Astro's, for instance, refuses
-    /// the handshake unless it is told where a TypeScript SDK lives, rather
-    /// than looking for one itself — no argv can substitute, because the option
-    /// is part of the protocol rather than the command line.
-    pub initialization_options: Option<Value>,
-    /// The settings `workspace/configuration` is answered from, keyed by
-    /// section (see [`ConnectOptions::settings`]).
-    pub settings: Option<Value>,
+    /// Some servers cannot start without `initializationOptions`. Astro's, for
+    /// instance, refuses the handshake unless it is told where a TypeScript SDK
+    /// lives, rather than looking for one itself — no argv can substitute,
+    /// because the option is part of the protocol rather than the command line.
+    pub options: ConnectOptions,
 }
 
 impl LspSpec {
@@ -253,22 +345,21 @@ impl LspSpec {
             command: command.into(),
             args,
             languages,
-            initialization_options: None,
-            settings: None,
+            options: ConnectOptions::default(),
         }
     }
 
     /// Attach the `initializationOptions` sent verbatim with `initialize`.
     #[must_use]
     pub fn with_initialization_options(mut self, options: Option<Value>) -> Self {
-        self.initialization_options = options;
+        self.options.initialization_options = options;
         self
     }
 
     /// Attach the settings `workspace/configuration` is answered from.
     #[must_use]
     pub fn with_settings(mut self, settings: Option<Value>) -> Self {
-        self.settings = settings;
+        self.options.settings = settings;
         self
     }
 }
@@ -314,6 +405,16 @@ pub enum ServerRefresh {
     /// answer -- editing a function's return type in one file changes the
     /// hints shown at its call sites in every other.
     InlayHints,
+    /// `workspace/semanticTokens/refresh`: every document's semantic tokens
+    /// from this server may now be stale -- a project-wide change (an index
+    /// that finished loading, a dependency that resolved) reclassified names
+    /// in files nobody edited.
+    SemanticTokens,
+    /// `workspace/diagnostic/refresh`: every document's pulled diagnostics
+    /// from this server may now be stale -- a project-wide change (a
+    /// dependency edit, a configuration reload) changed what it would report
+    /// for files nobody edited, so each open document is pulled again.
+    Diagnostics,
 }
 
 /// An async client for a single language server.
@@ -346,8 +447,7 @@ impl LspClient {
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
-        Self::spawn_command_configured(command, &spec.command, root, ConnectOptions::from(&spec))
-            .await
+        Self::spawn_command_configured(command, &spec.command, root, spec.options).await
     }
 
     /// Spawn and initialize a server through a caller-prepared command.
@@ -368,22 +468,7 @@ impl LspClient {
         display_name: &str,
         root: &Path,
     ) -> Result<Self, LspError> {
-        Self::spawn_command_with(command, display_name, root, None).await
-    }
-
-    /// Spawn as [`Self::spawn_command`], sending `initialization_options` with
-    /// the handshake.
-    ///
-    /// # Errors
-    /// As [`Self::spawn_command`].
-    pub async fn spawn_command_with(
-        command: tokio::process::Command,
-        display_name: &str,
-        root: &Path,
-        initialization_options: Option<Value>,
-    ) -> Result<Self, LspError> {
-        let options = ConnectOptions::default().with_initialization_options(initialization_options);
-        Self::spawn_command_configured(command, display_name, root, options).await
+        Self::spawn_command_configured(command, display_name, root, ConnectOptions::default()).await
     }
 
     /// Spawn as [`Self::spawn_command`], connecting with `options` (see
@@ -518,31 +603,7 @@ impl LspClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        Self::connect_with(read, write, root, None).await
-    }
-
-    /// Connect as [`Self::connect`], sending `initialization_options` with the
-    /// handshake.
-    ///
-    /// Separate from [`Self::connect`] rather than a parameter on it, so the
-    /// common case stays a three-argument call. Some servers cannot start
-    /// without their options: Astro's refuses the handshake unless it is told
-    /// where a TypeScript SDK lives.
-    ///
-    /// # Errors
-    /// As [`Self::connect`].
-    pub async fn connect_with<R, W>(
-        read: R,
-        write: W,
-        root: &Path,
-        initialization_options: Option<Value>,
-    ) -> Result<Self, LspError>
-    where
-        R: AsyncRead + Send + Unpin + 'static,
-        W: AsyncWrite + Send + Unpin + 'static,
-    {
-        let options = ConnectOptions::default().with_initialization_options(initialization_options);
-        Self::connect_configured(read, write, root, options).await
+        Self::connect_configured(read, write, root, ConnectOptions::default()).await
     }
 
     /// Connect as [`Self::connect`], with `options`: `initializationOptions`
@@ -550,6 +611,11 @@ impl LspClient {
     /// answered from -- held before `initialize` goes out, so a server that
     /// asks at once is answered from them, and pushed once with
     /// `workspace/didChangeConfiguration` after `initialized`.
+    ///
+    /// Separate from [`Self::connect`] rather than a parameter on it, so the
+    /// common case stays a three-argument call. Some servers cannot start
+    /// without their options: Astro's refuses the handshake unless it is told
+    /// where a TypeScript SDK lives.
     ///
     /// # Errors
     /// As [`Self::connect`].
@@ -569,20 +635,21 @@ impl LspClient {
         if let Some(settings) = &options.settings {
             conn.set_settings(settings.clone());
         }
-        let result: Value = conn.request("initialize", params).await?;
+        let result: Value = conn
+            .request("initialize", handshake::to_wire(params)?)
+            .await?;
         // Seeded into the gate the handler already owns. Registrations are kept
         // apart from the advertised set, so one that arrives between here and
         // the first request survives the seeding.
         let gate = conn.gate();
-        let parsed = capability::parse(&result);
+        let (parsed, negotiated) = capability::parse(&result);
         tracing::debug!(
             features = parsed.len(),
-            encoding = ?parsed.position_encoding,
-            sync = ?parsed.text_sync,
+            sync = ?negotiated.text_sync,
             "language server advertised its capabilities"
         );
         if let Ok(mut live) = gate.write() {
-            live.advertise(parsed);
+            live.advertise(parsed, negotiated);
         }
         conn.notify("initialized", lsp_types::InitializedParams {})?;
         if let Some(settings) = options.settings {
@@ -609,6 +676,15 @@ impl LspClient {
         self.gate
             .read()
             .map(|gate| gate.capabilities())
+            .unwrap_or_default()
+    }
+
+    /// What the handshake negotiated beyond the feature set: a snapshot, as
+    /// [`Self::capabilities`] is.
+    pub(crate) fn server_options(&self) -> capability::ServerOptions {
+        self.gate
+            .read()
+            .map(|gate| gate.options().clone())
             .unwrap_or_default()
     }
 
@@ -643,6 +719,26 @@ impl LspClient {
         self.gate
             .read()
             .is_ok_and(|gate| gate.supports_for(feature, doc))
+    }
+
+    /// Whether this server currently supports `feature` for the document at
+    /// `doc` were it open as `language`, open now or not.
+    ///
+    /// As [`Self::supports_for`], except that a selector's `language` filter
+    /// is matched against `language` rather than the `languageId` the client
+    /// recorded at [`Self::did_open`], which [`Self::did_close`] forgets. It
+    /// answers for a document already closed: whether a registration still
+    /// covers what it was last open as.
+    #[must_use]
+    pub fn supports_for_language(
+        &self,
+        feature: ServerFeature,
+        doc: &Path,
+        language: &str,
+    ) -> bool {
+        self.gate
+            .read()
+            .is_ok_and(|gate| gate.supports_as(feature, doc, Some(language)))
     }
 
     /// Refuse `method` when the server never said it could answer it for any
@@ -714,8 +810,8 @@ impl LspClient {
     /// full `text`.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_open(
         &self,
         doc: &Path,
@@ -748,8 +844,8 @@ impl LspClient {
     /// [`Self::did_change_incremental`] where the server supports it.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_change(&self, doc: &Path, version: i32, text: &str) -> Result<(), LspError> {
         let params = lsp_types::DidChangeTextDocumentParams {
             text_document: lsp_types::VersionedTextDocumentIdentifier::new(
@@ -780,14 +876,19 @@ impl LspClient {
     /// Returns [`LspError::Unsupported`] **without sending anything** when the
     /// server did not ask for incremental sync (send the whole text with
     /// [`Self::did_change`] instead), [`LspError::Protocol`] for an
-    /// unconvertible path, or [`LspError::Closed`] if the connection is gone.
+    /// unconvertible path or a full outbound queue, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn did_change_incremental(
         &self,
         doc: &Path,
         version: i32,
         edits: &[TextEdit],
     ) -> Result<(), LspError> {
-        if self.capabilities().text_sync != karet_core::TextSyncKind::Incremental {
+        let incremental = self
+            .gate
+            .read()
+            .is_ok_and(|gate| gate.options().text_sync == capability::TextSyncKind::Incremental);
+        if !incremental {
             return Err(LspError::Unsupported {
                 method: "incremental textDocument/didChange",
             });
@@ -812,8 +913,8 @@ impl LspClient {
     /// Notify the server that `doc` was saved (optionally including its text).
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_save(&self, doc: &Path, text: Option<&str>) -> Result<(), LspError> {
         let params = lsp_types::DidSaveTextDocumentParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
@@ -825,8 +926,8 @@ impl LspClient {
     /// Notify the server that `doc` was closed.
     ///
     /// # Errors
-    /// Returns [`LspError::Protocol`] for an unconvertible path or
-    /// [`LspError::Closed`] if the connection is gone.
+    /// Returns [`LspError::Protocol`] for an unconvertible path or a full
+    /// outbound queue, or [`LspError::Closed`] if the connection is gone.
     pub async fn did_close(&self, doc: &Path) -> Result<(), LspError> {
         if let Ok(mut gate) = self.gate.write() {
             gate.closed(doc);
@@ -841,8 +942,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn hover(&self, doc: &Path, pos: LineCol) -> Result<Option<Hover>, LspError> {
         self.require_for(ServerFeature::Hover, "textDocument/hover", doc)?;
         let params = lsp_types::HoverParams {
@@ -858,8 +961,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn document_symbols(&self, doc: &Path) -> Result<Vec<Symbol>, LspError> {
         self.require_for(
             ServerFeature::DocumentSymbol,
@@ -883,8 +988,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for a request that does
+    /// not encode or a result that does not decode, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>, LspError> {
         self.require(ServerFeature::WorkspaceSymbol, "workspace/symbol")?;
         let params = lsp_types::WorkspaceSymbolParams {
@@ -905,8 +1012,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn implementations(
         &self,
         doc: &Path,
@@ -929,51 +1038,14 @@ impl LspClient {
         Ok(convert::locations_from_lsp(response))
     }
 
-    /// Resolve the supertypes of the type at `pos` — what it derives from or implements.
-    ///
-    /// Two round trips, as the protocol requires: `prepare` establishes the item, and
-    /// `supertypes` walks upward from it. A server that declines the first returns no
-    /// supertypes rather than an error, since not supporting the request is not a failure.
-    ///
-    /// # Errors
-    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
-    pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
-        self.require_for(
-            ServerFeature::TypeHierarchy,
-            "textDocument/prepareTypeHierarchy",
-            doc,
-        )?;
-        let prepare = lsp_types::TypeHierarchyPrepareParams {
-            text_document_position_params: text_document_position(doc, pos)?,
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-        };
-        let items: Option<Vec<lsp_types::TypeHierarchyItem>> = self
-            .conn
-            .request("textDocument/prepareTypeHierarchy", prepare)
-            .await?;
-        let Some(item) = items.unwrap_or_default().into_iter().next() else {
-            return Ok(Vec::new());
-        };
-        let params = lsp_types::TypeHierarchySupertypesParams {
-            item,
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-        };
-        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = self
-            .conn
-            .request("typeHierarchy/supertypes", params)
-            .await?;
-        Ok(convert::type_hierarchy_locations(response))
-    }
-
     /// Resolve the definition location(s) of the symbol at `pos`.
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn definition(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
         self.require_for(ServerFeature::Definition, "textDocument/definition", doc)?;
         let params = lsp_types::GotoDefinitionParams {
@@ -991,9 +1063,11 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`], or [`LspError::Protocol`] when the edit names a
-    /// URI that is not a file.
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a result that does not decode or
+    /// an edit naming a URI that is not a file, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn rename(
         &self,
         doc: &Path,
@@ -1020,7 +1094,10 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise `prepareProvider`, else [`LspError::Server`]
-    /// (servers commonly explain a refusal this way) or [`LspError::Timeout`].
+    /// (servers commonly explain a refusal this way), [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for an unconvertible path, a request that does
+    /// not encode or a result that does not decode, or [`LspError::Closed`] if
+    /// the connection is gone.
     pub async fn prepare_rename(
         &self,
         doc: &Path,
@@ -1057,8 +1134,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn signature_help(
         &self,
         doc: &Path,
@@ -1090,8 +1169,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn formatting(
         &self,
         doc: &Path,
@@ -1128,8 +1209,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn range_formatting(
         &self,
         doc: &Path,
@@ -1212,6 +1295,28 @@ impl LspClient {
         T: serde::de::DeserializeOwned,
     {
         self.conn.request(method, params).await
+    }
+
+    /// [`custom_request`](Self::custom_request), bounded by `timeout` instead
+    /// of the standard request timeout: for a request the server answers only
+    /// once something slower than a round trip has happened, such as a user
+    /// confirming a device code in their browser.
+    ///
+    /// # Errors
+    ///
+    /// As [`custom_request`](Self::custom_request), with
+    /// [`LspError::Timeout`] once `timeout` has passed unanswered.
+    pub async fn custom_request_with<P, T>(
+        &self,
+        method: &str,
+        params: P,
+        timeout: std::time::Duration,
+    ) -> Result<T, LspError>
+    where
+        P: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        self.conn.request_with(method, params, timeout).await
     }
 
     /// Send an arbitrary notification (fire-and-forget), `method` verbatim.

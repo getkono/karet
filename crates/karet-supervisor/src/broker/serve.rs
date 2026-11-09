@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use karet_jsonrpc::Framing;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncBufRead;
@@ -34,7 +35,6 @@ use tokio::sync::mpsc;
 use crate::broker::BrokerError;
 use crate::broker::endpoint::Endpoint;
 use crate::broker::endpoint::write_endpoint;
-use crate::broker::framing::Framing;
 use crate::broker::io_error;
 use crate::broker::lease;
 use crate::broker::lease::BrokerSpec;
@@ -81,14 +81,14 @@ pub(crate) struct Pending<T> {
 
 /// Everything one running broker shares between its tasks.
 pub(crate) struct Core<P: BrokerProtocol> {
-    pub(crate) upstream: mpsc::Sender<Value>,
-    pub(crate) clients: Mutex<HashMap<ClientId, mpsc::Sender<Value>>>,
-    pub(crate) pending: Mutex<HashMap<u64, Pending<P::RequestTag>>>,
-    pub(crate) state: Arc<P::State>,
-    pub(crate) next_request: AtomicU64,
-    pub(crate) next_client: AtomicU64,
-    pub(crate) active_clients: AtomicUsize,
-    pub(crate) last_activity: std::sync::Mutex<Instant>,
+    upstream: mpsc::Sender<Value>,
+    clients: Mutex<HashMap<ClientId, mpsc::Sender<Value>>>,
+    pending: Mutex<HashMap<u64, Pending<P::RequestTag>>>,
+    state: Arc<P::State>,
+    next_request: AtomicU64,
+    next_client: AtomicU64,
+    active_clients: AtomicUsize,
+    last_activity: std::sync::Mutex<Instant>,
     /// Set once the brokered process's stdout ends, for any reason.
     ///
     /// A latch, not a bare [`Notify`]: `notify_waiters` wakes only the waiters
@@ -99,8 +99,8 @@ pub(crate) struct Core<P: BrokerProtocol> {
     /// its 30s idle timeout, long after the client gave up at 5s. The flag is
     /// what makes the signal survive that gap; the `Notify` only wakes a
     /// waiter that is already parked.
-    pub(crate) upstream_closed: AtomicBool,
-    pub(crate) upstream_closed_signal: Notify,
+    upstream_closed: AtomicBool,
+    upstream_closed_signal: Notify,
 }
 
 impl<P: BrokerProtocol> Core<P> {
@@ -117,6 +117,21 @@ impl<P: BrokerProtocol> Core<P> {
             upstream_closed: AtomicBool::new(false),
             upstream_closed_signal: Notify::new(),
         })
+    }
+
+    /// The protocol's broker-wide state.
+    pub(crate) fn state(&self) -> &Arc<P::State> {
+        &self.state
+    }
+
+    /// Queue a message for the server, dropping it if the queue is gone.
+    pub(crate) async fn send_upstream(&self, message: Value) {
+        let _ = self.upstream.send(message).await;
+    }
+
+    /// Reserve a request id nobody else will use on this broker.
+    pub(crate) fn next_request_id(&self) -> u64 {
+        self.next_request.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -375,7 +390,7 @@ where
     P: BrokerProtocol,
     R: AsyncBufRead + Unpin + Send,
 {
-    while let Some(mut message) = <P::Framing as Framing>::read_message(reader)
+    while let Some(mut message) = read_message::<P::Framing, _>(reader)
         .await
         .map_err(io_error)?
     {
@@ -390,7 +405,7 @@ where
                 }
             },
             ClientFlow::Forward => {
-                let _ = core.upstream.send(message).await;
+                core.send_upstream(message).await;
             },
             ClientFlow::Drop => {},
             ClientFlow::Stop => break,
@@ -406,7 +421,7 @@ async fn proxy_request<P: BrokerProtocol>(
     message: &mut Value,
     core: &Arc<Core<P>>,
 ) {
-    let id = core.next_request.fetch_add(1, Ordering::Relaxed);
+    let id = core.next_request_id();
     message["id"] = json!(id);
     core.pending.lock().await.insert(
         id,
@@ -416,7 +431,7 @@ async fn proxy_request<P: BrokerProtocol>(
             tag,
         },
     );
-    let _ = core.upstream.send(message.clone()).await;
+    core.send_upstream(message.clone()).await;
 }
 
 async fn upstream_reader<P, R>(read: R, core: Arc<Core<P>>)
@@ -426,7 +441,7 @@ where
 {
     let mut reader = BufReader::new(read);
     loop {
-        let Ok(message) = <P::Framing as Framing>::read_message(&mut reader).await else {
+        let Ok(message) = read_message::<P::Framing, _>(&mut reader).await else {
             break;
         };
         let Some(mut message) = message else {
@@ -468,7 +483,6 @@ where
                     let _ = tx.send(message.clone()).await;
                 }
             },
-            ServerRoute::Discard => {},
         }
     }
     core.upstream_closed.store(true, Ordering::Release);
@@ -481,10 +495,43 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     while let Some(message) = messages.recv().await {
-        if F::write_message(&mut writer, &message).await.is_err() {
+        if write_message::<F, _>(&mut writer, &message).await.is_err() {
             break;
         }
     }
+}
+
+/// Read one framed message and parse it, or `None` at a clean end of stream.
+///
+/// The framing moves bytes; this is where they become a [`Value`]. A framing
+/// failure and a body that is not JSON both surface as
+/// [`std::io::ErrorKind::InvalidData`], so a caller tells a broken peer from a
+/// broken transport only by the kind.
+pub(crate) async fn read_message<F, R>(reader: &mut R) -> std::io::Result<Option<Value>>
+where
+    F: Framing,
+    R: AsyncBufRead + Unpin + Send,
+{
+    let Some(body) = F::read_frame(reader)
+        .await
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Serialise `message` and write it as one frame, flushed.
+pub(crate) async fn write_message<F, W>(writer: &mut W, message: &Value) -> std::io::Result<()>
+where
+    F: Framing,
+    W: AsyncWrite + Unpin + Send,
+{
+    let body = serde_json::to_vec(message)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    F::write_frame(writer, &body).await
 }
 
 fn touch<P: BrokerProtocol>(core: &Core<P>) {

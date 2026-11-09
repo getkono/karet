@@ -7,7 +7,7 @@
 //!
 //! Unlike the seam view, which deliberately never ranks, a report ranks: that is what
 //! makes it short enough to act on. The cut-offs are recorded in the report itself
-//! ([`Thresholds`]) so a reader can see exactly what "large" meant here.
+//! ([`ReportThresholds`]) so a reader can see exactly what "large" meant here.
 //!
 //! Everything is computed under one configuration — by default the one that leaves test
 //! code out — and over a scope, which is any node set a query selected.
@@ -24,24 +24,26 @@ mod tests;
 
 use std::collections::HashSet;
 
-pub use coupling::Envy;
+pub use coupling::FeatureEnvy;
 pub use coupling::InternalReach;
 pub use coupling::ModuleCoupling;
 pub use coupling::ModuleEdge;
 pub use coupling::ModuleRow;
-pub use hotspots::Cycle;
-pub use hotspots::Hotspot;
-pub use hotspots::Hotspots;
+pub use hotspots::CallCycle;
+pub use hotspots::CallHotspot;
+pub use hotspots::CallHotspots;
 pub use ledger::LanguageLedger;
 pub use ledger::PrecisionLedger;
-pub use ledger::Uncertain;
+pub use ledger::UncertainCall;
 
 use super::graph::CallGraph;
 use super::graph::FunctionMetrics;
 use super::graph::GraphOptions;
 use crate::id::SeamId;
 use crate::index::SeamIndex;
+use crate::model::ConfigMembership;
 use crate::model::NodeKind;
+use crate::model::Visibility;
 
 /// How much a report shows, and where its cut-offs fall.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +56,8 @@ pub struct ReportOptions {
     pub excerpt_depth: usize,
     /// Callees shown per level of an excerpt.
     pub excerpt_width: usize,
+    /// At most this many entries in the precision ledger's least-certain list.
+    pub least_certain_n: usize,
 }
 
 impl Default for ReportOptions {
@@ -63,6 +67,7 @@ impl Default for ReportOptions {
             percentile: 0.95,
             excerpt_depth: 3,
             excerpt_width: 8,
+            least_certain_n: 50,
         }
     }
 }
@@ -70,9 +75,11 @@ impl Default for ReportOptions {
 /// The cut-offs a report actually used, so a reader can see what "large" meant.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Thresholds {
+pub struct ReportThresholds {
     /// At most this many entries per hotspot list.
     pub top_n: usize,
+    /// At most this many entries in the precision ledger's least-certain list.
+    pub least_certain_n: usize,
     /// The percentile used, as a fraction.
     pub percentile: f64,
     /// Fan-in at or above which a function is a hub.
@@ -88,7 +95,7 @@ pub struct Thresholds {
 /// Counts over the whole scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct Summary {
+pub struct ReportSummary {
     /// Functions measured.
     pub functions: usize,
     /// Their own code lines, summed.
@@ -183,11 +190,11 @@ pub struct CallReport {
     /// The configuration everything was measured under.
     pub configuration: String,
     /// The cut-offs the rankings used.
-    pub thresholds: Thresholds,
+    pub thresholds: ReportThresholds,
     /// Counts over the scope.
-    pub summary: Summary,
+    pub summary: ReportSummary,
     /// Where structure is most likely to need attention, with evidence.
-    pub hotspots: Hotspots,
+    pub hotspots: CallHotspots,
     /// How modules depend on one another through calls.
     pub coupling: ModuleCoupling,
     /// How much of every number is established, and how much is a bound.
@@ -246,14 +253,33 @@ pub fn report(
         );
         &built_with_tests
     };
+    // When tests are built, test code is in the graph, and a test function is called by
+    // the test runner rather than by code: a function gated out without tests is an entry
+    // point, never "unreachable". Without tests no such function is measured at all.
+    let test_gated: HashSet<SeamId> = if tests_included {
+        let mut production = configuration.clone();
+        production.env.flags.remove("test");
+        let membership = crate::config::evaluate(index, &production);
+        graph
+            .all()
+            .iter()
+            .map(|m| m.id)
+            .filter(|id| membership.get(id) == Some(&ConfigMembership::Inactive))
+            .collect()
+    } else {
+        HashSet::new()
+    };
 
     CallReport {
-        // A test build already says so in its name.
-        configuration: configuration.name.clone(),
+        configuration: if tests_included {
+            format!("{} + tests", configuration.name)
+        } else {
+            configuration.name.clone()
+        },
         summary: summary(index, &measured),
-        hotspots: hotspots::find(&context, &measured, testing),
+        hotspots: hotspots::find(&context, &measured, testing, &test_gated),
         coupling: coupling::measure(index, &graph, &measured),
-        ledger: ledger::account(index, &measured),
+        ledger: ledger::account(index, &measured, options.least_certain_n),
         functions: measured.iter().map(|m| row(index, m)).collect(),
         thresholds,
     }
@@ -264,12 +290,33 @@ pub(crate) struct Context<'a> {
     pub(crate) index: &'a SeamIndex,
     pub(crate) graph: &'a CallGraph,
     pub(crate) options: &'a ReportOptions,
-    pub(crate) thresholds: &'a Thresholds,
+    pub(crate) thresholds: &'a ReportThresholds,
 }
 
 /// A function's identity as text.
+/// The display name of the language `path` is written in, or `None` for a file type
+/// the catalogue does not recognise.
+pub(crate) fn language_label(path: &std::path::Path) -> Option<&'static str> {
+    let file_type = karet_filetype::file_type_for_path(path);
+    file_type.is_recognized().then(|| file_type.name())
+}
+
 pub(crate) fn path_of(index: &SeamIndex, id: SeamId) -> String {
     index.path(id).map(ToString::to_string).unwrap_or_default()
+}
+
+/// How far a function reaches, for the report's purposes.
+///
+/// A method a contract declares is as reachable as the contract: a Rust trait method
+/// carries no visibility of its own, so read alone it would look private, and every
+/// unimplemented-here method of a public trait would read as dead.
+pub(crate) fn visibility_of(index: &SeamIndex, id: SeamId) -> Option<Visibility> {
+    let node = index.node(id)?;
+    node.parent
+        .and_then(|parent| index.node(parent))
+        .filter(|parent| parent.kind == NodeKind::Interface)
+        .and_then(crate::model::Node::effective_visibility)
+        .or_else(|| node.effective_visibility())
 }
 
 /// The nearest module or package around a node.
@@ -292,19 +339,17 @@ fn row(index: &SeamIndex, metrics: &FunctionMetrics) -> FunctionRow {
         path: path_of(index, metrics.id),
         language: node
             .and_then(|node| index.file_path(node.location.file))
-            .and_then(karet_treesitter::language_name_from_path)
+            .and_then(language_label)
             .map(str::to_owned),
         file,
         line: node.map_or(0, |node| node.location.range.start.line.saturating_add(1)),
-        visibility: node
-            .and_then(crate::model::Node::effective_visibility)
-            .map(|v| v.name().to_owned()),
+        visibility: visibility_of(index, metrics.id).map(|v| v.name().to_owned()),
         metrics: RowMetrics::from(metrics),
     }
 }
 
 /// Counts over the scope.
-fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> Summary {
+fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> ReportSummary {
     let modules: HashSet<SeamId> = measured
         .iter()
         .filter_map(|m| module_of(index, m.id))
@@ -318,7 +363,7 @@ fn summary(index: &SeamIndex, measured: &[&FunctionMetrics]) -> Summary {
         .filter(|m| m.scc_size > 1)
         .map(|m| m.scc)
         .collect();
-    Summary {
+    ReportSummary {
         functions: measured.len(),
         code_lines: measured.iter().map(|m| u64::from(m.code_lines)).sum(),
         modules: modules.len(),
@@ -346,7 +391,7 @@ pub(crate) fn percentile(mut values: Vec<f64>, percentile: f64) -> f64 {
 
 /// The cut-offs: a percentile of every function, never below a floor that keeps a small
 /// codebase from calling its median function a hotspot.
-fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> Thresholds {
+fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> ReportThresholds {
     let p = options.percentile;
     let fan_in = percentile(measured.iter().map(|m| f64::from(m.fan_in)).collect(), p);
     let leaf = percentile(
@@ -365,8 +410,9 @@ fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> Thresho
             .collect(),
         p,
     );
-    Thresholds {
+    ReportThresholds {
         top_n: options.top_n,
+        least_certain_n: options.least_certain_n,
         percentile: p,
         hub_fan_in: (fan_in.ceil() as u32).max(5),
         heavy_ratio: ratio.max(2.0),

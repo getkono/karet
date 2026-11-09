@@ -9,7 +9,6 @@ use crate::app::tests::support::completion_app;
 use crate::app::tests::support::screen;
 use crate::app::tests::support::send_key;
 use crate::app::tests::support::text_tab;
-use crate::keymap::Focus;
 use crate::tab::MergeConflictState;
 
 /// A line far wider than any of the three panes, ending in `END`.
@@ -25,7 +24,7 @@ fn side_panes_scroll_with_the_merged_caret_in_the_same_frame() {
     let mut conflict = MergeConflictState::loading();
     conflict.finish(wide_line('C'), wide_line('I'));
     app.tabs[app.active].merge_conflict = Some(conflict);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // The first frame measures the panes the reveal is resolved against.
     let _ = screen(&mut app, 120, 12);
 
@@ -36,13 +35,13 @@ fn side_panes_scroll_with_the_merged_caret_in_the_same_frame() {
     let painted = screen(&mut app, 120, 12);
 
     let tab = &app.tabs[app.active];
-    let merged = tab.editor.scroll_col;
+    let merged = tab.editor.scroll_col();
     assert!(merged > 0, "End scrolled the merged pane");
     let Some(conflict) = tab.merge_conflict.as_ref() else {
         unreachable!("the tab is still a merge conflict");
     };
-    assert_eq!(conflict.current_editor.scroll_col, merged);
-    assert_eq!(conflict.incoming_editor.scroll_col, merged);
+    assert_eq!(conflict.current_editor.scroll_col(), merged);
+    assert_eq!(conflict.incoming_editor.scroll_col(), merged);
     // All three panes show the same columns: the `END` tail of each line.
     assert!(
         painted.iter().any(|row| row.matches("END").count() == 3),
@@ -68,11 +67,11 @@ fn side_panes_follow_a_caret_typed_past_the_right_margin() {
     let _ = screen(&mut app, 120, 12);
 
     let tab = &app.tabs[app.active];
-    let merged = tab.editor.scroll_col;
+    let merged = tab.editor.scroll_col();
     assert!(merged > 0, "typing scrolled the merged pane");
     let Some(conflict) = tab.merge_conflict.as_ref() else {
         unreachable!("the tab is still a merge conflict");
     };
-    assert_eq!(conflict.current_editor.scroll_col, merged);
-    assert_eq!(conflict.incoming_editor.scroll_col, merged);
+    assert_eq!(conflict.current_editor.scroll_col(), merged);
+    assert_eq!(conflict.incoming_editor.scroll_col(), merged);
 }

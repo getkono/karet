@@ -6,7 +6,18 @@
 //! lifetime (how long the card stays) are derived from the tier, so there is
 //! exactly one place to tune either.
 
-use super::*;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::Diagnostic;
+use karet_core::Notification;
+use karet_core::NotificationId;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::BackendError;
+use karet_session::DocumentId;
+
+use crate::app::App;
 
 /// How long a refusal stays before it clears itself.
 const REFUSAL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -105,8 +116,6 @@ impl App {
     pub(in crate::app) const DEPS_CHECK_TAG: &'static str = "deps.check";
     /// The notification tag a save-many-before-X batch shares.
     pub(in crate::app) const SAVE_BATCH_TAG: &'static str = "save.batch";
-    /// The notification tag a diff computation shares.
-    pub(in crate::app) const DIFF_COMPUTE_TAG: &'static str = "diff.compute";
     /// The notification tag the debug session's own state changes share.
     pub(in crate::app) const DEBUG_SESSION_TAG: &'static str = "debug.session";
     /// The notification tag a running notebook kernel shares.
@@ -267,6 +276,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

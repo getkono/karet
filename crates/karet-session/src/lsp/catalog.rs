@@ -2,10 +2,7 @@
 //!
 //! This is the single source of truth for a provider's argv. It is consulted
 //! both when the executable comes from the project or `PATH` and when it comes
-//! from a karet-managed installation, so the two can no longer disagree. They
-//! previously held independent copies of every provider's argv, and agreeing
-//! was never proof of being right: both copies said `neocmakelsp` took no
-//! arguments, and both were wrong.
+//! from a karet-managed installation, so the two cannot disagree.
 //!
 //! There is deliberately **no catch-all**. Every row states its `args`, so a
 //! provider that genuinely takes none records that as a decision (`args: &[]`)
@@ -273,7 +270,22 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
     ),
     // Selected for a repository that configures Flake8 without Ruff.
     provider("pylsp", "pylsp", &[], &["python"], Role::Companion),
+    // Inline completions (ghost text) for every language, once the user opts
+    // in -- see `LspManager::inline_companion`.
+    provider(
+        COPILOT,
+        "copilot-language-server",
+        &["--stdio"],
+        &[ANY_LANGUAGE],
+        Role::Companion,
+    ),
 ];
+
+/// GitHub Copilot's language server, which proposes inline completions.
+pub(crate) const COPILOT: &str = "copilot-language-server";
+
+/// The language list entry of a provider that serves every language.
+pub(crate) const ANY_LANGUAGE: &str = "*";
 
 /// Every built-in provider, primaries and companions alike.
 pub(crate) fn builtin_providers() -> &'static [BuiltinProvider] {
@@ -291,13 +303,13 @@ pub(crate) fn builtin_provider(server: &LanguageServerId) -> Option<&'static Bui
 ///
 /// Asked of a provider rather than of a language, so a companion that is no
 /// language's default -- Ruff, Biome -- still answers for the languages it
-/// covers.
+/// covers, and one listing [`ANY_LANGUAGE`] -- Copilot -- for every language.
 pub(crate) fn serves_language(server: &LanguageServerId, language: &str) -> bool {
     builtin_provider(server).is_some_and(|provider| {
         provider
             .languages
             .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(language))
+            .any(|candidate| *candidate == ANY_LANGUAGE || candidate.eq_ignore_ascii_case(language))
     })
 }
 

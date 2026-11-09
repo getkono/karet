@@ -610,17 +610,31 @@ impl Lookup<'_, '_> {
         let index = self.tables.index;
         index.ancestors(id).iter().take(2).any(|up| {
             index.node(*up).is_some_and(|node| {
-                (node.kind == NodeKind::Implementation && node.name.contains(contract))
+                (node.kind == NodeKind::Implementation && names(&node.name, contract))
                     // A type that records what it derives from, as Java and C++ do.
                     || (node.kind == NodeKind::Type
-                        && node.detail.as_deref().is_some_and(|d| d.contains(contract)))
+                        && node.detail.as_deref().is_some_and(|d| names(d, contract)))
                     || node
                         .facets_for(Lens::Substitution)
                         .filter_map(|facet| facet.detail.as_deref())
-                        .any(|detail| detail.contains(contract))
+                        .any(|detail| names(detail, contract))
             })
         })
     }
+}
+
+/// Whether `text` holds `name` as a whole identifier.
+///
+/// A substring is not enough: `extends TreeNodeBase` contains `Node` and implements
+/// nothing of that name.
+fn names(text: &str, name: &str) -> bool {
+    let part = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    !name.is_empty()
+        && text.match_indices(name).any(|(at, _)| {
+            let before = text.get(..at).and_then(|s| s.chars().next_back());
+            let after = text.get(at + name.len()..).and_then(|s| s.chars().next());
+            !before.is_some_and(part) && !after.is_some_and(part)
+        })
 }
 
 /// A site that is only probably a call is never exact.

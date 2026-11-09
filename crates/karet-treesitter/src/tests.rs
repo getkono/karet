@@ -4,6 +4,7 @@ use super::*;
 fn language_ids_compare() {
     assert_eq!(LanguageId(1), LanguageId(1));
     assert_ne!(LanguageId(1), LanguageId(2));
+    assert_eq!(LanguageId(7).get(), 7);
 }
 
 #[test]
@@ -134,15 +135,19 @@ fn missing_nodes_count_as_errors() -> Result<(), TsError> {
     Ok(())
 }
 
-#[cfg(feature = "lang-rust")]
+#[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
 #[test]
 fn layered_error_lines_union_the_layers() -> Result<(), TsError> {
-    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
     let mut parser = LayeredParser::new();
-    let clean = parser.parse(lang, "fn main() {}\n")?;
+    let clean = parser.parse(md, "# Title\n\n```rust\nfn ok() {}\n```\n")?;
     assert!(clean.error_lines().is_empty());
-    let broken = parser.parse(lang, "fn broken( {{{\n")?;
-    assert!(!broken.error_lines().is_empty());
+    // Line 6 (0-based) is broken inside the fence; the markdown host is well formed,
+    // so the only error rows come from the injected rust layer.
+    let src = "# Title\n\nText.\n\n```rust\nfn ok() {}\nfn broken() { let x = ; }\n```\n";
+    let broken = parser.parse(md, src)?;
+    assert!(broken.root().error_lines().is_empty());
+    assert_eq!(broken.error_lines(), vec![(6, 6)]);
     Ok(())
 }
 
@@ -180,7 +185,7 @@ fn incremental_reparse_matches_full() -> Result<(), TsError> {
     let mut pool = ParserPool::new();
     let mut tree = SyntaxTree::parse(&mut pool, lang, old)?;
     // The insertion happens at byte 11 (before '}'), 8 bytes long, same line.
-    tree.edit(&Edit {
+    tree.edit(&AppliedEdit {
         start_byte: 11,
         old_end_byte: 11,
         new_end_byte: 19,
@@ -223,8 +228,7 @@ fn parses_markdown_and_compiles_block_query() -> Result<(), TsError> {
 }
 
 /// The `(row, byte-column)` of `byte` in `text` — for building test edits.
-#[cfg(feature = "lang-markdown")]
-fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
+pub(crate) fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
     let before = text.get(..byte).unwrap_or("");
     let row = before.matches('\n').count();
     let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
@@ -325,7 +329,7 @@ fn reparse_discovers_a_newly_typed_code_fence() -> Result<(), TsError> {
     assert!(!layer_langs(&tree).contains(&rust), "no fence yet");
 
     // Append the fence — the edit turns a paragraph into an injected rust region.
-    let edit = Edit {
+    let edit = AppliedEdit {
         start_byte: old.len(),
         old_end_byte: old.len(),
         new_end_byte: new.len(),
@@ -364,7 +368,7 @@ fn deleting_a_fence_drops_its_layer() -> Result<(), TsError> {
 
     parser.reparse(
         &mut tree,
-        &[Edit {
+        &[AppliedEdit {
             start_byte: 0,
             old_end_byte: old.len(),
             new_end_byte: 0,
@@ -472,8 +476,23 @@ fn self_injecting_grammar_terminates() -> Result<(), TsError> {
     // depth cap and identity guard this descends forever.
     let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
     let mut parser = LayeredParser::new();
-    let tree = parser.parse(rust, "macro_rules! m { () => { m!(); } }\nfn f() { m!(); }")?;
-    assert!(tree.children().len() < MAX_INJECTION_LAYERS);
+    let src = "macro_rules! m { () => { m!(); } }\nfn f() { m!(); }";
+    let tree = parser.parse(rust, src)?;
+    let layers: Vec<(LanguageId, &str)> = tree
+        .children()
+        .iter()
+        .map(|layer| {
+            (
+                layer.language(),
+                &src[layer.span().start.0..layer.span().end.0],
+            )
+        })
+        .collect();
+    // Exactly three layers, each a macro token tree parsed once more as rust.
+    assert_eq!(
+        layers,
+        vec![(rust, "{ m!(); }"), (rust, "()"), (rust, "()")]
+    );
     Ok(())
 }
 
@@ -504,6 +523,7 @@ fn point_at_resolves_rows_and_columns() {
     );
 }
 
+#[cfg(feature = "lang-rust")]
 #[test]
 fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
     let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
@@ -538,8 +558,9 @@ fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
 #[test]
 fn detects_rust_by_extension_and_name() {
     let p = std::path::Path::new("src/lib.rs");
-    assert!(language_id_from_path(p).is_some());
-    assert_eq!(language_name_from_path(p), Some("Rust"));
+    assert!(languages::RUST.is_some());
+    assert_eq!(language_id_from_path(p), languages::RUST);
+    assert_eq!(language_id_from_injection_name("rust"), languages::RUST);
 }
 
 #[cfg(all(

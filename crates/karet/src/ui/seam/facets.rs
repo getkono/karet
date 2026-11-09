@@ -21,8 +21,8 @@ use super::LENS_NAMES;
 use super::PENDING;
 use super::UNRESOLVABLE;
 use super::lens_glyph;
-use crate::app::seam::SeamFocus;
-use crate::app::seam::SeamViewState;
+use crate::tab::seam::SeamFocus;
+use crate::tab::seam::SeamViewState;
 
 /// Draw the facet pane.
 pub(super) fn draw(

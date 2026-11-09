@@ -1,6 +1,11 @@
 //! Dashboard accessors, section requests, navigation, and sign-in.
 
-use super::*;
+use karet_session::GithubCommand;
+
+use crate::app::App;
+use crate::app::github::state::GithubDashboard;
+use crate::app::github::state::GithubSection;
+use crate::pending::Pending;
 
 impl App {
     /// The dashboard, but only while it is the page in front — what a key or a click
@@ -24,11 +29,9 @@ impl App {
             return;
         };
         let command = match section {
-            GithubSection::Issues => SessionCommand::GithubSearchIssues { query, page: 1 },
-            GithubSection::PullRequests => {
-                SessionCommand::GithubSearchPullRequests { query, page: 1 }
-            },
-            GithubSection::Actions => SessionCommand::GithubActions { page: 1 },
+            GithubSection::Issues => GithubCommand::SearchIssues { query, page: 1 },
+            GithubSection::PullRequests => GithubCommand::SearchPullRequests { query, page: 1 },
+            GithubSection::Actions => GithubCommand::Actions { page: 1 },
         };
         let request = self.send(command);
         if let Some(dashboard) = self.dashboard_mut() {
@@ -62,7 +65,7 @@ impl App {
             }
             return;
         }
-        let request = self.send(SessionCommand::GithubLogin {
+        let request = self.send(GithubCommand::Login {
             token: karet_session::GithubToken::new(token),
         });
         if let Some(dashboard) = self.active_dashboard_mut() {

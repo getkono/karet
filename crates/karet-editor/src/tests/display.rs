@@ -1,7 +1,8 @@
 //! The display options: line-number modes, the cursor-line highlight,
-//! rulers, and the keyboard reveal's vertical margin (`scroll_off`).
+//! rulers, the keyboard reveal's vertical margin (`scroll_off`), and the
+//! soft-wrap geometry: the wrap column and continuation-row indentation.
 
-use crate::*;
+use super::*;
 
 /// `count` numbered lines.
 fn lines(count: u32) -> TextBuffer {
@@ -143,7 +144,7 @@ fn a_ruler_moves_with_horizontal_scroll_and_leaves_with_it() {
         .theme(&theme)
         .rulers(&[6, 2])
         .render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
     let tinted: Vec<u16> = (0..13).filter(|&x| target[(x, 0)].bg == ruler).collect();
     assert_eq!(
         tinted,
@@ -166,14 +167,18 @@ fn a_sticky_header_is_numbered_in_the_active_mode() {
     let render = |numbers: LineNumbers| {
         let mut state = EditorState::new();
         state.place_caret(LineCol::new(6, 0));
-        state.scroll_line = 4;
+        state.scroll_to_line(4);
         let mut target = Buffer::empty(area);
         Editor::new(&buffer)
             .semantic_blocks(&blocks)
             .sticky_scroll(true)
             .line_numbers(numbers)
             .render(area, &mut target, &mut state);
-        assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+        assert_eq!(
+            state.frame.sticky_rows,
+            vec![0],
+            "line 0 is the sticky header"
+        );
         row_text(&target, 0, 0, 10)
     };
     assert_eq!(render(LineNumbers::Absolute), "  1 line 0");
@@ -206,26 +211,30 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
         let mut state = EditorState::new();
         paint(&buffer, &mut state, wrap);
         for _ in 0..6 {
-            state.move_down(&buffer);
+            state.extend_down(&buffer);
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 0, "line 6 has three rows below it");
-        state.move_down(&buffer);
+        assert_eq!(state.scroll_line(), 0, "line 6 has three rows below it");
+        state.extend_down(&buffer);
         if !wrap {
             // A wrapped view leaves the margin to the render, in rows.
-            assert_eq!(state.scroll_line, 1, "resolved by the motion");
+            assert_eq!(state.scroll_line(), 1, "resolved by the motion");
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 1, "and kept by the render");
+        assert_eq!(state.scroll_line(), 1, "and kept by the render");
 
         state.goto(&buffer, LineCol::new(20, 0));
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 14, "line 20 three rows from the bottom");
+        assert_eq!(
+            state.scroll_line(),
+            14,
+            "line 20 three rows from the bottom"
+        );
         for _ in 0..4 {
-            state.move_up(&buffer);
+            state.extend_up(&buffer);
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 13, "line 16 three rows from the top");
+        assert_eq!(state.scroll_line(), 13, "line 16 three rows from the top");
     }
 }
 
@@ -247,18 +256,18 @@ fn a_wrapped_margin_counts_rows_not_lines() {
     paint(&mut state);
     state.goto(&buffer, LineCol::new(3, 0));
     paint(&mut state);
-    assert_eq!(state.scroll_line, 0, "row 6 has three rows below it");
+    assert_eq!(state.scroll_line(), 0, "row 6 has three rows below it");
     state.goto(&buffer, LineCol::new(4, 0));
     paint(&mut state);
     assert_eq!(
-        (state.scroll_line, state.scroll_subrow),
+        (state.scroll_line(), state.scroll_subrow),
         (1, 0),
         "row 8 scrolls two rows, not three lines"
     );
     state.goto(&buffer, LineCol::new(2, 0));
     paint(&mut state);
     assert_eq!(
-        (state.scroll_line, state.scroll_subrow),
+        (state.scroll_line(), state.scroll_subrow),
         (0, 1),
         "three rows above: line 0's second row on top"
     );
@@ -271,12 +280,12 @@ fn scroll_off_stops_at_either_end_of_the_buffer() {
         let buffer = lines(30);
         let mut state = EditorState::new();
         paint(&buffer, &mut state, wrap);
-        state.move_doc_end(&buffer);
+        state.extend_doc_end(&buffer);
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 21, "the last line on the bottom row");
-        state.move_doc_start(&buffer);
+        assert_eq!(state.scroll_line(), 21, "the last line on the bottom row");
+        state.extend_doc_start(&buffer);
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 0);
+        assert_eq!(state.scroll_line(), 0);
     }
 }
 
@@ -287,7 +296,7 @@ fn a_click_inside_the_margin_does_not_scroll() {
     paint(&buffer, &mut state, false);
     state.set_caret(&buffer, LineCol::new(9, 0));
     paint(&buffer, &mut state, false);
-    assert_eq!(state.scroll_line, 0, "the bottom row stays put");
+    assert_eq!(state.scroll_line(), 0, "the bottom row stays put");
 }
 
 #[test]
@@ -303,11 +312,204 @@ fn scroll_off_is_capped_to_what_a_short_viewport_can_spare() {
             .render(area, &mut target, state);
     };
     paint(&mut state);
-    state.move_down(&buffer);
-    state.move_down(&buffer);
+    state.extend_down(&buffer);
+    state.extend_down(&buffer);
     paint(&mut state);
-    assert_eq!(state.scroll_line, 0, "line 2 has a row below it");
-    state.move_down(&buffer);
+    assert_eq!(state.scroll_line(), 0, "line 2 has a row below it");
+    state.extend_down(&buffer);
     paint(&mut state);
-    assert_eq!(state.scroll_line, 1);
+    assert_eq!(state.scroll_line(), 1);
+}
+
+/// The one-line buffer the wrapping-indent tests share: two leading spaces,
+/// then three words that wrap a 10-cell row into three rows.
+const INDENTED: &str = "  aaaa bbbb cccc";
+
+/// One line takes a 3-cell gutter: the digit, its padding and the fold lane.
+const ONE_LINE_GUTTER: u16 = 3;
+
+/// The area the wrapping-indent tests render into: 10 content cells.
+const INDENT_AREA: Rect = Rect::new(0, 0, ONE_LINE_GUTTER + 10, 4);
+
+/// Render `buffer` soft-wrapped into [`INDENT_AREA`], focused, indenting
+/// continuation rows as `indent` says, and return the painted target.
+fn wrapped_indent(buffer: &TextBuffer, state: &mut EditorState, indent: WrappingIndent) -> Buffer {
+    let mut target = Buffer::empty(INDENT_AREA);
+    Editor::new(buffer)
+        .word_wrap(true)
+        .wrapping_indent(indent)
+        .focused(true)
+        .render(INDENT_AREA, &mut target, state);
+    target
+}
+
+#[test]
+fn continuation_rows_paint_after_the_lines_own_indent() {
+    let buffer = TextBuffer::from_text(INDENTED);
+    let target = wrapped_indent(&buffer, &mut EditorState::new(), WrappingIndent::Same);
+    let rows: Vec<String> = (0..3)
+        .map(|y| row_text(&target, ONE_LINE_GUTTER, y, 10))
+        .collect();
+    // The continuation rows give two cells to the indent, so `bbbb cccc`
+    // no longer fits the second row's eight.
+    assert_eq!(rows, ["  aaaa    ", "  bbbb    ", "  cccc    "]);
+    let unindented = wrapped_indent(&buffer, &mut EditorState::new(), WrappingIndent::None);
+    assert_eq!(row_text(&unindented, ONE_LINE_GUTTER, 1, 10), "bbbb cccc ");
+}
+
+#[test]
+fn the_caret_on_a_continuation_row_is_drawn_past_its_indent() {
+    let buffer = TextBuffer::from_text(INDENTED);
+    let mut state = EditorState::new();
+    // Column 7 starts the second row (`bbbb`); column 9 is two cells in.
+    for (col, cell) in [(7, (ONE_LINE_GUTTER + 2, 1)), (9, (ONE_LINE_GUTTER + 4, 1))] {
+        state.place_caret(LineCol::new(0, col));
+        let target = wrapped_indent(&buffer, &mut state, WrappingIndent::Same);
+        assert_eq!(
+            state.primary_caret_cell(INDENT_AREA, &buffer, &[]),
+            Some(cell)
+        );
+        assert!(
+            target[cell].modifier.contains(Modifier::REVERSED),
+            "the painted caret is the cell `primary_caret_cell` reports"
+        );
+    }
+}
+
+#[test]
+fn a_click_on_a_continuation_row_resolves_past_its_indent() {
+    let buffer = TextBuffer::from_text(INDENTED);
+    let mut state = EditorState::new();
+    wrapped_indent(&buffer, &mut state, WrappingIndent::Same);
+    let click = |x: u16, y: u16| state.pos_at(INDENT_AREA, &buffer, &[], ONE_LINE_GUTTER + x, y);
+    // On the `b` two cells past the indent: column 9.
+    assert_eq!(click(4, 1), LineCol::new(0, 9));
+    // Inside the indent: the row's first column, never the row above.
+    assert_eq!(click(0, 1), LineCol::new(0, 7));
+    assert_eq!(click(1, 1), LineCol::new(0, 7));
+    // The third row starts at column 12, painted from cell 2.
+    assert_eq!(click(3, 2), LineCol::new(0, 13));
+    // The first row is not indented: cell 3 is column 3.
+    assert_eq!(click(3, 0), LineCol::new(0, 3));
+}
+
+#[test]
+fn vertical_motion_keeps_the_screen_column_across_an_indent() {
+    let buffer = TextBuffer::from_text(INDENTED);
+    let mut state = EditorState::new();
+    wrapped_indent(&buffer, &mut state, WrappingIndent::Same);
+    // Column 4 is cell 4 of the first row, which is cell 2 of the
+    // continuation rows' text: columns 9 and 14.
+    state.set_caret(&buffer, LineCol::new(0, 4));
+    let mut path = Vec::new();
+    for down in [true, true, false, false] {
+        if down {
+            state.extend_down(&buffer);
+        } else {
+            state.extend_up(&buffer);
+        }
+        path.push(state.cursor().col);
+    }
+    assert_eq!(path, [9, 14, 9, 4]);
+    // A goal inside the indent lands on the continuation row's start.
+    state.set_caret(&buffer, LineCol::new(0, 1));
+    state.extend_down(&buffer);
+    assert_eq!(state.cursor(), LineCol::new(0, 7));
+}
+
+/// The `(start, indent)` of each row `text` wraps into at `width` cells,
+/// capped at `column`, indenting continuations as `indent` says.
+fn rows_of(text: &str, width: u32, column: Option<u32>, indent: WrappingIndent) -> Vec<(u32, u32)> {
+    let buffer = TextBuffer::from_text(text);
+    let hints = crate::hint::HintIndex::default();
+    let blocks = crate::hint::BlockIndex::default();
+    let layout = crate::visual::Layout {
+        width,
+        tab_width: 4,
+        unwrapped_lines: &[],
+        hints: &hints,
+        blocks: &blocks,
+        wrap: true,
+        wrap_column: column,
+        wrapping_indent: indent,
+        wraps: &crate::text::WrapCache::default(),
+    };
+    crate::visual::visual_ranges(&buffer, 0, layout)
+        .iter()
+        .map(|range| (range.start, range.indent))
+        .collect()
+}
+
+#[test]
+fn each_wrapping_indent_mode_measures_the_leading_whitespace() {
+    let text = "  word word word word word";
+    assert_eq!(
+        rows_of(text, 20, None, WrappingIndent::None),
+        [(0, 0), (17, 0)]
+    );
+    assert_eq!(
+        rows_of(text, 20, None, WrappingIndent::Same),
+        [(0, 0), (17, 2)]
+    );
+    // One tab stop deeper: 2 + 4.
+    assert_eq!(
+        rows_of(text, 20, None, WrappingIndent::Indent),
+        [(0, 0), (17, 6)]
+    );
+    // A leading tab expands to its stop, and the first row keeps none.
+    assert_eq!(
+        rows_of("\tword word word word", 12, None, WrappingIndent::Same),
+        [(0, 0), (6, 4), (11, 4), (16, 4)]
+    );
+}
+
+#[test]
+fn a_deep_indent_is_capped_at_half_the_wrap_width() {
+    // Twelve leading spaces in a 10-cell row would leave a continuation no
+    // room at all; half the row is kept for text.
+    let rows = rows_of("            abcdefghijkl", 10, None, WrappingIndent::Same);
+    assert!(rows.len() > 1, "{rows:?}");
+    assert!(
+        rows.iter().skip(1).all(|&(_, indent)| indent == 5),
+        "{rows:?}"
+    );
+    // A one-cell view has no half to give.
+    let rows = rows_of("  abc", 1, None, WrappingIndent::Indent);
+    assert!(rows.iter().all(|&(_, indent)| indent == 0), "{rows:?}");
+}
+
+#[test]
+fn the_wrap_column_narrows_but_never_widens_the_row() {
+    let text = "aaaa bbbb cccc dddd eeee";
+    // Narrower than the viewport: rows break at the column.
+    assert_eq!(
+        rows_of(text, 20, Some(10), WrappingIndent::None),
+        [(0, 0), (10, 0), (20, 0)]
+    );
+    // Wider than the viewport, or zero: the viewport decides.
+    let viewport = rows_of(text, 20, None, WrappingIndent::None);
+    assert_eq!(viewport, [(0, 0), (20, 0)]);
+    assert_eq!(rows_of(text, 20, Some(80), WrappingIndent::None), viewport);
+    assert_eq!(rows_of(text, 20, Some(0), WrappingIndent::None), viewport);
+}
+
+#[test]
+fn a_wrap_column_paints_and_hit_tests_at_its_column() {
+    let buffer = TextBuffer::from_text("aaaa bbbb cccc dddd");
+    let area = Rect::new(0, 0, ONE_LINE_GUTTER + 20, 3);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .wrap_column(Some(10))
+        .render(area, &mut target, &mut state);
+    let rows: Vec<String> = (0..2)
+        .map(|y| row_text(&target, ONE_LINE_GUTTER, y, 20))
+        .collect();
+    assert_eq!(rows, ["aaaa bbbb           ", "cccc dddd           "]);
+    // Past the column on the first row: that row's end, not the next row.
+    let pos = state.pos_at(area, &buffer, &[], ONE_LINE_GUTTER + 15, 0);
+    assert_eq!(pos, LineCol::new(0, 10));
+    let pos = state.pos_at(area, &buffer, &[], ONE_LINE_GUTTER + 2, 1);
+    assert_eq!(pos, LineCol::new(0, 12));
 }

@@ -111,7 +111,11 @@ fn a_provider_is_reported_once_per_generation() {
     let (mut manager, mut updates) = manager();
     manager.report_unresolved(LanguageServerId::new("gopls"), "go");
     manager.report_unresolved(LanguageServerId::new("gopls"), "go");
-    assert!(updates.try_recv().is_ok());
+    assert!(
+        matches!(updates.try_recv().ok(), Some(LspUpdate::ManualInstallRequired { server, .. })
+            if server == LanguageServerId::new("gopls")),
+        "the first report must be gopls's manual-install notice"
+    );
     assert!(
         updates.try_recv().is_err(),
         "opening a second Go file must not repeat the notice"

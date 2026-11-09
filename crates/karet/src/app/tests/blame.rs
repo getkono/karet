@@ -27,7 +27,7 @@ fn live_blame_coalesces_motion_and_resolves_the_latest_cursor_line() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "zero\none\ntwo\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.settings.git.blame = true;
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(9));
@@ -73,14 +73,14 @@ fn mouse_cursor_motion_requests_inline_blame_without_typing() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.push_tab(text_tab("main.rs", "zero\none\ntwo\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.settings.git.blame = true;
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(9));
     }
     let area = Rect::new(0, 0, 40, 4);
-    app.editor_rect = area;
-    app.pane_frames = vec![content_frame(&app, area)];
+    app.last_frame.panes = vec![content_frame(&app, area)];
+    app.last_frame.focused_pane = Some(app.focus_pane());
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -157,7 +157,7 @@ fn blame_requires_a_double_click_and_consumes_the_first_press() {
             author_time: 0,
         })),
     });
-    app.blame_rect = Some(Rect::new(20, 5, 12, 1));
+    app.focused_frame_mut().blame_rect = Some(Rect::new(20, 5, 12, 1));
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 22,
@@ -184,7 +184,7 @@ fn blame_requires_a_double_click_and_consumes_the_first_press() {
 fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
     let mut app = app();
     app.push_tab(text_tab("main.rs", "let a\n"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(7));
     }
@@ -207,7 +207,7 @@ fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
         })),
     });
     let painted = frame(&mut app, 100, 12);
-    let Some(rect) = app.blame_rect else {
+    let Some(rect) = app.last_frame.blame_rect() else {
         unreachable!("the label is on screen");
     };
     let label: String = (rect.x..rect.right())
@@ -222,9 +222,9 @@ fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
 #[test]
 fn a_single_click_on_the_blame_label_focuses_its_pane() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
-    app.blame_rect = Some(Rect::new(20, 5, 12, 1));
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 10))];
+    app.keyboard.focus_sidebar();
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 40, 10))];
+    app.focused_frame_mut().blame_rect = Some(Rect::new(20, 5, 12, 1));
     let tabs = app.tabs.len();
     assert!(app.handle_blame_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -232,6 +232,10 @@ fn a_single_click_on_the_blame_label_focuses_its_pane() {
         row: 5,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.focus, Focus::Editor, "the click is not swallowed");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Editor,
+        "the click is not swallowed"
+    );
     assert_eq!(app.tabs.len(), tabs, "and still does not activate");
 }

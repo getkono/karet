@@ -222,6 +222,53 @@ fn an_untracked_closer_is_typed_not_stepped_over() {
 }
 
 #[test]
+fn only_a_closing_character_is_stepped_over() {
+    // A tracked position followed by the same character steps over only when
+    // that character closes a pair.
+    let (buffer, cursors) = parse("a|x");
+    let closers = [LineCol::new(0, 1)];
+    assert!(type_char(&buffer, &cursors, 0, 'x', &rules(None), &closers).is_none());
+}
+
+#[test]
+fn a_step_over_beside_a_plain_replacement_composes() -> Result<(), &'static str> {
+    // One caret steps over its tracked `)`; the selection on the next line
+    // opens nothing, so the `)` replaces it.
+    let (buffer, cursors) = parse("f(|)\n«ab»");
+    let closers = [LineCol::new(0, 2)];
+    let t = type_char(&buffer, &cursors, 0, ')', &rules(None), &closers).ok_or("typed")?;
+    assert_eq!(render(buffer, t.edit.as_ref(), &t.cursors), "f()|\n)|");
+    Ok(())
+}
+
+#[test]
+fn a_never_pair_does_not_wrap_a_selection() {
+    let never = AutoPairs {
+        brackets: AutoClose::Never,
+        ..rules(None)
+    };
+    assert_eq!(typed_with("«ab»", '(', &never).0, "plain");
+}
+
+#[test]
+fn a_quote_right_after_a_comment_or_on_a_later_line_reads_its_own_scope() {
+    // The caret ends a trailing comment: the character before it is comment
+    // text, so the quote types alone even though nothing after it is.
+    let trailing = spans(&[(2, 7, StandardToken::Comment)]);
+    assert_eq!(
+        typed_with("x // c |\n", '"', &rules(Some(&trailing))).0,
+        "plain"
+    );
+    assert_eq!(typed("x // c |\n", '"'), "x // c \"|\"\n", "code closes");
+    // The same comment on line 1 is found at its own bytes, not line 0's.
+    let later = spans(&[(2, 9, StandardToken::Comment)]);
+    assert_eq!(
+        typed_with("x\n// it |", '"', &rules(Some(&later))).0,
+        "plain"
+    );
+}
+
+#[test]
 fn tracked_closers_move_with_the_text_typed_before_them() -> Result<(), &'static str> {
     // `(` then `[` inside: both closers stay tracked and shift right.
     let (buffer, cursors) = parse("(|)");
@@ -289,6 +336,25 @@ fn backspace_handles_other_carets_ordinarily() -> Result<(), &'static str> {
     let (buffer, cursors) = parse("(|)\nab|");
     let edit = backspace(&buffer, &cursors, 0, &rules(None)).ok_or("edit")?;
     assert_eq!(render(buffer, Some(&edit), &edit.cursors), "|\na|");
+    Ok(())
+}
+
+#[test]
+fn backspace_deletes_another_selection_whole() -> Result<(), &'static str> {
+    let (buffer, cursors) = parse("(|)\nx«ab»y");
+    let edit = backspace(&buffer, &cursors, 0, &rules(None)).ok_or("edit")?;
+    assert_eq!(render(buffer, Some(&edit), &edit.cursors), "|\nx|y");
+    Ok(())
+}
+
+#[test]
+fn enter_replaces_another_selection() -> Result<(), &'static str> {
+    let (buffer, cursors) = parse("f {|}\nx«ab»y");
+    let edit = newline(&buffer, &cursors, 0, &rules(None), "    ").ok_or("edit")?;
+    assert_eq!(
+        render(buffer, Some(&edit), &edit.cursors),
+        "f {\n    |\n}\nx\n|y"
+    );
     Ok(())
 }
 

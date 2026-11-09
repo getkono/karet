@@ -257,7 +257,10 @@ mod tests {
         assert_eq!(vcs.current_branch()?.as_deref(), Some("feature"));
         vcs.rename_branch("feature", "renamed")?;
         assert_eq!(vcs.current_branch()?.as_deref(), Some("renamed"));
-        assert!(vcs.delete_branch("renamed").is_err());
+        assert!(matches!(
+            vcs.delete_branch("renamed"),
+            Err(VcsError::Git(message)) if message == "cannot delete the current branch"
+        ));
         vcs.switch_branch(&BranchTarget::Local("main".to_string()))?;
         vcs.delete_branch("renamed")?;
         assert!(
@@ -306,7 +309,79 @@ mod tests {
         assert_eq!(outcome.commit, second);
         assert!(!outcome.was_upstream);
         assert_eq!(vcs.changes(crate::Selection::Staged, None)?.len(), 1);
-        assert!(vcs.undo_commit(false).is_err());
+        assert!(matches!(
+            vcs.undo_commit(false),
+            Err(VcsError::Git(message)) if message == "cannot undo the root commit"
+        ));
+        Ok(())
+    }
+
+    /// A bare remote holding `main` (its recorded default) and `topic`.
+    fn published_pair(
+        name: &str,
+    ) -> Result<(test_support::TestRepo, test_support::TestRepo), VcsError> {
+        let repo = test_support::init(name)?;
+        let remote = test_support::bare_remote(name)?;
+        test_support::commit(&repo, "one\n", "initial")?;
+        test_support::git(
+            &repo.0,
+            &["remote", "add", "origin", &remote.0.to_string_lossy()],
+        )?;
+        test_support::git(&repo.0, &["push", "-q", "origin", "main", "main:topic"])?;
+        test_support::git(&repo.0, &["fetch", "-q", "origin"])?;
+        test_support::git(&repo.0, &["remote", "set-head", "origin", "main"])?;
+        Ok((repo, remote))
+    }
+
+    fn remote_heads(remote: &test_support::TestRepo) -> Result<Vec<String>, VcsError> {
+        let listing = test_support::git(
+            &remote.0,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        )?;
+        Ok(listing.lines().map(str::to_string).collect())
+    }
+
+    #[test]
+    fn delete_remote_branch_refuses_the_default_and_deletes_others() -> Result<(), VcsError> {
+        let (repo, remote) = published_pair("delete-remote")?;
+        let vcs = Repository::discover(&repo.0)?;
+        assert_eq!(remote_heads(&remote)?, vec!["main", "topic"]);
+
+        // The remote's recorded default branch is refused before any push runs.
+        assert!(matches!(
+            vcs.delete_remote_branch("origin", "main"),
+            Err(VcsError::Git(message)) if message == "cannot delete the remote default branch"
+        ));
+        assert_eq!(remote_heads(&remote)?, vec!["main", "topic"]);
+
+        // Any other branch is deleted on the remote itself.
+        vcs.delete_remote_branch("origin", "topic")?;
+        assert_eq!(remote_heads(&remote)?, vec!["main"]);
+
+        // Option-shaped names never reach the push.
+        assert!(vcs.delete_remote_branch("origin", "--all").is_err());
+        assert!(vcs.delete_remote_branch("--mirror", "topic").is_err());
+        assert_eq!(remote_heads(&remote)?, vec!["main"]);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_push_surfaces_git_stderr() -> Result<(), VcsError> {
+        let (repo, _remote) = published_pair("delete-missing")?;
+        let vcs = Repository::discover(&repo.0)?;
+        // Deleting a branch the remote does not have fails inside `git push`; the
+        // error carries git's own stderr, not the empty-stderr fallback text.
+        match vcs.delete_remote_branch("origin", "absent") {
+            Err(VcsError::Git(message)) => {
+                assert!(message.contains("absent"), "stderr was {message:?}");
+                assert!(!message.starts_with("git exited with"), "{message:?}");
+            },
+            other => {
+                return Err(VcsError::Git(format!(
+                    "expected a git error, got {other:?}"
+                )));
+            },
+        }
         Ok(())
     }
 

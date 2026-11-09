@@ -120,10 +120,18 @@ fn chord_sequences_resolve_through_a_pending_prefix() {
 fn no_terminal_binding_is_a_prefix_of_another() {
     // The resolver commits on the first full match, so a binding must never also
     // be a strict prefix of a longer one (which it would shadow). This invariant
-    // is what lets resolution stay deterministic without a timeout.
+    // is what lets resolution stay deterministic without a timeout. Two
+    // bindings can only shadow each other where some stack holds both layers
+    // (helix's `Space f` and Source Control's `Space` never meet).
+    let stacks = crate::keymap::layer::all_stacks();
+    let meet = |a: &Binding, b: &Binding| {
+        stacks
+            .iter()
+            .any(|stack| stack.contains(&a.layer) && stack.contains(&b.layer))
+    };
     for a in BINDINGS {
         for b in BINDINGS {
-            if a.seq_len() >= b.seq_len() {
+            if a.seq_len() >= b.seq_len() || !meet(a, b) {
                 continue;
             }
             let a_prefixes_b = (0..a.seq_len()).all(|i| a.chord_at(i) == b.chord_at(i));
@@ -133,5 +141,34 @@ fn no_terminal_binding_is_a_prefix_of_another() {
                 a.command, b.command
             );
         }
+    }
+}
+
+#[test]
+fn default_binding_hints_parse_back_to_their_chords() {
+    // A hint is what a user copies into keymap.jsonc, so the verbose rendering of
+    // every default binding must name the same keys through the user-file parser.
+    // The one known lossy case is a bare letter, which renders upper-cased (`g`
+    // and `G` both show as `G`); fold its case on both sides.
+    let fold = |c: KeyChord| match c.code {
+        KeyCode::Char(ch) if !c.mods.ctrl && !c.mods.alt => KeyChord {
+            code: KeyCode::Char(ch.to_ascii_lowercase()),
+            ..c
+        },
+        _ => c,
+    };
+    for bind in BINDINGS {
+        let hint = bind.hint(ChordStyle::Verbose);
+        let parsed = user::parse_sequence(&hint);
+        assert!(
+            parsed.is_ok(),
+            "hint `{hint}` for {:?} does not parse: {parsed:?}",
+            bind.command
+        );
+        let parsed: Vec<KeyChord> = parsed.unwrap_or_default().into_iter().map(fold).collect();
+        let expected: Vec<KeyChord> = (0..bind.seq_len())
+            .map(|i| fold(bind.chord_at(i)))
+            .collect();
+        assert_eq!(parsed, expected, "hint `{hint}` for {:?}", bind.command);
     }
 }

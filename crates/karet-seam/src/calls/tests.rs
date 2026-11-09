@@ -627,7 +627,9 @@ fn swift_and_kotlin_resolve_self_and_free_calls() -> TestResult {
             (
                 "Sources/App/Widget.swift",
                 "struct Widget {\n    func render() -> Int {\n        return self.size() + helper()\n    }\n    \
-                 func size() -> Int { return 1 }\n}\n\nfunc helper() -> Int {\n    return 2\n}\n",
+                 func measure() -> Int {\n        return size()\n    }\n    \
+                 func size() -> Int { return 1 }\n}\n\nfunc helper() -> Int {\n    return 2\n}\n\n\
+                 func size() -> Int {\n    return 3\n}\n",
             ),
         ])?;
         let index = index(dir.path())?;
@@ -652,6 +654,7 @@ fn swift_and_kotlin_resolve_self_and_free_calls() -> TestResult {
                 .any(|(t, r)| t.ends_with("::helper") && *r == Resolution::Exact),
             "{found:?}"
         );
+        assert_bare_call_reaches_own_member(&index, &paths)?;
     }
     if mapped("kotlin") {
         let dir = tree(&[
@@ -659,7 +662,8 @@ fn swift_and_kotlin_resolve_self_and_free_calls() -> TestResult {
             (
                 "src/main/kotlin/app/Widget.kt",
                 "package app\n\nclass Widget {\n    fun render(): Int {\n        return this.size() + helper()\n    }\n    \
-                 fun size(): Int = 1\n}\n\nfun helper(): Int {\n    return 2\n}\n",
+                 fun measure(): Int {\n        return size()\n    }\n    \
+                 fun size(): Int = 1\n}\n\nfun helper(): Int {\n    return 2\n}\n\nfun size(): Int {\n    return 3\n}\n",
             ),
         ])?;
         let index = index(dir.path())?;
@@ -684,7 +688,29 @@ fn swift_and_kotlin_resolve_self_and_free_calls() -> TestResult {
                 .any(|(t, r)| t.ends_with("::helper") && *r == Resolution::Exact),
             "{found:?}"
         );
+        assert_bare_call_reaches_own_member(&index, &paths)?;
     }
+    Ok(())
+}
+
+/// A bare `size()` inside `Widget::measure` is the implicit receiver's member, and
+/// beats the file-level `size()` the fixture also declares.
+fn assert_bare_call_reaches_own_member(
+    index: &crate::index::SeamIndex,
+    paths: &[String],
+) -> TestResult {
+    let measure = paths
+        .iter()
+        .find(|p| p.ends_with("Widget::measure"))
+        .ok_or_else(|| format!("{paths:?}"))?;
+    let found = calls(index, measure)?;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|(t, r)| t.ends_with("Widget::size") && *r == Resolution::Exact),
+        "{found:?}"
+    );
     Ok(())
 }
 

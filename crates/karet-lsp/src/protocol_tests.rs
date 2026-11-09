@@ -218,9 +218,9 @@ async fn a_taken_message_request_answers_the_chosen_action_verbatim() -> TestRes
     let first = tokio::time::timeout(WAIT, requests.recv())
         .await?
         .ok_or("a request")?;
-    assert_eq!(first.level, MessageLevel::Warning);
-    assert_eq!(first.message, "Reload workspace?");
-    assert_eq!(first.actions, vec!["Reload".to_owned(), "Later".to_owned()]);
+    assert_eq!(first.level(), MessageLevel::Warning);
+    assert_eq!(first.message(), "Reload workspace?");
+    assert_eq!(first.actions(), ["Reload".to_owned(), "Later".to_owned()]);
     first.respond(Some(0));
     let second = tokio::time::timeout(WAIT, requests.recv())
         .await?

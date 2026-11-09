@@ -2,15 +2,17 @@
 
 use std::collections::HashMap;
 
+use karet_core::Emphasis;
 use karet_core::StandardToken;
 use karet_core::ThemeRole;
 use serde::Deserialize;
 
-use crate::Emphasis;
 use crate::Rgba;
 use crate::Theme;
 use crate::ThemeError;
 use crate::is_dark_color;
+use crate::semantic::SemanticRule;
+use crate::semantic::SemanticStyle;
 
 #[derive(Deserialize)]
 struct Root {
@@ -18,6 +20,45 @@ struct Root {
     colors: HashMap<String, String>,
     #[serde(default, rename = "tokenColors")]
     token_colors: Vec<TokenColorEntry>,
+    /// Selector → a colour string, or a style object. Kept as raw values so
+    /// one malformed entry is skipped rather than failing the whole theme.
+    #[serde(default, rename = "semanticTokenColors")]
+    semantic_token_colors: InFileOrder,
+}
+
+/// A JSON object's entries in the order the file wrote them.
+///
+/// The later of two equally specific `semanticTokenColors` rules wins, so the
+/// order is part of the theme. `serde_json::Map` keeps it only when some crate
+/// in the build turns on `serde_json/preserve_order`, and is sorted otherwise:
+/// reading the entries through a visitor keeps file order whatever features
+/// the build unified.
+#[derive(Default)]
+struct InFileOrder(Vec<(String, serde_json::Value)>);
+
+impl<'de> Deserialize<'de> for InFileOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> serde::de::Visitor<'de> for Entries {
+            type Value = InFileOrder;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of semantic token selectors")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(InFileOrder(entries))
+            }
+        }
+        deserializer.deserialize_map(Entries)
+    }
 }
 
 #[derive(Deserialize)]
@@ -72,17 +113,45 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editorOverviewRuler.border", ThemeRole::ScrollbarTrack),
 ];
 
-/// VS Code find-match keys, composited over `editor.background` at load time.
+/// VS Code find-match and word-highlight keys, composited over
+/// `editor.background` at load time.
 ///
 /// Themes conventionally make these translucent (Dark+ ships
 /// `#ea5c0055` for the other matches) so the text shows through, and a terminal
 /// cell cannot carry alpha: taken as-is, the other matches would paint opaque and
 /// saturated, louder than the current match.
+///
+/// `editor.wordHighlightTextBackground` is not read: karet paints a textual
+/// mention in the read role, and VS Code's own default for that key is the
+/// read key's color.
 const BLENDED_ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
     (
         "editor.findMatchHighlightBackground",
         ThemeRole::SearchMatch,
+    ),
+    ("editor.wordHighlightBackground", ThemeRole::WordHighlight),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
+    ),
+];
+
+/// Word-highlight keys a theme may leave unset, each with the key whose role
+/// colors that occurrence kind instead: the list-hover color for reads and
+/// textual mentions, the matching-bracket color for writes.
+const WORD_HIGHLIGHT_FALLBACKS: &[(&str, ThemeRole, &str, ThemeRole)] = &[
+    (
+        "editor.wordHighlightBackground",
+        ThemeRole::WordHighlight,
+        "list.hoverBackground",
+        ThemeRole::HoverHighlight,
+    ),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
+        "editorBracketMatch.background",
+        ThemeRole::MatchingBracket,
     ),
 ];
 
@@ -112,6 +181,19 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     for (key, role) in BLENDED_ROLE_KEYS {
         if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
             theme.roles[*role as usize] = composite_over(color, backdrop);
+        }
+    }
+    // A theme without its own word-highlight color keeps the theme-derived
+    // color occurrences painted in before they had roles, rather than the
+    // built-in dark default under (say) a light theme's dark text.
+    for (key, role, fallback_key, fallback_role) in WORD_HIGHLIGHT_FALLBACKS {
+        let own = root.colors.get(*key).and_then(|h| Rgba::from_hex(h));
+        let fallback = root
+            .colors
+            .get(*fallback_key)
+            .and_then(|h| Rgba::from_hex(h));
+        if own.is_none() && fallback.is_some() {
+            theme.roles[*role as usize] = theme.role(*fallback_role);
         }
     }
     // VS Code falls back from a per-kind hint color to the general one, so a
@@ -156,6 +238,17 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
         }
     }
 
+    // The built-in colour rules belong to the built-in palette; only the
+    // colourless ones carry over, ahead of the theme's own so it can override
+    // them.
+    theme.semantic = crate::default::portable_semantic_rules();
+    theme.semantic.extend(
+        root.semantic_token_colors
+            .0
+            .iter()
+            .filter_map(|(selector, value)| SemanticRule::parse(selector, semantic_style(value)?)),
+    );
+
     // Foreground/dark are derived from the (possibly overridden) editor colors.
     theme.fallback_fg = theme.role(ThemeRole::Foreground);
     theme.dark = is_dark_color(theme.role(ThemeRole::Background));
@@ -193,7 +286,40 @@ fn parse_font_style(s: &str) -> Emphasis {
         italic: s.split_whitespace().any(|w| w == "italic"),
         underline: s.split_whitespace().any(|w| w == "underline"),
         strikethrough: s.split_whitespace().any(|w| w == "strikethrough"),
+        // VS Code's `fontStyle` has no faint style.
+        dim: false,
     }
+}
+
+/// One `semanticTokenColors` value: a colour string, or an object with any of
+/// `foreground`, `fontStyle`, `bold`, `italic`, `underline` and
+/// `strikethrough`. A `fontStyle` sets all four flags (`""` clears them); an
+/// explicit flag overrides it. `None` for a value that sets nothing usable.
+fn semantic_style(value: &serde_json::Value) -> Option<SemanticStyle> {
+    if let Some(color) = value.as_str() {
+        return Rgba::from_hex(color).map(SemanticStyle::fg);
+    }
+    let object = value.as_object()?;
+    let mut style = SemanticStyle {
+        fg: object
+            .get("foreground")
+            .and_then(serde_json::Value::as_str)
+            .and_then(Rgba::from_hex),
+        ..SemanticStyle::default()
+    };
+    if let Some(font) = object.get("fontStyle").and_then(serde_json::Value::as_str) {
+        let em = parse_font_style(font);
+        style.bold = Some(em.bold);
+        style.italic = Some(em.italic);
+        style.underline = Some(em.underline);
+        style.strikethrough = Some(em.strikethrough);
+    }
+    let flag = |key: &str| object.get(key).and_then(serde_json::Value::as_bool);
+    style.bold = flag("bold").or(style.bold);
+    style.italic = flag("italic").or(style.italic);
+    style.underline = flag("underline").or(style.underline);
+    style.strikethrough = flag("strikethrough").or(style.strikethrough);
+    (!style.is_empty()).then_some(style)
 }
 
 /// Map a TextMate scope selector to a [`StandardToken`], most-specific first.
@@ -364,6 +490,84 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn word_highlight_keys_composite_over_the_theme_background() -> Result<(), ThemeError> {
+        // Dark+'s values: both translucent, so each is composited over
+        // #1e1e1e (alpha 0xb8) rather than painted opaque.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#1e1e1e",
+                "editor.wordHighlightBackground": "#575757b8",
+                "editor.wordHighlightStrongBackground": "#004972b8"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::WordHighlight), Rgba::rgb(71, 71, 71));
+        assert_eq!(t.role(ThemeRole::WordHighlightStrong), Rgba::rgb(8, 61, 91));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_word_highlight_keys_fall_back_to_the_themes_hover_and_bracket_colors()
+    -> Result<(), ThemeError> {
+        // A light theme that sets neither word-highlight key: occurrences take
+        // its own list-hover and bracket-match colors, not the dark defaults.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#ffffff",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0xe8, 0xe8, 0xe8)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_word_highlight_key_wins_over_its_fallback_key() -> Result<(), ThemeError> {
+        // Each key is resolved on its own: the theme's read color wins over
+        // list hover, while the unset write key still takes the bracket color.
+        let json = r##"{
+            "colors": {
+                "editor.wordHighlightBackground": "#102030",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0x10, 0x20, 0x30)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_word_highlight_text_key_leaves_the_read_role_alone() -> Result<(), ThemeError> {
+        // A textual mention paints in the read role, which only
+        // `editor.wordHighlightBackground` colors.
+        let json = r##"{ "colors": { "editor.wordHighlightTextBackground": "#ff0000" } }"##;
+        let t = Theme::load_vscode(json)?;
+        let dark = Theme::dark();
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            dark.role(ThemeRole::WordHighlight)
+        );
+        Ok(())
+    }
+
     /// The backdrop is the loaded theme's background, whichever order the keys
     /// appear in, and a fully transparent key leaves exactly that background.
     #[test]
@@ -435,6 +639,103 @@ mod tests {
         assert_eq!(scope_to_token("comment.line"), Some(StandardToken::Comment));
     }
 
+    /// Every arm of the order-sensitive chain, each specific prefix paired with
+    /// the general prefix it must be tested ahead of. Falsified by reordering
+    /// any pair (e.g. `constant` before `constant.numeric`), by dropping an
+    /// alternative spelling (`storage`, `support.class`, `markup.deleted`), or
+    /// by widening the fallthrough so an unknown scope maps to something.
+    #[test]
+    fn every_scope_arm_maps_and_specific_prefixes_win() {
+        use StandardToken as S;
+        let table: &[(&str, Option<StandardToken>)] = &[
+            ("markup.heading.2.markdown", Some(S::MarkupHeading)),
+            ("entity.name.section.markdown", Some(S::MarkupHeading)),
+            ("markup.bold.markdown", Some(S::MarkupBold)),
+            ("markup.strong", Some(S::MarkupBold)),
+            ("markup.italic.markdown", Some(S::MarkupItalic)),
+            ("markup.underline.link.markdown", Some(S::MarkupLink)),
+            ("markup.link", Some(S::MarkupLink)),
+            ("markup.inline.raw.string", Some(S::MarkupRaw)),
+            ("markup.raw.block", Some(S::MarkupRaw)),
+            ("markup.fenced_code.block", Some(S::MarkupRaw)),
+            ("markup.quote.markdown", Some(S::MarkupQuote)),
+            ("markup.list.numbered", Some(S::MarkupListMarker)),
+            ("markup.strikethrough", Some(S::MarkupStrikethrough)),
+            ("markup.deleted.diff", Some(S::MarkupStrikethrough)),
+            // `markup.underline` alone is not a link.
+            ("markup.underline", None),
+            ("comment.line.documentation.rust", Some(S::CommentDoc)),
+            ("comment.block", Some(S::Comment)),
+            // `documentation` outside a comment scope is not a doc comment.
+            ("string.documentation", Some(S::String)),
+            ("string.quoted.double", Some(S::String)),
+            ("constant.numeric.integer", Some(S::Number)),
+            ("constant.language.boolean", Some(S::Boolean)),
+            ("constant.character.escape", Some(S::Constant)),
+            ("keyword.operator.arithmetic", Some(S::Operator)),
+            ("keyword.control.flow", Some(S::KeywordControl)),
+            ("keyword.other", Some(S::Keyword)),
+            ("storage.type.fn", Some(S::Keyword)),
+            ("entity.name.function.rust", Some(S::Function)),
+            ("support.function.builtin", Some(S::Function)),
+            ("entity.name.type.struct", Some(S::Type)),
+            ("entity.name.class", Some(S::Type)),
+            ("support.type.primitive", Some(S::Type)),
+            ("support.class.builtin", Some(S::Type)),
+            ("variable.parameter.function", Some(S::Parameter)),
+            ("variable.other.readwrite", Some(S::Variable)),
+            ("entity.name.tag.html", Some(S::Tag)),
+            ("entity.other.attribute-name.html", Some(S::Attribute)),
+            ("entity.name.namespace", None),
+            ("punctuation.definition", None),
+            ("", None),
+        ];
+        for (scope, want) in table {
+            assert_eq!(scope_to_token(scope), *want, "scope {scope:?}");
+        }
+    }
+
+    /// One `scope` string listing several selectors colors each of them, with
+    /// the whitespace around the commas ignored. Falsified by passing the
+    /// string through unsplit (`"string, comment"` maps to `String` only).
+    #[test]
+    fn a_comma_separated_scope_string_colors_every_selector() -> Result<(), ThemeError> {
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "string, comment ,keyword.control", "settings": { "foreground": "#123456" } }
+            ]
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        let c = Rgba::rgb(0x12, 0x34, 0x56);
+        assert_eq!(t.color(StandardToken::String.id()), c);
+        assert_eq!(t.color(StandardToken::Comment.id()), c);
+        assert_eq!(t.color(StandardToken::KeywordControl.id()), c);
+        // A token no selector named keeps its built-in color.
+        assert_eq!(
+            t.color(StandardToken::Function.id()),
+            Theme::dark().color(StandardToken::Function.id())
+        );
+        Ok(())
+    }
+
+    /// The fallback foreground follows the theme's `editor.foreground`, so a
+    /// token id outside the palette paints in the theme's text color rather
+    /// than the built-in one. Falsified by deleting the `fallback_fg`
+    /// assignment in `load`.
+    #[test]
+    fn the_fallback_foreground_is_the_theme_foreground() -> Result<(), ThemeError> {
+        use karet_core::TokenId;
+
+        let t = Theme::load_vscode(r##"{"colors":{"editor.foreground":"#0a0b0c"}}"##)?;
+        let fg = Rgba::rgb(0x0a, 0x0b, 0x0c);
+        assert_ne!(Theme::dark().fallback_fg, fg);
+        assert_eq!(t.fallback_fg, fg);
+        // The highest non-semantic id indexes past the standard palette.
+        let unmapped = TokenId(TokenId::SEMANTIC_BASE - 1);
+        assert_eq!(t.color(unmapped), fg);
+        Ok(())
+    }
+
     #[test]
     fn font_style_overlays_emphasis() -> Result<(), ThemeError> {
         let json = r##"{
@@ -481,6 +782,79 @@ mod tests {
             Theme::dark().color(StandardToken::MarkupQuote.id())
         );
         assert!(t.emphasis(StandardToken::MarkupQuote.id()).bold);
+        Ok(())
+    }
+
+    /// A colour string, a style object, and a `fontStyle` whose explicit flag
+    /// overrides it, all resolve; a selector outside the vocabulary or a value
+    /// setting nothing is skipped without failing the theme.
+    #[test]
+    fn semantic_token_colors_overlay_semantic_tokens() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "entity.name.function", "settings": { "foreground": "#0000ff" } }
+            ],
+            "semanticTokenColors": {
+                "variable.readonly": "#ff0000",
+                "parameter": { "foreground": "#00ff00", "fontStyle": "italic bold", "bold": false },
+                "*.static": { "fontStyle": "underline" },
+                "widget": "#123456",
+                "function": { "fontStyle": 42 }
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        let readonly = TokenId::semantic(T::Variable, M::READONLY);
+        assert_eq!(t.color(readonly), Rgba::rgb(255, 0, 0));
+        let parameter = TokenId::semantic(T::Parameter, M::NONE);
+        assert_eq!(t.color(parameter), Rgba::rgb(0, 255, 0));
+        assert_eq!(t.emphasis(parameter), Emphasis::ITALIC);
+        // No rule colours a function: it takes the theme's own function colour.
+        let function = TokenId::semantic(T::Function, M::STATIC);
+        assert_eq!(t.color(function), Rgba::rgb(0, 0, 255));
+        assert_eq!(t.emphasis(function), Emphasis::UNDERLINE);
+        Ok(())
+    }
+
+    /// Of two equally specific rules the one later in the file wins, whatever
+    /// order the selectors sort in. Falsified by reading the entries through
+    /// a sorted map (`*.readonly` would sort first and lose to `*.static`),
+    /// as `serde_json::Map` is without `preserve_order`.
+    #[test]
+    fn a_tie_goes_to_the_rule_later_in_the_file() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let json = r##"{"semanticTokenColors": {"*.static": "#ff0000", "*.readonly": "#00ff00"}}"##;
+        let t = Theme::load_vscode(json)?;
+        let both = TokenId::semantic(T::Variable, M::READONLY | M::STATIC);
+        assert_eq!(t.color(both), Rgba::rgb(0, 255, 0));
+        Ok(())
+    }
+
+    /// The built-in palette's semantic colours do not leak into a loaded
+    /// theme, while its colourless rules carry over and can be overridden.
+    #[test]
+    fn a_loaded_theme_keeps_only_the_colourless_built_in_rules() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let plain = Theme::load_vscode("{}")?;
+        let mac = TokenId::semantic(T::Macro, M::NONE);
+        assert_eq!(plain.color(mac), plain.color(StandardToken::Function.id()));
+        assert_ne!(Theme::dark().color(mac), plain.color(mac));
+        let deprecated = TokenId::semantic(T::Function, M::DEPRECATED);
+        assert!(plain.emphasis(deprecated).strikethrough);
+
+        let cleared = Theme::load_vscode(
+            r#"{"semanticTokenColors":{"*.deprecated":{"strikethrough":false}}}"#,
+        )?;
+        assert!(!cleared.emphasis(deprecated).strikethrough);
         Ok(())
     }
 

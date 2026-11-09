@@ -42,10 +42,11 @@ impl Command {
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",
             Self::ToggleOutline => "outline",
+            Self::ToggleZenMode => "zen",
+            Self::ToggleMaximizePane => "maximize",
             Self::ToggleFocus => "focus",
             Self::SelectView(View::Editor) => "editor",
             Self::SelectView(View::GitHub) => "github",
-            // #211: Self::SelectView(View::Agents) => "agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
@@ -53,6 +54,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Todos) => "todos",
             Self::SelectPanel(SidebarPanel::Debug) => "debug",
             Self::SelectPanel(SidebarPanel::Problems) => "problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "hierarchy",
             Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::NextProblem => "next problem",
             Self::PrevProblem => "prev problem",
@@ -62,13 +64,20 @@ impl Command {
             Self::ProblemsFilterCancel => "clear",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
+            Self::OpenLinkAtCaret => "open link",
             Self::GoToDeclaration => "declaration",
             Self::GoToTypeDefinition => "type definition",
             Self::GoToImplementation => "implementation",
             Self::FindReferences => "references",
+            Self::ShowIncomingCalls => "callers",
+            Self::ShowOutgoingCalls => "callees",
+            Self::ShowSupertypes => "supertypes",
+            Self::ShowSubtypes => "subtypes",
+            Self::HierarchyExpand => "expand",
             Self::RenameSymbol | Self::RenameSubmit => "rename",
             Self::RenameCancel => "cancel",
             Self::FormatDocument | Self::FormatSelection => "format",
+            Self::StartLinkedEditing => "linked edit",
             Self::CodeActions => "quick fix",
             Self::SourceAction => "source action",
             Self::OrganizeImports => "organize imports",
@@ -98,6 +107,7 @@ impl Command {
             Self::TerminalScrollPageDown => "scroll down",
             Self::TerminalScrollToTop => "top",
             Self::TerminalScrollToBottom => "bottom",
+            Self::RunTask => "run task",
             Self::DismissNotification => "dismiss",
             Self::Copy => "copy",
             // Sidebar.
@@ -319,6 +329,7 @@ impl Command {
             | Self::AddCursorAbove
             | Self::AddCursorBelow
             | Self::CollapseCarets
+            | Self::EnterNormalMode
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
@@ -327,9 +338,14 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::NextInlineCompletion
+            | Self::PrevInlineCompletion
+            | Self::CopilotSignIn
+            | Self::CopilotSignOut
             | Self::Hover
             | Self::SignatureHelp
             | Self::ToggleInlayHints
+            | Self::ToggleFormatOnType
             | Self::ShowDiagnostic
             | Self::DebugStart
             | Self::DebugStop

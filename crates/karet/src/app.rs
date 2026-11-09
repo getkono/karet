@@ -14,6 +14,7 @@ mod comment;
 pub(crate) mod commit_console;
 mod completion;
 pub(crate) mod confirm;
+mod context_menu;
 mod debugging;
 mod definition;
 mod deps;
@@ -21,22 +22,29 @@ mod diffs;
 mod drag;
 mod editor;
 mod explorer;
+mod focus;
 pub(crate) mod github;
 mod graphics;
+pub(crate) mod hierarchy;
 mod history;
 mod hit;
 mod hover;
 mod indent;
 mod inlay;
+mod inline_completion;
 mod inline_macros;
 mod input;
 mod language_servers;
+mod latex;
 mod lifecycle;
+mod link_color;
+mod linked_editing;
 mod markdown_edit;
 mod mouse;
 mod navigation;
 mod notifications;
 mod occurrences;
+mod on_type;
 mod panes;
 mod pending;
 mod problems;
@@ -59,23 +67,19 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+mod tasks;
 #[cfg(feature = "terminal")]
 mod terminal;
 pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
-mod util;
+pub(crate) mod vi;
 
 #[cfg(test)]
 pub(crate) mod tests;
 
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::io::Write;
-use std::io::{self};
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -83,201 +87,108 @@ use std::time::Instant;
 
 pub(crate) use capture::capture;
 pub(crate) use code_lens::code_lens_rows;
-use color_eyre::eyre::eyre;
-use confirm::ConfirmAction;
-use confirm::ConfirmChoice;
-use confirm::ConfirmDialog;
-use confirm::describe_paths;
-use crossterm::event::DisableBracketedPaste;
-use crossterm::event::DisableFocusChange;
-use crossterm::event::DisableMouseCapture;
-use crossterm::event::EnableBracketedPaste;
-use crossterm::event::EnableFocusChange;
-use crossterm::event::EnableMouseCapture;
-use crossterm::event::Event;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use crossterm::event::KeyboardEnhancementFlags;
-use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
-use crossterm::event::PopKeyboardEnhancementFlags;
-use crossterm::event::PushKeyboardEnhancementFlags;
-use crossterm::event::{self};
-use crossterm::terminal::SetTitle;
-pub(crate) use drag::DragGranularity;
-pub(crate) use drag::EditorDrag;
+#[cfg(test)]
+pub(crate) use debugging::DebugPanel;
+pub(crate) use debugging::DebugRow;
 pub(crate) use editor::column::ColumnSelect;
-pub(crate) use editor::column::ColumnStep;
-pub(crate) use hit::*;
+use graphics::GraphicsCaret;
+pub(crate) use hit::BreadcrumbHit;
+pub(crate) use hit::CommitCollapseHit;
+pub(crate) use hit::CommitDirHit;
+pub(crate) use hit::CommitFileHit;
+pub(crate) use hit::FindBarRects;
+pub(crate) use hit::FrameHits;
+pub(crate) use hit::MarkdownLinkHit;
+pub(crate) use hit::PaneFrame;
+use hit::PaneResize;
+use hit::ScrollDrag;
+pub(crate) use hit::ScrollHits;
+pub(crate) use hit::ScrollSurface;
+pub(crate) use hit::TabDrag;
+pub(crate) use hit::TabHit;
+use hit::TextFieldTarget;
+pub(crate) use hit::ToastHit;
 pub(crate) use inlay::InlayHintHit;
-use karet_core::BlameAttribution;
-use karet_core::BytePos;
-use karet_core::Change;
-use karet_core::Decoration;
-use karet_core::DecorationKind;
-use karet_core::Diagnostic;
-use karet_core::LineCol;
-use karet_core::Notification;
-use karet_core::NotificationId;
+#[cfg(test)]
+use karet_core::FoldRegions;
 use karet_core::NotificationKind;
-use karet_core::Range;
-use karet_core::Severity;
-use karet_core::Symbol;
-use karet_core::TextEdit;
-use karet_core::ThemeRole;
-use karet_editor::EditorState;
-use karet_editor::class_run_at;
-use karet_editor::editing;
-use karet_editor::line_span;
 pub(crate) use karet_editor::resolve_folds;
-use karet_editor::selection_text;
-use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
-use karet_filetype::WrapMode;
-use karet_filetype::file_type_for_path;
-use karet_fileview::image::GraphicsProtocol;
-use karet_fileview::image::{self};
-use karet_search::SearchQuery;
-use karet_search::search_chunks;
 use karet_session::Backend;
-use karet_session::BackendError;
-use karet_session::ChangeSummary;
-use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
-use karet_session::DocSnapshot;
 use karet_session::DocumentId;
-use karet_session::DocumentSettings;
-use karet_session::Event as SessionEvent;
-use karet_session::EventRx;
-use karet_session::GithubVerification;
-use karet_session::LanguageServerChange;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerLogEntry;
-use karet_session::LanguageServerMessageId;
-use karet_session::LanguageServerPlanId;
-use karet_session::LanguageServerRuntimeState;
-use karet_session::LanguageServerStatus;
+use karet_session::GithubPullRequest;
 use karet_session::LoadedConfig;
-use karet_session::LocationKind;
-use karet_session::PreparedChange;
-use karet_session::PullRequestSummary;
-use karet_session::RangeSpec;
-use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
-use karet_session::SaveCause;
-use karet_session::SearchHit;
-use karet_session::SessionConfig;
 use karet_session::Settings;
-use karet_session::SnapshotRx;
-use karet_session::SpellingHit;
 use karet_session::SwapInfo;
 use karet_session::VcsAction;
-use karet_session::VcsOutcome;
 use karet_session::ViewId;
-use karet_session::config::schema::AutoSave;
-use karet_session::local;
-#[cfg(test)]
-use karet_syntax::FoldRegions;
-use karet_text::EditCause;
-use karet_text::TextBuffer;
 use karet_theme::Theme;
-use karet_vcs::Commit;
-use karet_vcs::CommitDetail;
 use karet_vcs::RepositorySummary;
-use karet_vcs::StatusKind;
-use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
-use karet_widgets::ListSelection;
 use karet_widgets::PaneDivider;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
-use karet_widgets::PendingEdit;
-use karet_widgets::Spinner;
-use karet_widgets::SplitAxis;
-use karet_widgets::SplitDir;
-use karet_widgets::drop_zone;
-use karet_widgets::scroll::PaintedTracks;
-use karet_widgets::scroll::ScrollTrack;
-use karet_widgets::scroll::TrackHit;
-pub(crate) use karet_widgets::textarea::TextAreaState;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use language_servers::LanguageServerBadgeSummary;
-pub(crate) use language_servers::LanguageServerQuestion;
+pub(crate) use link_color::HeldColors;
+pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
-pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
 pub(crate) use problems::ProblemsChrome;
 pub(crate) use problems::ProblemsPanel;
 pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
+pub(crate) use runtime::clamp_sidebar_width;
 pub(crate) use runtime::run;
+pub(crate) use scroll::keep_visible;
+pub(crate) use search::SearchPanel;
+pub(crate) use search::SearchPanelField;
+pub(crate) use search::SearchRow;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
-pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
-pub(crate) use state::*;
-use tokio::sync::mpsc;
-use util::KeyboardEnhancementGuard;
-use util::canonical;
-use util::close_prompt_choices;
-use util::copy_path_recursive;
-pub(crate) use util::effective_word_wrap;
-use util::human_bytes;
-use util::load_theme;
-use util::move_path;
-use util::parse_rev_range;
-use util::path_contains_or_equals;
-use util::path_under;
-use util::rebase_path;
-use util::rect_contains;
-use util::retarget_tab_path;
-use util::row_in_rect;
-use util::same_path;
-use util::tab_at;
-pub(crate) use util::tab_language;
-use util::unique_child_path;
-use util::word_at;
+pub(crate) use spelling::SpellingPanel;
+pub(crate) use spelling::SpellingRow;
+use state::CloseRequest;
+pub(crate) use state::CommitInput;
+use state::ContextMenu;
+pub(crate) use state::ContextMenuEntryExt;
+use state::DocState;
+use state::ExplorerFileClipboard;
+pub(crate) use state::LiveBlame;
+pub(crate) use state::OperationBlocker;
+use state::OutlinePanel;
+use state::PendingAutoSave;
+use state::PendingOpen;
+use state::PendingRemoteAction;
+use state::PendingSave;
+use state::RemoteFacts;
+use state::Scm;
+use state::ScmChrome;
+use state::ScreenModes;
+use state::SearchChrome;
+use state::SpellingChrome;
+use state::StoredPane;
+pub(crate) use state::TerminalCaps;
+use state::TodosChrome;
+pub(crate) use todos::TodoRow;
+pub(crate) use todos::TodosPanel;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
-use crate::compat;
-use crate::compat::GraphicsCaret;
-use crate::keymap::Context;
-use crate::keymap::EditorTab;
-use crate::keymap::Focus;
-use crate::keymap::FocusTarget;
 use crate::keymap::KeyChord;
-use crate::keymap::Modal;
-use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
-use crate::outline::OutlineRow;
-use crate::outline::OutlineTarget;
-use crate::overlay::DiffTarget;
-use crate::overlay::Overlay;
-use crate::overlay::OverlayEvent;
-use crate::overlay::StashAction;
-use crate::overlay::TextPurpose;
-use crate::remote;
-use crate::render::FileView;
-use crate::render::Section;
-use crate::tab::CommitFiles;
-use crate::tab::CommitViewState;
-use crate::tab::FindState;
-use crate::tab::MarkdownPreviewState;
-use crate::tab::MergeConflictState;
-use crate::tab::PagerState;
-use crate::tab::SearchField;
+use crate::pending::Pending;
 use crate::tab::Tab;
-use crate::tab::TabKind;
 use crate::tab::ViewMode;
-use crate::tab::commit_title;
-use crate::ui;
 use crate::view::View;
 use crate::workspace;
 
@@ -332,9 +243,9 @@ const COMMIT_AUTOLOAD_THRESHOLD: usize = 3;
 /// double-click before it auto-hides.
 pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 
-/// Delay before rendering non-blocking loading text. Fast operations can complete
-/// without visual churn; slower ones get an explicit, stable placeholder.
-pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// How soon a press must follow the last one to continue its multi-click streak,
+/// in the editor, the shell's other surfaces, and the terminal grid alike.
+pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Maximum graceful wait for a repository mutation during application shutdown.
 const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -345,6 +256,10 @@ const GRAPHICS_CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 pub struct App {
     /// The workspace root.
     pub(crate) root: PathBuf,
+    /// The keymap files merged over the defaults, lowest precedence first: the
+    /// user's and `root`'s. The session watches them and reports
+    /// `KeymapChanged`; [`App::reload_keymap`] re-reads them.
+    pub(crate) keymap_files: Vec<(keymap::user::Source, PathBuf)>,
     /// The loaded, verified configuration (see `karet_session::config`). Applied to
     /// the UI at startup and handed to the session backend.
     pub(crate) settings: Settings,
@@ -368,8 +283,8 @@ pub struct App {
     pub(crate) view: View,
     /// The GitHub view's pages. Empty while the workspace is not GitHub-eligible.
     pub(crate) github: github::GithubSurface,
-    /// Which area has keyboard focus.
-    pub(crate) focus: Focus,
+    /// Who holds the keyboard: the focused pane, the commit box, the overlay.
+    pub(crate) keyboard: focus::KeyboardOwner,
     /// The active sidebar panel.
     pub(crate) sidebar_panel: SidebarPanel,
     /// Whether the sidebar is shown.
@@ -405,7 +320,7 @@ pub struct App {
     /// Open-pull-request query currently filling the picker.
     pub(crate) pending_pull_requests: Option<RequestId>,
     /// Pull-request pages accumulated until GitHub has no next page.
-    pub(crate) pull_request_items: Vec<PullRequestSummary>,
+    pub(crate) pull_request_items: Vec<GithubPullRequest>,
     /// Remote associated with the accumulating pull-request query.
     pub(crate) pull_request_remote: Option<String>,
     /// Repository action parked until all dirty editors save successfully.
@@ -428,8 +343,6 @@ pub struct App {
     /// read, so no pruning pass is needed. `ViewId(0)` never enters, being the
     /// unassigned sentinel every welcome tab shares.
     pub(crate) view_history: Vec<ViewId>,
-    /// The open modal overlay (quick-open / command palette), if any.
-    pub(crate) overlay: Option<Overlay>,
     /// The workspace's file list behind quick-open, walked off the UI thread.
     pub(crate) file_index: workspace::FileIndex,
     /// Quick-open's `#` mode: the workspace-symbol query and its request.
@@ -465,43 +378,33 @@ pub struct App {
     pub(crate) pending_swaps: Option<Vec<SwapInfo>>,
     /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
     pub(crate) pending: Vec<KeyChord>,
+    /// Modal editing (`editor.keymap` `"vim"`/`"helix"`): the mode, registers,
+    /// macros and the command being typed.
+    pub(crate) vi: vi::ViState,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// The workspace-spelling panel state.
     pub(crate) spelling: SpellingPanel,
     /// The centralized notification stack (errors, out-of-band conditions).
     pub(crate) notifications: NotificationCenter,
-    /// Clickable toast cards from the last frame (mouse hit-testing).
-    pub(crate) toast_hits: Vec<ToastHit>,
-    /// The sidebar rect from the last frame (mouse hit-testing).
-    pub(crate) sidebar_rect: Rect,
-    /// The main content rect from the last frame.
-    pub(crate) main_rect: Rect,
+    /// Every hit region and rect the last frame recorded for the mouse, assigned
+    /// once per frame by [`ui::draw`].
+    pub(crate) last_frame: FrameHits,
     /// The user-controlled sidebar width in columns (draggable; clamped responsively
     /// to the terminal width each frame).
     pub(crate) sidebar_width: u16,
-    /// The x column of the sidebar's drag divider from the last frame (hit-testing).
-    pub(crate) sidebar_divider_x: u16,
     /// Whether a sidebar-resize drag is currently in progress.
     pub(crate) sidebar_resizing: bool,
     /// The last-used diff layout; newly-opened diffs adopt it so the choice sticks.
     pub(crate) diff_layout: ViewMode,
-    /// Per-pane clickable regions from the last frame (mouse hit-testing).
-    pub(crate) pane_frames: Vec<PaneFrame>,
-    /// Draggable split boundaries from the last rendered frame.
-    pub(crate) pane_dividers: Vec<PaneDivider>,
     /// Current pointer-hovered split boundary.
     pub(crate) pane_divider_hover: Option<PaneDivider>,
     /// Active pane-boundary drag.
     pub(crate) pane_resize: Option<PaneResize>,
-    /// Every scrollbar track the last frame painted, in draw order (hit-testing).
-    pub(crate) scroll_hits: ScrollHits,
     /// The in-progress scrollbar-thumb drag, if one is under way.
     pub(crate) scroll_drag: Option<ScrollDrag>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
     pub(crate) tab_drag: Option<TabDrag>,
-    /// The sidebar's content area (below the header) from the last frame.
-    pub(crate) sidebar_content_rect: Rect,
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
@@ -509,17 +412,10 @@ pub struct App {
     pub(crate) pane_action_hover: Option<(u16, u16)>,
     /// The current mouse position while hovering the sidebar header controls.
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
-    /// The header panel-switcher cells (`1 2 3`) from the last frame.
-    pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
-    /// The chrome row carrying the top-level view switcher.
-    pub(crate) view_chrome_rect: Rect,
-    /// Column spans of the view-switcher buttons on the chrome row.
-    pub(crate) view_hits: Vec<(u16, u16, View)>,
     /// The right-side outline panel.
     pub(crate) outline: OutlinePanel,
-    /// The explorer header toolbar-button cells `(start, end, command)` from the last
-    /// frame (new file / new folder / refresh / collapse all).
-    pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
+    /// Zen Mode and the maximised pane.
+    pub(crate) modes: ScreenModes,
 
     /// Last completed compact status for nested repositories in the explorer.
     nested_repository_status: HashMap<PathBuf, RepositorySummary>,
@@ -529,8 +425,6 @@ pub struct App {
     pub(crate) scm_ui: ScmChrome,
     /// Text field currently being extended by a left-button drag.
     pub(crate) text_field_drag: Option<TextFieldTarget>,
-    /// Where the find-in-file bar's editable fields landed last frame.
-    pub(crate) find_rects: crate::ui::FindBarRects,
     /// The Search panel's last-frame render chrome.
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
@@ -547,18 +441,10 @@ pub struct App {
     pub(crate) problems: ProblemsPanel,
     /// The Problems panel's per-frame chrome.
     pub(crate) problems_ui: ProblemsChrome,
-    /// The status bar rect from the last frame (mouse hit-testing).
-    pub(crate) status_rect: Rect,
-    /// Clickable status-bar segments `(start, end, command)` from the last frame.
-    pub(crate) status_hits: Vec<(u16, u16, Command)>,
-    /// The active code tab's editor content area from the last frame.
-    pub(crate) editor_rect: Rect,
-    /// The active code tab's in-editor Markdown preview area from the last frame.
-    pub(crate) markdown_preview_rect: Rect,
-    /// Visible committed-attribution text from the last frame, for click routing.
-    pub(crate) blame_rect: Option<Rect>,
-    /// Visible Markdown link runs from the focused preview's last frame.
-    pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
+    /// The Hierarchy panel state: the call or type tree being walked.
+    pub(crate) hierarchy: hierarchy::HierarchyPanel,
+    /// The Hierarchy panel's per-frame chrome.
+    pub(crate) hierarchy_ui: hierarchy::HierarchyChrome,
     /// Current mouse position when it rests over a visible Markdown link.
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
@@ -570,15 +456,15 @@ pub struct App {
     /// The quick-fix menu's pending request, the action being run, and the
     /// gutter lightbulb's probe.
     pub(crate) code_actions: code_actions::CodeActions,
+    /// Ghost text: the pending ask and what is on offer (see
+    /// [`inline_completion`]).
+    pub(crate) inline_completion: inline_completion::InlineCompletions,
     /// The occurrence-highlight probe and what it found (see [`occurrences`]).
     pub(crate) occurrences: occurrences::Occurrences,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
     pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.
     pub(crate) definition_hover: Option<definition::DefinitionHover>,
-    /// The focused commit view's signature-badge rect (screen coords) from the last
-    /// frame, for double-click hit-testing. `None` when no badge is on screen.
-    pub(crate) commit_badge_rect: Option<Rect>,
     /// The editor's in-progress pointer selection drag, if one is under way.
     pub(crate) editor_drag: Option<drag::EditorDrag>,
     /// The box selection last made, so the next Shift+Alt press or
@@ -598,8 +484,6 @@ pub struct App {
     click_origin: (editor::ClickSurface, KeyModifiers),
     /// The system clipboard (OSC 52).
     clipboard: Clipboard,
-    /// The active Kitty image placement rect (set by the renderer), if any.
-    pub(crate) image_area: Option<Rect>,
     /// Local images the markdown preview paints, decoded off the UI thread.
     pub(crate) preview_images: crate::preview_images::PreviewImages,
     /// Starts integrated terminals and owns the channel their output and exit
@@ -609,6 +493,9 @@ pub struct App {
     /// The frame cap terminal output repaints under.
     #[cfg(feature = "terminal")]
     terminal_frame: terminal::TerminalFrame,
+    /// The configured tasks running (or run) in terminals.
+    #[cfg(feature = "terminal")]
+    tasks: tasks::TaskRuns,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even
@@ -646,25 +533,21 @@ pub struct App {
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The closers auto-inserted by the last keystrokes, open to type-over.
     auto_closers: Option<autopair::AutoClosers>,
-    /// The in-flight completion request, if any (see [`crate::completion`]).
-    pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
-    /// The open completion popup, if any.
-    pub(crate) completion: Option<crate::completion::CompletionUi>,
-    /// The trigger and commit characters the server completing in each
-    /// document last answered with there; dropped when the document closes.
-    pub(crate) completion_chars: HashMap<DocumentId, karet_core::CompletionOptions>,
-    /// An accepted item's additional edits, still on their way.
-    pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
-    /// The snippet an accepted completion is still being filled in through,
-    /// if any (see [`crate::completion::SnippetSession`]).
-    pub(crate) snippet: Option<crate::completion::SnippetSession>,
-    /// The reusable fuzzy matcher backing the completion popup's filtering.
-    pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Completion: the request in flight, the open popup, each document's
+    /// trigger and commit characters, an accepted item's follow-up, the snippet
+    /// being filled in, and the matcher (see [`completion`]).
+    pub(crate) completion: completion::Completion,
     /// The in-flight hover request, if any (see [`crate::hover`]).
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The Expand Selection waiting on the server's selection ranges, if any
     /// (see [`syntax_select`]).
     pub(crate) pending_expand: Option<syntax_select::PendingExpand>,
+    /// The Start Linked Editing waiting on the server's linked ranges, if
+    /// any (see [`linked_editing`]).
+    pub(crate) pending_linked: Option<linked_editing::PendingLinked>,
+    /// On-type formatting: the request in flight, each document's trigger
+    /// characters, and the session toggle (see [`on_type`]).
+    pub(crate) on_type: on_type::OnTypeState,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
     /// Signature help: the request in flight, the open popup, and each
@@ -675,23 +558,17 @@ pub struct App {
     /// Each document's code lenses, the requests for them, and a lens run
     /// awaiting its answer (see [`code_lens`]).
     pub(crate) code_lenses: code_lens::CodeLensState,
+    /// Each document's language-server links and colours, the requests for
+    /// them, and a link resolve awaiting its answer (see [`link_color`]).
+    pub(crate) links_colors: link_color::LinkColorState,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
-    /// The debug session's lifecycle, mirrored from `Event::DebugState`.
-    pub(crate) debug_state: karet_session::DebugSessionState,
-    /// The status-line detail for the current debug state.
-    pub(crate) debug_detail: String,
+    /// The debug session: lifecycle, console, Debug panel, and stop location
+    /// (see [`debugging`]).
+    pub(crate) debugger: debugging::Debugger,
     /// Armed breakpoints per absolute file path: line → verified.
     pub(crate) breakpoints:
         std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
-    /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
-    pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
-    /// The Debug sidebar panel (stack, variables tree, evaluate log).
-    pub(crate) debug_panel: DebugPanel,
-    /// The Debug panel's last-frame hit-test data.
-    pub(crate) debug_ui: DebugChrome,
-    /// Where the debuggee is stopped, for the stopped-line tint.
-    pub(crate) debug_stopped: Option<(PathBuf, u32)>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or
@@ -699,11 +576,15 @@ pub struct App {
     /// the attach silently did nothing. [`runtime::attach_backend`] drains
     /// this, which is the one path both the live shell and `--capture` share.
     pub(crate) startup_commands: Vec<Command>,
-    /// Parser-backed resolver for the seeded inline-macro catalog.
-    inline_macro_engine: karet_syntax::InlineMacroEngine,
+    /// The last layered tree-sitter parse a UI-thread reader asked for (comment
+    /// toggling, Enter and paste indentation, Expand Selection, inline macros), reused while the
+    /// document and its buffer version are unchanged.
+    layered_trees: syntax_select::LayeredTreeCache,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, ViewId>,
+    /// In-flight range diffs, mapping request id → the compare tab reserved for it.
+    pending_compare: HashMap<RequestId, ViewId>,
     /// Explicit LaTeX build requests mapped to their reserved preview view.
     latex_previews: HashMap<RequestId, ViewId>,
     /// Lazy forge-verification reads, owned by their exact commit view.
@@ -721,6 +602,9 @@ pub struct App {
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
+    /// Whether the command line asked for a startup view or focus (`--view`,
+    /// `--focus`), which a restored workspace layout must leave in place.
+    startup_surface_requested: bool,
     /// In-flight commit-graph history pages, each owned by the exact view that asked.
     /// Keyed this way so an answering [`SessionEvent::VcsLog`] fills that view rather
     /// than the sidebar log — or, with several graph views open, the wrong one.
@@ -731,6 +615,8 @@ pub struct App {
     pub(crate) seam_query_req: Option<RequestId>,
     /// The in-flight seam node-detail request.
     pub(crate) seam_node_req: Option<RequestId>,
+    /// Package discovery behind the Seam start-point picker, run off the UI thread.
+    pub(crate) seam_discovery: seam::roots::RootDiscovery,
     /// Requests cancelled because their owning view closed. Late queued events
     /// bearing these ids are ignored and cannot resurrect UI.
     cancelled_requests: HashSet<RequestId>,
@@ -748,7 +634,7 @@ impl App {
     /// make the merged result the live keymap, and say what happened: each
     /// problem as a notification, or a transient "reloaded" when there are none.
     pub(crate) fn reload_keymap(&mut self) {
-        let (keymap, report) = keymap::user::load(std::slice::from_ref(&self.root));
+        let (keymap, report) = keymap::user::load_files(&self.keymap_files);
         self.apply_keymap(keymap, &report);
     }
 
@@ -768,5 +654,81 @@ impl App {
                 format!("config: {}", diag.message),
             );
         }
+    }
+}
+
+/// [`App::apply_keymap`]'s side effects. Each test installs the compiled-in
+/// defaults, so the process-wide keymap every other test reads never changes.
+#[cfg(test)]
+mod keymap_reload_tests {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use karet_core::Severity;
+
+    use super::tests::support::app;
+    use super::*;
+    use crate::keymap::KeyChord;
+    use crate::keymap::user::Issue;
+    use crate::keymap::user::KeymapReport;
+
+    /// The active notifications' severities and titles, oldest first.
+    fn notes(app: &App) -> Vec<(Severity, String)> {
+        let mut notes: Vec<_> = app
+            .notifications
+            .active()
+            .into_iter()
+            .map(|note| (note.severity, note.title.clone()))
+            .collect();
+        notes.reverse();
+        notes
+    }
+
+    /// A Ctrl+K press, the prefix of the two-key chords.
+    fn ctrl_k() -> KeyChord {
+        KeyChord::from_event(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+    }
+
+    /// A clean reload drops a half-typed chord and says it reloaded.
+    #[test]
+    fn a_clean_reload_clears_the_pending_chord_and_reports_success() {
+        let mut app = app();
+        app.pending.push(ctrl_k());
+        app.apply_keymap(keymap::Keymap::defaults(), &KeymapReport::default());
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            notes(&app),
+            vec![(Severity::Hint, "keymap reloaded".into())]
+        );
+    }
+
+    /// A reload with problems reports each one as a `config:` warning, located
+    /// at its file, and never also claims a clean reload.
+    #[test]
+    fn a_reload_with_problems_reports_each_and_not_success() {
+        let mut app = app();
+        app.pending.push(ctrl_k());
+        let issue = |message: &str| Issue {
+            path: PathBuf::from("/k/keymap.jsonc"),
+            message: message.to_owned(),
+        };
+        let report = KeymapReport {
+            files: Vec::new(),
+            issues: vec![issue("1:2: unknown command"), issue("3:4: bad key")],
+        };
+        app.apply_keymap(keymap::Keymap::defaults(), &report);
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            notes(&app),
+            vec![
+                (
+                    Severity::Warning,
+                    "config: /k/keymap.jsonc: 1:2: unknown command".into()
+                ),
+                (
+                    Severity::Warning,
+                    "config: /k/keymap.jsonc: 3:4: bad key".into()
+                ),
+            ]
+        );
     }
 }

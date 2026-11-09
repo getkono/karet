@@ -3,7 +3,7 @@
 
     /// A session over a package whose functions call one another, indexed.
     fn calling_session() -> Option<(Session, crate::session::EventRx, tempfile::TempDir)> {
-        karet_seam::lang::rust::language_id()?;
+        karet_treesitter::languages::RUST?;
         let dir = tempfile::tempdir().ok()?;
         std::fs::write(
             dir.path().join("Cargo.toml"),
@@ -21,7 +21,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -39,7 +39,7 @@
         events: &mut crate::session::EventRx,
         path: &str,
     ) -> (Vec<crate::api::SeamEdgeView>, Option<crate::api::SeamCallMetricsView>) {
-        session.handle(RequestId(9), Command::SeamNode {
+        session.handle(RequestId(9), SeamCommand::Node {
             path: path.to_owned(),
         });
         let answer = await_seam_event(events);
@@ -107,7 +107,7 @@
         assert_eq!(before.map(|m| m.fan_in), Some(1), "only `mid` calls it");
 
         // An edit adds a caller: the graph must not answer from before the edit.
-        session.handle(RequestId(3), Command::ReindexSeams {
+        session.handle(RequestId(3), SeamCommand::Reindex {
             path: dir.path().join("src").join("lib.rs"),
             text: "pub fn top() { mid(); mid(); }\nfn mid() { leaf(); }\nfn leaf() {}\n\
                    pub fn extra() { leaf(); }\npub struct Shape;\n"
@@ -128,7 +128,7 @@
 
         // Back to the original text, then measured under the test configuration: the test
         // caller counts there, and not under the default.
-        session.handle(RequestId(4), Command::ReindexSeams {
+        session.handle(RequestId(4), SeamCommand::Reindex {
             path: dir.path().join("src").join("lib.rs"),
             text: "pub fn top() { mid(); mid(); }\nfn mid() { leaf(); }\nfn leaf() {}\n\
                    pub struct Shape;\n#[cfg(test)]\nmod tests {\n    fn t() { super::leaf(); }\n}\n"
@@ -138,8 +138,8 @@
             await_seam_event(&mut events),
             Some(Event::SeamIndexed { .. })
         ));
-        session.handle(RequestId(5), Command::SetSeamConfiguration {
-            name: karet_seam::Configuration::unconfigured()
+        session.handle(RequestId(5), SeamCommand::SetConfiguration {
+            name: karet_seam::config::Configuration::unconfigured()
                 .for_target("test")
                 .name,
         });

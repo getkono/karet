@@ -74,7 +74,7 @@ pub(crate) fn walk(
     for _ in 0..max_depth {
         let mut next = Vec::new();
         for parent in &level {
-            for child in directories(parent) {
+            for child in subdirs(parent, |_| false) {
                 if visited >= max_directories {
                     return;
                 }
@@ -94,15 +94,19 @@ pub(crate) fn walk(
     }
 }
 
-/// A directory's immediate subdirectories, sorted by name.
-fn directories(base: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(base) else {
+/// A directory's immediate subdirectories, sorted by path, less those `skip` rejects.
+///
+/// The one listing every discovery and module walk reads a directory through, so each
+/// gets the same stable order. An unreadable directory has no subdirectories.
+#[must_use]
+pub(crate) fn subdirs(dir: &Path, skip: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
+        .filter(|path| path.is_dir() && !skip(path))
         .collect();
     out.sort();
     out
@@ -141,6 +145,24 @@ mod tests {
     fn the_walk_offers_the_root_first_then_sorted_children() -> TestResult {
         let root = tree(&["zeta", "alpha", "mid"])?;
         assert_eq!(visited(root.path(), 1), ["", "alpha", "mid", "zeta"]);
+        Ok(())
+    }
+
+    /// Every walk lists through this, so its contract is pinned directly: directories
+    /// only, sorted, minus what `skip` rejects, and nothing for an unreadable path.
+    #[test]
+    fn subdirs_lists_sorted_directories_less_the_skipped() -> TestResult {
+        let root = tree(&["zeta", "alpha", ".hidden", "mid/inner"])?;
+        std::fs::write(root.path().join("file.rs"), "")?;
+        let names = |skip: fn(&Path) -> bool| -> Vec<String> {
+            subdirs(root.path(), skip)
+                .iter()
+                .filter_map(|path| Some(path.file_name()?.to_str()?.to_owned()))
+                .collect()
+        };
+        assert_eq!(names(|_| false), [".hidden", "alpha", "mid", "zeta"]);
+        assert_eq!(names(skipped), ["alpha", "mid", "zeta"]);
+        assert!(subdirs(&root.path().join("absent"), |_| false).is_empty());
         Ok(())
     }
 

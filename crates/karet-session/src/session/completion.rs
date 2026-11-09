@@ -1,35 +1,22 @@
 //! Completion through the session seam: asking the document's language server
-//! for candidates ([`Command::Completion`]) and for what it deferred about one
-//! of them ([`Command::ResolveCompletion`]), and handing the answers back with
-//! every range in buffer columns.
+//! for candidates ([`LspCommand::Completion`](crate::api::LspCommand::Completion))
+//! and for what it deferred about one of them
+//! ([`LspCommand::ResolveCompletion`](crate::api::LspCommand::ResolveCompletion)),
+//! and handing the answers back with every range in buffer columns.
 
 use karet_core::CompletionItem;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::utf16_caret;
 use super::*;
 
 impl Session {
-    /// Serve a [`Command::Completion`] or [`Command::ResolveCompletion`];
-    /// any other command is not this module's and is ignored.
-    pub(super) fn completion_command(&mut self, id: RequestId, command: Command) {
-        match command {
-            Command::Completion {
-                doc,
-                position,
-                trigger,
-            } => self.completion(id, doc, (position, trigger)),
-            Command::ResolveCompletion { doc, item } => self.resolve_completion(id, doc, item),
-            _ => {},
-        }
-    }
-
-    /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
-    /// encoding and forward to the document's language server. Languages with no
-    /// server answer immediately with an empty set, so the client never waits.
-    fn completion(
+    /// Serve [`LspCommand::Completion`](crate::api::LspCommand::Completion):
+    /// convert the caret to the server's UTF-16 encoding and forward to the
+    /// document's language server. Languages with no server answer immediately
+    /// with an empty set, so the client never waits.
+    pub(super) fn completion(
         &mut self,
         id: RequestId,
         doc_id: DocumentId,
@@ -57,10 +44,16 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ResolveCompletion`] from the server that completes in
-    /// the document. With no server to ask, the answer is that nothing was
-    /// resolved, so the client stops waiting and does not ask again.
-    fn resolve_completion(&mut self, id: RequestId, doc_id: DocumentId, item: CompletionItem) {
+    /// Serve [`LspCommand::ResolveCompletion`](crate::api::LspCommand::ResolveCompletion)
+    /// from the server that completes in the document. With no server to ask,
+    /// the answer is that nothing was resolved, so the client stops waiting and
+    /// does not ask again.
+    pub(super) fn resolve_completion(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        item: CompletionItem,
+    ) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
@@ -120,24 +113,6 @@ impl Session {
                 self.emit(Some(request), Event::CompletionResolved { doc, resolved });
             },
             _ => {},
-        }
-    }
-
-    /// Convert every range `item` carries -- its edit, its replace range, its
-    /// additional edits -- from the server's UTF-16 columns to `doc`'s buffer
-    /// columns. A closed document leaves them as they are.
-    fn completion_to_buffer_columns(&self, doc: DocumentId, item: &mut CompletionItem) {
-        let Some(open) = self.store.docs.get(&doc) else {
-            return;
-        };
-        let ranges = item
-            .edit
-            .iter_mut()
-            .chain(item.additional_edits.iter_mut())
-            .map(|edit| &mut edit.range)
-            .chain(item.replace_range.as_mut());
-        for range in ranges {
-            *range = utf16_range_to_buffer(&open.buffer, *range);
         }
     }
 }

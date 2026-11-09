@@ -1,8 +1,8 @@
 //! Per-file-type comment syntax: the tokens a "toggle comment" command inserts.
 //!
-//! The table is keyed by a file type's protocol language id (or, for a type with
-//! none, its display name), so two types that share a grammar can still differ —
-//! `.json` has no comments while `.jsonc` takes `//`.
+//! Each registry row sets its own tokens, so two types that share a grammar can
+//! still differ — `.json` has no comments while `.jsonc` takes `//` — and a
+//! renamed type keeps them.
 
 /// The line and block comment tokens of one file type.
 ///
@@ -46,71 +46,72 @@ impl CommentTokens {
     }
 }
 
-const fn line(token: &'static str) -> CommentTokens {
+/// A line comment only.
+pub(crate) const fn line(token: &'static str) -> CommentTokens {
     CommentTokens::new(Some(token), None)
 }
 
-const fn both(token: &'static str, open: &'static str, close: &'static str) -> CommentTokens {
+/// A line comment and a block comment.
+pub(crate) const fn both(
+    token: &'static str,
+    open: &'static str,
+    close: &'static str,
+) -> CommentTokens {
     CommentTokens::new(Some(token), Some((open, close)))
 }
 
-const fn block(open: &'static str, close: &'static str) -> CommentTokens {
+/// A block comment only.
+pub(crate) const fn block(open: &'static str, close: &'static str) -> CommentTokens {
     CommentTokens::new(None, Some((open, close)))
 }
 
-const C_STYLE: CommentTokens = both("//", "/*", "*/");
-const HASH: CommentTokens = line("#");
-const MARKUP: CommentTokens = block("<!--", "-->");
-
-/// The comment tokens for a file type identified by `key` — its protocol language
-/// id, or its display name when it has none. Unknown keys have no comment syntax.
-pub(crate) fn tokens_for(key: &str) -> CommentTokens {
-    match key {
-        "rust" | "c" | "cpp" | "csharp" | "java" | "kotlin" | "go" | "swift" | "scala" | "dart"
-        | "javascript" | "javascriptreact" | "typescript" | "typescriptreact" | "jsonc"
-        | "json5" | "protobuf" | "scss" | "sass" | "less" | "pkl" | "php" => C_STYLE,
-        "zig" | "asciidoc" => line("//"),
-        "python" | "ruby" | "r" | "perl" | "elixir" | "yaml" | "toml" | "properties"
-        | "lockfile" | "shellscript" | "zsh" | "fish" | "graphql" | "dockerfile" | "make"
-        | "gitconfig" | "editorconfig" | "dotenv" | "Ksh" | "Git config" => HASH,
-        "cmake" => both("#", "#[[", "]]"),
-        "powershell" => both("#", "<#", "#>"),
-        "ini" => line(";"),
-        "lua" => both("--", "--[[", "]]"),
-        "haskell" => both("--", "{-", "-}"),
-        "sql" => both("--", "/*", "*/"),
-        "ocaml" => block("(*", "*)"),
-        "erlang" | "latex" => line("%"),
-        "Mermaid" => line("%%"),
-        "clojure" | "edn" | "elisp" => line(";"),
-        "vim" => line("\""),
-        "batch" => line("REM"),
-        "restructuredtext" => line(".."),
-        "css" => block("/*", "*/"),
-        "html" | "xml" | "markdown" | "vue" | "svelte" | "astro" => MARKUP,
-        "mdx" => block("{/*", "*/}"),
-        "erb" => block("<%#", "%>"),
-        _ => CommentTokens::NONE,
-    }
-}
+/// `//` and `/* */`: the C family and everything that borrowed its syntax.
+pub(crate) const C_STYLE: CommentTokens = both("//", "/*", "*/");
+/// `#` line comments: shells, scripting languages, and most config formats.
+pub(crate) const HASH: CommentTokens = line("#");
+/// `<!-- -->`: HTML, XML and markdown.
+pub(crate) const MARKUP: CommentTokens = block("<!--", "-->");
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::file_type_for_language;
+    use crate::file_type_for_path;
+
+    fn tokens(id: &str) -> Option<CommentTokens> {
+        file_type_for_language(id).map(|file_type| file_type.comment_tokens())
+    }
 
     #[test]
     fn c_family_has_both_halves() {
-        let tokens = tokens_for("rust");
-        assert_eq!(tokens.line(), Some("//"));
-        assert_eq!(tokens.block(), Some(("/*", "*/")));
-        assert!(!tokens.is_empty());
+        let rust = tokens("rust").unwrap_or_default();
+        assert_eq!(rust.line(), Some("//"));
+        assert_eq!(rust.block(), Some(("/*", "*/")));
+        assert!(!rust.is_empty());
     }
 
     #[test]
     fn markup_is_block_only_and_data_has_none() {
-        assert_eq!(tokens_for("html").line(), None);
-        assert_eq!(tokens_for("html").block(), Some(("<!--", "-->")));
-        assert!(tokens_for("json").is_empty());
-        assert_eq!(tokens_for("no-such-language"), CommentTokens::NONE);
+        let html = tokens("html").unwrap_or_default();
+        assert_eq!(html.line(), None);
+        assert_eq!(html.block(), Some(("<!--", "-->")));
+        assert_eq!(tokens("json"), Some(CommentTokens::NONE));
+        assert!(tokens("json").is_some_and(|json| json.is_empty()));
+        let unknown = file_type_for_path(std::path::Path::new("x.no-such-extension"));
+        assert_eq!(unknown.comment_tokens(), CommentTokens::NONE);
+    }
+
+    /// Types that share a grammar keep their own tokens: `.json` has none while
+    /// `.jsonc` takes C-style comments, and the name-only types (no protocol
+    /// id) carry theirs on the row too.
+    #[test]
+    fn each_row_carries_its_own_tokens() {
+        let at = |path: &str| file_type_for_path(std::path::Path::new(path)).comment_tokens();
+        assert_eq!(at("a.json"), CommentTokens::NONE);
+        assert_eq!(at("a.jsonc"), C_STYLE);
+        assert_eq!(at("a.ksh"), HASH);
+        assert_eq!(at(".gitignore"), HASH);
+        assert_eq!(at("a.mmd").line(), Some("%%"));
+        assert_eq!(at("a.mdx").block(), Some(("{/*", "*/}")));
     }
 }

@@ -1,7 +1,37 @@
+use karet_core::EditCause;
+use karet_core::HierarchyDirection;
+use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_editor::EditorState;
 use karet_editor::Motion;
+use karet_editor::editing;
+use karet_session::DebugCommand;
+use karet_session::DocumentCommand;
+use karet_session::LocationKind;
+use karet_session::NotebookCommand;
+use karet_session::RangeSpec;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_session::WorkspaceCommand;
+use karet_widgets::PaneId;
+use karet_widgets::SplitDir;
 
 use super::code_actions::ActionsFor;
-use super::*;
+use crate::app::App;
+use crate::app::GRAPH_PAN_COLUMNS;
+use crate::app::editor::column::ColumnStep;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::app::state::SearchOption;
+use crate::app::state::ZenRestore;
+use crate::command::Command;
+use crate::keymap::Focus;
+use crate::keymap::SidebarPanel;
+use crate::overlay::Overlay;
+use crate::remote;
+use crate::tab::SearchField;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Apply a resolved [`Command`].
@@ -20,9 +50,14 @@ impl App {
                 if panel == SidebarPanel::Todos && !self.todos_available() {
                     return;
                 }
+                // The Hierarchy panel shows a tree a hierarchy command grew;
+                // with none yet there is nothing to show.
+                if panel == SidebarPanel::Hierarchy && !self.show_hierarchy() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
-                self.focus = Focus::Sidebar;
+                self.keyboard.focus_sidebar();
                 // Lazily fetch the first commit-log page when Source Control opens.
                 if panel == SidebarPanel::SourceControl && self.scm.log.is_empty() {
                     self.request_scm_log(0);
@@ -54,7 +89,7 @@ impl App {
             Command::GoToSymbolInWorkspace => self.open_workspace_symbols(),
             Command::GoToLine => self.open_go_to_line(),
             Command::OpenRecentWorkspace => self.open_recent_workspace(),
-            Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
+            Command::OpenCommandPalette => self.open_overlay(Overlay::command_palette()),
             Command::OpenFind => self.open_find(),
             Command::OpenGlobalSearch => self.start_global_search(),
             Command::CloseTab => self.request_close_active_tab(),
@@ -79,6 +114,7 @@ impl App {
             | Command::TerminalScrollPageDown
             | Command::TerminalScrollToTop
             | Command::TerminalScrollToBottom => self.terminal_command(command),
+            Command::RunTask => self.open_task_picker(),
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
@@ -112,6 +148,8 @@ impl App {
             Command::SidebarCollapse => self.sidebar_collapse(),
             Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
             Command::ToggleOutline => self.toggle_outline(),
+            Command::ToggleZenMode => self.toggle_zen_mode(),
+            Command::ToggleMaximizePane => self.toggle_maximize_pane(),
             Command::OutlineUp => self.outline_step(-1),
             Command::OutlineDown => self.outline_step(1),
             Command::OutlineActivate => self.outline_activate(),
@@ -163,10 +201,15 @@ impl App {
             Command::ExpandSelection => self.expand_selection(),
             Command::ShrinkSelection => self.shrink_selection(),
             Command::CollapseCarets => self.collapse_carets_or_unfocus(),
+            Command::EnterNormalMode => self.vi_enter_normal(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
-            Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
-            Command::PageDown => self.scroll_lines(i32::from(self.main_rect.height.max(1))),
+            Command::PageUp => {
+                self.scroll_lines(-i32::from(self.last_frame.main_rect.height.max(1)))
+            },
+            Command::PageDown => {
+                self.scroll_lines(i32::from(self.last_frame.main_rect.height.max(1)))
+            },
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
@@ -178,27 +221,31 @@ impl App {
             Command::FoldLevel(level) => self.fold_level(level),
             Command::FoldRecursively => self.fold_recursively(),
             Command::UnfoldRecursively => self.unfold_recursively(),
-            Command::FoldAllComments => self.fold_kind(karet_syntax::FoldKind::Comment),
-            Command::FoldAllImports => self.fold_kind(karet_syntax::FoldKind::Imports),
+            Command::FoldAllComments => self.fold_kind(karet_core::FoldKind::Comment),
+            Command::FoldAllImports => self.fold_kind(karet_core::FoldKind::Imports),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::NextInlineCompletion => self.cycle_inline_completion(true),
+            Command::PrevInlineCompletion => self.cycle_inline_completion(false),
+            Command::CopilotSignIn => self.copilot_account(true),
+            Command::CopilotSignOut => self.copilot_account(false),
             Command::Hover => self.request_hover(),
             Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),
             Command::ShowDiagnostic => self.show_diagnostic(),
             Command::DebugStart => self.debug_start_or_continue(),
-            Command::DebugStop => self.debug_send(SessionCommand::DebugStop),
-            Command::DebugPause => self.debug_send(SessionCommand::DebugPause),
+            Command::DebugStop => self.debug_send(DebugCommand::Stop),
+            Command::DebugPause => self.debug_send(DebugCommand::Pause),
             Command::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
-            Command::DebugStepOver => self.debug_step(SessionCommand::DebugStepOver),
-            Command::DebugStepIn => self.debug_step(SessionCommand::DebugStepIn),
-            Command::DebugStepOut => self.debug_step(SessionCommand::DebugStepOut),
+            Command::DebugStepOver => self.debug_step(DebugCommand::StepOver),
+            Command::DebugStepIn => self.debug_step(DebugCommand::StepIn),
+            Command::DebugStepOut => self.debug_step(DebugCommand::StepOut),
             Command::DebugEvaluatePrompt => self.debug_evaluate_prompt(),
             Command::NotebookRunAll => self.notebook_run_all(),
-            Command::NotebookInterrupt => self.debug_send(SessionCommand::NotebookInterrupt),
-            Command::NotebookRestartKernel => self.debug_send(SessionCommand::NotebookRestart),
+            Command::NotebookInterrupt => self.debug_send(NotebookCommand::Interrupt),
+            Command::NotebookRestartKernel => self.debug_send(NotebookCommand::Restart),
             Command::ToggleLineComment => self.toggle_comment(false),
             Command::ToggleBlockComment => self.toggle_comment(true),
             Command::ToggleBold => {
@@ -251,6 +298,7 @@ impl App {
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
+            Command::OpenLinkAtCaret => self.open_link_at_caret(),
             Command::GoToDeclaration => self.request_locations(Some(LocationKind::Declaration)),
             Command::GoToTypeDefinition => {
                 self.request_locations(Some(LocationKind::TypeDefinition));
@@ -259,11 +307,18 @@ impl App {
                 self.request_locations(Some(LocationKind::Implementation));
             },
             Command::FindReferences => self.request_locations(Some(LocationKind::References)),
+            Command::ShowIncomingCalls => self.open_hierarchy(HierarchyDirection::IncomingCalls),
+            Command::ShowOutgoingCalls => self.open_hierarchy(HierarchyDirection::OutgoingCalls),
+            Command::ShowSupertypes => self.open_hierarchy(HierarchyDirection::Supertypes),
+            Command::ShowSubtypes => self.open_hierarchy(HierarchyDirection::Subtypes),
+            Command::HierarchyExpand => self.hierarchy_expand(),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),
             Command::FormatDocument => self.format_active(false),
             Command::FormatSelection => self.format_active(true),
+            Command::StartLinkedEditing => self.start_linked_editing(),
+            Command::ToggleFormatOnType => self.toggle_format_on_type(),
             Command::CodeActions => self.request_code_actions(&[], ActionsFor::Menu),
             Command::SourceAction => self.request_code_actions(&["source"], ActionsFor::Menu),
             Command::OrganizeImports => self.request_code_actions(
@@ -290,6 +345,7 @@ impl App {
                     }
                     self.maybe_auto_complete(c);
                     self.maybe_signature_help(c);
+                    self.maybe_format_on_type(c);
                 }
             },
             Command::InsertNewline => {
@@ -319,6 +375,7 @@ impl App {
                         );
                     }
                 }
+                self.maybe_format_on_type('\n');
             },
             Command::Indent => self.indent_or_toggle_focus(),
             Command::Outdent => self.reindent(true),
@@ -345,15 +402,15 @@ impl App {
             Command::SelectExtendDown => self.sidebar_select_extend(1),
             Command::SelectToggle => self.sidebar_select_toggle(),
             Command::SelectAll => self.sidebar_select_all(),
-            Command::ScmStage => self.scm_send_paths(|paths| SessionCommand::Stage { paths }),
-            Command::ScmUnstage => self.scm_send_paths(|paths| SessionCommand::Unstage { paths }),
+            Command::ScmStage => self.scm_send_paths(|paths| VcsCommand::Stage { paths }),
+            Command::ScmUnstage => self.scm_send_paths(|paths| VcsCommand::Unstage { paths }),
             Command::ScmToggleStage => self.scm_toggle_stage(),
-            Command::ScmStageAll => self.send_command(SessionCommand::StageAll),
-            Command::ScmUnstageAll => self.send_command(SessionCommand::UnstageAll),
+            Command::ScmStageAll => self.send_command(VcsCommand::StageAll),
+            Command::ScmUnstageAll => self.send_command(VcsCommand::UnstageAll),
             Command::ScmDiscard => self.scm_arm_discard(),
             Command::ScmCommit => self.scm_open_commit_input(),
             Command::ScmRefresh => {
-                self.send_command(SessionCommand::RefreshVcs);
+                self.send_command(VcsCommand::Refresh);
                 self.request_repository_snapshot();
             },
             Command::ScmSync => self.run_vcs_action(VcsAction::Sync),
@@ -379,7 +436,7 @@ impl App {
             Command::OpenBlameDetail => self.open_live_blame_detail(),
             Command::ShowLoadedConfig => {
                 if self.backend.is_some() {
-                    self.send_command(SessionCommand::LoadedConfig);
+                    self.send_command(WorkspaceCommand::LoadedConfig);
                 } else {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
@@ -418,21 +475,36 @@ impl App {
 
             // Modal-scoped commands (resolved only while a modal context is active).
             Command::OverlayUp => {
-                if let Some(overlay) = self.overlay.as_mut() {
+                if let Some(overlay) = self.keyboard.overlay_mut() {
                     overlay.select_up();
                 }
             },
             Command::OverlayDown => {
-                if let Some(overlay) = self.overlay.as_mut() {
+                if let Some(overlay) = self.keyboard.overlay_mut() {
                     overlay.select_down();
                 }
             },
             Command::OverlayAccept => self.overlay_accept(),
-            Command::OverlayCancel => self.overlay = None,
+            Command::OverlayCancel => {
+                self.close_overlay();
+            },
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
-            Command::FindSubmit => self.find_submit(),
+            Command::FindSubmit => {
+                let searching =
+                    self.active_find().map(|find| find.field) == Some(SearchField::Find);
+                // In a modal preset, Enter in the query accepts the match the
+                // typing already moved to and hands the keys back to the
+                // editor, as vim's `/` does; `n`/`N` go on from there.
+                if searching && self.keymap_preset().is_modal() {
+                    if let Some(find) = self.active_find_mut() {
+                        find.focused = false;
+                    }
+                } else {
+                    self.find_submit();
+                }
+            },
             Command::FindReplaceAll => self.find_replace_all(),
             Command::FindToggleReplace => self.find_toggle_replace(),
             Command::FindToggleField => self.find_toggle_field(),
@@ -477,11 +549,11 @@ impl App {
                         format!("recovering {} file(s)…", swaps.len()),
                     );
                 }
-                self.send_command(SessionCommand::RecoverSwaps);
+                self.send_command(DocumentCommand::RecoverSwaps);
             },
             Command::DiscardSwaps => {
                 self.pending_swaps = None;
-                self.send_command(SessionCommand::DiscardSwaps);
+                self.send_command(DocumentCommand::DiscardSwaps);
             },
             Command::CloseConfirmCancel => self.cancel_close(),
             Command::DismissSwaps => {
@@ -498,7 +570,7 @@ impl App {
                     NotificationKind::System,
                     "building dependency graph…",
                 );
-                self.send_command(SessionCommand::DependencyGraph);
+                self.send_command(WorkspaceCommand::DependencyGraph);
             },
             Command::SeamNextRow => self.seam_move_row(1),
             Command::SeamPrevRow => self.seam_move_row(-1),
@@ -533,12 +605,8 @@ impl App {
             Command::RevInputSubmit => self.rev_submit(),
             Command::RevInputCancel => self.rev_cancel(),
             Command::ShowFileHistory => self.open_file_history(),
-            Command::DiffUnpushed => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Unpushed,
-            }),
-            Command::DiffSinceBase => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::SinceBase { base: None },
-            }),
+            Command::DiffUnpushed => self.open_range(RangeSpec::Unpushed),
+            Command::DiffSinceBase => self.open_range(RangeSpec::SinceBase { base: None }),
             Command::CommitGraphMarkBase => self.graph_mark_base(),
             Command::CommitGraphCompare => self.graph_compare(),
             Command::SpellingScan => self.scan_workspace_spelling(),
@@ -550,7 +618,7 @@ impl App {
             // `should_quit` until now, so Esc while browsing results quit karet.
             Command::SearchQuit => {
                 self.search.input = false;
-                self.focus = Focus::Editor;
+                self.keyboard.focus_editor();
             },
             Command::SearchExpand => self.search_expand(),
             Command::SearchCollapse => self.search_collapse(),
@@ -580,7 +648,7 @@ impl App {
         if is_code {
             self.caret_motion(false, motion);
         } else {
-            let page = i32::from(self.main_rect.height.max(1));
+            let page = i32::from(self.last_frame.main_rect.height.max(1));
             self.scroll_lines(if motion == Motion::PageUp {
                 -page
             } else {
@@ -607,6 +675,57 @@ impl App {
         } else {
             editor.go_to_bracket(buffer, Some(highlights));
         }
+    }
+
+    /// Enter or leave Zen Mode.
+    ///
+    /// Entering hides the sidebar and the outline here, and the view switcher
+    /// and status bar where the frame is laid out; focus moves to the editor when
+    /// it sat on a panel that just vanished. A panel opened while Zen Mode is on
+    /// (Ctrl+Shift+F, say) still shows, so no command strands focus somewhere
+    /// invisible. Leaving shows again what entering hid, and keeps open whatever
+    /// was opened meanwhile.
+    pub(super) fn toggle_zen_mode(&mut self) {
+        if let Some(restore) = self.modes.zen.take() {
+            self.sidebar_visible |= restore.sidebar;
+            if restore.outline && !self.outline.visible {
+                self.outline.visible = true;
+                self.request_active_outline();
+                self.sync_outline_selection();
+            }
+            return;
+        }
+        self.modes.zen = Some(ZenRestore {
+            sidebar: self.sidebar_visible,
+            outline: self.outline.visible,
+        });
+        self.sidebar_visible = false;
+        self.outline.visible = false;
+        self.outline.overlay = false;
+        if matches!(self.keyboard.focus(), Focus::Sidebar | Focus::Outline) {
+            self.keyboard.focus_editor();
+        }
+    }
+
+    /// Draw the focused pane alone across the content area, or tile every pane
+    /// again. With a single pane there is nothing to maximise, so it stays off.
+    pub(super) fn toggle_maximize_pane(&mut self) {
+        self.modes.maximized = match self.maximized_pane() {
+            None if self.layout.pane_count() > 1 => Some(self.focus_pane()),
+            _ => None,
+        };
+    }
+
+    /// The pane drawn alone across the content area, if one is.
+    ///
+    /// A maximised pane holds only while it keeps focus: focusing another pane
+    /// (Ctrl+K arrow, a split, closing the pane) tiles the layout again rather
+    /// than swapping which pane fills the screen, as VS Code's maximised group
+    /// does.
+    pub(crate) fn maximized_pane(&self) -> Option<PaneId> {
+        self.modes
+            .maximized
+            .filter(|&pane| pane == self.focus_pane() && self.layout.pane_count() > 1)
     }
 }
 

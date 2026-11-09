@@ -17,12 +17,18 @@
 
 use std::collections::HashMap;
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use karet_core::LineCol;
 use karet_core::SignatureHelp;
 use karet_core::SignatureHelpOptions;
-use karet_session::Command as SessionCommand;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
 use karet_session::RequestId;
+use karet_text::TextBuffer;
 
-use super::*;
+use crate::app::App;
+use crate::tab::TabKind;
 
 /// The trigger characters assumed before a server names its own: what
 /// rust-analyzer, typescript-language-server, pyright and clangd all use.
@@ -134,12 +140,12 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::SignatureHelp {
+        let command = LspCommand::SignatureHelp {
             doc,
             position: at,
             manual,
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             self.signature.pending = Some(PendingSignature { id, doc, at });
         }
     }
@@ -260,7 +266,7 @@ impl App {
     /// while the hover popup is open: the signature popup is hidden under it,
     /// so the arrows move the caret instead of cycling an unseen overload.
     pub(super) fn signature_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_some()
+        if self.completion.popup.is_some()
             || self.hover_ui.is_some()
             || !self.editor_owns_keyboard()
             || !key.modifiers.is_empty()
@@ -291,6 +297,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn buffer(text: &str) -> TextBuffer {

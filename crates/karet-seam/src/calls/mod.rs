@@ -58,7 +58,6 @@ pub use graph::GraphOptions;
 use rayon::prelude::*;
 pub use report::CallReport;
 pub use report::ReportOptions;
-pub use report::report;
 pub use resolve::CallResolver;
 pub use resolve::NameResolver;
 pub use resolve::Resolved;

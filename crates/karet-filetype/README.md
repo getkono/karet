@@ -3,7 +3,7 @@
 The single source of truth for **file-type classification and presentation
 metadata** in the [karet](https://github.com/getkono/karet) editor toolkit.
 
-Given a path (and optionally its leading bytes), it answers three questions that
+Given a path (and optionally its leading bytes), it answers four questions that
 were previously scattered across the workspace:
 
 - **What is it?** — [`file_type_for_path`] resolves a path to a [`FileType`]
@@ -14,8 +14,12 @@ were previously scattered across the workspace:
   [`chevron`] return glyphs for an [`IconStyle`] (`NerdFont` / `Unicode` /
   `Ascii`), so the file tree and other widgets render consistent icons.
 - **How should it open?** — [`classify`] returns a [`FileKind`]
-  (`Text`/`Markdown`/`Image`/`Pdf`/`Binary`/`TooLarge`) for renderer routing,
-  using extension plus magic-byte sniffing.
+  (`Text`/`Markdown`/`Cbor`/`Image`/`Pdf`/`Docx`/`Notebook`/`Binary`/`TooLarge`)
+  for renderer routing, using extension plus magic-byte sniffing.
+- **Is it machine-maintained?** — [`generated_for_path`] and
+  [`generated_for_content`] return a [`Generated`] reason (a lockfile, a
+  minified bundle, a vendored tree, a generated-file banner), so renderers can
+  fold it away by default and name why.
 
 The crate is headless and dependency-free (only `std`); presentation crates
 (`karet-widgets`, the `karet` app) and the parse host (`karet-treesitter`)
