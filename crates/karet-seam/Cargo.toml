@@ -42,6 +42,8 @@ lang-java       = ["karet-treesitter/lang-java"]
 
 [dependencies]
 karet-core.workspace       = true
+# Language display names for the call report's rows and precision ledger.
+karet-filetype.workspace   = true
 karet-fuzzy.workspace      = true
 karet-treesitter.workspace = true
 # Manifest reading. Already a workspace dependency, and the crate that owns Cargo

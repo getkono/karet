@@ -3809,6 +3809,7 @@ version = "0.7.1"
 dependencies = [
  "dependable-core",
  "karet-core",
+ "karet-filetype",
  "karet-fuzzy",
  "karet-treesitter",
  "rayon",
