@@ -360,16 +360,15 @@ fn generate_client(surface: &Path, output: &Path) -> Result<(), Box<dyn Error>> 
     let output = output
         .to_str()
         .ok_or_else(|| build_error("OUT_DIR generated path is not UTF-8"))?;
-    let mut config = spargen::Config::new(surface, spargen::OutputTarget::Module(output.into()));
-    config.features.uuid = false;
-    let report = spargen::generate(&config);
-    for diagnostic in &report.diagnostics {
-        println!(
-            "cargo:warning=spargen {} at {}: {}",
-            diagnostic.code, diagnostic.pointer, diagnostic.message
-        );
-    }
-    if report.outcome != spargen::Outcome::Generated {
+    // `Required`: a build that silently skipped the consumer-manifest dependency audit (E023)
+    // or the rerun-if-changed directives could ship a stale or under-constrained client.
+    let build = spargen::Spec::new(surface)
+        .uuid(false)
+        .build(output)
+        .cargo(spargen::CargoIntegration::Required);
+    let report = spargen::generate(&build);
+    report.emit_cargo_diagnostics();
+    if !report.succeeded() {
         return Err(build_error(format!("spargen failed: {report:#?}")).into());
     }
     Ok(())

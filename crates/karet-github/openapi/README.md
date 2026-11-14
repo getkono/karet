@@ -12,22 +12,26 @@ description. It is the sole source of truth for generated GitHub wire types.
 - REST API header version: `2026-03-10`
 
 `surface-operations.json` is the complete reviewed 121-operation repository
-workflow surface. `generated-operations.json` contains the 77 operations that
-pass spargen's strict audit and compile. `manual-operations.json` records the 44
-operations temporarily implemented by typed adapters, together with the real
-upstream issue blocking each operation.
+workflow surface. `generated-operations.json` lists the operations spargen
+generates: since spargen 0.6.0 that is all 121, because the generator gaps that
+used to block 44 of them (spargen#45, #46, #47, #48) are fixed upstream.
+`manual-operations.json` is therefore empty. It stays as the place to record any
+future operation spargen rejects, together with the upstream spargen issue
+blocking it; `build.rs` requires that link and checks that the three lists
+partition the surface.
+
+An operation in `generated-operations.json` can still be called through a
+hand-written adapter in `GitHubClient` that decodes only the fields karet reads
+(issues, search, comments, workflows, timelines, and others do this today).
+Moving those adapters onto the generated methods is a separate change.
 
 `build.rs` verifies the source checksum and manifest partition, derives the
-transitive filtered OpenAPI document, and runs pinned spargen 0.2.1. Both the
-filtered document and generated Rust are written only to Cargo's `OUT_DIR`.
-Generated client code is never tracked and must never be patched manually.
-
-Verified upstream gaps:
-
-- [Union-valued parameters can generate uncompilable Rust](https://github.com/getkono/spargen/issues/45)
-- [Remaining typed GitHub `oneOf`/`anyOf` coverage](https://github.com/getkono/spargen/issues/46)
-- [Duplicate diagnostics for shared components](https://github.com/getkono/spargen/issues/47)
-- [Embedded runtime fails strict consumer lints](https://github.com/getkono/spargen/issues/48)
+transitive filtered OpenAPI document, and runs pinned spargen 0.6.0 with
+`CargoIntegration::Required`, so spargen's consumer-manifest dependency audit
+(E023) always runs and fails the build if `Cargo.toml` falls below a runtime
+dependency floor. Both the filtered document and generated Rust are written only
+to Cargo's `OUT_DIR`. Generated client code is never tracked and must never be
+patched manually.
 
 To refresh the source, replace it with the official JSON from a reviewed upstream
 commit, update the checksum here and in `build.rs`, then run the normal format,

@@ -5,8 +5,9 @@ single home for GitHub-specific networking in the workspace.
 
 It exposes stable repository-workflow models and asynchronous operations for issues,
 pull requests, Actions, and commit verification. GitHub wire types are generated with
-spargen from the vendored official OpenAPI description where the schema is provably
-representable; strictly typed adapters cover explicitly tracked generator blockers.
+spargen from the vendored official OpenAPI description; any operation the generator
+cannot represent is tracked against its upstream spargen issue and covered by a
+strictly typed adapter.
 Generation runs in `build.rs` and writes only to Cargo's `OUT_DIR`; generated Rust is
 never checked into or loaded from the source tree.
 

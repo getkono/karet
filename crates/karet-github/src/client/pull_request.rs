@@ -211,7 +211,7 @@ impl GitHubClient {
                 repository.owner.clone(),
                 repository.repo.clone(),
                 pull_number,
-                &request,
+                Some(&request),
             )
             .await
             .map_err(generated_error)?;
@@ -266,7 +266,7 @@ impl GitHubClient {
                 repository.owner.clone(),
                 repository.repo.clone(),
                 pull_number,
-                &body,
+                Some(&body),
             )
             .await
             .map_err(generated_error)?
@@ -353,8 +353,8 @@ pub(super) fn map_pull_request(pull: generated::types::PullRequest) -> PullReque
         state: pull.state.to_string(),
         creator: Some(pull.user.login),
         creator_id: u64::try_from(pull.user.id).ok(),
-        created_at: pull.created_at,
-        updated_at: pull.updated_at,
+        created_at: pull.created_at.0,
+        updated_at: pull.updated_at.0,
         labels: pull
             .labels
             .into_iter()

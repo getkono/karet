@@ -143,7 +143,11 @@ fn generated_api_error_reports_the_typed_body_and_request_id() {
 
 #[test]
 fn generated_decode_error_names_the_path_and_truncation() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-github-request-id", HeaderValue::from_static("REQ-7"));
     let error = generated_error::<()>(generated::Error::Decode {
+        status: StatusCode::OK,
+        headers,
         path: "head.sha".to_string(),
         body: Bytes::from_static(b"{ \"head\":\n  {} }"),
         truncated: true,
@@ -151,16 +155,19 @@ fn generated_decode_error_names_the_path_and_truncation() {
     assert!(matches!(
         error,
         GitHubError::Decode(ref message)
-            if message == "field `head.sha` could not be decoded (response was truncated); response: { \"head\": {} }"
+            if message == "field `head.sha` of a 200 response could not be decoded (response was truncated); response: { \"head\": {} } (GitHub request ID: REQ-7)"
     ));
     let error = generated_error::<()>(generated::Error::Decode {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        headers: HeaderMap::new(),
         path: "id".to_string(),
         body: Bytes::new(),
         truncated: false,
     });
     assert!(matches!(
         error,
-        GitHubError::Decode(ref message) if message == "field `id` could not be decoded; response: "
+        GitHubError::Decode(ref message)
+            if message == "field `id` of a 422 response could not be decoded; response: "
     ));
 }
 
