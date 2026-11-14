@@ -19,6 +19,7 @@ use karet_core::DebugOutputCategory;
 use karet_core::DebugScope;
 use karet_core::DebugVariable;
 use karet_core::Diagnostic;
+use karet_core::DirEntry;
 use karet_core::DocumentColor;
 use karet_core::DocumentLink;
 use karet_core::EditCause;
@@ -62,10 +63,12 @@ mod github;
 mod language_servers;
 mod navigation;
 mod refactor;
+mod render;
 mod seam;
 mod search;
 mod server_window;
 mod vcs;
+mod workspace;
 
 pub use aicommit::*;
 pub use command::*;
@@ -75,10 +78,12 @@ pub use github::*;
 pub use language_servers::*;
 pub use navigation::*;
 pub use refactor::*;
+pub use render::*;
 pub use seam::*;
 pub use search::*;
 pub use server_window::*;
 pub use vcs::*;
+pub use workspace::*;
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.

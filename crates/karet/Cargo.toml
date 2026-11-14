@@ -108,6 +108,9 @@ jsonc-parser.workspace = true        # parse keymap.jsonc (same JSONC dialect as
 filedescriptor = { workspace = true, optional = true } # wake the terminal's PTY reader on close; behind `terminal`
 
 [dev-dependencies]
+# The tests build real workspaces and supply their listings the way the backend
+# does; the shell itself no longer walks a filesystem.
+ignore.workspace = true
 tempfile.workspace = true            # temp roots for the desktop-entry executor tests
 zip.workspace = true                 # build in-test DOCX fixtures for the open-file tests
 

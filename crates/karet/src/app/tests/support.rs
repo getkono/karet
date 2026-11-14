@@ -88,6 +88,9 @@ pub(crate) use crate::tab::SearchField;
 pub(crate) use crate::tab::Section;
 pub(crate) use crate::tab::TabKind;
 
+mod backend_fs;
+pub(crate) use backend_fs::*;
+
 pub(crate) fn change(path: &str, status: StatusKind) -> ChangeSummary {
     ChangeSummary {
         path: PathBuf::from(path),
@@ -177,7 +180,7 @@ pub(crate) fn write_file(root: &Path, rel: &str, contents: &[u8]) {
 }
 
 pub(crate) fn select_explorer_path(app: &mut App, path: &Path) {
-    app.explorer.ensure_built(&app.root);
+    build_explorer_from_disk(app);
     let Some(idx) = app.explorer.rows().iter().position(|row| row.path == path) else {
         panic!("missing explorer path {}", path.display());
     };

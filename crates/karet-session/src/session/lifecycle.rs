@@ -13,7 +13,7 @@ impl Session {
     #[must_use]
     pub fn new(config: SessionConfig) -> (Self, EventRx, SnapshotRx) {
         let (events, erx) = EventTx::channel();
-        let (snapshots, srx) = mpsc::unbounded_channel();
+        let (snapshots, srx) = crate::local::snapshot_channel();
         // Discover the source-control repository (from the first root) before the
         // watcher, so its git-metadata directories can be watched for index/HEAD/refs
         // changes — that is what keeps the status fresh after external `git` commands.
@@ -50,6 +50,7 @@ impl Session {
         let github_repository = github::eligible_repository(&config.roots, vcs.as_ref());
         let vcs_worker = crate::vcs_worker::spawn(config.roots.first().cloned(), events.clone());
         let search_worker = crate::search_worker::spawn(events.clone());
+        let fs_worker = crate::fs_worker::spawn(events.clone());
         let seam_worker = crate::seam_worker::spawn(events.clone(), config.seam_cache_dir.clone());
         let spell_scan_worker = crate::spell_scan::spawn(events.clone());
         let todo_scan_worker = crate::todo_scan::spawn(events.clone());
@@ -125,6 +126,10 @@ impl Session {
             ai_commit_request: None,
             vcs_worker,
             search_worker,
+            fs_worker,
+            viewports: HashMap::new(),
+            highlight_windows: std::sync::Mutex::default(),
+            view_state: Vec::new(),
             seam_worker,
             spell_scan_worker,
             todo_scan_worker,
@@ -155,7 +160,7 @@ impl Session {
         };
         // Announce any recoverable swaps so the UI can prompt on the first frame.
         session.announce_pending_swaps();
-        (session, EventRx(erx), SnapshotRx(srx))
+        (session, EventRx(erx), srx)
     }
 
     /// Kick off the work deferred until the session is actually being driven: the

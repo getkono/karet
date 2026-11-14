@@ -17,10 +17,16 @@
 //! [`path`](FileTreeRow::path) is the *deepest* directory — expansion, selection,
 //! and opening all act on it; toggling expands/collapses the whole chain.
 
+#[cfg(test)]
+mod local_source;
 mod model;
 mod state;
 mod view;
 
+#[cfg(test)]
+mod edit_tests;
+#[cfg(test)]
+mod listing_tests;
 #[cfg(test)]
 mod tests;
 

@@ -290,6 +290,41 @@ fn an_edited_document_keeps_a_code_tab_whatever_else_shows_its_path() {
     assert_eq!(closes, vec![DocumentId(41), DocumentId(42)]);
 }
 
+/// Against a remote workspace a tab is reserved before the size guard is
+/// settled, but a document the backend already holds needs no guard: its tab
+/// takes its own reference at once, before the backend's is released, rather
+/// than waiting on a classification while the close discards the edit.
+#[test]
+fn a_remote_edited_document_takes_its_reference_before_the_backends_is_released() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let other = dir.path().join("other.rs");
+    let (backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));
+    app.workspace_remote = true;
+
+    app.on_backend_event(
+        None,
+        SessionEvent::WorkspaceEdit {
+            applied: AppliedWorkspaceEdit {
+                result: ApplyWorkspaceEditResult::applied(),
+                edited: vec![other.clone()],
+                opened: vec![(DocumentId(43), other.clone())],
+                ..AppliedWorkspaceEdit::default()
+            },
+        },
+    );
+
+    let order = sent(&backend, |_, command| match command {
+        SessionCommand::Document(DocumentCommand::Open { path, .. }) if *path == other => {
+            Some("open")
+        },
+        SessionCommand::Document(DocumentCommand::Close { doc }) if *doc == DocumentId(43) => {
+            Some("close")
+        },
+        _ => None,
+    });
+    assert_eq!(order, vec!["open", "close"]);
+}
+
 #[test]
 fn a_failed_rename_says_why_and_a_moved_file_retargets_its_tab() {
     let (backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));

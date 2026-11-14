@@ -13,6 +13,8 @@
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use karet_core::CursorState;
 use karet_core::FoldRegions;
@@ -68,18 +70,65 @@ pub struct DocSnapshot {
     pub cursor: Option<CursorState>,
 }
 
+/// The sending half of the snapshot stream: each snapshot travels with the
+/// connection position (`seq`) of the backend frame it was rebuilt from, or 0
+/// when it has none (a local session's, or a remote client's own echo).
+pub(crate) type SnapshotTx = mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>, u64)>;
+
 /// The receiving half of the local snapshot stream (one entry per renderable
 /// change, coalescable last-per-document by the UI).
-pub struct SnapshotRx(pub(crate) mpsc::UnboundedReceiver<(DocumentId, Arc<DocSnapshot>)>);
+pub struct SnapshotRx {
+    rx: mpsc::UnboundedReceiver<(DocumentId, Arc<DocSnapshot>, u64)>,
+    /// The newest connection position among the snapshots the presentation
+    /// layer has taken. A remote client stamps it on every command as what the
+    /// presentation layer had applied when it composed the command, which is
+    /// the one thing the backend's edit fence can trust: the connection has
+    /// often received a newer frame that the presentation layer has not.
+    taken: Arc<AtomicU64>,
+}
+
+/// Build a snapshot stream.
+///
+/// A remote client reconstructs snapshots from the render updates on its
+/// connection and pushes them here, so the renderer draws from the same stream
+/// shape in either mode. The channel is "local" in the sense that matters — it
+/// never crosses a process — regardless of where the data came from.
+#[must_use]
+pub(crate) fn snapshot_channel() -> (SnapshotTx, SnapshotRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (
+        tx,
+        SnapshotRx {
+            rx,
+            taken: Arc::new(AtomicU64::new(0)),
+        },
+    )
+}
 
 impl SnapshotRx {
     /// Await the next snapshot, or `None` once the session has shut down.
     pub async fn recv(&mut self) -> Option<(DocumentId, Arc<DocSnapshot>)> {
-        self.0.recv().await
+        let item = self.rx.recv().await;
+        item.map(|item| self.take(item))
     }
 
     /// Take the next ready snapshot without awaiting, or `None` if none is queued.
     pub fn try_recv(&mut self) -> Option<(DocumentId, Arc<DocSnapshot>)> {
-        self.0.try_recv().ok()
+        let item = self.rx.try_recv().ok();
+        item.map(|item| self.take(item))
+    }
+
+    /// The shared record of the newest connection position taken, for the
+    /// sender that stamps it on commands.
+    pub(crate) fn taken(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.taken)
+    }
+
+    fn take(
+        &self,
+        (doc, snapshot, seq): (DocumentId, Arc<DocSnapshot>, u64),
+    ) -> (DocumentId, Arc<DocSnapshot>) {
+        self.taken.fetch_max(seq, Ordering::Relaxed);
+        (doc, snapshot)
     }
 }

@@ -20,6 +20,7 @@ use crossterm::terminal::SetTitle;
 use karet_core::NotificationKind;
 use karet_fileview::image;
 use karet_session::Backend;
+use karet_session::BackendError;
 use karet_session::EventRx;
 use karet_session::SessionConfig;
 use karet_session::SnapshotRx;
@@ -40,11 +41,42 @@ use crate::workspace;
 /// The session configuration for `app` — shared by the interactive runtime and
 /// the capture harness so the two attach identically. `swap_dir` differs: the
 /// real app persists crash-recovery swaps; a throwaway capture must not.
-pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+pub(crate) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) -> SessionConfig {
+    session_config_for(
+        app.root.clone(),
+        app.loaded_config.clone(),
+        app.syntax,
+        swap_dir,
+        app.keymap_files
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect(),
+    )
+}
+
+/// The session configuration for a workspace, without a shell around it.
+///
+/// A backend serving a remote client never builds an [`App`], but must configure
+/// its session identically to a local one — same settings layers, same supervisor,
+/// same shared language-server installs. Having one constructor is what keeps a
+/// served workspace and a local one from drifting.
+///
+/// Every path resolved here belongs to the machine holding the workspace, which is
+/// the point: `current_exe` is *this* karet, and the language-server directory is
+/// the one whose servers can actually see these files. `keymap_paths` are the
+/// keymap files the session watches for the client; a served session has no
+/// client-side keymap to watch and passes none.
+pub(crate) fn session_config_for(
+    root: std::path::PathBuf,
+    loaded_config: karet_session::config::LoadedConfig,
+    syntax: bool,
+    swap_dir: Option<std::path::PathBuf>,
+    keymap_paths: Vec<std::path::PathBuf>,
+) -> SessionConfig {
     SessionConfig {
-        roots: vec![app.root.clone()],
-        diff_syntax: app.syntax,
-        loaded_config: app.loaded_config.clone(),
+        roots: vec![root],
+        diff_syntax: syntax,
+        loaded_config,
         swap_dir,
         // Every external process is owned by a hidden copy of this executable.
         process_supervisor: std::env::current_exe().ok(),
@@ -56,11 +88,7 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
         seam_cache_dir: karet_session::default_seam_cache_dir(),
         // Saving a `keymap.jsonc` rebinds live: the session watches the files and
         // reports `KeymapChanged`, so the app runs no watcher of its own.
-        keymap_paths: app
-            .keymap_files
-            .iter()
-            .map(|(_, path)| path.clone())
-            .collect(),
+        keymap_paths,
     }
 }
 
@@ -73,10 +101,19 @@ pub(super) fn attach_backend(
     config: SessionConfig,
 ) -> color_eyre::Result<(EventRx, SnapshotRx)> {
     let (local_backend, snaps) = local(config);
-    // The composition root only ever sees the `Backend` seam: the local
-    // implementation is constructed here, and the event stream comes off the
-    // trait — the exact shape a remote backend will slot into.
-    let backend: Arc<dyn Backend> = Arc::new(local_backend);
+    attach(app, Arc::new(local_backend), snaps)
+}
+
+/// Attach an already-constructed backend and run the shared post-attach steps.
+///
+/// The composition root only ever sees the `Backend` seam, so a session running
+/// in this process and one running on another machine arrive here identically —
+/// which is the whole reason remote mode needed no changes below this line.
+pub(super) fn attach(
+    app: &mut App,
+    backend: Arc<dyn Backend>,
+    snaps: SnapshotRx,
+) -> color_eyre::Result<(EventRx, SnapshotRx)> {
     let Some(events) = backend.take_events() else {
         return Err(eyre!("backend event stream is unavailable"));
     };
@@ -102,6 +139,25 @@ pub(super) fn attach_backend(
     }
     Ok((events, snaps))
 }
+
+/// Where the session this shell drives comes from.
+pub enum Source {
+    /// An in-process session, configured from the shell (see [`session_config`]).
+    Local,
+    /// A session on the other end of a connection, opened by `open`.
+    ///
+    /// The connection is established inside the shell's runtime rather than
+    /// handed in already made, because a `RemoteBackend` and its pump are tied to
+    /// the runtime that spawned them.
+    Remote(RemoteOpen),
+}
+
+/// Opens a connection to a remote backend, inside the shell's Tokio runtime.
+pub type RemoteOpen = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn Future<Output = color_eyre::Result<(Arc<dyn Backend>, SnapshotRx)>>>,
+        > + Send,
+>;
 
 /// The sidebar width a body `body_width` columns wide shows for a user-chosen
 /// `width`: it can grow to nearly the full width, but always leaves one column
@@ -147,7 +203,7 @@ impl App {
     }
 }
 
-pub fn run(mut app: App) -> color_eyre::Result<()> {
+pub fn run(mut app: App, source: Source) -> color_eyre::Result<()> {
     let kitty_keyboard_supported = crate::term_caps::supports_kitty_keyboard();
     if !kitty_keyboard_supported {
         return Err(eyre!(
@@ -177,8 +233,23 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     }
     let root = app.root.clone();
     app.recent.touch_workspace(&root);
+    // A remote workspace is not on this disk: its file list comes from the
+    // backend, never from a walk of a path that only means something there.
+    let local = matches!(source, Source::Local);
+    if !local {
+        app.mark_workspace_remote();
+    }
     // Walk now, so the list is ready by the first Go to File.
     app.file_index.ensure_started();
+    // Connected before the editor takes the terminal: the command that carries
+    // the connection may need the user first — an `ssh` password, a host key to
+    // accept, a second factor — and it asks on the terminal, which is readable
+    // and answerable only while it is still the plain one. Ctrl+C still ends a
+    // backend that never greets, so the wait needs no bound of its own.
+    let remote = match source {
+        Source::Local => None,
+        Source::Remote(open) => Some(runtime.block_on(open())?),
+    };
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -224,7 +295,9 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
 
     // The saved workspace layout lives beside the swaps. Only the live editor
     // reads or writes it: `--capture` and tests never touch the user's state.
-    let layout_dir = karet_session::default_swap_dir();
+    // A layout saved here names paths on this machine, so a remote workspace
+    // neither restores nor saves one.
+    let layout_dir = karet_session::default_swap_dir().filter(|_| local);
 
     let result = runtime.block_on(async {
         // Restored before the backend attaches, so attaching registers every
@@ -232,7 +305,10 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         if let Some(dir) = &layout_dir {
             app.restore_workspace_layout(dir);
         }
-        let (events, snaps) = attach_backend(&mut app, config)?;
+        let (events, snaps) = match remote {
+            None => attach_backend(&mut app, config)?,
+            Some((backend, snaps)) => attach(&mut app, backend, snaps)?,
+        };
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
                 .editor
@@ -357,6 +433,8 @@ async fn event_loop(
     // output arriving faster than its frame cap: that output waits for the
     // scheduled terminal frame (`next_wake`) instead.
     let mut redraw = true;
+    let mut events_open = true;
+    let mut snaps_open = true;
     loop {
         // Backend events (a definition answer, a debugger stop) move the caret
         // too; one look per frame records them for Go Back.
@@ -372,6 +450,10 @@ async fn event_loop(
             note_frame(app);
         }
         redraw = true;
+        // The visible line range is only known once the editor has been laid out,
+        // so the backend hears about it after the frame that established it.
+        app.report_viewports();
+        app.dispatch_file_index_walk();
         // The graph view only learns its viewport height by being painted; top its
         // history up once that is known, so the first screen is already backed by more
         // history than it shows.
@@ -401,11 +483,26 @@ async fn event_loop(
                 Some(event) => handle_terminal_event(app, event),
                 None => app.should_quit = true,
             },
-            event = events.recv() => if let Some((id, ev)) = event {
-                app.on_backend_event(id, ev);
+            // A closed stream answers `None` at once and forever, so it is parked
+            // rather than polled: a dropped remote connection would otherwise spin
+            // this loop at full CPU. The user hears once that the backend is gone.
+            event = events.recv(), if events_open => match event {
+                Some((id, ev)) => app.on_backend_event(id, ev),
+                None => {
+                    events_open = false;
+                    if snaps_open {
+                        app.notify_backend_error(BackendError::Closed);
+                    }
+                },
             },
-            snap = snaps.recv() => if let Some((doc, snap)) = snap {
-                app.on_snapshot(doc, &snap);
+            snap = snaps.recv(), if snaps_open => match snap {
+                Some((doc, snap)) => app.on_snapshot(doc, &snap),
+                None => {
+                    snaps_open = false;
+                    if events_open {
+                        app.notify_backend_error(BackendError::Closed);
+                    }
+                },
             },
             image = recv_decoded(&mut decoded_images) => accept_decoded(app, image),
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
@@ -696,6 +793,9 @@ mod prepare_frame_tests {
             "a paint sends the backend nothing"
         );
 
+        // The tree lists what the backend has told it, so answer its listings
+        // first: the nested repository is discovered from a listed row.
+        crate::app::tests::support::build_explorer_from_disk(&mut app);
         app.prepare_frame(Rect::new(0, 0, 80, 24));
         let nested: Vec<_> = sent(&backend)
             .into_iter()

@@ -1,0 +1,241 @@
+//! Explorer filesystem mutations.
+//!
+//! Every one of these used to run in the presentation layer. They are here now
+//! because a client need not share a machine with the workspace — and because
+//! having one implementation means the create-then-refresh dance is defined once.
+
+use std::path::Path;
+
+use crate::api::PathMutation;
+
+/// Perform `mutation`, mapping any failure to a displayable message.
+pub(super) fn run(mutation: &PathMutation) -> Result<(), String> {
+    match mutation {
+        PathMutation::CreateFile { path } => create_file(path),
+        PathMutation::CreateDirectory { path } => {
+            std::fs::create_dir_all(path).map_err(|error| error.to_string())
+        },
+        PathMutation::Rename { from, to } => rename(&entry(from), &entry(to)),
+        PathMutation::Copy { from, to } => copy(&entry(from), &entry(to)),
+        PathMutation::Delete { path } => delete(&entry(path)),
+    }
+}
+
+/// `path` naming the entry itself rather than what it resolves to.
+///
+/// A trailing separator (or a trailing `.`) makes the OS resolve a final
+/// symlink: `link/` is the directory the link points at, so `symlink_metadata`
+/// reports a directory and a delete would empty the target — the one thing the
+/// "never followed" rule below exists to prevent. Rebuilding the path from its
+/// components drops both, so every mutation acts on the entry the explorer
+/// listed.
+fn entry(path: &Path) -> std::path::PathBuf {
+    path.components().collect()
+}
+
+/// Create an empty file, failing if something is already there.
+///
+/// `create_new` rather than `create`: the explorer's "new file" must never
+/// silently truncate a file the user forgot about.
+fn create_file(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Rename `from` to `to`, refusing to clobber an existing destination.
+///
+/// `fs::rename` overwrites on Unix. The explorer's rename and drag-move must not,
+/// so the destination is checked first. The check races, but it turns the common
+/// mistake into an error instead of silent data loss.
+///
+/// A destination that is the source itself is not a clash: an unchanged F2
+/// rename is a no-op, and a case-only rename on a case-insensitive filesystem
+/// names the same entry under a new spelling, which `fs::rename` performs.
+///
+/// Across a mount point `fs::rename` cannot move anything, so the entry is
+/// copied and the source deleted instead, as a drag between volumes expects.
+fn rename(from: &Path, to: &Path) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    if to.symlink_metadata().is_ok() && !same_entry(from, to) {
+        return Err(format!("{} already exists", to.display()));
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    match std::fs::rename(from, to) {
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => move_by_copy(from, to),
+        result => result.map_err(|error| error.to_string()),
+    }
+}
+
+/// Move `from` to `to` by copying it and deleting the source: the only move
+/// there is across a mount point.
+pub(super) fn move_by_copy(from: &Path, to: &Path) -> Result<(), String> {
+    copy_into_new(from, to)?;
+    delete(from)
+}
+
+/// Whether `from` and `to` name one filesystem entry under two spellings (a
+/// case-only rename on a case-insensitive filesystem).
+///
+/// The same inode alone is not enough: two hard links share one, and
+/// `fs::rename` between them succeeds by doing nothing, leaving the source in
+/// place while the explorer believes it moved. A destination that is another
+/// link to the source is a clash like any other.
+#[cfg(unix)]
+pub(super) fn same_entry(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    if !from.as_os_str().eq_ignore_ascii_case(to.as_os_str()) {
+        return false;
+    }
+    match (from.symlink_metadata(), to.symlink_metadata()) {
+        (Ok(from), Ok(to)) => from.dev() == to.dev() && from.ino() == to.ino(),
+        _ => false,
+    }
+}
+
+/// Whether `from` and `to` name one filesystem entry. Without inode identity,
+/// two paths differing only in ASCII case are taken as one, which is what a
+/// case-insensitive filesystem makes them.
+#[cfg(not(unix))]
+pub(super) fn same_entry(from: &Path, to: &Path) -> bool {
+    from.as_os_str().eq_ignore_ascii_case(to.as_os_str())
+}
+
+/// Copy a file, or a directory and everything under it.
+fn copy(from: &Path, to: &Path) -> Result<(), String> {
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    copy_into_new(from, to)
+}
+
+/// Copy `from` to the absent `to`, refusing to copy a directory into itself.
+///
+/// The presentation layer checks this too, but any client can send the
+/// mutation, and a directory copied into its own subtree recurses until the path
+/// limit, filling the disk on the way.
+fn copy_into_new(from: &Path, to: &Path) -> Result<(), String> {
+    // A link is copied as a link (see `copy_recursive`), so only a real
+    // directory can recurse into its own copy.
+    let real_dir = from.symlink_metadata().is_ok_and(|entry| entry.is_dir());
+    if real_dir && inside(from, to) {
+        return Err(format!(
+            "cannot copy {} into itself ({})",
+            from.display(),
+            to.display()
+        ));
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    copy_recursive(from, to)
+}
+
+/// Whether `path` is `dir` or lies under it, judged both as written and with
+/// links resolved (a destination reached through a link into `dir` counts).
+fn inside(dir: &Path, path: &Path) -> bool {
+    if path.starts_with(dir) {
+        return true;
+    }
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    resolve_absent(path).is_some_and(|resolved| resolved.starts_with(&dir))
+}
+
+/// Where the not-yet-existing `path` will be: its nearest existing ancestor
+/// with links resolved, then the rest of the path applied to it.
+///
+/// The rest names entries that do not exist, so none of them is a link and a
+/// `..` among them steps up exactly as it reads. Dropping the rest instead let
+/// `W/missing/../src/copy` judge as `W` while it lands in `W/src`.
+fn resolve_absent(path: &Path) -> Option<std::path::PathBuf> {
+    let (ancestor, mut resolved) = path
+        .ancestors()
+        .find_map(|ancestor| Some((ancestor, ancestor.canonicalize().ok()?)))?;
+    let rest = path.strip_prefix(ancestor).ok()?;
+    for component in rest.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            },
+            std::path::Component::Normal(name) => resolved.push(name),
+            _ => {},
+        }
+    }
+    Some(resolved)
+}
+
+/// Copy `from` to `to`, recursing through directories.
+///
+/// A link to a file is copied by content, not recreated as a link: an explorer
+/// copy that produced a link pointing outside the destination would surprise,
+/// and a link into the copied tree would still point at the original.
+///
+/// A link to a directory is recreated as a link and never followed, as the
+/// explorer lists it (`karet_core::DirEntry::is_dir`). Following one copies
+/// whatever it reaches: a link to an ancestor nests copies until the path limit,
+/// and a link to `/` copies the filesystem.
+///
+/// Anything else that is not a regular file — a FIFO, a socket, a device — is
+/// refused: copying a FIFO blocks the worker until a writer appears.
+fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
+    let entry = from.symlink_metadata().map_err(|error| error.to_string())?;
+    if entry.is_symlink() && from.is_dir() {
+        return copy_link(from, to);
+    }
+    if entry.is_dir() {
+        std::fs::create_dir_all(to).map_err(|error| error.to_string())?;
+        for entry in std::fs::read_dir(from).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            copy_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    let followed = std::fs::metadata(from).map_err(|error| error.to_string())?;
+    if !followed.is_file() {
+        return Err(format!("{} is not a regular file", from.display()));
+    }
+    std::fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// Recreate the link `from` at `to`, pointing where it points.
+fn copy_link(from: &Path, to: &Path) -> Result<(), String> {
+    let target = std::fs::read_link(from).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, to);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&target, to);
+    #[cfg(not(any(unix, windows)))]
+    let made: std::io::Result<()> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("cannot recreate the link to {}", target.display()),
+    ));
+    made.map_err(|error| error.to_string())
+}
+
+/// Delete a path, recursively for a directory.
+///
+/// A symlink is removed as a link, never followed — deleting a link to a
+/// directory must not delete the directory.
+fn delete(path: &Path) -> Result<(), String> {
+    let metadata = path.symlink_metadata().map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        std::fs::remove_file(path).map_err(|error| error.to_string())
+    }
+}

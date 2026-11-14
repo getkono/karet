@@ -89,6 +89,7 @@ karet-search = { workspace = true, features = ["serde"] } # workspace search run
 # and `lang-python` are the mappings that exist, so those are the grammars it can use.
 karet-seam = { workspace = true, features = ["serde", "lang-rust", "lang-python", "lang-typescript", "lang-swift", "lang-kotlin", "lang-c", "lang-cpp", "lang-java"] }
 karet-watch.workspace = true          # centralized filesystem watching
+ignore.workspace = true               # gitignore-aware directory listing for the file tree
 karet-supervisor.workspace = true     # crash-safe process ownership + shared LSP broker
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time", "net", "io-util"] }
 tracing.workspace = true
@@ -98,6 +99,7 @@ spellbook.workspace = true            # spell-check → diagnostics (migrated fr
 directories.workspace = true          # server-side config / session paths
 # The seam index cache, which is written once per sync and read on every cold start —
 # so it is worth the compactness of a binary encoding over JSON's inspectability.
+# The remote wire codec too: self-describing, so mismatched peers skip what they cannot read.
 ciborium.workspace    = true
 # The stored index decodes in parallel: it is the one part of a warm start that would
 # otherwise stay serial while the cold path it replaces runs on every core.
@@ -108,7 +110,7 @@ reqwest.workspace = true              # explicitly approved managed-LSP download
 base64.workspace = true               # WakaTime Basic auth
 secrecy.workspace = true              # WakaTime API key handling
 sha2.workspace = true                 # release-asset integrity
-flate2.workspace = true               # .gz / .tar.gz managed tool archives
+flate2.workspace = true               # .gz / .tar.gz managed tool archives; remote-frame compression
 lzma-rust2.workspace = true            # pure-Rust .tar.xz managed tool archives
 tar.workspace = true                  # traversal-safe managed tool extraction
 zip.workspace = true                  # Windows managed tool archives

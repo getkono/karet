@@ -387,7 +387,7 @@ fn completion_keys_belong_to_the_focused_editor_only() {
 #[test]
 fn an_outside_press_commits_an_inline_rename() {
     let dir = test_dir("rename-outside-press");
-    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    let mut app = app_at(dir.clone());
     app.sidebar_panel = SidebarPanel::Explorer;
     app.explorer_begin_new(false);
     for c in "made.txt".chars() {
@@ -401,6 +401,7 @@ fn an_outside_press_commits_an_inline_rename() {
         row: 5,
         modifiers: KeyModifiers::NONE,
     });
+    settle_mutations(&mut app);
 
     assert!(
         !app.explorer.is_editing(),

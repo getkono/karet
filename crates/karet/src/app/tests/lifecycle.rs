@@ -607,6 +607,14 @@ fn successful_latex_build_replaces_the_reserved_view_and_publishes_diagnostics()
 
     let replaced = app.tabs.iter().find(|tab| tab.view == view);
     assert!(replaced.is_some_and(|tab| tab.path() == Some(pdf.as_path())));
+    // The new tab is only a reservation; its content is asked for at once, or
+    // the preview never renders.
+    let classified = backend.sent.lock().is_ok_and(|sent| {
+        sent.iter().any(|(_, command)| {
+            matches!(command, SessionCommand::Workspace(karet_session::WorkspaceCommand::ClassifyPath { path, .. }) if *path == pdf)
+        })
+    });
+    assert!(classified, "the built PDF's content is requested");
     assert_eq!(
         app.docs.diagnostics.get(&DocumentId(14)),
         Some(&vec![spelling, diagnostic])

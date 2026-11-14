@@ -55,6 +55,7 @@ mod syntax_state;
 mod updates;
 mod vcs;
 mod viz;
+mod workspace;
 mod workspace_edit;
 
 #[cfg(test)]
@@ -116,6 +117,7 @@ use crate::api::RequestId;
 use crate::api::SaveCause;
 use crate::api::SeamCommand;
 use crate::api::SwapInfo;
+use crate::api::ViewId;
 use crate::api::WorkspaceCommand;
 use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
@@ -123,6 +125,7 @@ use crate::backup::discard;
 use crate::backup::scan;
 use crate::config::load::ConfigManager;
 use crate::event_tx::EventTx;
+use crate::fs_worker::FsJob;
 use crate::highlight::HighlightJob;
 use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
@@ -133,6 +136,24 @@ use crate::lsp::LspManager;
 use crate::lsp::LspUpdate;
 use crate::spell::SpellJob;
 use crate::spell::SpellResult;
+
+/// How many lines beyond a declared viewport a document's highlight spans cover.
+///
+/// A scroll shorter than this needs no round trip: the spans a client already
+/// holds still reach past the edge of its screen. Sized for a page-ish jump,
+/// trading a little bandwidth for not repainting unhighlighted text on every
+/// `Ctrl+D`.
+pub(crate) const VIEWPORT_MARGIN: u32 = 200;
+
+/// The highlight window of one document whose views declared a viewport.
+struct HighlightWindow {
+    /// The padded line range spans are narrowed to. Kept until a view reaches
+    /// outside it, so a scroll within the margin republishes nothing.
+    lines: (u32, u32),
+    /// The slice last published, reused while its spans are unchanged so the
+    /// snapshot keeps the same `Arc` and a connection sends nothing for it.
+    narrowed: Option<Arc<Highlights>>,
+}
 
 /// Configuration for a session, started from it by [`crate::local`].
 #[derive(Clone, Debug)]
@@ -328,7 +349,7 @@ pub(crate) struct Session {
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
     events: EventTx,
-    snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
+    snapshots: crate::local::SnapshotTx,
     store: DocumentStore,
     /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered
     /// highlighting is too heavy to run inline on this actor.
@@ -354,6 +375,21 @@ pub(crate) struct Session {
     /// Ordered background repository actions and network reads.
     vcs_worker: std::sync::mpsc::Sender<crate::vcs_worker::VcsJob>,
     search_worker: std::sync::mpsc::Sender<crate::search_worker::SearchJob>,
+    /// Workspace path I/O: classification, byte reads, listings, mutations.
+    /// Blocking and filesystem-bound, so never on the actor.
+    fs_worker: std::sync::mpsc::Sender<crate::fs_worker::FsJob>,
+    /// The inclusive line range each view is displaying, keyed by
+    /// `(document, view)`. Bounds a document's highlight spans to what a
+    /// client can actually see; empty until a client declares one.
+    viewports: HashMap<(DocumentId, ViewId), (u32, u32)>,
+    /// The window each document's highlights are narrowed to, and the slice last
+    /// published for it. Behind a lock only because publishing borrows the
+    /// session immutably; the actor is its one user.
+    highlight_windows: std::sync::Mutex<HashMap<DocumentId, HighlightWindow>>,
+    /// The client's opaque view state, held so a reattaching client can
+    /// restore tabs and panes its own process did not outlive. Never
+    /// interpreted here.
+    view_state: Vec<u8>,
     /// The seam indexer, which owns its index rather than rebuilding it per request.
     seam_worker: std::sync::mpsc::Sender<crate::seam_worker::SeamJob>,
     /// The workspace spelling scan, which walks every file rather than the open ones.
@@ -513,6 +549,13 @@ impl Session {
             DocumentCommand::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
             DocumentCommand::RecoverSwaps => self.recover_swaps(id),
             DocumentCommand::DiscardSwaps => self.discard_swaps(),
+            DocumentCommand::SetViewport {
+                doc,
+                view,
+                first_line,
+                last_line,
+            } => self.set_viewport(doc, view, first_line, last_line),
+            DocumentCommand::ClearViewport { doc, view } => self.clear_viewport(doc, view),
         }
     }
 
@@ -545,6 +588,36 @@ impl Session {
                     report: Box::new(self.config.loaded_config.clone()),
                 },
             ),
+            WorkspaceCommand::ClassifyPath { path, ignore_size } => {
+                self.submit_fs(FsJob::Classify {
+                    id,
+                    path,
+                    ignore_size,
+                });
+            },
+            WorkspaceCommand::ReadFileBytes { path, offset, len } => {
+                self.submit_fs(FsJob::ReadBytes {
+                    id,
+                    path,
+                    offset,
+                    len,
+                });
+            },
+            WorkspaceCommand::ListFiles { limit } => self.list_files(id, limit),
+            WorkspaceCommand::ReadDirectory {
+                path,
+                show_hidden,
+                respect_gitignore,
+            } => self.submit_fs(FsJob::ReadDirectory {
+                id,
+                path,
+                show_hidden,
+                respect_gitignore,
+            }),
+            WorkspaceCommand::MutatePath { mutation } => {
+                self.submit_fs(FsJob::Mutate { id, mutation });
+            },
+            WorkspaceCommand::CheckpointViewState { blob } => self.view_state = blob,
         }
     }
 
@@ -812,6 +885,17 @@ fn unknown_document(doc: DocumentId) -> Event {
 
 /// The receiving half of a session's server→client event stream.
 pub struct EventRx(mpsc::UnboundedReceiver<(Option<RequestId>, Event)>);
+
+/// Build an event stream not backed by a local [`Session`].
+///
+/// A remote client presents the same stream to the presentation layer, filled
+/// from a connection instead of an in-process actor. Exposing the constructor is
+/// what lets it do that without the UI learning there are two kinds.
+#[must_use]
+pub(crate) fn event_channel() -> (mpsc::UnboundedSender<(Option<RequestId>, Event)>, EventRx) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    (tx, EventRx(rx))
+}
 
 impl EventRx {
     /// Receive the next event, with the [`RequestId`] it answers (if any).

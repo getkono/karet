@@ -588,8 +588,7 @@ impl App {
                     return;
                 }
                 let view_row = (row_y - self.last_frame.sidebar_content_rect.y) as usize;
-                let root = self.root.clone();
-                self.explorer.ensure_built(&root);
+                self.build_explorer();
                 if self.explorer.visible_index(view_row).is_none() {
                     return;
                 }

@@ -138,6 +138,12 @@ impl App {
             if matches!(tab.kind, TabKind::Code { .. }) && tab.fill_caret.is_some() {
                 pendings.extend(tab.fill_since);
             }
+            // So does a tab reserved for bytes still being read.
+            if matches!(tab.kind, TabKind::Hex { .. } | TabKind::Placeholder { .. })
+                && tab.fill_error.is_none()
+            {
+                pendings.extend(tab.fill_since);
+            }
             pendings.extend(tab.kind.pendings());
         }
         // The GitHub surface is not a tab, so its waits have to be collected in their

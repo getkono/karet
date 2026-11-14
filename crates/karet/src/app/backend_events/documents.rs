@@ -169,17 +169,28 @@ impl App {
             self.pending_open.remove(&req);
             self.abandoned_open.remove(&req);
         }
+        let mut needs_bytes = false;
         for tab in self.all_tabs_mut() {
             let is_pending_for_path =
                 matches!(&tab.kind, TabKind::Code { path: p, doc: None, .. } if *p == path);
-            if is_pending_for_path && let Ok(bytes) = std::fs::read(&path) {
+            if is_pending_for_path {
+                // Reserved empty and filled from the backend, like any other
+                // byte-rendered file: the bytes that turned out not to be text are
+                // on the machine that just said so.
                 tab.kind = TabKind::Hex {
                     path: path.clone(),
-                    bytes,
+                    bytes: Vec::new(),
                     scroll: 0,
                 };
                 tab.markdown_preview = None;
+                needs_bytes = true;
             }
+        }
+        // Read the bytes outright rather than classify first: the head can
+        // look like text (Latin-1, or a bad byte past the sampled 8 KiB), and a
+        // classification that says "text" again would leave the view empty.
+        if needs_bytes {
+            self.request_fallback_bytes(&path);
         }
         self.notify_tagged(
             Report::Alert,

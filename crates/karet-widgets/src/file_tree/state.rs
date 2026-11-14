@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+
+use karet_core::DirEntry;
+
 use super::model::*;
 use super::*;
 
@@ -86,6 +90,26 @@ pub struct FileTreeState {
     pub(super) edit_rect: Option<Rect>,
     selected_paths: BTreeSet<PathBuf>,
     cursor_path: Option<PathBuf>,
+    /// Where the cursor goes once a rebuild lists it: the entry an inline
+    /// create just asked for, which appears only when the embedder supplies the
+    /// listing the filesystem's answer prompted. Until then the rows the
+    /// cursor clamps among do not say where the user was.
+    landing: Option<PathBuf>,
+    /// Directory listings the tree has been given, keyed by directory.
+    ///
+    /// The tree does not read directories; it renders the ones it has been told
+    /// about. That is what lets it show a workspace on another machine, and it
+    /// makes the cache the single place a stale listing can live.
+    listings: BTreeMap<PathBuf, Vec<DirEntry>>,
+    /// Directories a rebuild wanted and did not have.
+    ///
+    /// Drained by the embedder, which fetches them and calls
+    /// [`supply`](Self::supply); each answer triggers another rebuild, so the
+    /// tree converges one level at a time.
+    missing: BTreeSet<PathBuf>,
+    /// Listed directories expanded since the embedder last asked: what it shows
+    /// may be out of date, and the moment it is opened is when to read it again.
+    stale: BTreeSet<PathBuf>,
 }
 
 impl Default for FileTreeState {
@@ -103,6 +127,10 @@ impl Default for FileTreeState {
             edit_rect: None,
             selected_paths: BTreeSet::new(),
             cursor_path: None,
+            landing: None,
+            listings: BTreeMap::new(),
+            missing: BTreeSet::new(),
+            stale: BTreeSet::new(),
         }
     }
 }
@@ -290,6 +318,12 @@ impl FileTreeState {
 
     /// Rebuild the index-based selection from remembered path identities.
     fn restore_selection_paths(&mut self) {
+        if let Some(landing) = &self.landing
+            && self.rows.iter().any(|row| &row.path == landing)
+        {
+            self.cursor_path = self.landing.take();
+            self.selected_paths = self.cursor_path.iter().cloned().collect();
+        }
         let indices: Vec<usize> = self
             .rows
             .iter()
@@ -496,14 +530,14 @@ impl FileTreeState {
         if name.is_empty() {
             return None;
         }
+        let created = edit.parent.join(name);
         Some(match edit.kind {
-            EditKind::NewFile => PendingEdit::Create {
-                path: edit.parent.join(name),
-                folder: false,
-            },
-            EditKind::NewFolder => PendingEdit::Create {
-                path: edit.parent.join(name),
-                folder: true,
+            EditKind::NewFile | EditKind::NewFolder => {
+                self.landing = Some(created.clone());
+                PendingEdit::Create {
+                    path: created,
+                    folder: matches!(edit.kind, EditKind::NewFolder),
+                }
             },
             EditKind::Rename(old) => {
                 let to = old
@@ -519,6 +553,7 @@ impl FileTreeState {
     /// The app calls this when the filesystem rejects a create/rename after
     /// [`take_edit`](Self::take_edit) has already consumed the editor state.
     pub fn restore_edit(&mut self, pending: &PendingEdit) {
+        self.landing = None; // nothing was created to land on
         self.editing = match pending {
             PendingEdit::Create { path, folder } => path.parent().map(|parent| {
                 let buffer = file_label(path);
@@ -602,9 +637,17 @@ impl FileTreeState {
     }
 
     /// Expand directory `path`.
+    ///
+    /// A directory whose listing the tree already holds keeps showing it and is
+    /// reported by [`take_stale`](Self::take_stale), so the embedder reads it
+    /// again: nothing else reports a change inside a hidden or ignored
+    /// directory.
     pub fn expand(&mut self, path: &Path) {
         if self.expanded.insert(path.to_path_buf()) {
             self.needs_rebuild = true;
+            if self.listings.contains_key(path) {
+                self.stale.insert(path.to_path_buf());
+            }
         }
     }
 
@@ -634,6 +677,132 @@ impl FileTreeState {
         }
     }
 
+    /// Whether hidden (dot) entries should be listed.
+    ///
+    /// Read by the embedder when it asks for a directory: the tree records the
+    /// preference, and the side doing the listing applies it.
+    #[must_use]
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    /// Whether gitignored entries should be flagged as ignored.
+    #[must_use]
+    pub fn respect_gitignore(&self) -> bool {
+        self.respect_gitignore
+    }
+
+    /// The children of `dir` as the tree knows them.
+    ///
+    /// A directory nobody has supplied yet is recorded as missing and renders
+    /// empty until its listing arrives — the tree fills in behind itself rather
+    /// than blocking a frame on I/O it cannot do.
+    fn children_of(&mut self, dir: &Path) -> Vec<DirEntry> {
+        match self.listings.get(dir) {
+            Some(children) => children.clone(),
+            None => {
+                self.missing.insert(dir.to_path_buf());
+                Vec::new()
+            },
+        }
+    }
+
+    /// Supply `children` as the listing for `dir`.
+    ///
+    /// Marks the tree for rebuild, so the rows appear on the next frame. A
+    /// listing that replaces an earlier one simply wins: the newest answer is
+    /// always the truest.
+    ///
+    /// A subdirectory the new listing no longer holds as a directory is gone:
+    /// the listings held beneath it, and its expansion, are dropped, so a
+    /// folder of the same name created later is read afresh and opens closed
+    /// rather than showing the deleted one's children.
+    pub fn supply(&mut self, dir: PathBuf, mut children: Vec<DirEntry>) {
+        karet_core::sort_entries(&mut children);
+        let present: BTreeSet<&Path> = children
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| entry.path.as_path())
+            .collect();
+        let gone = |path: &Path| {
+            path.strip_prefix(&dir)
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .is_some_and(|child| !present.contains(dir.join(child).as_path()))
+        };
+        self.listings.retain(|path, _| !gone(path));
+        self.expanded.retain(|path| !gone(path));
+        self.stale.retain(|path| !gone(path));
+        self.missing.remove(&dir);
+        self.listings.insert(dir, children);
+        self.needs_rebuild = true;
+    }
+
+    /// Take the directories the last rebuild wanted and did not have.
+    ///
+    /// The embedder fetches these and calls [`supply`](Self::supply). Draining
+    /// rather than reading means a directory is asked for once per miss, not once
+    /// per frame.
+    #[must_use]
+    pub fn take_missing(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.missing).into_iter().collect()
+    }
+
+    /// Take the listed directories expanded since the last call, to be read
+    /// again; their current listings stay until each fresh
+    /// [`supply`](Self::supply) replaces one.
+    #[must_use]
+    pub fn take_stale(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.stale).into_iter().collect()
+    }
+
+    /// Record `dir` as still needed.
+    ///
+    /// Used when an embedder took a miss and could not act on it — the tree must
+    /// go on knowing it is incomplete, or a caller waiting for the level would
+    /// conclude it had arrived empty.
+    pub fn mark_missing(&mut self, dir: PathBuf) {
+        self.missing.insert(dir);
+    }
+
+    /// Whether the tree is still waiting on any directory.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        !self.missing.is_empty()
+    }
+
+    /// Forget the listing for `dir`, so the next rebuild asks for it again.
+    ///
+    /// Used when something changed underneath: a file created or deleted, a
+    /// filesystem event, an explicit refresh.
+    pub fn invalidate(&mut self, dir: &Path) {
+        self.listings.remove(dir);
+        self.needs_rebuild = true;
+    }
+
+    /// Forget every listing.
+    pub fn invalidate_all(&mut self) {
+        self.listings.clear();
+        self.needs_rebuild = true;
+    }
+
+    /// Whether `dir`'s listing is already known.
+    #[must_use]
+    pub fn has_listing(&self, dir: &Path) -> bool {
+        self.listings.contains_key(dir)
+    }
+
+    /// Every directory whose listing the tree holds, in path order.
+    ///
+    /// For a refresh that re-reads them all while the tree keeps showing the
+    /// current listings: each fresh [`supply`](Self::supply) replaces one.
+    #[must_use]
+    pub fn listed_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self.listings.keys().cloned().collect();
+        dirs.sort();
+        dirs
+    }
+
     /// Rebuild the visible rows for `root` if the root changed or the tree is dirty.
     pub fn ensure_built(&mut self, root: &Path) {
         if self.needs_rebuild || self.root != root {
@@ -645,7 +814,7 @@ impl FileTreeState {
     pub fn rebuild(&mut self, root: &Path) {
         self.root = root.to_path_buf();
         let mut rows = Vec::new();
-        let children = read_dir_sorted(root, self.show_hidden, self.respect_gitignore);
+        let children = self.children_of(root);
         self.push_entries(children, 0, false, &mut rows);
         // Overlay any in-progress inline edit, then keep its row under the cursor.
         let follow = self.apply_editing(&mut rows);
@@ -667,8 +836,8 @@ impl FileTreeState {
     /// directory is ignored too — even though the descendant's own name matches no
     /// pattern (a `target/` rule dims everything under `target/`, not just `target/`).
     fn push_entries(
-        &self,
-        children: Vec<Entry>,
+        &mut self,
+        children: Vec<DirEntry>,
         depth: u16,
         parent_ignored: bool,
         rows: &mut Vec<FileTreeRow>,
@@ -695,8 +864,8 @@ impl FileTreeState {
     /// Push a directory row, compacting a single-child directory chain into one
     /// `a/b/c` row, and recursing into the chain's tip when it is expanded.
     fn push_compacted_dir(
-        &self,
-        first: Entry,
+        &mut self,
+        first: DirEntry,
         depth: u16,
         parent_ignored: bool,
         rows: &mut Vec<FileTreeRow>,
@@ -706,23 +875,32 @@ impl FileTreeState {
         // Ignore inherits strictly: once an ancestor is ignored the whole subtree is.
         let mut ignored = parent_ignored || first.ignored;
         // Descend while the current directory's *only* entry is another directory.
+        let mut is_repository = first.is_repository;
+        // A directory expanded before its listing showed it to be the head of a
+        // chain is the chain's tip now: the expansion moves there, or the row
+        // the user opened collapses as soon as its contents arrive.
+        let mut carried = false;
         let children = loop {
-            let entries = read_dir_sorted(&tip, self.show_hidden, self.respect_gitignore);
-            if is_repository_dir(&tip) {
+            let entries = self.children_of(&tip);
+            if is_repository {
                 break entries;
             }
             match entries.as_slice() {
                 [child] if child.is_dir => {
+                    carried |= self.expanded.remove(&tip);
                     label.push('/');
                     label.push_str(&file_label(&child.path));
                     ignored = ignored || child.ignored;
+                    is_repository = child.is_repository;
                     tip = child.path.clone();
                 },
                 _ => break entries,
             }
         };
+        if carried {
+            self.expanded.insert(tip.clone());
+        }
         let expanded = self.expanded.contains(&tip);
-        let is_repository = is_repository_dir(&tip);
         rows.push(FileTreeRow {
             path: tip,
             label,
@@ -738,8 +916,4 @@ impl FileTreeState {
             self.push_entries(children, depth + 1, ignored, rows);
         }
     }
-}
-
-fn is_repository_dir(path: &Path) -> bool {
-    path.join(".git").exists()
 }

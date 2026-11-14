@@ -221,6 +221,8 @@ fn ctrl_clicking_an_image_opens_it_in_its_own_tab() {
             .and_then(|path| path.file_name()),
         Some(std::ffi::OsStr::new("logo.png"))
     );
+    // Reserved from the name; the image arrives as bytes the backend reads.
+    fill_media_tabs(&mut app);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Image { .. }));
     let _ = std::fs::remove_dir_all(root);
 }

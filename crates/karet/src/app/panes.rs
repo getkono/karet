@@ -240,6 +240,10 @@ impl App {
                     fill_since: t.fill_since,
                     fill_view: t.fill_view.clone(),
                     fill_error: t.fill_error.clone(),
+                    // A source whose size guard has not settled leaves the copy
+                    // unsettled too, so registering it waits for the verdict
+                    // rather than opening a document the guard may refuse.
+                    size_unchecked: t.size_unchecked,
                     ..Tab::new(
                         t.title.clone(),
                         TabKind::Code {
@@ -602,7 +606,7 @@ impl App {
             if !path.is_file() {
                 continue;
             }
-            let mut tab = Tab::open(&path);
+            let mut tab = self.open_tab(&path);
             tab.view = self.alloc_view();
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;

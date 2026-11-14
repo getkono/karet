@@ -247,6 +247,17 @@ impl App {
             latex_previews: HashMap::new(),
             pending_prepared_diffs: HashMap::new(),
             pending_conversions: HashMap::new(),
+            pending_classify: HashMap::new(),
+            pending_bytes: HashMap::new(),
+            file_list_req: None,
+            pending_listings: HashMap::new(),
+            presentation: None,
+            reported_viewports: HashMap::new(),
+            workspace_remote: false,
+            pending_reveal: None,
+            pending_mutations: HashMap::new(),
+            explorer_delete_done: 0,
+            explorer_paste_done: 0,
             pending_startup_diffs: Vec::new(),
             startup_surface_requested: false,
             pending_commit_verification: HashMap::new(),
@@ -290,11 +301,41 @@ impl App {
         self
     }
 
+    /// Keep this machine's presentation settings across a backend's configuration.
+    ///
+    /// Called when the workspace is somewhere else. A local session never needs
+    /// it: there is one configuration and nothing to arbitrate.
+    pub(crate) fn adopt_local_presentation(&mut self) {
+        self.presentation = Some(crate::app::PresentationSettings {
+            color_theme: self.settings.workbench.color_theme.clone(),
+            icon_style: self.settings.workbench.icon_style,
+        });
+    }
+
+    /// Run against a workspace at the other end of a connection: quick-open
+    /// walks through the backend (a walk of a local path would list this
+    /// machine), and views report their viewports so highlights cross the
+    /// connection a screenful at a time.
+    pub(crate) fn mark_workspace_remote(&mut self) {
+        self.workspace_remote = true;
+        self.file_index.walk_through_backend();
+    }
+
     /// Apply a configuration snapshot. Live reload deliberately leaves the startup
     /// panel alone; it is a startup action rather than persistent UI state.
     pub(super) fn apply_loaded_config(&mut self, loaded: LoadedConfig, apply_startup_panel: bool) {
         use karet_session::config::schema::StartupPanel;
 
+        let mut loaded = loaded;
+        // Presentation belongs to the machine doing the presenting. A backend's
+        // configuration describes the code — its indentation, its linters, its
+        // language servers — but it has no standing to say which theme suits the
+        // terminal the user is looking at, or whether that terminal has a patched
+        // font. Those keys stay with the client that resolved them.
+        if let Some(presentation) = self.presentation.clone() {
+            loaded.settings.workbench.color_theme = presentation.color_theme;
+            loaded.settings.workbench.icon_style = presentation.icon_style;
+        }
         let settings = loaded.settings.clone();
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;
@@ -400,7 +441,7 @@ impl App {
             self.open_path(path);
             return;
         }
-        let mut tab = Tab::open(path);
+        let mut tab = self.open_tab(path);
         tab.view = self.alloc_view();
         self.stash_focused();
         let new_pane = self.layout.split(from, SplitDir::Right);
