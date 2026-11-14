@@ -55,9 +55,9 @@ impl GithubIssueForm {
 
 // TODO(spargen-project-items): replace the label/milestone/type text inputs with
 // repository-aware selector islands and add project/custom-field controls.
-// Project-item request bodies remain typed manual adapters while spargen#46
-// tracks their unsupported oneOf property-presence constraints. Do not add
-// untyped JSON calls here as a temporary workaround.
+// The project-item operations (`projects/add-item-for-{org,user}`,
+// `projects/list-items-for-{org,user}`) are generated since spargen 0.6.0, so
+// build these controls on the generated client. Do not add untyped JSON calls.
 
 /// New-pull-request editor state.
 #[derive(Debug)]

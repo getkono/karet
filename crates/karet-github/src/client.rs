@@ -807,6 +807,8 @@ fn generated_error<E: Debug>(error: generated::Error<E>) -> GitHubError {
             }
         },
         generated::Error::Decode {
+            status,
+            headers,
             path,
             body,
             truncated,
@@ -816,14 +818,22 @@ fn generated_error<E: Debug>(error: generated::Error<E>) -> GitHubError {
             } else {
                 ""
             };
-            GitHubError::Decode(format!(
-                "field `{path}` could not be decoded{suffix}; response: {}",
+            let mut message = format!(
+                "field `{path}` of a {} response could not be decoded{suffix}; response: {}",
+                status.as_u16(),
                 compact_response_excerpt(&body)
-            ))
+            );
+            if let Some(id) = github_request_id(&headers) {
+                message.push_str(&format!(" (GitHub request ID: {id})"));
+            }
+            GitHubError::Decode(message)
         },
         generated::Error::InterruptedBody(error) => {
             GitHubError::Transport(format!("GitHub response was interrupted: {error}"))
         },
+        generated::Error::PaginationCycle { url } => GitHubError::Transport(format!(
+            "GitHub pagination looped back to an already-fetched page: {url}"
+        )),
     }
 }
 

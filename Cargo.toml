@@ -89,11 +89,11 @@ blameline        = { path = "crates/blameline", version = "2.0.4", default-featu
 # --- shared external dependencies (versions verified via `cargo add`) ---
 # Foundational
 thiserror = "2.0.18"
-tokio     = { version = "1.52.3", default-features = false }  # crates opt into features
+tokio     = { version = "1.53.3", default-features = false }  # crates opt into features
 tracing   = "0.1.44"
 tracing-appender = "0.2.3"
-serde     = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde     = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2       = "0.10.9"
 hmac       = "0.12.1"                  # jupyter wire signing (with the sha2 pin)
 getrandom  = "0.4.3"                   # OS entropy for the jupyter signing key (already in the zeromq tree)
@@ -107,12 +107,14 @@ jupyter-protocol = "2.0.0"
 flate2     = "1.1.9"
 lzma-rust2 = { version = "0.18.0", default-features = false, features = ["std", "xz"] }
 tar        = "0.4.44"
-bytes      = { version = "1.12.0", features = ["serde"] }
+bytes      = { version = "1.12.1", features = ["serde"] }
 secrecy    = "0.10.3"
-time       = { version = "0.3.47", features = ["serde-human-readable", "formatting", "parsing"] }
+http       = "1.4.2"    # spargen-generated runtime: HttpBackend speaks http::Request/Response
+http-body  = "1.0.1"
+time       = { version = "0.3.55", features = ["serde-human-readable", "formatting", "parsing"] }
 # Host-only OpenAPI generator for karet-github. Generated Rust is written to
 # OUT_DIR, so spargen never enters a karet runtime dependency graph.
-spargen   = { version = "=0.2.1", default-features = false }
+spargen   = { version = "=0.6.0", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"
@@ -275,7 +277,7 @@ aicommit-core = "0.2.0"
 agent-text = { version = "0.1.1", default-features = false, features = ["claude-code", "codex"] }
 # GitHub REST client (karet-github). Pure-Rust TLS via rustls (ring), no OpenSSL /
 # native-tls system dependency. Blocking API so callers need no async runtime.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Application-only
 clap               = { version = "4.6.1", features = ["derive"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
